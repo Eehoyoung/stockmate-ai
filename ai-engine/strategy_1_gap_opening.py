@@ -1,5 +1,17 @@
+"""전술 1: 갭상승 + 체결강도 시초가 매수
+타이밍: 8:30 ~ 9:05
+진입 조건 (AND):
+
+전일 종가 대비 예상 시초가 갭상승률 ≥ 3% (0H 예상체결)
+체결강도 ≥ 130% 확인 (ka10046)
+갭상승 당일 전일 거래량 대비 호가잔량 매수 우위 ≥ 1.5배 (0D)
+전일 일봉 하락폭 ≤ 3% (갭메우기 제거) OR 신고가 돌파 종목 우선"""
+
 import asyncio, httpx, json, redis
 from datetime import datetime
+import os
+
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL")
 
 r = redis.Redis(host='localhost', decode_responses=True)
 
