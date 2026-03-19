@@ -1,0 +1,115 @@
+package org.invest.apiorchestrator.service;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.exception.KiwoomApiException;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
+
+import java.time.Duration;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class KiwoomApiService {
+    private final WebClient kiwoomWebClient;
+    private final TokenService tokenService;
+
+    private static final int MAX_RETRIES = 2;
+    private static final Duration RETRY_DELAY = Duration.ofSeconds(1);
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
+    private static final String HEADER_API_ID = "api-id";
+    private static final String HEADER_AUTHORIZATION = "authorization";
+    private static final String HEADER_CONTENT_TYPE = "Content-Type";
+    private static final String CONTENT_TYPE_JSON_UTF8 = "application/json;charset=UTF-8";
+    private static final String HEADER_CONT_YN = "cont-yn";
+    private static final String HEADER_NEXT_KEY = "next-key";
+
+    /**
+     * 키움 REST API POST 호출 공통 메서드
+     *
+     * @param apiId    TR명 (예: ka10046)
+     * @param endpoint URL 경로 (예: /api/dostk/mrkcond)
+     * @param body     요청 바디 DTO
+     * @param respType 응답 타입
+     */
+    public <T> T post(String apiId, String endpoint, Object body, Class<T> respType) {
+        WebClient.RequestBodySpec spec = createPostSpec(apiId, endpoint);
+        T result = spec.bodyValue(body)
+                .retrieve()
+                .onStatus(HttpStatusCode::is4xxClientError, response -> on4xx(apiId, response))
+                .bodyToMono(respType)
+                .retryWhen(Retry.backoff(MAX_RETRIES, RETRY_DELAY)
+                        .filter(e -> !(e instanceof KiwoomApiException))
+                        .doBeforeRetry(rs -> log.warn("API 재시도 [{}] attempt={}", apiId, rs.totalRetries() + 1)))
+                .doOnError(e -> log.error("API 호출 최종 실패 [{}]: {}", apiId, e.getMessage()))
+                .block(REQUEST_TIMEOUT);
+
+        if (result == null) {
+            throw new KiwoomApiException("API 응답 없음 [" + apiId + "]");
+        }
+        return result;
+    }
+
+    /**
+     * 연속조회 지원 POST 호출 (cont-yn, next-key 자동 처리)
+     * - 단순 단건 조회는 post() 사용
+     */
+    public <T> T postWithContinuation(String apiId, String endpoint,
+                                      Object body, Class<T> respType,
+                                      String contYn, String nextKey) {
+        WebClient.RequestBodySpec spec = createPostSpec(apiId, endpoint);
+        spec = applyContinuationHeaders(spec, contYn, nextKey);
+
+        T result = spec.bodyValue(body)
+                .retrieve()
+                .onStatus(HttpStatusCode::is4xxClientError, response -> on4xx(apiId, response))
+                .bodyToMono(respType)
+                .retryWhen(Retry.backoff(MAX_RETRIES, RETRY_DELAY)
+                        .filter(e -> !(e instanceof KiwoomApiException))
+                        .doBeforeRetry(rs -> log.warn("API 재시도(연속조회) [{}] attempt={}", apiId, rs.totalRetries() + 1)))
+                .doOnError(e -> log.error("API 호출 최종 실패(연속조회) [{}]: {}", apiId, e.getMessage()))
+                .block(REQUEST_TIMEOUT);
+
+        if (result == null) {
+            throw new KiwoomApiException("API 응답 없음 [" + apiId + "]");
+        }
+        return result;
+    }
+
+    // 공통 POST 스펙 생성 (인증/공통 헤더 포함)
+    private WebClient.RequestBodySpec createPostSpec(String apiId, String endpoint) {
+        String bearerToken = tokenService.getBearerToken();
+        return kiwoomWebClient.post()
+                .uri(endpoint)
+                .header(HEADER_API_ID, apiId)
+                .header(HEADER_AUTHORIZATION, bearerToken)
+                .header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON_UTF8);
+    }
+
+    // 연속조회 헤더 적용
+    private WebClient.RequestBodySpec applyContinuationHeaders(WebClient.RequestBodySpec spec, String contYn, String nextKey) {
+        if ("Y".equals(contYn) && nextKey != null) {
+            return spec.header(HEADER_CONT_YN, contYn).header(HEADER_NEXT_KEY, nextKey);
+        }
+        return spec;
+    }
+
+    // 4xx 에러 처리: 401은 토큰 갱신 후 재시도 유도, 그 외는 즉시 실패
+    private Mono<Throwable> on4xx(String apiId, org.springframework.web.reactive.function.client.ClientResponse clientResponse) {
+        return clientResponse.bodyToMono(String.class)
+                .flatMap(bodyText -> {
+                    int status = clientResponse.statusCode().value();
+                    log.error("4xx 오류 [{}] status={} body={}", apiId, status, bodyText);
+                    if (status == 401) {
+                        // 토큰 만료: 갱신 후 재시도 허용 예외로 전달
+                        tokenService.refreshToken();
+                        return Mono.error(new IllegalStateException("Token refreshed. Retry request."));
+                    }
+                    return Mono.error(new KiwoomApiException("API 오류 [" + apiId + "]: " + bodyText));
+                });
+    }
+}
