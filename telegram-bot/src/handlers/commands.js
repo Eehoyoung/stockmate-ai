@@ -94,18 +94,22 @@ const candidates = guard(async (ctx) => {
 /** /시세 {종목코드} */
 const quote = guard(async (ctx) => {
     const args   = ctx.message.text.split(' ');
-    const stkCd  = args[1];
+    const stkCd  = args[1]?.trim();
     if (!stkCd) return ctx.reply('사용법: /시세 005930');
+    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /시세 005930');
 
     const tick = await getTickData(stkCd);
     if (!tick || Object.keys(tick).length === 0) {
         return ctx.reply(`❓ ${stkCd} 실시간 데이터 없음 (WebSocket 미구독 또는 TTL 만료)`);
     }
+    const fluRt  = tick.flu_rt ?? '-';
+    const fluSign = Number(fluRt) > 0 ? '+' : '';
     await ctx.reply(
         `📈 <b>${stkCd} 실시간 시세</b>\n` +
-        `현재가: <b>${tick.cur_prc ?? '-'}</b>\n` +
-        `등락률: ${tick.flu_rt ?? '-'}%\n` +
+        `현재가: <b>${Number(tick.cur_prc ?? 0).toLocaleString()}원</b>\n` +
+        `등락률: <b>${fluSign}${fluRt}%</b>\n` +
         `체결강도: ${tick.cntr_str ?? '-'}\n` +
+        `누적거래량: ${Number(tick.acc_trde_qty ?? 0).toLocaleString()}\n` +
         `체결시간: ${tick.cntr_tm ?? '-'}`,
         { parse_mode: 'HTML' }
     );

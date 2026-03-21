@@ -59,6 +59,16 @@ async def _run_once(rdb):
 
     now = datetime.datetime.now().time()
 
+    # ── S7: 동시호가 (08:30 ~ 09:00) ──────────────────────────────
+    if datetime.time(8, 30) <= now <= datetime.time(9, 0):
+        try:
+            from strategy_7_auction import scan_auction_signal
+            for market in ("001", "101"):
+                signals = await scan_auction_signal(token, market, rdb=rdb)
+                await _push_signals(rdb, signals, "S7_AUCTION")
+        except Exception as e:
+            logger.error("[Runner] S7 스캔 오류: %s", e)
+
     # ── S1: 갭상승 시초가 (08:30 ~ 09:10) ─────────────────────────
     if datetime.time(8, 30) <= now <= datetime.time(9, 10):
         try:
@@ -82,6 +92,24 @@ async def _run_once(rdb):
         except Exception as e:
             logger.error("[Runner] S3 스캔 오류: %s", e)
 
+    # ── S4: 장대양봉 추격 (09:30 ~ 14:30) – 후보 종목 순차 스캔 ──
+    if datetime.time(9, 30) <= now <= datetime.time(14, 30):
+        try:
+            from strategy_4_big_candle import check_big_candle
+            kospi  = await rdb.lrange("candidates:001", 0, 99)
+            kosdaq = await rdb.lrange("candidates:101", 0, 99)
+            candidates = list(dict.fromkeys(kospi + kosdaq))[:30]  # 상위 30개만
+            s4_signals = []
+            for stk_cd in candidates:
+                result = await check_big_candle(token, stk_cd, rdb=rdb)
+                if result:
+                    s4_signals.append(result)
+                    if len(s4_signals) >= 5:
+                        break
+            await _push_signals(rdb, s4_signals, "S4_BIG_CANDLE")
+        except Exception as e:
+            logger.error("[Runner] S4 스캔 오류: %s", e)
+
     # ── S5: 프로그램+외인 (10:00 ~ 14:00) ─────────────────────────
     if datetime.time(10, 0) <= now <= datetime.time(14, 0):
         try:
@@ -100,16 +128,6 @@ async def _run_once(rdb):
             await _push_signals(rdb, signals, "S6_THEME_LAGGARD")
         except Exception as e:
             logger.error("[Runner] S6 스캔 오류: %s", e)
-
-    # ── S7: 동시호가 (08:30 ~ 09:00) ──────────────────────────────
-    if datetime.time(8, 30) <= now <= datetime.time(9, 0):
-        try:
-            from strategy_7_auction import scan_auction_signal
-            for market in ("001", "101"):
-                signals = await scan_auction_signal(token, market, rdb=rdb)
-                await _push_signals(rdb, signals, "S7_AUCTION")
-        except Exception as e:
-            logger.error("[Runner] S7 스캔 오류: %s", e)
 
 
 async def run_strategy_scanner(rdb):
