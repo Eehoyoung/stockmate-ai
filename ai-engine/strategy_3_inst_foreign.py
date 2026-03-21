@@ -22,7 +22,7 @@ KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
 async def fetch_intraday_investor(token: str, market: str = "000") -> list:
     """ka10063 장중투자자별매매 - 외인+기관 동시 순매수"""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
             headers={"api-id": "ka10063", "authorization": f"Bearer {token}",
@@ -36,11 +36,13 @@ async def fetch_intraday_investor(token: str, market: str = "000") -> list:
                 "stex_tp": "1"
             }
         )
+        resp.raise_for_status()
         return resp.json().get("opmr_invsr_trde", [])
+
 
 async def fetch_continuous_netbuy(token: str, market: str) -> set:
     """ka10131 기관외국인연속매매 - 3일 연속 순매수 종목셋"""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/frgnistt",
             headers={"api-id": "ka10131", "authorization": f"Bearer {token}",
@@ -54,24 +56,28 @@ async def fetch_continuous_netbuy(token: str, market: str) -> set:
                 "stex_tp": "1"
             }
         )
+        resp.raise_for_status()
         items = resp.json().get("orgn_for_cont_trde", [])
         return {x["stk_cd"] for x in items}
 
+
 async def fetch_volume_compare(token: str, stk_cd: str) -> float:
     """ka10055 당일전일체결량 - 동시간 거래량 비율"""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         today = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
             headers={"api-id": "ka10055", "authorization": f"Bearer {token}",
                      "Content-Type": "application/json;charset=UTF-8"},
             json={"stk_cd": stk_cd, "tdy_pred": "1"}  # 당일
         )
+        today.raise_for_status()
         prev = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
             headers={"api-id": "ka10055", "authorization": f"Bearer {token}",
                      "Content-Type": "application/json;charset=UTF-8"},
             json={"stk_cd": stk_cd, "tdy_pred": "2"}  # 전일
         )
+        prev.raise_for_status()
 
     today_qty = sum(int(x.get("cntr_qty", 0))
                     for x in today.json().get("tdy_pred_cntr_qty", []))

@@ -13,14 +13,18 @@ import httpx
 import logging
 import os
 
+from http_utils import fetch_cntr_strength
+
 logger = logging.getLogger(__name__)
 
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+
+
 async def fetch_theme_groups(token: str) -> list:
     """ka90001 테마그룹별 상위 수익률"""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/thme",
             headers={"api-id": "ka90001", "authorization": f"Bearer {token}",
@@ -32,49 +36,21 @@ async def fetch_theme_groups(token: str) -> list:
                 "stex_tp": "1"
             }
         )
+        resp.raise_for_status()
         return resp.json().get("thme_grp", [])[:5]  # 상위 5 테마
+
 
 async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
     """ka90002 테마구성종목"""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/thme",
             headers={"api-id": "ka90002", "authorization": f"Bearer {token}",
                      "Content-Type": "application/json;charset=UTF-8"},
             json={"date_tp": "1", "thema_grp_cd": thema_grp_cd, "stex_tp": "1"}
         )
+        resp.raise_for_status()
         return resp.json().get("thme_comp_stk", [])
-
-
-async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
-    """
-    체결강도 조회 (ka10003 체결정보요청)
-    - 종목코드(stk_cd)를 입력받아 최근 체결정보의 cntr_str 반환
-    """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-            headers={
-                "api-id": "ka10003",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8"
-            },
-            json={"stk_cd": stk_cd}
-        )
-
-    data = resp.json()
-    cntr_infr = data.get("cntr_infr", [])
-    if not cntr_infr:
-        return 0.0
-
-    # 가장 최근 체결정보의 cntr_str 사용
-    latest = cntr_infr[0]
-    strength = latest.get("cntr_str", "0")
-    try:
-        return float(strength)
-    except ValueError:
-        return 0.0
-
 
 
 
@@ -84,13 +60,21 @@ async def scan_theme_laggard(token: str) -> list:
 
     for theme in themes:
         thema_grp_cd = theme.get("thema_grp_cd")
-        theme_flu_rt = float(theme.get("flu_rt", 0))
+        try:
+            theme_flu_rt = float(str(theme.get("flu_rt", "0")).replace("+", "").replace(",", ""))
+        except (TypeError, ValueError):
+            theme_flu_rt = 0.0
 
         if theme_flu_rt < 2.0:  # 테마 자체 등락률 2% 미만 제외
             continue
 
         stocks = await fetch_theme_stocks(token, thema_grp_cd)
-        flu_rates = [float(s.get("flu_rt", 0)) for s in stocks]
+        flu_rates = []
+        for s in stocks:
+            try:
+                flu_rates.append(float(str(s.get("flu_rt", "0")).replace("+", "").replace(",", "")))
+            except (TypeError, ValueError):
+                flu_rates.append(0.0)
 
         if not flu_rates:
             continue
@@ -99,7 +83,10 @@ async def scan_theme_laggard(token: str) -> list:
 
         for stk in stocks:
             stk_cd = stk.get("stk_cd")
-            flu_rt = float(stk.get("flu_rt", 0))
+            try:
+                flu_rt = float(str(stk.get("flu_rt", "0")).replace("+", "").replace(",", ""))
+            except (TypeError, ValueError):
+                flu_rt = 0.0
 
             # 후발주 조건: 테마 평균보다 낮지만 상승 중
             if not (0.5 <= flu_rt < p70) or flu_rt >= 5.0:
@@ -115,9 +102,10 @@ async def scan_theme_laggard(token: str) -> list:
                 "theme_name": theme.get("thema_nm"),
                 "theme_flu_rt": theme_flu_rt,
                 "stk_flu_rt": flu_rt,
+                "gap_pct": flu_rt,       # scorer/analyzer 가 기대하는 필드명
                 "cntr_strength": round(strength, 1),
                 "entry_type": "지정가_1호가",
-                "target_pct": theme_flu_rt * 0.6,  # 테마 상승률의 60%
+                "target_pct": min(theme_flu_rt * 0.6, 5.0),  # 테마 상승률의 60%, 최대 5%
                 "stop_pct": -2.0,
             })
 

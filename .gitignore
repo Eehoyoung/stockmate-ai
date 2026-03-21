@@ -36,3 +36,23 @@ out/
 ### VS Code ###
 .vscode/
 .env
+stockmate-ai.iml
+#docs
+CLAUDE.md
+
+### Python ###
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+venv/
+.venv/
+env/
+logs/
+
+### Node.js ###
+node_modules/
+npm-debug.log*
+
+### Secrets ###
+*.env

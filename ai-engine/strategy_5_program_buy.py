@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
-async def fetch_program_netbuy(token: str, market: str) -> set:
+async def fetch_program_netbuy(token: str, market: str) -> dict:
     """ka90003 프로그램순매수상위50"""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
             headers={"api-id": "ka90003", "authorization": f"Bearer {token}",
@@ -33,12 +33,14 @@ async def fetch_program_netbuy(token: str, market: str) -> set:
                 "stex_tp": "1"
             }
         )
+        resp.raise_for_status()
         items = resp.json().get("prm_netprps_upper_50", [])
         return {x["stk_cd"]: int(x.get("net_buy_amt", 0)) for x in items}
 
+
 async def fetch_frgn_inst_upper(token: str, market: str) -> set:
     """ka90009 외국인기관매매상위"""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
             headers={"api-id": "ka90009", "authorization": f"Bearer {token}",
@@ -50,6 +52,7 @@ async def fetch_frgn_inst_upper(token: str, market: str) -> set:
                 "stex_tp": "1"
             }
         )
+        resp.raise_for_status()
         items = resp.json().get("for_inst_trde_upper", [])
         return {x["stk_cd"] for x in items}
 
@@ -66,10 +69,10 @@ async def scan_program_buy(token: str, market: str = "000") -> list:
         results.append({
             "stk_cd": stk_cd,
             "strategy": "S5_PROG_FRGN",
-            "prog_net_buy_amt": prog_map[stk_cd],
+            "net_buy_amt": prog_map[stk_cd],
             "entry_type": "지정가_1호가",
             "target_pct": 3.0,
             "stop_pct": -2.0,
         })
 
-    return sorted(results, key=lambda x: x["prog_net_buy_amt"], reverse=True)[:5]
+    return sorted(results, key=lambda x: x["net_buy_amt"], reverse=True)[:5]

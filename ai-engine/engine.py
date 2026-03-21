@@ -76,6 +76,12 @@ async def _run_health_server(port: int, rdb):
     await site.start()
     logger.info("[Health] AI Engine 헬스체크 서버 시작 → http://0.0.0.0:%d/health", port)
 
+    # 서버를 계속 실행 (태스크 취소 시 자동 종료)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+
 
 async def main():
     logger.info("=" * 50)

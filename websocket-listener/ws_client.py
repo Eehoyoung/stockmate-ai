@@ -176,8 +176,12 @@ async def run_ws_loop(rdb):
 
                 await _subscribe_all(ws, rdb)
 
+                # 초기 구독 후보를 subscribed_set 에 등록 (watchlist poller 가 중복 UNREG 방지)
+                kospi  = await _get_candidates(rdb, "001")
+                kosdaq = await _get_candidates(rdb, "101")
+                subscribed_set: set = set(dict.fromkeys(kospi + kosdaq))
+
                 # 동적 구독 watchlist 폴러 + heartbeat 시작
-                subscribed_set: set = set()
                 watchlist_task  = asyncio.create_task(_watchlist_poller(ws, rdb, subscribed_set))
                 heartbeat_task  = asyncio.create_task(_heartbeat_writer(rdb))
 

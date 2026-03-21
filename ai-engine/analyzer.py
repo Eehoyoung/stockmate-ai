@@ -18,6 +18,18 @@ CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 MAX_TOKENS      = 256   # 압축 프롬프트에 맞게 축소
 CLAUDE_TIMEOUT  = 10    # seconds
 
+# Claude 클라이언트 싱글턴 (모듈 로드 시 생성, 매 호출 시 재생성 방지)
+_claude_client: anthropic.AsyncAnthropic | None = None
+
+def _get_claude_client() -> anthropic.AsyncAnthropic:
+    global _claude_client
+    if _claude_client is None:
+        api_key = os.getenv("CLAUDE_API_KEY")
+        if not api_key:
+            raise RuntimeError("CLAUDE_API_KEY 환경 변수 미설정")
+        _claude_client = anthropic.AsyncAnthropic(api_key=api_key)
+    return _claude_client
+
 # 시스템 프롬프트 (공통)
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 try:
@@ -124,11 +136,7 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float) -> d
     반환: {"action": ..., "ai_score": ..., "confidence": ..., "reason": ...,
            "adjusted_target_pct": ..., "adjusted_stop_pct": ...}
     """
-    api_key = os.getenv("CLAUDE_API_KEY")
-    if not api_key:
-        raise RuntimeError("CLAUDE_API_KEY 환경 변수 미설정")
-
-    client       = anthropic.AsyncAnthropic(api_key=api_key)
+    client       = _get_claude_client()
     user_message = _build_user_message(signal, market_ctx, rule_score)
 
     raw_text = ""
@@ -144,7 +152,11 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float) -> d
         )
         raw_text = response.content[0].text.strip()
 
-        # JSON 파싱
+        # JSON 파싱 – Claude 가 JSON 앞뒤에 텍스트를 추가하는 경우 중괄호 범위 추출
+        json_start = raw_text.find("{")
+        json_end   = raw_text.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            raw_text = raw_text[json_start:json_end]
         result = json.loads(raw_text)
         logger.info(
             json.dumps({

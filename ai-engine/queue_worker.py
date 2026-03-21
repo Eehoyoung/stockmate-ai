@@ -19,7 +19,7 @@ import asyncio
 import logging
 import os
 
-from analyzer import analyze_signal
+from analyzer import analyze_signal, _fallback
 from redis_reader import (
     pop_telegram_queue,
     get_tick_data,
@@ -78,7 +78,6 @@ async def process_one(rdb) -> bool:
             within_limit = await check_daily_limit(rdb)
             if not within_limit:
                 # 상한 초과 시 규칙 스코어만으로 발행
-                from analyzer import _fallback
                 result = _fallback(r_score)
                 result["reason"] = "일별 Claude 호출 상한 초과 – 규칙 스코어 기반 처리"
             else:
@@ -88,11 +87,10 @@ async def process_one(rdb) -> bool:
                 except Exception as claude_err:
                     logger.warning("[Worker] Claude API 오류 [%s %s]: %s – 규칙 스코어로 대체",
                                    stk_cd, strategy, claude_err)
-                    from analyzer import _fallback
                     result = _fallback(r_score)
                     result["reason"] = f"Claude API 오류 – 규칙 스코어 기반 처리: {claude_err}"
 
-        # 5. 결과 합산 후 ai_scored_queue 에 발행
+        # 6. 결과 합산 후 ai_scored_queue 에 발행
         enriched = {
             **item,
             "rule_score":          r_score,

@@ -5,6 +5,19 @@
  * ai_scored_queue 항목을 텔레그램 메시지로 변환
  */
 
+/**
+ * Telegram HTML 모드에서 문제가 되는 특수문자를 이스케이프
+ * @param {string} text
+ * @returns {string}
+ */
+function escapeHtml(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 const STRATEGY_EMOJI = {
     S1_GAP_OPEN:       '🚀',
     S2_VI_PULLBACK:    '🎯',
@@ -55,11 +68,14 @@ function formatSignal(item) {
     // 진입가 / 목표가 / 손절가 / 리스크리워드
     const curPrc = Number(item.cur_prc ?? item.entry_price ?? 0);
     if (curPrc > 0) {
-        const targetPrc = Math.round(curPrc * 1.08);
-        const stopPrc   = Math.round(curPrc * 0.97);
+        const tgtPct = Number(targetPct ?? item.target_pct ?? 8);
+        const stpPct = Number(stopPct  ?? item.stop_pct   ?? -3);
+        const targetPrc = Math.round(curPrc * (1 + tgtPct / 100));
+        const stopPrc   = Math.round(curPrc * (1 + stpPct / 100));
+        const rr = stpPct !== 0 ? (tgtPct / Math.abs(stpPct)).toFixed(1) : '-';
         lines.push(`진입가: <b>${curPrc.toLocaleString()}원</b>`);
-        lines.push(`목표가: <b>${targetPrc.toLocaleString()}원</b> (+8%)  손절가: <b>${stopPrc.toLocaleString()}원</b> (-3%)`);
-        lines.push(`리스크/리워드: 1:2.7`);
+        lines.push(`목표가: <b>${targetPrc.toLocaleString()}원</b> (+${tgtPct}%)  손절가: <b>${stopPrc.toLocaleString()}원</b> (${stpPct}%)`);
+        lines.push(`리스크/리워드: 1:${rr}`);
     }
 
     // 전술별 지표
@@ -74,16 +90,21 @@ function formatSignal(item) {
         lines.push(`순매수: ${amt}억`);
     }
 
-    // AI 분석 근거
+    // AI 분석 근거 (HTML 이스케이프 처리)
     if (item.ai_reason) {
         lines.push('');
-        lines.push(`💬 <i>${item.ai_reason}</i>`);
+        lines.push(`💬 <i>${escapeHtml(item.ai_reason)}</i>`);
     }
 
     // 신호 시간
-    const signalTime = item.signal_time
-        ? new Date(item.signal_time).toLocaleTimeString('ko-KR')
-        : new Date().toLocaleTimeString('ko-KR');
+    let signalTime;
+    try {
+        signalTime = item.signal_time
+            ? new Date(item.signal_time).toLocaleTimeString('ko-KR')
+            : new Date().toLocaleTimeString('ko-KR');
+    } catch (_) {
+        signalTime = new Date().toLocaleTimeString('ko-KR');
+    }
     lines.push(`\n🕐 ${signalTime}`);
 
     return lines.join('\n');
@@ -117,4 +138,4 @@ function formatDailySummary(stats) {
     return lines.join('\n');
 }
 
-module.exports = { formatSignal, formatForceClose, formatDailySummary };
+module.exports = { formatSignal, formatForceClose, formatDailySummary, escapeHtml };

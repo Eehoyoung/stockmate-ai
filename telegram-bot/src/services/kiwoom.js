@@ -49,13 +49,15 @@ async function refreshToken() {
 async function runStrategy(strategy, params = {}) {
     const map = {
         s1: '/api/trading/strategy/s1/run',
+        s2: '/api/trading/strategy/s2/run',
         s3: '/api/trading/strategy/s3/run',
+        s4: '/api/trading/strategy/s4/run',
         s5: '/api/trading/strategy/s5/run',
         s6: '/api/trading/strategy/s6/run',
         s7: '/api/trading/strategy/s7/run',
     };
     const url = map[strategy.toLowerCase()];
-    if (!url) throw new Error(`알 수 없는 전술: ${strategy}`);
+    if (!url) throw new Error(`알 수 없는 전술: ${strategy}. 사용 가능: s1~s7`);
     const { data } = await api.post(url, null, { params });
     return data;
 }

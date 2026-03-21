@@ -14,6 +14,8 @@ import logging
 
 import httpx
 
+from http_utils import fetch_cntr_strength
+
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
 # rdb (redis.asyncio.Redis) 는 strategy_runner.py 에서 전달받습니다.
@@ -52,41 +54,15 @@ async def handle_vi_event(rdb, event: dict):
         await rdb.hset(key, "status", "released")
         # 눌림목 감시 큐에 등록
         import json
+        import time
         await rdb.lpush("vi_watch_queue", json.dumps({
             "stk_cd": stk_cd,
             "vi_price": float(vi_data["vi_price"]),
-            "watch_until": (datetime.now().timestamp() + 600)  # 10분 감시
+            "watch_until": int((time.time() + 600) * 1000),  # 10분 감시 (밀리초, Java와 일치)
+            "is_dynamic": vi_data.get("vi_type") in ("2", "3"),
         }))
 
 
-async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
-    """
-    체결강도 조회 (ka10003 체결정보요청)
-    - 종목코드(stk_cd)를 입력받아 최근 체결정보의 cntr_str 반환
-    """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-            headers={
-                "api-id": "ka10003",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8"
-            },
-            json={"stk_cd": stk_cd}
-        )
-
-    data = resp.json()
-    cntr_infr = data.get("cntr_infr", [])
-    if not cntr_infr:
-        return 0.0
-
-    # 가장 최근 체결정보의 cntr_str 사용
-    latest = cntr_infr[0]
-    strength = latest.get("cntr_str", "0")
-    try:
-        return float(strength)
-    except ValueError:
-        return 0.0
 
 
 
