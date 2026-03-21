@@ -62,6 +62,15 @@ public class TradingController {
                 "signals", signals, "published", cnt));
     }
 
+    /** 전술 2 수동 실행 (VI 눌림목) – 해당 없음: 이벤트 기반 전술이므로 안내 메시지 반환 */
+    @PostMapping("/strategy/s2/run")
+    public ResponseEntity<Map<String, Object>> runS2() {
+        return ResponseEntity.ok(Map.of(
+                "strategy", "S2_VI_PULLBACK",
+                "published", 0,
+                "msg", "S2는 VI 이벤트 기반 전술입니다. vi_watch_queue 를 통해 자동 실행됩니다."));
+    }
+
     /** 전술 3 수동 실행 (외인+기관) */
     @PostMapping("/strategy/s3/run")
     public ResponseEntity<Map<String, Object>> runS3(
@@ -70,6 +79,23 @@ public class TradingController {
         int cnt = signalService.processSignals(signals);
         return ResponseEntity.ok(Map.of("strategy", "S3_INST_FRGN",
                 "signals", signals, "published", cnt));
+    }
+
+    /** 전술 4 수동 실행 (장대양봉) */
+    @PostMapping("/strategy/s4/run")
+    public ResponseEntity<Map<String, Object>> runS4(
+            @RequestParam(defaultValue = "000") String market) {
+        List<String> candidates = candidateService.getCandidates(market).stream()
+                .limit(30).toList();
+        int cnt = 0;
+        for (String stkCd : candidates) {
+            var sigOpt = strategyService.checkBigCandle(stkCd);
+            if (sigOpt.isPresent() && signalService.processSignal(sigOpt.get())) {
+                cnt++;
+                if (cnt >= 5) break;
+            }
+        }
+        return ResponseEntity.ok(Map.of("strategy", "S4_BIG_CANDLE", "published", cnt));
     }
 
     /** 전술 5 수동 실행 (프로그램+외인) */
