@@ -62,11 +62,13 @@ public class StrategyService {
                         .stkCd(stkCd)
                         .strategy(TradingSignal.StrategyType.S1_GAP_OPEN)
                         .signalScore(round(score))
+                        .entryPrice(expPrice)
                         .gapPct(round(gapPct))
                         .cntrStrength(round(strength))
                         .bidRatio(round(bidRatio))
                         .entryType("시초가_시장가")
                         .targetPct(4.0)
+                        .target2Pct(6.0)
                         .stopPct(-2.0)
                         .build());
 
@@ -114,11 +116,13 @@ public class StrategyService {
                     .stkCd(stkCd)
                     .strategy(TradingSignal.StrategyType.S2_VI_PULLBACK)
                     .signalScore(round(score))
+                    .entryPrice(curPrice)
                     .pullbackPct(round(pullbackPct))
                     .cntrStrength(round(strength))
                     .bidRatio(round(bidRatio))
                     .entryType("지정가_눌림목")
                     .targetPct(3.0)
+                    .target2Pct(4.5)
                     .stopPct(-2.0)
                     .build());
         } catch (Exception e) {
@@ -175,6 +179,7 @@ public class StrategyService {
                         .marketType(market)
                         .entryType("지정가_1호가")
                         .targetPct(3.5)
+                        .target2Pct(5.0)
                         .stopPct(-2.0)
                         .build());
             }
@@ -243,6 +248,7 @@ public class StrategyService {
                     .stkCd(stkCd)
                     .strategy(TradingSignal.StrategyType.S4_BIG_CANDLE)
                     .signalScore(round(score))
+                    .entryPrice(c)
                     .gapPct(round(gainPct))
                     .volRatio(round(volRatio))
                     .cntrStrength(round(strength))
@@ -250,6 +256,7 @@ public class StrategyService {
                     .isNewHigh(isNewHigh)
                     .entryType("추격_시장가")
                     .targetPct(4.0)
+                    .target2Pct(6.0)
                     .stopPct(-2.5)
                     .build());
         } catch (Exception e) {
@@ -298,6 +305,7 @@ public class StrategyService {
                         .marketType(market)
                         .entryType("지정가_1호가")
                         .targetPct(3.0)
+                        .target2Pct(4.5)
                         .stopPct(-2.0)
                         .build());
             }
@@ -368,6 +376,7 @@ public class StrategyService {
                             .cntrStrength(round(strength))
                             .entryType("지정가_1호가")
                             .targetPct(round(target))
+                            .target2Pct(round(target * 1.5))
                             .stopPct(-2.0)
                             .build());
                 }
@@ -428,17 +437,20 @@ public class StrategyService {
 
                 double score = bidRatio * 10 + gapPct + (50 - rank) * 0.5;
 
+                double t1 = Math.min(gapPct * 0.8, 5.0);
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
                         .stkNm(item.getStkNm())
                         .strategy(TradingSignal.StrategyType.S7_AUCTION)
                         .signalScore(round(score))
+                        .entryPrice(expPrice)
                         .gapPct(round(gapPct))
                         .bidRatio(round(bidRatio))
                         .volRank(rank)
                         .marketType(market)
                         .entryType("시초가_시장가")
-                        .targetPct(Math.min(gapPct * 0.8, 5.0))
+                        .targetPct(round(t1))
+                        .target2Pct(round(Math.min(t1 * 1.5, 8.0)))
                         .stopPct(-2.0)
                         .build());
                 rank++;

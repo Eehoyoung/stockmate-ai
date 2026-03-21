@@ -112,12 +112,16 @@ public class SignalService {
     }
 
     private TradingSignal buildSignalEntity(TradingSignalDto dto) {
+        double t1 = dto.calcTarget1Price();
+        double sp = dto.calcStopPrice();
         return TradingSignal.builder()
                 .stkCd(dto.getStkCd())
                 .stkNm(dto.getStkNm())
                 .strategy(dto.getStrategy())
                 .signalScore(dto.getSignalScore())
                 .entryPrice(dto.getEntryPrice())
+                .targetPrice(t1 > 0 ? t1 : null)
+                .stopPrice(sp > 0 ? sp : null)
                 .targetPct(dto.getTargetPct())
                 .stopPct(dto.getStopPct())
                 .entryType(dto.getEntryType())
