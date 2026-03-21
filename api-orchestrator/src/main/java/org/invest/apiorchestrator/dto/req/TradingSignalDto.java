@@ -65,6 +65,8 @@ public class TradingSignalDto {
         m.put("vol_rank",        volRank);
         m.put("market_type",     marketType);
         m.put("body_ratio",      bodyRatio);
+        m.put("signal_time",     signalTime != null ? signalTime.toString() : java.time.LocalDateTime.now().toString());
+        m.put("cur_prc",         entryPrice);  // 진입가 = 현재가 (신호 발생 시점)
         m.put("message",         toTelegramMessage());
         return m;
     }
