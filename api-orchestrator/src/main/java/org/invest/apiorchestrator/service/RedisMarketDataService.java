@@ -21,6 +21,7 @@ public class RedisMarketDataService {
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    private final org.invest.apiorchestrator.config.KiwoomProperties kiwoomProperties;
 
     // Redis 키 접두사
     private static final String KEY_TICK      = "ws:tick:";
@@ -181,12 +182,28 @@ public class RedisMarketDataService {
     }
 
     /**
-     * 신호 중복 여부 체크 (set → TTL 1시간)
+     * 신호 중복 여부 체크 (set → 전략별 TTL).
+     * 전략별 TTL: S1(갭상승)=1800s, S2(VI눌림목)=3600s, S7(동시호가)=7200s, 그외=기본값
+     * 기본값은 kiwoom.trading.signal-ttl-seconds (application.yml / SIGNAL_DUPLICATE_TTL 환경변수)
      */
     public boolean isSignalDuplicate(String stkCd, String strategy) {
         String key = "signal:" + stkCd + ":" + strategy;
-        Boolean absent = redis.opsForValue().setIfAbsent(key, "1", Duration.ofSeconds(3600));
+        long ttlSeconds = getSignalTtl(strategy);
+        Boolean absent = redis.opsForValue().setIfAbsent(key, "1", Duration.ofSeconds(ttlSeconds));
         return Boolean.FALSE.equals(absent);  // false = 이미 존재 = 중복
+    }
+
+    /**
+     * 전략별 신호 중복 방지 TTL 반환 (초)
+     */
+    private long getSignalTtl(String strategy) {
+        if (strategy == null) return kiwoomProperties.getTrading().getSignalTtlSeconds();
+        return switch (strategy) {
+            case "S1_GAP_OPEN"    -> 1800L;   // 갭상승: 30분 (시초가 이후 의미 없음)
+            case "S2_VI_PULLBACK" -> 3600L;   // VI 눌림목: 1시간
+            case "S7_AUCTION"     -> 7200L;   // 동시호가: 2시간
+            default               -> kiwoomProperties.getTrading().getSignalTtlSeconds();
+        };
     }
 
     /**

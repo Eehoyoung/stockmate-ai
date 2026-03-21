@@ -31,6 +31,10 @@ kiwoom:
     app-secret: ${KIWOOM_APP_SECRET}
     base-url: ${KIWOOM_BASE_URL}
     ws-url: ${KIWOOM_WS_URL}
+  trading:
+    # 신호 중복 방지 TTL (초). 전략별 기본값:
+    # S1(갭상승)=1800, S2(VI눌림)=3600, S7(동시호가)=7200, 그외=3600
+    signal-ttl-seconds: ${SIGNAL_DUPLICATE_TTL:3600}
 
 claude:
   api-key: ${CLAUDE_API_KEY}
