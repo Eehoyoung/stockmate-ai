@@ -7,6 +7,7 @@ StockMate AI – Python 전술 스캐너 (보완적 실행자)
   Java api-orchestrator 가 메인 전술 스캔을 담당하지만,
   이 모듈은 Python 전술 파일(strategy_1~7.py)을 직접 실행하여
   telegram_queue 에 신호를 발행하는 보완 경로를 제공한다.
+  신호 감지 시 TelegramNotifier 를 통해 즉시 매수 알림을 발송한다.
 
 활성화
   환경변수: ENABLE_STRATEGY_SCANNER=true
@@ -23,15 +24,20 @@ import json
 import logging
 import os
 
+from telegram_notifier import TelegramNotifier
+
 logger = logging.getLogger(__name__)
 
-REDIS_TOKEN_KEY      = "kiwoom:token"
-SCAN_INTERVAL_SEC    = float(os.getenv("STRATEGY_SCAN_INTERVAL_SEC", "60.0"))
-QUEUE_TTL_SECONDS    = 43200  # 12시간
+REDIS_TOKEN_KEY   = "kiwoom:token"
+SCAN_INTERVAL_SEC = float(os.getenv("STRATEGY_SCAN_INTERVAL_SEC", "60.0"))
+QUEUE_TTL_SECONDS = 43200  # 12시간
 
 # 동시 전술 실행 상한 – 60초 스캔 주기 내에 완료될 수 있도록 제한
 MAX_CONCURRENT_STRATEGIES = int(os.getenv("MAX_CONCURRENT_STRATEGIES", "3"))
 _semaphore: asyncio.Semaphore | None = None
+
+# 모듈 수준 TelegramNotifier 싱글턴 (이벤트 루프 불필요, 환경변수만 읽음)
+_notifier: TelegramNotifier | None = None
 
 
 def _get_semaphore() -> asyncio.Semaphore:
@@ -40,6 +46,14 @@ def _get_semaphore() -> asyncio.Semaphore:
     if _semaphore is None:
         _semaphore = asyncio.Semaphore(MAX_CONCURRENT_STRATEGIES)
     return _semaphore
+
+
+def _get_notifier() -> TelegramNotifier:
+    """TelegramNotifier 싱글턴 반환"""
+    global _notifier
+    if _notifier is None:
+        _notifier = TelegramNotifier()
+    return _notifier
 
 
 async def _run_strategy_with_semaphore(name: str, coro):
@@ -60,7 +74,8 @@ async def _load_token(rdb) -> str | None:
 
 
 async def _push_signals(rdb, signals: list, strategy_name: str):
-    """신호 목록을 telegram_queue 에 LPUSH"""
+    """신호 목록을 telegram_queue 에 LPUSH 하고 Telegram 알림 즉시 발송."""
+    notifier = _get_notifier()
     for sig in signals:
         try:
             payload = json.dumps(sig, ensure_ascii=False, default=str)
@@ -70,6 +85,13 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
                         strategy_name, sig.get("stk_cd"), sig.get("score", "N/A"))
         except Exception as e:
             logger.error("[Runner] 신호 발행 실패 [%s]: %s", strategy_name, e)
+
+        # Telegram 직접 알림 – 실패해도 루프를 중단하지 않는다
+        try:
+            await notifier.send_buy_signal(sig)
+        except Exception as e:
+            logger.error("[Runner] Telegram 알림 실패 [%s] stk=%s: %s",
+                         strategy_name, sig.get("stk_cd"), e)
 
 
 async def _run_once(rdb):
@@ -176,6 +198,11 @@ async def _run_once(rdb):
 async def run_strategy_scanner(rdb):
     """전술 스캐너 루프 – SCAN_INTERVAL_SEC 마다 전 전술 실행"""
     logger.info("[Runner] 전술 스캐너 시작 (interval=%.0fs)", SCAN_INTERVAL_SEC)
+    notifier = _get_notifier()
+    if notifier.enabled:
+        logger.info("[Runner] Telegram 직접 알림 활성화 (dry_run=%s)", notifier.dry_run)
+    else:
+        logger.warning("[Runner] Telegram 직접 알림 비활성화 – 환경변수 확인 필요")
     while True:
         try:
             await _run_once(rdb)
