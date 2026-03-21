@@ -75,7 +75,7 @@ public class TradingController {
     /** 전술 5 수동 실행 (프로그램+외인) */
     @PostMapping("/strategy/s5/run")
     public ResponseEntity<Map<String, Object>> runS5(
-            @RequestParam(defaultValue = "P00101") String market) {
+            @RequestParam(defaultValue = "001") String market) {
         List<TradingSignalDto> signals = strategyService.scanProgramFrgn(market);
         int cnt = signalService.processSignals(signals);
         return ResponseEntity.ok(Map.of("strategy", "S5_PROG_FRGN",
@@ -108,11 +108,25 @@ public class TradingController {
         return ResponseEntity.ok(Map.of("status", "ok", "msg", "WebSocket 연결 및 구독 완료"));
     }
 
+    /** WebSocket 구독 시작 (telegram-bot /ws시작 연동) */
+    @PostMapping("/ws/start")
+    public ResponseEntity<Map<String, String>> startWs() {
+        subscriptionManager.setupMarketHoursSubscription();
+        return ResponseEntity.ok(Map.of("status", "ok", "msg", "WebSocket 구독 시작 완료"));
+    }
+
     /** WebSocket 구독 해제 */
     @PostMapping("/ws/disconnect")
     public ResponseEntity<Map<String, String>> disconnectWs() {
         subscriptionManager.teardownSubscriptions();
         return ResponseEntity.ok(Map.of("status", "ok", "msg", "구독 해제 완료"));
+    }
+
+    /** WebSocket 구독 종료 (telegram-bot /ws종료 연동) */
+    @PostMapping("/ws/stop")
+    public ResponseEntity<Map<String, String>> stopWs() {
+        subscriptionManager.teardownSubscriptions();
+        return ResponseEntity.ok(Map.of("status", "ok", "msg", "WebSocket 구독 종료 완료"));
     }
 
     /** 후보 종목 조회 */

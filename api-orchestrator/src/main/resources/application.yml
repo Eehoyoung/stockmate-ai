@@ -5,7 +5,8 @@ spring:
     password: ${POSTGRES_PASSWORD}
 
   jpa:
-    hibernate.ddl-auto: create
+    hibernate:
+      ddl-auto: ${JPA_DDL_AUTO:update}  # create: 초기 스키마 생성, update: 운영, validate: 검증만
     show-sql: false
 
   data:

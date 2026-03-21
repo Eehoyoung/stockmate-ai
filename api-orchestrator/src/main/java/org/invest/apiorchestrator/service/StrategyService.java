@@ -456,10 +456,13 @@ public class StrategyService {
     // 유틸
     // ─────────────────────────────────────────────────────────────
     private double calcVolRatio(String stkCd) {
-        // Redis tick 데이터에서 당일 누적거래량 / 전일 동시간 추정 비교
-        // 실제 구현 시 ka10055 호출 결과 캐시로 보완 가능
+        // Redis tick 데이터에서 당일 누적거래량 비율 조회
+        // ws:tick 해시에 vol_ratio 필드가 없으면 조건 통과(1.5)로 처리하여
+        // 거래량 데이터 미수신 시에도 S3 후보 제외가 일어나지 않도록 함
         var tickOpt = redisService.getTickData(stkCd);
-        return tickOpt.map(m -> parseDouble(m, "vol_ratio")).orElse(1.0);
+        if (tickOpt.isEmpty()) return 1.5;  // 데이터 없으면 통과로 처리
+        double cached = parseDouble(tickOpt.get(), "vol_ratio");
+        return cached > 0 ? cached : 1.5;   // 0이면 필드 미존재 → 통과로 처리
     }
 
     private double parseDouble(Map<Object, Object> map, String key) {
