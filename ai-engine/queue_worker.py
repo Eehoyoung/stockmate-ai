@@ -53,6 +53,13 @@ async def process_one(rdb) -> bool:
     if not item:
         return False
 
+    # 특수 메시지 타입은 AI 분석 없이 바로 ai_scored_queue 로 전달
+    item_type = item.get("type", "")
+    if item_type in ("FORCE_CLOSE", "DAILY_REPORT"):
+        await push_score_only_queue(rdb, item)
+        logger.debug("[Worker] 특수 타입 통과 [%s]", item_type)
+        return True
+
     stk_cd   = item.get("stk_cd", "")
     strategy = item.get("strategy", "")
     signal   = item  # signal 필드들이 item 안에 flat하게 있음
