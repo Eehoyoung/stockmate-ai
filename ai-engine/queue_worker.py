@@ -90,7 +90,7 @@ async def process_one(rdb) -> bool:
             else:
                 # 5. Claude API 분석
                 try:
-                    result = await analyze_signal(signal, ctx, r_score)
+                    result = await analyze_signal(signal, ctx, r_score, rdb=rdb)
                 except Exception as claude_err:
                     logger.warning("[Worker] Claude API 오류 [%s %s]: %s – 규칙 스코어로 대체",
                                    stk_cd, strategy, claude_err)

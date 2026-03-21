@@ -8,7 +8,9 @@ import asyncio
 import json
 import logging
 import os
+from datetime import date
 from pathlib import Path
+from typing import Optional
 
 import anthropic
 
@@ -129,10 +131,34 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
         )
 
 
-async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float) -> dict:
+async def _track_api_usage(rdb, input_tokens: int = 0, output_tokens: int = 0):
+    """
+    Claude API 호출 후 일별 사용량을 Redis에 기록.
+    claude:daily_calls:{YYYYMMDD}  – 호출 횟수 (scorer.py check_daily_limit 과 공유)
+    claude:daily_tokens:{YYYYMMDD} – 입력+출력 토큰 합계
+    """
+    if rdb is None:
+        return
+    today_str = date.today().strftime("%Y%m%d")
+    try:
+        # 호출 횟수 증분 (check_daily_limit 과 동일 키 – 이미 증분된 경우 중복 방지를 위해
+        # scorer.py check_daily_limit 에서 1차 증분하므로 여기서는 토큰만 추적)
+        token_key = f"claude:daily_tokens:{today_str}"
+        total = input_tokens + output_tokens
+        if total > 0:
+            cnt = await rdb.incrby(token_key, total)
+            if cnt <= total:  # 첫 기록
+                await rdb.expire(token_key, 86400)
+    except Exception as e:
+        logger.debug("[Analyzer] API 사용량 기록 실패 (무시): %s", e)
+
+
+async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
+                         rdb=None) -> dict:
     """
     Claude API 호출로 신호 최종 분석.
     타임아웃(10s) 또는 오류 시 규칙 스코어 폴백.
+    rdb: Redis 클라이언트 (토큰 사용량 추적용, 선택)
     반환: {"action": ..., "ai_score": ..., "confidence": ..., "reason": ...,
            "adjusted_target_pct": ..., "adjusted_stop_pct": ...}
     """
@@ -151,6 +177,17 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float) -> d
             timeout=CLAUDE_TIMEOUT,
         )
         raw_text = response.content[0].text.strip()
+
+        # 토큰 사용량 추적 (usage 속성이 있는 경우)
+        try:
+            usage = response.usage
+            await _track_api_usage(
+                rdb,
+                input_tokens=getattr(usage, "input_tokens", 0),
+                output_tokens=getattr(usage, "output_tokens", 0),
+            )
+        except Exception:
+            pass
 
         # JSON 파싱 – Claude 가 JSON 앞뒤에 텍스트를 추가하는 경우 중괄호 범위 추출
         json_start = raw_text.find("{")
