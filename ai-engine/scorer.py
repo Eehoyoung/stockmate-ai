@@ -62,57 +62,73 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
     match strategy:
         case "S1_GAP_OPEN":
             gap = _safe_float(signal.get("gap_pct", 0))
+            # 갭 점수: 3~5% 최적, 5~8% 보통, 8~15% 약함, 15% 초과 페널티
             score += 20 if 3 <= gap < 5 else (15 if gap < 8 else (10 if gap < 15 else -10))
-            score += 25 if strength > 150 else (20 if strength > 130 else 0)
-            score += 25 if bid_ratio > 2 else (20 if bid_ratio > 1.3 else 0)
+            # 체결강도
+            score += 30 if strength > 150 else (20 if strength > 130 else (10 if strength > 110 else 0))
+            # 호가비율
+            score += 25 if bid_ratio > 2 else (20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.3 else 0))
+            # 캔들 체결강도 보너스 (신호에 포함된 경우)
+            cntr_sig = _safe_float(signal.get("cntr_strength", 0))
+            if cntr_sig > 0:
+                score += 10 if cntr_sig > 150 else (5 if cntr_sig > 130 else 0)
 
         case "S2_VI_PULLBACK":
             pullback = abs(_safe_float(signal.get("pullback_pct", 0)))
             score += 30 if 1.0 <= pullback < 2.0 else (20 if pullback < 3.0 else 0)
             score += 15 if signal.get("is_dynamic") else 0
-            score += 20 if strength > 110 else 0
-            score += 20 if bid_ratio > 1.3 else 0
+            score += 20 if strength > 120 else (10 if strength > 110 else 0)
+            score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.3 else 0)
 
         case "S3_INST_FRGN":
-            net_amt  = _safe_float(signal.get("net_buy_amt", 0))
-            cont_days = signal.get("continuous_days", 0) or 0
+            net_amt   = _safe_float(signal.get("net_buy_amt", 0))
+            cont_days = int(signal.get("continuous_days", 0) or 0)
+            vol_ratio = _safe_float(signal.get("vol_ratio", 0))
+            # 순매수 금액 (최대 25점)
             score += min(25, net_amt / 1_000_000 * 0.5)
-            score += 30 if cont_days >= 5 else (20 if cont_days >= 3 else 0)
-            score += 20 if _safe_float(signal.get("vol_ratio", 0)) >= 2 else 0
+            # 연속 순매수 일수
+            score += 30 if cont_days >= 5 else (20 if cont_days >= 3 else (10 if cont_days >= 1 else 0))
+            # 거래량 비율
+            score += 25 if vol_ratio >= 3 else (20 if vol_ratio >= 2 else (10 if vol_ratio >= 1.5 else 0))
 
         case "S4_BIG_CANDLE":
             vol_ratio  = _safe_float(signal.get("vol_ratio", 0))
-            body_ratio = _safe_float(signal.get("body_ratio", 0))  # StrategyService.checkBigCandle() 에서 계산
-            score += 25 if vol_ratio > 10 else (20 if vol_ratio > 5 else 0)
+            body_ratio = _safe_float(signal.get("body_ratio", 0))
+            score += 25 if vol_ratio > 10 else (20 if vol_ratio > 5 else (10 if vol_ratio > 3 else 0))
             score += 20 if body_ratio >= 0.8 else (10 if body_ratio >= 0.7 else 0)
             score += 20 if signal.get("is_new_high") else 0
-            score += 15 if strength > 140 else 0
+            score += 20 if strength > 150 else (15 if strength > 140 else (5 if strength > 120 else 0))
 
         case "S5_PROG_FRGN":
             net_amt = _safe_float(signal.get("net_buy_amt", 0))
             # 프로그램 순매수 금액 기반 (최대 40점)
             score += min(40, net_amt / 1_000_000 * 0.4)
             # 실시간 체결강도
-            score += 20 if strength > 120 else (10 if strength > 100 else 0)
+            score += 25 if strength > 130 else (20 if strength > 120 else (10 if strength > 100 else 0))
             # 호가 매수 우위
-            score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
+            score += 20 if bid_ratio > 2 else (15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0))
 
         case "S6_THEME_LAGGARD":
             gap = _safe_float(signal.get("gap_pct", 0))
+            cntr_sig = _safe_float(signal.get("cntr_strength", 0))
             score += 25 if 1 <= gap < 3 else (15 if gap < 5 else 0)
-            score += 25 if strength > 150 else (20 if strength > 120 else 0)
-            score += 20 if bid_ratio > 1.5 else 0
+            # 체결강도 우선 적용 (신호 내 값 → 없으면 실시간 값)
+            effective_strength = cntr_sig if cntr_sig > 0 else strength
+            score += 30 if effective_strength > 150 else (20 if effective_strength > 120 else 0)
+            score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
 
         case "S7_AUCTION":
             gap = _safe_float(signal.get("gap_pct", 0))
             score += 25 if 2 <= gap < 5 else (15 if gap < 8 else 0)
-            score += 30 if bid_ratio > 3 else (25 if bid_ratio > 2 else 0)
-            vol_rank = signal.get("vol_rank", 999) or 999
-            score += 20 if vol_rank <= 20 else 0
+            score += 30 if bid_ratio > 3 else (25 if bid_ratio > 2 else (10 if bid_ratio > 1.5 else 0))
+            vol_rank = int(signal.get("vol_rank", 999) or 999)
+            score += 20 if vol_rank <= 10 else (15 if vol_rank <= 20 else (5 if vol_rank <= 30 else 0))
 
     # 공통 페널티
     if flu_rt > 15:   # 이미 15% 이상 상승 → 과열
         score -= 20
+    elif flu_rt > 10:  # 10~15% 구간 – 주의
+        score -= 10
     if flu_rt < -5:   # 하락 중
         score -= 15
 

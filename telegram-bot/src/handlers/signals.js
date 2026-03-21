@@ -14,9 +14,28 @@
 const { popScoredQueue, getClient }        = require('../services/redis');
 const { formatSignal, formatForceClose }   = require('../utils/formatter');
 
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 2000);
-const MIN_AI_SCORE     = Number(process.env.MIN_AI_SCORE     ?? 65);
-const HOLD_MIN_SCORE   = 80;  // HOLD 신호는 80점 이상만 알림
+const POLL_INTERVAL_MS  = Number(process.env.POLL_INTERVAL_MS  ?? 2000);
+const MIN_AI_SCORE      = Number(process.env.MIN_AI_SCORE      ?? 65);
+const HOLD_MIN_SCORE    = 80;   // HOLD 신호는 80점 이상만 알림
+const MAX_SIGNALS_PER_MIN = Number(process.env.MAX_SIGNALS_PER_MIN ?? 10); // 분당 최대 발송
+
+// 분당 발송 횟수 추적
+let _signalCount = 0;
+let _signalWindowStart = Date.now();
+
+function _checkRateLimit() {
+    const now = Date.now();
+    if (now - _signalWindowStart >= 60_000) {
+        _signalCount = 0;
+        _signalWindowStart = now;
+    }
+    if (_signalCount >= MAX_SIGNALS_PER_MIN) {
+        console.warn(`[Signal] 분당 발송 한도 초과 (${_signalCount}/${MAX_SIGNALS_PER_MIN}) – 건너뜀`);
+        return false;
+    }
+    _signalCount++;
+    return true;
+}
 
 /**
  * 허용된 채팅 ID 목록 반환
@@ -78,6 +97,23 @@ async function processItem(bot, item) {
         return;
     }
 
+    // FORCE_CLOSE 타입은 action/score 무관하게 발송
+    if (item.type === 'FORCE_CLOSE') {
+        const chatIds = getAllowedChatIds();
+        const message = formatForceClose(item);
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, {
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true,
+                });
+            } catch (e) {
+                console.error(`[Signal] 강제청산 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        return;
+    }
+
     // CANCEL 이거나 스코어 미달 → 무시
     if (action === 'CANCEL') return;
     if (action === 'ENTER' && ai_score < MIN_AI_SCORE) {
@@ -92,10 +128,7 @@ async function processItem(bot, item) {
         return;
     }
 
-    // 강제청산 알림
-    const message = item.type === 'FORCE_CLOSE'
-        ? formatForceClose(item)
-        : formatSignal(item);
+    const message = formatSignal(item);
 
     for (const chatId of chatIds) {
         // 사용자별 전략 필터 확인
@@ -104,6 +137,9 @@ async function processItem(bot, item) {
             console.log(`[Signal] 필터로 건너뜀 chatId=${chatId} strategy=${item.strategy}`);
             continue;
         }
+        // 분당 발송 한도 확인
+        if (!_checkRateLimit()) continue;
+
         try {
             await bot.telegram.sendMessage(chatId, message, {
                 parse_mode:               'HTML',

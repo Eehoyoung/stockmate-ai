@@ -31,6 +31,15 @@ if (!BOT_TOKEN) {
 // ── 봇 인스턴스 생성 ─────────────────────────────────────────
 const bot = new Telegraf(BOT_TOKEN);
 
+// 허용되지 않은 사용자 차단 (명령어 등록 전에 위치해야 효과 있음)
+bot.use((ctx, next) => {
+    if (!commands.isAllowed(ctx)) {
+        console.warn(`[Bot] 미인가 접근 차단 – chatId=${ctx.chat?.id}`);
+        return ctx.reply('⛔ 접근 권한 없음');
+    }
+    return next();
+});
+
 // ── 명령어 등록 ──────────────────────────────────────────────
 bot.command('ping',     commands.ping);
 bot.command('상태',     commands.status);
@@ -46,15 +55,6 @@ bot.command('help',     commands.help);
 bot.command('start',    commands.help);
 bot.command('report',   commands.report);
 bot.command('filter',   commands.filter);
-
-// 허용되지 않은 사용자 차단
-bot.use((ctx, next) => {
-    if (!commands.isAllowed(ctx)) {
-        console.warn(`[Bot] 미인가 접근 차단 – chatId=${ctx.chat?.id}`);
-        return ctx.reply('⛔ 접근 권한 없음');
-    }
-    return next();
-});
 
 // ── 오류 핸들러 ──────────────────────────────────────────────
 bot.catch((err, ctx) => {
@@ -92,8 +92,12 @@ async function main() {
 // ── 종료 처리 ────────────────────────────────────────────────
 async function shutdown(signal) {
     console.log(`\n[Bot] 종료 시그널 수신 (${signal})`);
-    bot.stop(signal);
-    await closeRedis();
+    try {
+        bot.stop(signal);
+    } catch (_) {}
+    try {
+        await closeRedis();
+    } catch (_) {}
     console.log('[Bot] 종료 완료');
     process.exit(0);
 }

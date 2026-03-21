@@ -63,19 +63,15 @@ async def get_vi_status(rdb, stk_cd: str) -> dict:
     return data or {}
 
 
-async def push_analyzed_queue(rdb, payload: dict):
-    """
-    AI 분석 완료된 신호를 telegram_queue 에 재등록.
-    메시지에 ai_score, action, reason 필드 추가됨.
-    """
-    await rdb.lpush("telegram_queue", json.dumps(payload, ensure_ascii=False))
-    await rdb.expire("telegram_queue", 43200)  # 12시간
-
-
 async def push_score_only_queue(rdb, payload: dict):
     """
     스코어만 업데이트한 신호를 ai_scored_queue 에 저장
     (텔레그램 봇이 별도 폴링하는 큐)
     """
-    await rdb.lpush("ai_scored_queue", json.dumps(payload, ensure_ascii=False))
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error("[Reader] ai_scored_queue 직렬화 실패: %s", e)
+        return
+    await rdb.lpush("ai_scored_queue", serialized)
     await rdb.expire("ai_scored_queue", 43200)
