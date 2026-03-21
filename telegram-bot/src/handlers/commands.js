@@ -50,11 +50,37 @@ const ping = guard(async (ctx) => {
     await ctx.reply('🏓 pong! StockMate AI 작동 중');
 });
 
+/**
+ * Claude API 일별 사용량 조회 (Redis)
+ * @returns {{ calls: number, tokens: number }}
+ */
+async function getClaudeUsage() {
+    const redis = getClient();
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    try {
+        const callsRaw  = await redis.get(`claude:daily_calls:${today}`);
+        const tokensRaw = await redis.get(`claude:daily_tokens:${today}`);
+        return {
+            calls:  Number(callsRaw  ?? 0),
+            tokens: Number(tokensRaw ?? 0),
+        };
+    } catch (e) {
+        console.warn('[Commands] Claude 사용량 조회 실패:', e.message);
+        return { calls: 0, tokens: 0 };
+    }
+}
+
 /** /상태 */
 const status = guard(async (ctx) => {
     const h = await kiwoom.health();
+    const usage = await getClaudeUsage();
+    const maxCalls = Number(process.env.MAX_CLAUDE_CALLS_PER_DAY ?? 100);
     await ctx.reply(
-        `🟢 <b>시스템 상태</b>\nJava API: ${h.status}\n서비스: ${h.service}`,
+        `🟢 <b>시스템 상태</b>\n` +
+        `Java API: ${h.status}\n서비스: ${h.service}\n\n` +
+        `📊 <b>Claude AI 오늘 사용량</b>\n` +
+        `호출 횟수: <b>${usage.calls}</b> / ${maxCalls}\n` +
+        `총 토큰: <b>${usage.tokens.toLocaleString()}</b>`,
         { parse_mode: 'HTML' }
     );
 });
