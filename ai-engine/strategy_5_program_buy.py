@@ -56,7 +56,18 @@ async def fetch_frgn_inst_upper(token: str, market: str) -> set:
         items = resp.json().get("for_inst_trde_upper", [])
         return {x["stk_cd"] for x in items}
 
+VALID_MARKETS = {"001", "101", "000"}
+# NOTE: market="000" (전체)는 ka90003/ka90009 API에서 지원됩니다.
+# api-orchestrator의 StrategyService.java는 기본으로 "000"을 사용합니다.
+# 특정 시장만 조회하려면 "001" (KOSPI) 또는 "101" (KOSDAQ)을 사용하세요.
+
+
 async def scan_program_buy(token: str, market: str = "000") -> list:
+    # 유효하지 않은 market 파라미터 방어
+    if market not in VALID_MARKETS:
+        logger.warning("[S5] 지원되지 않는 market 파라미터: %s → '001' (KOSPI)로 대체", market)
+        market = "001"
+
     prog_map, frgn_set = await asyncio.gather(
         fetch_program_netbuy(token, market),
         fetch_frgn_inst_upper(token, market)

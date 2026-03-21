@@ -40,15 +40,18 @@ async def fetch_intraday_investor(token: str, market: str = "000") -> list:
         return resp.json().get("opmr_invsr_trde", [])
 
 
-async def fetch_continuous_netbuy(token: str, market: str) -> set:
-    """ka10131 기관외국인연속매매 - 3일 연속 순매수 종목셋"""
+CONTINUOUS_DAYS_QUERY = int(os.getenv("S3_CONTINUOUS_DAYS", "3"))  # API 조회 연속일
+
+
+async def fetch_continuous_netbuy(token: str, market: str) -> dict:
+    """ka10131 기관외국인연속매매 - CONTINUOUS_DAYS_QUERY일 연속 순매수 종목 및 연속일 정보 반환"""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/frgnistt",
             headers={"api-id": "ka10131", "authorization": f"Bearer {token}",
                      "Content-Type": "application/json;charset=UTF-8"},
             json={
-                "dt": "3",
+                "dt": str(CONTINUOUS_DAYS_QUERY),
                 "mrkt_tp": market,
                 "netslmt_tp": "2",  # 순매수
                 "stk_inds_tp": "0",
@@ -58,7 +61,19 @@ async def fetch_continuous_netbuy(token: str, market: str) -> set:
         )
         resp.raise_for_status()
         items = resp.json().get("orgn_for_cont_trde", [])
-        return {x["stk_cd"] for x in items}
+        # stk_cd → continuous_days 매핑. API 응답에 cont_dt 필드가 있으면 사용,
+        # 없으면 쿼리에 사용한 연속일(CONTINUOUS_DAYS_QUERY)로 폴백
+        result = {}
+        for x in items:
+            stk_cd = x.get("stk_cd")
+            if stk_cd:
+                # API 응답에서 실제 연속일 추출 시도 (cont_dt, cont_days 등 필드명 대응)
+                actual_days = x.get("cont_dt") or x.get("cont_days") or x.get("continuous_days")
+                try:
+                    result[stk_cd] = int(actual_days) if actual_days is not None else CONTINUOUS_DAYS_QUERY
+                except (TypeError, ValueError):
+                    result[stk_cd] = CONTINUOUS_DAYS_QUERY
+        return result
 
 
 async def fetch_volume_compare(token: str, stk_cd: str) -> float:
@@ -88,12 +103,13 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
 
 async def scan_inst_foreign(token: str, market: str = "000") -> list:
     smtm_list = await fetch_intraday_investor(token, market)
-    cont_set = await fetch_continuous_netbuy(token, market)
+    # cont_map: stk_cd → actual continuous_days (API 응답에서 추출, 없으면 쿼리 기본값)
+    cont_map = await fetch_continuous_netbuy(token, market)
 
     results = []
     for item in smtm_list[:30]:
         stk_cd = item.get("stk_cd")
-        if stk_cd not in cont_set:
+        if stk_cd not in cont_map:
             continue
 
         vol_ratio = await fetch_volume_compare(token, stk_cd)
@@ -101,12 +117,14 @@ async def scan_inst_foreign(token: str, market: str = "000") -> list:
             continue
 
         net_buy_amt = float(item.get("net_buy_amt", 0))
+        # API 응답에서 실제 연속일 사용 (하드코딩 3 제거)
+        continuous_days = cont_map.get(stk_cd, 1)
         results.append({
             "stk_cd": stk_cd,
             "strategy": "S3_INST_FRGN",
             "net_buy_amt": net_buy_amt,
             "vol_ratio": round(vol_ratio, 2),
-            "continuous_days": 3,
+            "continuous_days": continuous_days,
             "entry_type": "지정가_1호가",
             "target_pct": 3.5,
             "stop_pct": -2.0,

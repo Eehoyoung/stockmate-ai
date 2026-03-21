@@ -76,7 +76,9 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
         case "S2_VI_PULLBACK":
             pullback = abs(_safe_float(signal.get("pullback_pct", 0)))
             score += 30 if 1.0 <= pullback < 2.0 else (20 if pullback < 3.0 else 0)
-            score += 15 if signal.get("is_dynamic") else 0
+            # is_dynamic: Java는 Boolean(true/false), Python 전술은 int(1/0) 으로도 전달될 수 있음
+            is_dynamic = bool(signal.get("is_dynamic", False))
+            score += 15 if is_dynamic else 0
             score += 20 if strength > 120 else (10 if strength > 110 else 0)
             score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.3 else 0)
 
