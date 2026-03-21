@@ -9,13 +9,18 @@
 당일 고가 신고가 또는 전고점 돌파 (20일 고가 기준)
 상위 이탈원 없음 (ka10053 당일상위이탈원 체크)
 """
-from idlelib.multicall import r
 from statistics import mean
+import os
+import logging
 
 import httpx
-import os
 
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL")
+# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
+# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
+# rdb (redis.asyncio.Redis) 는 strategy_runner.py 에서 전달받습니다.
+
+logger = logging.getLogger(__name__)
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
 async def fetch_minute_chart(token: str, stk_cd: str, scope: int = 5) -> list:
     """ka10080 주식분봉차트 조회"""
@@ -28,7 +33,7 @@ async def fetch_minute_chart(token: str, stk_cd: str, scope: int = 5) -> list:
         )
         return resp.json().get("stk_min_pole_chart_qry", [])
 
-async def check_big_candle(token: str, stk_cd: str) -> dict | None:
+async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     candles = await fetch_minute_chart(token, stk_cd, 5)
     if len(candles) < 20:
         return None
@@ -71,9 +76,11 @@ async def check_big_candle(token: str, stk_cd: str) -> dict | None:
     max_20d = max(highs_20d) if highs_20d else 0
     is_new_high = h >= max_20d
 
-    # 체결강도 확인 (Redis 캐시)
-    strength_data = r.lrange(f"ws:strength:{stk_cd}", 0, 2)
-    avg_strength = mean([float(s) for s in strength_data]) if strength_data else 100
+    # 체결강도 확인 (Redis 캐시, 비동기)
+    avg_strength = 100
+    if rdb:
+        strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 2)
+        avg_strength = mean([float(s) for s in strength_data]) if strength_data else 100
 
     if avg_strength < 140:
         return None

@@ -15,6 +15,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
@@ -29,6 +30,7 @@ public class TokenService {
 
     private static final String REDIS_TOKEN_KEY = "kiwoom:token";
     private static final String TOKEN_ISSUE_URL = "/oauth2/token";
+    private static final DateTimeFormatter EXPIRES_DT_FMT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     private final ReentrantLock tokenLock = new ReentrantLock();
 
@@ -66,7 +68,7 @@ public class TokenService {
 
         TokenRequest req = TokenRequest.builder()
                 .appKey(properties.getApi().getAppKey())
-                .secretKey(properties.getApi().getSecretKey())
+                .secretKey(properties.getApi().getAppSecret())
                 .build();
 
         TokenResponse resp = kiwoomWebClient.post()
@@ -84,22 +86,33 @@ public class TokenService {
         // 기존 활성 토큰 비활성화
         tokenRepository.deactivateAllTokens();
 
+        // expires_dt(yyyyMMddHHmmss) 파싱, 실패 시 설정값 fallback
+        LocalDateTime expiresAt;
+        long redisTtlMinutes;
+        String expiresDt = resp.getExpiresDt();
+        if (expiresDt != null && expiresDt.length() == 14) {
+            expiresAt = LocalDateTime.parse(expiresDt, EXPIRES_DT_FMT);
+            redisTtlMinutes = Duration.between(LocalDateTime.now(), expiresAt).toMinutes() - 15;
+        } else {
+            int ttlMinutes = properties.getApi().getTokenTtlMinutes();
+            expiresAt = LocalDateTime.now().plusMinutes(ttlMinutes);
+            redisTtlMinutes = ttlMinutes - 15L;
+        }
+
         // 새 토큰 저장
-        int ttlMinutes = properties.getApi().getTokenTtlMinutes();
         KiwoomToken token = KiwoomToken.builder()
                 .accessToken(resp.getAccessToken())
                 .tokenType(resp.getTokenType() != null ? resp.getTokenType() : "Bearer")
-                .expiresAt(LocalDateTime.now().plusMinutes(ttlMinutes))
+                .expiresAt(expiresAt)
                 .active(true)
                 .build();
         tokenRepository.save(token);
 
-        // Redis 캐싱 (만료 10분 전 갱신되도록 TTL 단축)
-        long redisTtl = ttlMinutes - 15L;
+        // Redis 캐싱 (만료 15분 전 갱신되도록 TTL 단축)
         stringRedisTemplate.opsForValue()
-                .set(REDIS_TOKEN_KEY, resp.getAccessToken(), Duration.ofMinutes(redisTtl));
+                .set(REDIS_TOKEN_KEY, resp.getAccessToken(), Duration.ofMinutes(redisTtlMinutes));
 
-        log.info("토큰 발급 완료 - 유효시간: {}분", ttlMinutes);
+        log.info("토큰 발급 완료 - 만료: {}", expiresAt);
         return resp.getAccessToken();
     }
 

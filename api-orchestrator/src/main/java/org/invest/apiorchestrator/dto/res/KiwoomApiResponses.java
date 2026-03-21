@@ -215,4 +215,120 @@ public class KiwoomApiResponses {
             @JsonProperty("cntr_qty") private String cntrQty;
         }
     }
+
+    /* ───────────── 예상체결등락률상위 (ka10029) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ExpCntrFluRtUpperResponse extends BaseResponse {
+        @JsonProperty("exp_cntr_flu_rt_upper") private List<ExpCntrFluRtItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class ExpCntrFluRtItem {
+            @JsonProperty("stk_cd")       private String stkCd;
+            @JsonProperty("stk_nm")       private String stkNm;
+            @JsonProperty("exp_cntr_pric")private String expCntrPric;
+            @JsonProperty("base_pric")    private String basePric;
+            @JsonProperty("flu_rt")       private String fluRt;      // +XX.XX
+            @JsonProperty("pred_pre")     private String predPre;
+            @JsonProperty("exp_cntr_qty") private String expCntrQty;
+            @JsonProperty("sel_req")      private String selReq;
+            @JsonProperty("sel_bid")      private String selBid;
+            @JsonProperty("buy_bid")      private String buyBid;
+            @JsonProperty("buy_req")      private String buyReq;
+        }
+    }
+
+    /* ───────────── 당일거래량상위 (ka10030) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class TdyTrdeQtyUpperResponse extends BaseResponse {
+        // ka10030 은 returnCode 가 camelCase 로 오는 경우도 대응
+        @JsonProperty("returnCode") private String returnCodeCamel;
+        @JsonProperty("tdy_trde_qty_upper") private List<TdyTrdeQtyItem> items;
+
+        @Override
+        public boolean isSuccess() {
+            if (getReturnCode() != null) return "0".equals(getReturnCode());
+            return "0".equals(returnCodeCamel);
+        }
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class TdyTrdeQtyItem {
+            @JsonProperty("stk_cd")          private String stkCd;
+            @JsonProperty("stk_nm")          private String stkNm;
+            @JsonProperty("cur_prc")         private String curPrc;
+            @JsonProperty("flu_rt")          private String fluRt;
+            @JsonProperty("trde_qty")        private String trdeQty;
+            @JsonProperty("pred_rt")         private String predRt;
+            @JsonProperty("trde_tern_rt")    private String trdeTernRt;
+            @JsonProperty("trde_amt")        private String trdeAmt;
+            @JsonProperty("opmr_trde_qty")   private String opmrTrdeQty;
+            @JsonProperty("af_mkrt_trde_qty")private String afMkrtTrdeQty;
+            @JsonProperty("bf_mkrt_trde_qty")private String bfMkrtTrdeQty;
+        }
+    }
+
+    /* ───────────── 거래량급증 (ka10023) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class TrdeQtySdninResponse extends BaseResponse {
+        @JsonProperty("trde_qty_sdnin") private List<TrdeQtySdninItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class TrdeQtySdninItem {
+            @JsonProperty("stk_cd")       private String stkCd;
+            @JsonProperty("stk_nm")       private String stkNm;
+            @JsonProperty("cur_prc")      private String curPrc;
+            @JsonProperty("flu_rt")       private String fluRt;
+            @JsonProperty("prev_trde_qty")private String prevTrdeQty;
+            @JsonProperty("now_trde_qty") private String nowTrdeQty;
+            @JsonProperty("sdnin_qty")    private String sdninQty;
+            @JsonProperty("sdnin_rt")     private String sdninRt;   // +XX.XX
+        }
+    }
+
+    /* ───────────── 가격급등락 (ka10019) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class PricJmpFluResponse extends BaseResponse {
+        @JsonProperty("pric_jmpflu") private List<PricJmpFluItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class PricJmpFluItem {
+            @JsonProperty("stk_cd")  private String stkCd;
+            @JsonProperty("stk_nm")  private String stkNm;
+            @JsonProperty("cur_prc") private String curPrc;
+            @JsonProperty("flu_rt")  private String fluRt;
+            @JsonProperty("base_pric")private String basePric;
+            @JsonProperty("base_pre")private String basePre;
+            @JsonProperty("jmp_rt")  private String jmpRt;   // +XX.XX
+            @JsonProperty("trde_qty")private String trdeQty;
+        }
+    }
+
+    /* ───────────── 호가잔량상위 (ka10020) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class BidReqUpperResponse extends BaseResponse {
+        @JsonProperty("bid_req_upper") private List<BidReqUpperItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class BidReqUpperItem {
+            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_nm")      private String stkNm;
+            @JsonProperty("cur_prc")     private String curPrc;
+            @JsonProperty("flu_rt")      private String fluRt;
+            @JsonProperty("trde_qty")    private String trdeQty;
+            @JsonProperty("tot_sel_req") private String totSelReq;
+            @JsonProperty("tot_buy_req") private String totBuyReq;
+            @JsonProperty("netprps_req") private String netprpsReq;
+            @JsonProperty("buy_rt")      private String buyRt;  // % string
+        }
+    }
+
+    /* ───────────── 주식기본정보 (ka10001) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class StkBasicInfoResponse extends BaseResponse {
+        @JsonProperty("stk_cd")   private String stkCd;
+        @JsonProperty("stk_nm")   private String stkNm;
+        @JsonProperty("base_pric")private String basePric;   // 전일종가
+        @JsonProperty("cur_prc")  private String curPrc;
+        @JsonProperty("flu_rt")   private String fluRt;
+        @JsonProperty("trde_qty") private String trdeQty;
+    }
 }

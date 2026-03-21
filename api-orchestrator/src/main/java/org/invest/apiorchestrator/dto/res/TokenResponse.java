@@ -8,22 +8,22 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class TokenResponse {
 
-    @JsonProperty("access_token")
+    @JsonProperty("token")
     private String accessToken;
 
     @JsonProperty("token_type")
     private String tokenType;
 
-    @JsonProperty("expires_in")
-    private Long expiresIn;
+    @JsonProperty("expires_dt")
+    private String expiresDt;
 
     @JsonProperty("return_code")
-    private String returnCode;
+    private Integer returnCode;
 
     @JsonProperty("return_msg")
     private String returnMsg;
 
     public boolean isSuccess() {
-        return "0".equals(returnCode) && accessToken != null && !accessToken.isBlank();
+        return Integer.valueOf(0).equals(returnCode) && accessToken != null && !accessToken.isBlank();
     }
 }

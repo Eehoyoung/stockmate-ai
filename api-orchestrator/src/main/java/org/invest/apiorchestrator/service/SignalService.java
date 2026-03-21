@@ -7,6 +7,7 @@ import org.invest.apiorchestrator.config.KiwoomProperties;
 import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -14,7 +15,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -40,32 +40,33 @@ public class SignalService {
     public boolean processSignal(TradingSignalDto dto) {
         String stkCd = dto.getStkCd();
         String strategy = dto.getStrategy().name();
-
-        // 1. 중복 신호 체크 (Redis TTL 기반)
-        if (redisService.isSignalDuplicate(stkCd, strategy)) {
-            log.debug("중복 신호 무시 [{} {}]", stkCd, strategy);
-            return false;
-        }
-
-        // 2. DB 저장
-        TradingSignal signal = buildSignalEntity(dto);
-        signalRepository.save(signal);
-
-        // 3. 텔레그램 큐 발행
+        MDC.put("strategy", strategy);
+        MDC.put("stk_cd", stkCd);
         try {
-            String telegramMsg = objectMapper.writeValueAsString(Map.of(
-                    "id",       signal.getId(),
-                    "stk_cd",   stkCd,
-                    "strategy", strategy,
-                    "message",  dto.toTelegramMessage()
-            ));
-            redisService.pushTelegramQueue(telegramMsg);
-            log.info("신호 발행 [{} {}] score={}", stkCd, strategy, dto.getSignalScore());
-        } catch (Exception e) {
-            log.error("텔레그램 큐 발행 실패: {}", e.getMessage());
-        }
+            // 1. 중복 신호 체크 (Redis TTL 기반)
+            if (redisService.isSignalDuplicate(stkCd, strategy)) {
+                log.debug("중복 신호 무시 [{} {}]", stkCd, strategy);
+                return false;
+            }
 
-        return true;
+            // 2. DB 저장
+            TradingSignal signal = buildSignalEntity(dto);
+            signalRepository.save(signal);
+
+            // 3. 텔레그램 큐 발행 – TradingSignalDto.toQueuePayload() 로 필드 계약 중앙화
+            try {
+                String telegramMsg = objectMapper.writeValueAsString(dto.toQueuePayload(signal.getId()));
+                redisService.pushTelegramQueue(telegramMsg);
+                log.info("신호 발행 [{} {}] score={}", stkCd, strategy, dto.getSignalScore());
+            } catch (Exception e) {
+                log.error("텔레그램 큐 발행 실패: {}", e.getMessage());
+            }
+
+            return true;
+        } finally {
+            MDC.remove("strategy");
+            MDC.remove("stk_cd");
+        }
     }
 
     /**

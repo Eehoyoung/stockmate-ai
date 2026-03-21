@@ -6,6 +6,7 @@ import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -23,6 +24,7 @@ public class StrategyService {
     // 전술 1: 갭상승 + 체결강도 시초가 매수  (8:30~9:05)
     // ─────────────────────────────────────────────────────────────
     public List<TradingSignalDto> scanGapOpening(List<String> candidates) {
+        MDC.put("strategy", "S1_GAP_OPEN");
         log.info("[S1] 갭상승 시초가 스캔 시작 - 후보 {}개", candidates.size());
         List<TradingSignalDto> results = new ArrayList<>();
 
@@ -73,6 +75,7 @@ public class StrategyService {
             }
         }
 
+        MDC.remove("strategy");
         return results.stream()
                 .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
                 .limit(5).collect(Collectors.toList());
@@ -243,6 +246,7 @@ public class StrategyService {
                     .gapPct(round(gainPct))
                     .volRatio(round(volRatio))
                     .cntrStrength(round(strength))
+                    .bodyRatio(round(bodyRatio))
                     .isNewHigh(isNewHigh)
                     .entryType("추격_시장가")
                     .targetPct(4.0)
@@ -380,39 +384,48 @@ public class StrategyService {
     // 전술 7: 장전 예상체결 + 호가잔량  (8:30~9:00)
     // ─────────────────────────────────────────────────────────────
     public List<TradingSignalDto> scanAuction(String market) {
-        log.info("[S7] 동시호가 스캔 [{}]", market);
-        try {
-            // 거래량 순위 상위 50
-            var volResp = apiService.post(
-                    "ka10033", "/api/dostk/rkinfo",
-                    StrategyRequests.VolumeRankRequest.builder().mrktTp(market).build(),
-                    KiwoomApiResponses.VolumeRankResponse.class);
+        return scanAuction(market, Collections.emptySet());
+    }
 
-            if (volResp.getItems() == null) return Collections.emptyList();
+    /**
+     * 사전 필터링된 종목 집합으로 S7 스캔 (preFiltered 비어있으면 전체 대상).
+     */
+    public List<TradingSignalDto> scanAuction(String market, Set<String> preFiltered) {
+        log.info("[S7] 동시호가 스캔 [{}] preFiltered={}건", market, preFiltered.size());
+        try {
+            // ka10029 예상체결등락률 상위로 후보 조회
+            KiwoomApiResponses.ExpCntrFluRtUpperResponse gapResp =
+                    apiService.fetchKa10029(
+                            StrategyRequests.ExpCntrFluRtUpperRequest.builder()
+                                    .mrktTp(market).sortTp("1").trdeQtyCnd("10")
+                                    .stkCnd("1").crdCnd("0").pricCnd("8").stexTp("1").build());
+
+            if (gapResp == null || gapResp.getItems() == null) return Collections.emptyList();
 
             List<TradingSignalDto> results = new ArrayList<>();
-
-            for (var item : volResp.getItems().stream().limit(50).toList()) {
+            int rank = 1;
+            for (var item : gapResp.getItems().stream().limit(50).toList()) {
                 String stkCd = item.getStkCd();
+                // 사전 필터 적용 (비어있으면 전체 허용)
+                if (!preFiltered.isEmpty() && !preFiltered.contains(stkCd)) { rank++; continue; }
 
                 var expOpt = redisService.getExpectedData(stkCd);
-                if (expOpt.isEmpty()) continue;
+                if (expOpt.isEmpty()) { rank++; continue; }
 
                 double prevClose = parseDouble(expOpt.get(), "pred_pre_pric");
                 double expPrice  = parseDouble(expOpt.get(), "exp_cntr_pric");
-                if (prevClose <= 0 || expPrice <= 0) continue;
+                if (prevClose <= 0 || expPrice <= 0) { rank++; continue; }
 
                 double gapPct = (expPrice - prevClose) / prevClose * 100;
-                if (gapPct < 2.0 || gapPct > 10.0) continue;
+                if (gapPct < 2.0 || gapPct > 10.0) { rank++; continue; }
 
                 var hogaOpt = redisService.getHogaData(stkCd);
-                if (hogaOpt.isEmpty()) continue;
+                if (hogaOpt.isEmpty()) { rank++; continue; }
                 double bid = parseDouble(hogaOpt.get(), "total_buy_bid_req");
                 double ask = parseDouble(hogaOpt.get(), "total_sel_bid_req");
                 double bidRatio = ask > 0 ? bid / ask : 0;
-                if (bidRatio < 2.0) continue;
+                if (bidRatio < 2.0) { rank++; continue; }
 
-                int rank = parseInt(item.getRank());
                 double score = bidRatio * 10 + gapPct + (50 - rank) * 0.5;
 
                 results.add(TradingSignalDto.builder()
@@ -428,6 +441,7 @@ public class StrategyService {
                         .targetPct(Math.min(gapPct * 0.8, 5.0))
                         .stopPct(-2.0)
                         .build());
+                rank++;
             }
             return results.stream()
                     .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())

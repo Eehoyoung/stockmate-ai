@@ -1,15 +1,29 @@
 package org.invest.apiorchestrator.scheduler;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
+import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.websocket.WebSocketSubscriptionManager;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Component
@@ -22,6 +36,15 @@ public class TradingScheduler {
     private final ViWatchService viWatchService;
     private final WebSocketSubscriptionManager subscriptionManager;
     private final TokenService tokenService;
+    private final VolSurgeService volSurgeService;
+    private final PriceSurgeService priceSurgeService;
+    private final BidUpperService bidUpperService;
+    private final KiwoomApiService kiwoomApiService;
+    private final RedisMarketDataService redisMarketDataService;
+    private final StringRedisTemplate redis;
+    private final ObjectMapper objectMapper;
+
+    private static final ExecutorService PRELOAD_POOL = Executors.newFixedThreadPool(5);
 
     // ─────────────────────────────────────────────
     // 시스템 준비
@@ -53,16 +76,71 @@ public class TradingScheduler {
     // 전술 7: 장전 동시호가 (08:30~09:00, 2분마다)
     // ─────────────────────────────────────────────
 
-    /** 08:30~09:00 매 2분 - 전술 7 동시호가 */
+    /** 08:30~09:00 매 2분 - 전술 7 동시호가 (ka10029 갭필터 + ka10030 거래대금 + BidUpper 교집합) */
     @Scheduled(cron = "0 0/2 8 * * MON-FRI")
     public void scanAuction() {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(8, 30)) || now.isAfter(LocalTime.of(9, 0))) return;
 
-        log.info("[S7] 동시호가 스캔 실행");
+        log.info("[S7] 동시호가 스캔 실행 (사전 필터링 적용)");
         try {
-            List<TradingSignalDto> kospiSignals  = strategyService.scanAuction("001");
-            List<TradingSignalDto> kosdaqSignals = strategyService.scanAuction("101");
+            // 사전 필터 1: ka10029 갭 2~10% 종목
+            Set<String> gapSet = new java.util.HashSet<>();
+            for (String mrkt : new String[]{"001", "101"}) {
+                KiwoomApiResponses.ExpCntrFluRtUpperResponse gapResp =
+                        kiwoomApiService.fetchKa10029(
+                                StrategyRequests.ExpCntrFluRtUpperRequest.builder()
+                                        .mrktTp(mrkt).sortTp("1").trdeQtyCnd("10")
+                                        .stkCnd("1").crdCnd("0").pricCnd("8").stexTp("1").build());
+                if (gapResp != null && gapResp.getItems() != null) {
+                    gapResp.getItems().stream()
+                            .filter(item -> {
+                                try {
+                                    double f = Double.parseDouble(item.getFluRt().replace("+","").replace(",",""));
+                                    return f >= 2.0 && f <= 10.0;
+                                } catch (Exception ex) { return false; }
+                            })
+                            .map(KiwoomApiResponses.ExpCntrFluRtUpperResponse.ExpCntrFluRtItem::getStkCd)
+                            .forEach(gapSet::add);
+                }
+            }
+
+            // 사전 필터 2: ka10030 거래대금 10억(1000) 이상 종목
+            Set<String> volSet = new java.util.HashSet<>();
+            for (String mrkt : new String[]{"001", "101"}) {
+                KiwoomApiResponses.TdyTrdeQtyUpperResponse volResp =
+                        kiwoomApiService.fetchKa10030(
+                                StrategyRequests.TdyTrdeQtyUpperRequest.builder()
+                                        .mrktTp(mrkt).sortTp("1").mangStkIncls("1")
+                                        .crdTp("0").trdeQtyTp("10").pricTp("8")
+                                        .trdePricaTp("0").mrktOpenTp("0").stexTp("1").build());
+                if (volResp != null && volResp.getItems() != null) {
+                    volResp.getItems().stream()
+                            .filter(item -> {
+                                try {
+                                    double amt = Double.parseDouble(item.getTrdeAmt().replace(",",""));
+                                    return amt >= 1000;
+                                } catch (Exception ex) { return false; }
+                            })
+                            .map(KiwoomApiResponses.TdyTrdeQtyUpperResponse.TdyTrdeQtyItem::getStkCd)
+                            .forEach(volSet::add);
+                }
+            }
+
+            // 사전 필터 3: 호가 매수비율 200% 이상
+            Set<String> bidSet = bidUpperService.fetchBidUpperCodes();
+
+            // 교집합: gapSet ∩ (volSet ∪ bidSet)
+            Set<String> preFiltered = new java.util.HashSet<>(gapSet);
+            Set<String> combined = new java.util.HashSet<>(volSet);
+            combined.addAll(bidSet);
+            preFiltered.retainAll(combined);
+
+            log.info("[S7] 사전 필터 – gap={}건 vol={}건 bid={}건 교집합={}건",
+                    gapSet.size(), volSet.size(), bidSet.size(), preFiltered.size());
+
+            List<TradingSignalDto> kospiSignals  = strategyService.scanAuction("001", preFiltered);
+            List<TradingSignalDto> kosdaqSignals = strategyService.scanAuction("101", preFiltered);
             int cnt = signalService.processSignals(kospiSignals)
                     + signalService.processSignals(kosdaqSignals);
             log.info("[S7] 동시호가 신호 발행: {}건", cnt);
@@ -146,21 +224,40 @@ public class TradingScheduler {
     // 전술 4: 장대양봉 추격 (09:30~14:30, 3분마다)
     // ─────────────────────────────────────────────
 
-    /** 09:30~14:30 매 3분 - 전술 4 장대양봉 스캔 */
+    /** 09:30~14:30 매 3분 - 전술 4 장대양봉 스캔 (VolSurge + PriceSurge 사전 필터) */
     @Scheduled(cron = "0 0/3 9-14 * * MON-FRI")
     public void scanBigCandle() {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(9, 30)) || now.isAfter(LocalTime.of(14, 30))) return;
 
-        log.info("[S4] 장대양봉 스캔");
+        log.info("[S4] 장대양봉 스캔 (사전 필터링 적용)");
         try {
-            List<String> candidates = candidateService.getAllCandidates();
+            // 사전 필터: 거래량급증 + 가격급등 합집합
+            Set<String> volSurge   = volSurgeService.fetchSurgeCandidates();
+            Set<String> priceSurge = priceSurgeService.fetchSurgeCandidates();
+            Set<String> surgeSet   = new java.util.HashSet<>(volSurge);
+            surgeSet.addAll(priceSurge);
+            log.info("[S4] 사전 필터 결과 – volSurge={}건 priceSurge={}건 union={}건",
+                    volSurge.size(), priceSurge.size(), surgeSet.size());
+
+            // surgeSet 이 비어있으면 전체 후보 기반으로 진행 (필터 API 실패 대비)
+            List<String> candidates;
+            if (surgeSet.isEmpty()) {
+                candidates = candidateService.getAllCandidates().stream()
+                        .limit(100).collect(Collectors.toList());
+            } else {
+                candidates = candidateService.getAllCandidates().stream()
+                        .filter(surgeSet::contains)
+                        .limit(30)
+                        .collect(Collectors.toList());
+            }
+
             int cnt = 0;
-            for (String stkCd : candidates.subList(0, Math.min(100, candidates.size()))) {
+            for (String stkCd : candidates) {
                 var sigOpt = strategyService.checkBigCandle(stkCd);
                 if (sigOpt.isPresent() && signalService.processSignal(sigOpt.get())) {
                     cnt++;
-                    if (cnt >= 5) break; // 최대 5건
+                    if (cnt >= 5) break;
                 }
             }
             if (cnt > 0) log.info("[S4] 신호 발행: {}건", cnt);
@@ -181,8 +278,8 @@ public class TradingScheduler {
 
         log.info("[S5] 프로그램+외인 스캔");
         try {
-            List<TradingSignalDto> kospiSignals  = strategyService.scanProgramFrgn("P00101");
-            List<TradingSignalDto> kosdaqSignals = strategyService.scanProgramFrgn("P10102");
+            List<TradingSignalDto> kospiSignals  = strategyService.scanProgramFrgn("001");
+            List<TradingSignalDto> kosdaqSignals = strategyService.scanProgramFrgn("101");
             int cnt = signalService.processSignals(kospiSignals)
                     + signalService.processSignals(kosdaqSignals);
             if (cnt > 0) log.info("[S5] 신호 발행: {}건", cnt);
@@ -266,10 +363,102 @@ public class TradingScheduler {
         }
     }
 
-    /** 매일 23:00 - 오래된 tick 데이터 정리 */
-    @Scheduled(cron = "0 0 23 * * *")
-    public void cleanupTickData() {
-        // WsTickDataRepository.deleteOldTickData는 별도 배치에서 처리
-        log.info("틱 데이터 정리 완료");
+    // ─────────────────────────────────────────────
+    // Phase 3-A: 장전 전일종가 사전 저장 (08:00)
+    // ─────────────────────────────────────────────
+
+    /** 08:00 – 후보 종목 전일종가 일괄 수집 후 Redis 저장 */
+    @Scheduled(cron = "0 0 8 * * MON-FRI")
+    public void preparePreOpenData() {
+        log.info("=== 장전 전일종가 사전 저장 시작 (08:00) ===");
+        try {
+            List<String> candidates = candidateService.getAllCandidates();
+            log.info("[PreOpen] 후보 종목 {}개에 대해 전일종가 수집 시작", candidates.size());
+
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+            for (String stkCd : candidates) {
+                CompletableFuture<Void> f = CompletableFuture.runAsync(() -> {
+                    try {
+                        KiwoomApiResponses.StkBasicInfoResponse info =
+                                kiwoomApiService.fetchKa10001(stkCd);
+                        if (info != null && info.getBasePric() != null) {
+                            String key = "ws:expected:" + stkCd;
+                            redis.opsForHash().put(key, "pred_pre_pric", info.getBasePric());
+                            redis.expire(key, Duration.ofHours(12));
+                        }
+                    } catch (Exception e) {
+                        log.debug("[PreOpen] {} 전일종가 조회 실패: {}", stkCd, e.getMessage());
+                    }
+                }, PRELOAD_POOL);
+                futures.add(f);
+            }
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            log.info("[PreOpen] 전일종가 사전 저장 완료 – {}개 처리", futures.size());
+        } catch (Exception e) {
+            log.error("[PreOpen] 전일종가 사전 저장 실패: {}", e.getMessage());
+        }
     }
+
+    // ─────────────────────────────────────────────
+    // Phase 4-A: 일별 성과 집계 (15:35)
+    // ─────────────────────────────────────────────
+
+    /** 15:35 – 당일 신호 통계 집계 후 Redis + telegram_queue 발행 */
+    @Scheduled(cron = "0 35 15 * * MON-FRI")
+    public void compileDailySummary() {
+        log.info("=== 일별 성과 집계 시작 (15:35) ===");
+        try {
+            java.time.LocalDateTime startOfDay = java.time.LocalDate.now().atStartOfDay();
+            List<Object[]> stats = signalService.getTodayStats();
+
+            long totalSignals = 0;
+            double totalScore = 0;
+            int scoreCount = 0;
+            java.util.Map<String, Long> byStrategy = new java.util.LinkedHashMap<>();
+
+            for (Object[] row : stats) {
+                String strategy = String.valueOf(row[0]);
+                long count = row[1] instanceof Number ? ((Number) row[1]).longValue() : 0L;
+                totalSignals += count;
+                byStrategy.put(strategy, count);
+                if (row[2] instanceof Number) {
+                    totalScore += ((Number) row[2]).doubleValue() * count;
+                    scoreCount += count;
+                }
+            }
+            double avgScore = scoreCount > 0 ? totalScore / scoreCount : 0.0;
+
+            String today = java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd"));
+            String summaryKey = "daily_summary:" + today;
+
+            redis.opsForHash().put(summaryKey, "total_signals", String.valueOf(totalSignals));
+            redis.opsForHash().put(summaryKey, "avg_score", String.format("%.1f", avgScore));
+            try {
+                redis.opsForHash().put(summaryKey, "by_strategy",
+                        objectMapper.writeValueAsString(byStrategy));
+            } catch (Exception ex) {
+                redis.opsForHash().put(summaryKey, "by_strategy", byStrategy.toString());
+            }
+            redis.expire(summaryKey, Duration.ofDays(7));
+
+            // telegram_queue 에 일일 리포트 메시지 발행
+            try {
+                java.util.Map<String, Object> report = new java.util.LinkedHashMap<>();
+                report.put("type", "DAILY_REPORT");
+                report.put("date", today);
+                report.put("total_signals", totalSignals);
+                report.put("avg_score", avgScore);
+                report.put("by_strategy", byStrategy);
+                redisMarketDataService.pushTelegramQueue(objectMapper.writeValueAsString(report));
+            } catch (Exception ex) {
+                log.warn("[DailySummary] 리포트 큐 발행 실패: {}", ex.getMessage());
+            }
+
+            log.info("[DailySummary] 집계 완료 – totalSignals={} avgScore={}", totalSignals, String.format("%.1f", avgScore));
+        } catch (Exception e) {
+            log.error("[DailySummary] 집계 실패: {}", e.getMessage());
+        }
+    }
+
+    // 틱 데이터 정리는 DataCleanupScheduler (23:30) 에서 전담 처리
 }

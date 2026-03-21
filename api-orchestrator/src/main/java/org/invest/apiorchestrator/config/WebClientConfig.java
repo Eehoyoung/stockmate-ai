@@ -34,8 +34,19 @@ public class WebClientConfig {
                         conn.addHandlerLast(new ReadTimeoutHandler(10, TimeUnit.SECONDS))
                                 .addHandlerLast(new WriteTimeoutHandler(10, TimeUnit.SECONDS)));
 
+        // 실전/모의 환경 분기 (KIWOOM_MODE=real|mock)
+        String configuredBaseUrl = properties.getApi().getBaseUrl();
+        String effectiveBaseUrl;
+        if ("real".equalsIgnoreCase(properties.getMode())) {
+            effectiveBaseUrl = configuredBaseUrl != null && !configuredBaseUrl.isBlank()
+                    ? configuredBaseUrl : "https://api.kiwoom.com";
+        } else {
+            effectiveBaseUrl = configuredBaseUrl != null && !configuredBaseUrl.isBlank()
+                    ? configuredBaseUrl : "https://mockapi.kiwoom.com";
+        }
+
         return WebClient.builder()
-                .baseUrl(properties.getApi().getBaseUrl())
+                .baseUrl(effectiveBaseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .filter(logRequest())

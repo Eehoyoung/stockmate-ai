@@ -11,6 +11,9 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "kiwoom")
 public class KiwoomProperties {
 
+    /** 실전/모의 환경 구분: real | mock */
+    private String mode = "mock";
+
     private Api api = new Api();
     private Websocket websocket = new Websocket();
     private Trading trading = new Trading();
@@ -21,7 +24,7 @@ public class KiwoomProperties {
         private String baseUrl;
         private String wsUrl;
         private String appKey;
-        private String secretKey;
+        private String appSecret;
         private int tokenTtlMinutes = 1420;
     }
 

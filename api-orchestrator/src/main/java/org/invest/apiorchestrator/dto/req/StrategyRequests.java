@@ -148,4 +148,76 @@ public class StrategyRequests {
         @JsonProperty("qry_dt_tp") private String qryDtTp = "0";
         @JsonProperty("date") private String date;
     }
+
+    /** ka10029 예상체결등락률상위 */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class ExpCntrFluRtUpperRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp")     private String mrktTp   = "000";
+        @JsonProperty("sort_tp")     private String sortTp   = "1";    // 1:상승률
+        @JsonProperty("trde_qty_cnd")private String trdeQtyCnd = "10"; // 만주 이상
+        @JsonProperty("stk_cnd")     private String stkCnd   = "1";    // 관리종목 제외
+        @JsonProperty("crd_cnd")     private String crdCnd   = "0";    // 전체
+        @JsonProperty("pric_cnd")    private String pricCnd  = "8";    // 1천원 이상
+    }
+
+    /** ka10030 당일거래량상위 */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class TdyTrdeQtyUpperRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp")       private String mrktTp      = "000";
+        @JsonProperty("sort_tp")       private String sortTp      = "1";
+        @JsonProperty("mang_stk_incls")private String mangStkIncls = "1"; // 관리종목 제외
+        @JsonProperty("crd_tp")        private String crdTp       = "0";
+        @JsonProperty("trde_qty_tp")   private String trdeQtyTp   = "10";
+        @JsonProperty("pric_tp")       private String pricTp      = "8";
+        @JsonProperty("trde_prica_tp") private String trdePricaTp = "0";
+        @JsonProperty("mrkt_open_tp")  private String mrktOpenTp  = "0";
+    }
+
+    /** ka10023 거래량급증 */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class TrdeQtySdninRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp")    private String mrktTp   = "000";
+        @JsonProperty("sort_tp")    private String sortTp   = "2";    // 2:급증률순
+        @JsonProperty("tm_tp")      private String tmTp     = "1";
+        @JsonProperty("trde_qty_tp")private String trdeQtyTp = "10";
+        @JsonProperty("tm")         private String tm;                // 분 (optional)
+        @JsonProperty("stk_cnd")    private String stkCnd   = "1";
+        @JsonProperty("pric_tp")    private String pricTp   = "8";
+    }
+
+    /** ka10019 가격급등락 */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class PricJmpFluRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp")      private String mrktTp     = "000";
+        @JsonProperty("flu_tp")       private String fluTp      = "1"; // 1:급등
+        @JsonProperty("tm_tp")        private String tmTp       = "1";
+        @JsonProperty("tm")           private String tm;
+        @JsonProperty("trde_qty_tp")  private String trdeQtyTp  = "00010";
+        @JsonProperty("stk_cnd")      private String stkCnd     = "1";
+        @JsonProperty("crd_cnd")      private String crdCnd     = "0";
+        @JsonProperty("pric_cnd")     private String pricCnd    = "8";
+        @JsonProperty("updown_incls") private String updownIncls = "0";
+    }
+
+    /** ka10020 호가잔량상위 */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class BidReqUpperRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp")    private String mrktTp    = "001";
+        @JsonProperty("sort_tp")    private String sortTp    = "3";    // 3:매수비율순
+        @JsonProperty("trde_qty_tp")private String trdeQtyTp = "0000";
+        @JsonProperty("stk_cnd")    private String stkCnd    = "1";
+        @JsonProperty("crd_cnd")    private String crdCnd    = "0";
+    }
+
+    /** ka10001 주식기본정보 (전일종가 조회용) */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class StkBasicInfoRequest extends KiwoomApiRequest {
+        @JsonProperty("stk_cd") private String stkCd;
+    }
 }

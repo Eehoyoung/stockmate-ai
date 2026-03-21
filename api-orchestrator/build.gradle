@@ -37,16 +37,16 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-data-redis-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    // Source: https://mvnrepository.com/artifact/com.fasterxml.jackson.core/jackson-databind
-    implementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.21.1'
-    // Source: https://mvnrepository.com/artifact/com.fasterxml.jackson.datatype/jackson-datatype-jsr310
-    implementation group: 'com.fasterxml.jackson.datatype', name: 'jackson-datatype-jsr310', version: '2.21.1'
-    // Source: https://mvnrepository.com/artifact/com.fasterxml.jackson.module/jackson-module-parameter-names
-    implementation("com.fasterxml.jackson.module:jackson-module-parameter-names:2.21.1")
     // Source: https://mvnrepository.com/artifact/org.springframework.boot/spring-boot-starter-webclient
     implementation("org.springframework.boot:spring-boot-starter-webclient:4.1.0-M2")
     // Source: https://mvnrepository.com/artifact/com.squareup.okhttp3/okhttp
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
+    implementation 'com.fasterxml.jackson.module:jackson-module-parameter-names'
+    // Source: https://mvnrepository.com/artifact/io.github.cdimascio/dotenv-java
+    implementation("io.github.cdimascio:dotenv-java:3.2.0")
 }
 
 tasks.named('test') {

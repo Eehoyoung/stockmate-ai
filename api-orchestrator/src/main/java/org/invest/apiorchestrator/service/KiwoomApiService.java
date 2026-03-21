@@ -2,6 +2,8 @@ package org.invest.apiorchestrator.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.dto.req.StrategyRequests;
+import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.exception.KiwoomApiException;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
@@ -18,7 +20,7 @@ public class KiwoomApiService {
     private final WebClient kiwoomWebClient;
     private final TokenService tokenService;
 
-    private static final int MAX_RETRIES = 2;
+    private static final int MAX_RETRIES = 3;
     private static final Duration RETRY_DELAY = Duration.ofSeconds(1);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
     private static final String HEADER_API_ID = "api-id";
@@ -109,7 +111,67 @@ public class KiwoomApiService {
                         tokenService.refreshToken();
                         return Mono.error(new IllegalStateException("Token refreshed. Retry request."));
                     }
+                    // 8005 응답 코드 처리 (토큰 만료 – body 에 코드가 담기는 경우)
+                    if (bodyText != null && bodyText.contains("8005")) {
+                        log.warn("8005 토큰 만료 감지 [{}] – 토큰 갱신 후 재시도", apiId);
+                        tokenService.refreshToken();
+                        return Mono.error(new IllegalStateException("8005 Token expired. Retry request."));
+                    }
+                    // 1700 Rate Limit: 재시도 허용 예외
+                    if (bodyText != null && bodyText.contains("1700")) {
+                        log.warn("1700 Rate Limit [{}] – 재시도 예정", apiId);
+                        return Mono.error(new IllegalStateException("1700 Rate limit. Retry request."));
+                    }
                     return Mono.error(new KiwoomApiException("API 오류 [" + apiId + "]: " + bodyText));
                 });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 편의 메서드 – 신규 API
+    // ─────────────────────────────────────────────────────────────
+
+    private static final String RKINFO_PATH  = "/api/dostk/rkinfo";
+    private static final String STKINFO_PATH = "/api/dostk/stkinfo";
+
+    /** ka10029 예상체결등락률상위 */
+    public KiwoomApiResponses.ExpCntrFluRtUpperResponse fetchKa10029(
+            StrategyRequests.ExpCntrFluRtUpperRequest req) {
+        return post("ka10029", RKINFO_PATH, req,
+                KiwoomApiResponses.ExpCntrFluRtUpperResponse.class);
+    }
+
+    /** ka10030 당일거래량상위 */
+    public KiwoomApiResponses.TdyTrdeQtyUpperResponse fetchKa10030(
+            StrategyRequests.TdyTrdeQtyUpperRequest req) {
+        return post("ka10030", RKINFO_PATH, req,
+                KiwoomApiResponses.TdyTrdeQtyUpperResponse.class);
+    }
+
+    /** ka10023 거래량급증 */
+    public KiwoomApiResponses.TrdeQtySdninResponse fetchKa10023(
+            StrategyRequests.TrdeQtySdninRequest req) {
+        return post("ka10023", RKINFO_PATH, req,
+                KiwoomApiResponses.TrdeQtySdninResponse.class);
+    }
+
+    /** ka10019 가격급등락 */
+    public KiwoomApiResponses.PricJmpFluResponse fetchKa10019(
+            StrategyRequests.PricJmpFluRequest req) {
+        return post("ka10019", STKINFO_PATH, req,
+                KiwoomApiResponses.PricJmpFluResponse.class);
+    }
+
+    /** ka10020 호가잔량상위 */
+    public KiwoomApiResponses.BidReqUpperResponse fetchKa10020(
+            StrategyRequests.BidReqUpperRequest req) {
+        return post("ka10020", RKINFO_PATH, req,
+                KiwoomApiResponses.BidReqUpperResponse.class);
+    }
+
+    /** ka10001 주식기본정보 (전일종가 조회) */
+    public KiwoomApiResponses.StkBasicInfoResponse fetchKa10001(String stkCd) {
+        return post("ka10001", STKINFO_PATH,
+                StrategyRequests.StkBasicInfoRequest.builder().stkCd(stkCd).build(),
+                KiwoomApiResponses.StkBasicInfoResponse.class);
     }
 }

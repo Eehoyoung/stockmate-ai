@@ -10,9 +10,14 @@ ka10131 기관외국인연속매매: 최근 3일 연속 기관+외인 순매수
 당일 거래량이 전일 동시간 대비 ≥ 1.5배 (ka10055)
 """
 import httpx
+import logging
 import os
 
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL")
+logger = logging.getLogger(__name__)
+
+# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
+# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
 
 async def fetch_intraday_investor(token: str, market: str = "000") -> list:

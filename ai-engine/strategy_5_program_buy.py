@@ -8,10 +8,16 @@ ka90009 외국인+기관 매매상위에도 동시 포함
 ka10044 일별기관매매: 전일 기관 순매수 종목
 현재가 5일 이평선 상단 유지
 """
-import asyncio, httpx
+import asyncio
+import httpx
+import logging
 import os
 
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL")
+logger = logging.getLogger(__name__)
+
+# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
+# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
 async def fetch_program_netbuy(token: str, market: str) -> set:
     """ka90003 프로그램순매수상위50"""

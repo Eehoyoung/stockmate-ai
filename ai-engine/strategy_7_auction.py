@@ -9,43 +9,56 @@ ka10033 거래량 순위: 예상거래량 상위 50위 이내
 전일 봉 패턴: 장대양봉 OR 상한가 근접 (3% 이내)
 시가총액 ≥ 500억 (소형주 변동성 제거)
 """
-from idlelib.multicall import r
-
-import httpx
 import os
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL")
+import logging
+import httpx
+
+logger = logging.getLogger(__name__)
+
+# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
+# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
 
-async def fetch_volume_rank(token: str, market: str) -> list:
-    """ka10033 거래량순위요청 - 예상거래량 상위"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-            headers={"api-id": "ka10033", "authorization": f"Bearer {token}",
-                     "Content-Type": "application/json;charset=UTF-8"},
-            json={
-                "mrkt_tp": market,
-                "trde_qty_tp": "10",
-                "stk_cnd": "1",
-                "updown_incls": "0",
-                "crd_cnd": "0",
-                "stex_tp": "1"
-            }
-        )
-        return resp.json().get("trde_qty_upper", [])
+async def fetch_gap_rank(token: str, market: str) -> list:
+    """ka10029 예상체결등락률상위 – 갭 2~10% 후보"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                headers={"api-id": "ka10029", "authorization": f"Bearer {token}",
+                         "Content-Type": "application/json;charset=UTF-8"},
+                json={"mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "10",
+                      "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "1"},
+            )
+            items = resp.json().get("exp_cntr_flu_rt_upper", [])
+            result = {}
+            for i, item in enumerate(items[:50]):
+                try:
+                    flu_rt = float(str(item.get("flu_rt", "0")).replace("+", "").replace(",", ""))
+                    if 2.0 <= flu_rt <= 10.0:
+                        result[item.get("stk_cd")] = i + 1
+                except Exception:
+                    pass
+            return result
+    except Exception as e:
+        logger.warning("[S7] ka10029 호출 실패: %s", e)
+        return {}
 
-async def scan_auction_signal(token: str, market: str = "000") -> list:
-    """장전 동시호가 종목 선별"""
-    vol_rank = await fetch_volume_rank(token, market)
-    vol_set = {x["stk_cd"]: int(x.get("rank", 999))
-               for x in vol_rank[:50]}
+
+async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list:
+    """장전 동시호가 종목 선별 (ka10029 기반, 비동기 Redis)"""
+    vol_set = await fetch_gap_rank(token, market)
 
     results = []
 
     for stk_cd, rank in vol_set.items():
-        # Redis에서 WebSocket 데이터 조회
-        exp = r.hgetall(f"ws:expected:{stk_cd}")
-        bid = r.hgetall(f"ws:hoga:{stk_cd}")
+        # Redis에서 WebSocket 데이터 조회 (비동기)
+        try:
+            exp = await rdb.hgetall(f"ws:expected:{stk_cd}") if rdb else {}
+            bid = await rdb.hgetall(f"ws:hoga:{stk_cd}") if rdb else {}
+        except Exception:
+            exp, bid = {}, {}
 
         if not exp or not bid:
             continue

@@ -1,24 +1,35 @@
 spring:
   datasource:
-    url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:SMA}
     username: ${POSTGRES_USER}
     password: ${POSTGRES_PASSWORD}
 
   jpa:
-    hibernate.ddl-auto: validate
+    hibernate.ddl-auto: create
     show-sql: false
 
   data:
     redis:
-      host: ${REDIS_HOST}
-      port: ${REDIS_PORT}
-      password: ${REDIS_PASSWORD}
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
 
 kiwoom:
-  app-key: ${KIWOOM_APP_KEY}
-  app-secret: ${KIWOOM_APP_SECRET}
-  base-url: ${KIWOOM_BASE_URL}
-  ws-url: ${KIWOOM_WS_URL}
+  mode: ${KIWOOM_MODE:mock}   # real or mock
+  api:
+    app-key: ${KIWOOM_APP_KEY}
+    app-secret: ${KIWOOM_APP_SECRET}
+    base-url: ${KIWOOM_BASE_URL}
+    ws-url: ${KIWOOM_WS_URL}
 
 claude:
   api-key: ${CLAUDE_API_KEY}
@@ -27,3 +38,7 @@ claude:
 telegram:
   bot-token: ${TELEGRAM_BOT_TOKEN}
   allowed-chat-ids: ${TELEGRAM_ALLOWED_CHAT_IDS}
+
+org:
+  gradle:
+    jvmargs: -enable-native-access=ALL-UNNAMED

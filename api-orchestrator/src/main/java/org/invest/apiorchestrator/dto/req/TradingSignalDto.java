@@ -5,6 +5,7 @@ import lombok.Getter;
 import org.invest.apiorchestrator.domain.TradingSignal;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @Getter
@@ -33,9 +34,40 @@ public class TradingSignalDto {
     private Boolean isNewHigh;
     private Integer continuousDays;
     private Long netBuyAmt;
+    private Double bodyRatio;      // S4 장대양봉 몸통 비율
 
     private Map<String, Object> extra;
     private LocalDateTime signalTime;
+
+    /**
+     * ai-engine scorer.py 가 기대하는 snake_case 필드 계약을 단일 위치에서 관리.
+     * SignalService 가 이 Map을 직렬화하여 telegram_queue 에 LPUSH 한다.
+     */
+    public Map<String, Object> toQueuePayload(Long signalId) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id",              signalId);
+        m.put("stk_cd",          stkCd);
+        m.put("stk_nm",          stkNm);
+        m.put("strategy",        strategy != null ? strategy.name() : null);
+        m.put("entry_type",      entryType);
+        m.put("target_pct",      targetPct);
+        m.put("stop_pct",        stopPct);
+        m.put("signal_score",    signalScore);
+        m.put("gap_pct",         gapPct);
+        m.put("cntr_strength",   cntrStrength);
+        m.put("bid_ratio",       bidRatio);
+        m.put("vol_ratio",       volRatio);
+        m.put("pullback_pct",    pullbackPct);
+        m.put("theme_name",      themeName);
+        m.put("net_buy_amt",     netBuyAmt);
+        m.put("continuous_days", continuousDays);
+        m.put("is_new_high",     isNewHigh);
+        m.put("vol_rank",        volRank);
+        m.put("market_type",     marketType);
+        m.put("body_ratio",      bodyRatio);
+        m.put("message",         toTelegramMessage());
+        return m;
+    }
 
     /** TelegramQueue용 직렬화 메시지 */
     public String toTelegramMessage() {

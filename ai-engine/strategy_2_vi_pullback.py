@@ -9,17 +9,22 @@ VI 해제 후 현재가가 VI 발동가 대비 -1% ~ -3% 눌림
 체결강도 ≥ 110% 유지 중"""
 
 from collections import defaultdict
-from idlelib.multicall import r
 import os
+import logging
 
 import httpx
 
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL")
+# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
+# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
+# rdb (redis.asyncio.Redis) 는 strategy_runner.py 에서 전달받습니다.
+
+logger = logging.getLogger(__name__)
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
 vi_events = defaultdict(list)  # stk_cd → [vi_event, ...]
 
-async def handle_vi_event(event: dict):
-    """Java WebSocket → 1h VI발동/해제 이벤트 처리"""
+async def handle_vi_event(rdb, event: dict):
+    """VI 발동/해제 이벤트 처리 (비동기 Redis)"""
     stk_cd = event.get("stk_cd")
     vi_type = event.get("vi_type")      # 1:정적, 2:동적, 3:동적+정적
     status = event.get("vi_stat")       # 1:발동, 2:해제
@@ -30,24 +35,24 @@ async def handle_vi_event(event: dict):
 
     if status == "1":  # 발동
         from datetime import datetime
-        r.hset(key, mapping={
-            "vi_price": vi_price,
+        await rdb.hset(key, mapping={
+            "vi_price": str(vi_price),
             "vi_time": datetime.now().isoformat(),
             "vi_type": vi_type,
-            "vi_volume": volume,
+            "vi_volume": str(volume),
             "status": "active"
         })
-        r.expire(key, 3600)
+        await rdb.expire(key, 3600)
 
     elif status == "2":  # 해제 → 눌림목 감시 시작
         from datetime import datetime
-        vi_data = r.hgetall(key)
+        vi_data = await rdb.hgetall(key)
         if not vi_data:
             return
-        r.hset(key, "status", "released")
+        await rdb.hset(key, "status", "released")
         # 눌림목 감시 큐에 등록
         import json
-        r.lpush("vi_watch_queue", json.dumps({
+        await rdb.lpush("vi_watch_queue", json.dumps({
             "stk_cd": stk_cd,
             "vi_price": float(vi_data["vi_price"]),
             "watch_until": (datetime.now().timestamp() + 600)  # 10분 감시
@@ -85,12 +90,15 @@ async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
 
 
 
-async def check_vi_pullback(token: str, watch_item: dict) -> dict | None:
+async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | None:
     stk_cd = watch_item["stk_cd"]
     vi_price = watch_item["vi_price"]
 
-    # 현재가 조회 (Redis 실시간 체결 캐시)
-    cur = r.hgetall(f"ws:tick:{stk_cd}")
+    if not rdb:
+        return None
+
+    # 현재가 조회 (Redis 실시간 체결 캐시, 비동기)
+    cur = await rdb.hgetall(f"ws:tick:{stk_cd}")
     if not cur:
         return None
 
