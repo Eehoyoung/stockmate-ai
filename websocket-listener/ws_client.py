@@ -18,6 +18,7 @@ import sys
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from health_server import set_ws_connected
 from redis_writer import write_tick, write_expected, write_hoga, write_vi, write_heartbeat
 from token_loader import load_token
 
@@ -110,7 +111,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
             removed_codes = subscribed_set - watchlist
 
             for code in new_codes:
-                for grp_no, ttype in [("5", "0B"), ("6", "0D"), ("7", "0H")]:
+                for grp_no, ttype in [("5", "0B"), ("6", "0H"), ("8", "0D")]:
                     payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "0",
                                "data": [{"item": code, "type": ttype}]}
                     await ws.send(json.dumps(payload))
@@ -118,7 +119,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                 logger.info("[WS] 동적 구독 추가 [%s]", code)
 
             for code in removed_codes:
-                for grp_no, ttype in [("5", "0B"), ("6", "0D"), ("7", "0H")]:
+                for grp_no, ttype in [("5", "0B"), ("6", "0H"), ("8", "0D")]:
                     payload = {"trnm": "UNREG", "grp_no": grp_no,
                                "data": [{"item": code, "type": ttype}]}
                     await ws.send(json.dumps(payload))
@@ -171,6 +172,7 @@ async def run_ws_loop(rdb):
                 reconnect_count = 0
                 delay_sec       = BASE_RECONNECT_MS / 1000
                 logger.info("[WS] 연결 성공")
+                set_ws_connected(True)
 
                 await _subscribe_all(ws, rdb)
 
@@ -185,11 +187,14 @@ async def run_ws_loop(rdb):
                 finally:
                     watchlist_task.cancel()
                     heartbeat_task.cancel()
+                    set_ws_connected(False)
 
         except ConnectionClosed as e:
             logger.warning("[WS] 연결 끊김: %s", e)
+            set_ws_connected(False)
         except Exception as e:
             logger.error("[WS] 오류: %s", e)
+            set_ws_connected(False)
 
         reconnect_count += 1
         if reconnect_count > MAX_RECONNECTS:
