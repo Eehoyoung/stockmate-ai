@@ -29,6 +29,27 @@ REDIS_TOKEN_KEY      = "kiwoom:token"
 SCAN_INTERVAL_SEC    = float(os.getenv("STRATEGY_SCAN_INTERVAL_SEC", "60.0"))
 QUEUE_TTL_SECONDS    = 43200  # 12시간
 
+# 동시 전술 실행 상한 – 60초 스캔 주기 내에 완료될 수 있도록 제한
+MAX_CONCURRENT_STRATEGIES = int(os.getenv("MAX_CONCURRENT_STRATEGIES", "3"))
+_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """전술 실행 세마포어 싱글턴 반환 (이벤트 루프 내에서만 생성)"""
+    global _semaphore
+    if _semaphore is None:
+        _semaphore = asyncio.Semaphore(MAX_CONCURRENT_STRATEGIES)
+    return _semaphore
+
+
+async def _run_strategy_with_semaphore(name: str, coro):
+    """세마포어를 획득한 후 전술 코루틴 실행. 대기 시 로그 출력."""
+    sem = _get_semaphore()
+    if sem.locked():
+        logger.debug("[Runner] [%s] 세마포어 대기 중 (동시 실행 %d개 한도)", name, MAX_CONCURRENT_STRATEGIES)
+    async with sem:
+        return await coro
+
 
 async def _load_token(rdb) -> str | None:
     """Redis 에서 Kiwoom 액세스 토큰 로드"""
@@ -52,82 +73,104 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
 
 
 async def _run_once(rdb):
-    """모든 전술 1회 스캔 실행"""
+    """
+    모든 전술 1회 스캔 실행.
+    시간대별로 활성화된 전술들을 asyncio.gather + 세마포어로 병렬 실행 (최대 MAX_CONCURRENT_STRATEGIES).
+    """
     token = await _load_token(rdb)
     if not token:
         return
 
     now = datetime.datetime.now().time()
+    tasks = []
 
     # ── S7: 동시호가 (08:30 ~ 09:00) ──────────────────────────────
     if datetime.time(8, 30) <= now <= datetime.time(9, 0):
-        try:
-            from strategy_7_auction import scan_auction_signal
-            for market in ("001", "101"):
-                signals = await scan_auction_signal(token, market, rdb=rdb)
-                await _push_signals(rdb, signals, "S7_AUCTION")
-        except Exception as e:
-            logger.error("[Runner] S7 스캔 오류: %s", e)
+        async def _s7():
+            try:
+                from strategy_7_auction import scan_auction_signal
+                for market in ("001", "101"):
+                    signals = await scan_auction_signal(token, market, rdb=rdb)
+                    await _push_signals(rdb, signals, "S7_AUCTION")
+            except Exception as e:
+                logger.error("[Runner] S7 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S7", _s7()))
 
     # ── S1: 갭상승 시초가 (08:30 ~ 09:10) ─────────────────────────
     if datetime.time(8, 30) <= now <= datetime.time(9, 10):
-        try:
-            from strategy_1_gap_opening import scan_gap_opening
-            kospi  = await rdb.lrange("candidates:001", 0, 199)
-            kosdaq = await rdb.lrange("candidates:101", 0, 199)
-            candidates = list(dict.fromkeys(kospi + kosdaq))
-            if candidates:
-                signals = await scan_gap_opening(token, candidates, rdb=rdb)
-                await _push_signals(rdb, signals, "S1_GAP_OPEN")
-        except Exception as e:
-            logger.error("[Runner] S1 스캔 오류: %s", e)
+        async def _s1():
+            try:
+                from strategy_1_gap_opening import scan_gap_opening
+                kospi  = await rdb.lrange("candidates:001", 0, 199)
+                kosdaq = await rdb.lrange("candidates:101", 0, 199)
+                candidates = list(dict.fromkeys(kospi + kosdaq))
+                if candidates:
+                    signals = await scan_gap_opening(token, candidates, rdb=rdb)
+                    await _push_signals(rdb, signals, "S1_GAP_OPEN")
+            except Exception as e:
+                logger.error("[Runner] S1 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S1", _s1()))
 
     # ── S3: 외인+기관 동시 순매수 (09:30 ~ 14:30) ─────────────────
     if datetime.time(9, 30) <= now <= datetime.time(14, 30):
-        try:
-            from strategy_3_inst_foreign import scan_inst_foreign
-            for market in ("001", "101"):
-                signals = await scan_inst_foreign(token, market)
-                await _push_signals(rdb, signals, "S3_INST_FRGN")
-        except Exception as e:
-            logger.error("[Runner] S3 스캔 오류: %s", e)
+        async def _s3():
+            try:
+                from strategy_3_inst_foreign import scan_inst_foreign
+                for market in ("001", "101"):
+                    signals = await scan_inst_foreign(token, market)
+                    await _push_signals(rdb, signals, "S3_INST_FRGN")
+            except Exception as e:
+                logger.error("[Runner] S3 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S3", _s3()))
 
     # ── S4: 장대양봉 추격 (09:30 ~ 14:30) – 후보 종목 순차 스캔 ──
     if datetime.time(9, 30) <= now <= datetime.time(14, 30):
-        try:
-            from strategy_4_big_candle import check_big_candle
-            kospi  = await rdb.lrange("candidates:001", 0, 99)
-            kosdaq = await rdb.lrange("candidates:101", 0, 99)
-            candidates = list(dict.fromkeys(kospi + kosdaq))[:30]  # 상위 30개만
-            s4_signals = []
-            for stk_cd in candidates:
-                result = await check_big_candle(token, stk_cd, rdb=rdb)
-                if result:
-                    s4_signals.append(result)
-                    if len(s4_signals) >= 5:
-                        break
-            await _push_signals(rdb, s4_signals, "S4_BIG_CANDLE")
-        except Exception as e:
-            logger.error("[Runner] S4 스캔 오류: %s", e)
+        async def _s4():
+            try:
+                from strategy_4_big_candle import check_big_candle
+                kospi  = await rdb.lrange("candidates:001", 0, 99)
+                kosdaq = await rdb.lrange("candidates:101", 0, 99)
+                candidates = list(dict.fromkeys(kospi + kosdaq))[:30]  # 상위 30개만
+                s4_signals = []
+                for stk_cd in candidates:
+                    result = await check_big_candle(token, stk_cd, rdb=rdb)
+                    if result:
+                        s4_signals.append(result)
+                        if len(s4_signals) >= 5:
+                            break
+                await _push_signals(rdb, s4_signals, "S4_BIG_CANDLE")
+            except Exception as e:
+                logger.error("[Runner] S4 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S4", _s4()))
 
     # ── S5: 프로그램+외인 (10:00 ~ 14:00) ─────────────────────────
     if datetime.time(10, 0) <= now <= datetime.time(14, 0):
-        try:
-            from strategy_5_program_buy import scan_program_buy
-            for market in ("001", "101"):
-                signals = await scan_program_buy(token, market)
-                await _push_signals(rdb, signals, "S5_PROG_FRGN")
-        except Exception as e:
-            logger.error("[Runner] S5 스캔 오류: %s", e)
+        async def _s5():
+            try:
+                from strategy_5_program_buy import scan_program_buy
+                for market in ("001", "101"):
+                    signals = await scan_program_buy(token, market)
+                    await _push_signals(rdb, signals, "S5_PROG_FRGN")
+            except Exception as e:
+                logger.error("[Runner] S5 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S5", _s5()))
 
     # ── S6: 테마 후발주 (09:30 ~ 13:00) ───────────────────────────
     if datetime.time(9, 30) <= now <= datetime.time(13, 0):
-        try:
-            from strategy_6_theme import scan_theme_laggard
-            signals = await scan_theme_laggard(token)
-            await _push_signals(rdb, signals, "S6_THEME_LAGGARD")
-        except Exception as e:
-            logger.error("[Runner] S6 스캔 오류: %s", e)
+        async def _s6():
+            try:
+                from strategy_6_theme import scan_theme_laggard
+                signals = await scan_theme_laggard(token)
+                await _push_signals(rdb, signals, "S6_THEME_LAGGARD")
+            except Exception as e:
+                logger.error("[Runner] S6 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S6", _s6()))
+
+    # 활성화된 전술들을 병렬 실행 (세마포어가 동시 실행 수 제한)
+    if tasks:
+        logger.debug("[Runner] 전술 %d개 병렬 실행 시작 (세마포어 한도: %d)",
+                     len(tasks), MAX_CONCURRENT_STRATEGIES)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def run_strategy_scanner(rdb):
