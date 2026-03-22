@@ -29,6 +29,11 @@ public class CandidateService {
      * 예상체결등락률 상위 종목코드 반환 (ka10029, 캐시 3분).
      * 갭 3~30% 범위 필터 → S1 후보 리스트.
      *
+     * <p><b>거래 시간 외 보호</b>: Redis 캐시가 비어 있고 거래 시간이 아닌 경우
+     * ka10029 API 를 호출하지 않고 빈 리스트를 반환합니다.
+     * 모의 서버(mockapi)는 장 시간 외 예상체결 데이터가 없어 불필요한 API 소모와
+     * Rate Limit(1700) 오류를 유발하기 때문입니다.
+     *
      * @param market 001:코스피, 101:코스닥, 000:전체
      */
     public List<String> getCandidates(String market) {
@@ -36,6 +41,12 @@ public class CandidateService {
         List<String> cached = redis.opsForList().range(cacheKey, 0, -1);
         if (cached != null && !cached.isEmpty()) {
             return cached;
+        }
+
+        // 캐시 없음 – 거래 시간 외이면 API 호출 생략 (Rate Limit 방어)
+        if (!org.invest.apiorchestrator.util.MarketTimeUtil.isTradingActive()) {
+            log.debug("[Candidate] 거래 시간 외 & 캐시 없음 – ka10029 호출 생략 [market={}]", market);
+            return Collections.emptyList();
         }
 
         try {

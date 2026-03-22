@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -34,6 +35,8 @@ public class KiwoomWebSocketClient {
     private okhttp3.WebSocket webSocket;
     private final AtomicBoolean connected = new AtomicBoolean(false);
     private final AtomicInteger reconnectCount = new AtomicInteger(0);
+    /** 현재 실행 중인 ping 스케줄 – 재연결 시 이전 것을 취소하기 위해 추적 */
+    private volatile ScheduledFuture<?> pingFuture;
     private final ScheduledExecutorService pingExecutor =
             Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "ws-ping");
@@ -152,9 +155,13 @@ public class KiwoomWebSocketClient {
             log.info("WebSocket 연결 성공");
             redisService.setWsConnected(true);
 
-            // Ping 스케줄 시작 (ping마다 Redis heartbeat 갱신)
+            // 이전 ping 스케줄 취소 (재연결 시 중복 방지)
+            if (pingFuture != null && !pingFuture.isCancelled()) {
+                pingFuture.cancel(false);
+            }
+            // 새 Ping 스케줄 시작 (ping마다 Redis heartbeat 갱신)
             int pingInterval = properties.getWebsocket().getPingIntervalSeconds();
-            pingExecutor.scheduleAtFixedRate(
+            pingFuture = pingExecutor.scheduleAtFixedRate(
                     () -> {
                         if (connected.get()) {
                             ws.send("{\"trnm\":\"PING\"}");

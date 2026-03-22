@@ -7,6 +7,11 @@ ws_client.py
   GRP 6  0H 예상체결  – 장전용
   GRP 7  1h VI발동해제 – 전체
   GRP 8  0D 호가잔량  – 상위 100
+
+환경변수:
+  BYPASS_MARKET_HOURS=true  : 장 시간 외에도 연결 시도 (모의 테스트용)
+                              지수 백오프 적용, 최대 MAX_RECONNECTS 회 후 5분 대기 반복
+  KIWOOM_MODE=real|mock     : real → wss://api.kiwoom.com, mock → wss://mockapi.kiwoom.com
 """
 
 import asyncio
@@ -30,86 +35,84 @@ _MARKET_OPEN_HOUR   = (7, 30)   # 07:30 – 장전 구독 시작
 _MARKET_CLOSE_HOUR  = (15, 35)  # 15:35 – 장 완전 종료
 _WEEKDAYS           = {0, 1, 2, 3, 4}  # Mon=0 … Fri=4
 
+# 장 시간 외 재연결 허용 여부 (모의 테스트용)
+BYPASS_MARKET_HOURS = os.getenv("BYPASS_MARKET_HOURS", "false").lower() in ("1", "true", "yes")
+
+
+def _now_kst() -> datetime:
+    """현재 KST 시각 반환 (timezone-aware)"""
+    return datetime.now(KST)
+
 
 def _is_market_hours() -> bool:
     """현재 KST 시각이 장 운영 시간 (평일 07:30~15:35) 인지 확인"""
-    now = datetime.now(KST)
+    now = _now_kst()
     if now.weekday() not in _WEEKDAYS:
         return False
     t = dtime(now.hour, now.minute, now.second)
-    open_t  = dtime(*_MARKET_OPEN_HOUR)
-    close_t = dtime(*_MARKET_CLOSE_HOUR)
-    return open_t <= t < close_t
+    return dtime(*_MARKET_OPEN_HOUR) <= t < dtime(*_MARKET_CLOSE_HOUR)
+
+
+def _next_market_open() -> datetime:
+    """다음 장 개장 datetime (KST, timezone-aware) 반환"""
+    now = _now_kst()
+    wd  = now.weekday()
+    t   = dtime(now.hour, now.minute, now.second)
+    open_t = dtime(*_MARKET_OPEN_HOUR)
+
+    # 오늘 개장 전이면 오늘 07:30
+    if wd in _WEEKDAYS and t < open_t:
+        return now.replace(hour=open_t.hour, minute=open_t.minute,
+                           second=0, microsecond=0)
+
+    # 오늘 이미 개장했거나 주말 → 다음 평일 07:30
+    days_ahead = 1
+    if wd >= 4:          # 금=4 → 토=1일 후(6 아님), 일=2일 후
+        days_ahead = 7 - wd
+    base = now.replace(hour=open_t.hour, minute=open_t.minute,
+                       second=0, microsecond=0)
+    return base + timedelta(days=days_ahead)
 
 
 async def _wait_for_market_open():
     """
     장 운영 시간이 아닌 경우 다음 개장 시각까지 대기.
-    평일 07:30 KST, 주말이면 다음 월요일 07:30 까지 대기.
+    60초 단위로 깨어나 재확인 (외부에서 취소 가능).
     """
-    now = datetime.now(KST)
-    wd  = now.weekday()
-    t   = dtime(now.hour, now.minute, now.second)
+    while True:
+        if _is_market_hours():
+            return  # 장 운영 중 → 즉시 반환
 
-    open_t  = dtime(*_MARKET_OPEN_HOUR)
-    close_t = dtime(*_MARKET_CLOSE_HOUR)
+        next_open   = _next_market_open()
+        now         = _now_kst()
+        wait_sec    = (next_open - now).total_seconds()
 
-    # 평일 장 시간 내이면 즉시 반환
-    if wd in _WEEKDAYS and open_t <= t < close_t:
-        return
-
-    # 다음 개장 시각 계산
-    target = now.replace(
-        hour=_MARKET_OPEN_HOUR[0], minute=_MARKET_OPEN_HOUR[1],
-        second=0, microsecond=0
-    )
-    if wd in _WEEKDAYS and t < open_t:
-        # 오늘 아직 개장 전
-        pass
-    else:
-        # 오늘 장 종료 또는 주말 → 다음 평일 07:30
-        days_ahead = 1
-        if wd >= 4:  # 금요일(4) 이후 → 다음 월요일
-            days_ahead = 7 - wd  # 토=2, 일=1
-        target += timedelta(days=days_ahead)
-
-    wait_sec = (target - now).total_seconds()
-    logger.info(
-        "[WS] 장 종료 시간 외 (현재 KST %02d:%02d, 평일 %02d:%02d 개장) – %.0f초 대기",
-        now.hour, now.minute, *_MARKET_OPEN_HOUR, wait_sec
-    )
-    # 최대 60초 단위로 체크하며 대기 (외부에서 취소 가능)
-    while wait_sec > 0:
-        await asyncio.sleep(min(60, wait_sec))
-        wait_sec = (_wait_next_open() - datetime.now(KST)).total_seconds()
         if wait_sec <= 0:
-            break
+            return  # 이미 개장 시간 도달
 
+        sleep_sec = min(60.0, wait_sec)
+        logger.info(
+            "[WS] 장 종료 시간 외 (현재 KST %02d:%02d) – 다음 개장 %s KST | %.0f분 남음 | %.0f초 대기",
+            now.hour, now.minute,
+            next_open.strftime("%m/%d %H:%M"),
+            wait_sec / 60,
+            sleep_sec,
+        )
+        try:
+            await asyncio.sleep(sleep_sec)
+        except asyncio.CancelledError:
+            raise  # 취소 신호 → 상위로 전파
 
-def _wait_next_open() -> datetime:
-    """다음 장 개장 datetime 반환"""
-    now = datetime.now(KST)
-    wd  = now.weekday()
-    t   = dtime(now.hour, now.minute, now.second)
-    open_t = dtime(*_MARKET_OPEN_HOUR)
-    target = now.replace(
-        hour=_MARKET_OPEN_HOUR[0], minute=_MARKET_OPEN_HOUR[1],
-        second=0, microsecond=0
-    )
-    if wd in _WEEKDAYS and t < open_t:
-        return target
-    days_ahead = 1
-    if wd >= 4:
-        days_ahead = 7 - wd
-    return target + timedelta(days=days_ahead)
 
 logger = logging.getLogger(__name__)
 
 WS_PATH              = "/api/dostk/websocket"
 MAX_RECONNECTS       = 10
 BASE_RECONNECT_MS    = 3000   # ms
+MAX_RECONNECT_SEC    = 300    # 최대 재연결 대기 5분
 WATCHLIST_POLL_SEC   = 30     # candidates:watchlist 폴링 간격
 HEARTBEAT_INTERVAL   = 10     # 초
+MIN_CONNECTED_SEC    = 30     # 이 미만으로 연결이 유지되면 "즉시 종료" 로 간주
 
 
 async def _get_candidates(rdb, market: str = "001") -> list[str]:
@@ -224,7 +227,15 @@ async def _heartbeat_writer(rdb):
 
 
 async def run_ws_loop(rdb):
-    """WebSocket 메인 루프 – 장 운영 시간 감지 + 지수 백오프 재연결 포함"""
+    """
+    WebSocket 메인 루프 – 장 운영 시간 감지 + 지수 백오프 재연결 포함.
+
+    BYPASS_MARKET_HOURS=true 일 때:
+      장 시간과 무관하게 연결 시도, 지수 백오프 적용 (최대 5분).
+      MAX_RECONNECTS 초과 시 5분 대기 후 카운터 리셋하여 무한 재시도.
+    BYPASS_MARKET_HOURS=false (기본):
+      장 시간 외 연결 종료 시 _wait_for_market_open() 으로 개장까지 대기.
+    """
     # 실전/모의 환경 분기
     kiwoom_mode = os.getenv("KIWOOM_MODE", "mock").lower()
     if kiwoom_mode == "real":
@@ -233,15 +244,28 @@ async def run_ws_loop(rdb):
         ws_base_url = os.getenv("KIWOOM_WS_URL", "wss://mockapi.kiwoom.com:10000")
     url = ws_base_url + WS_PATH
 
+    if BYPASS_MARKET_HOURS:
+        logger.warning(
+            "[WS] ⚠️  BYPASS_MARKET_HOURS=true – 장 시간 외 연결 허용 (모의 테스트 모드)"
+        )
+
     reconnect_count = 0
     delay_sec       = BASE_RECONNECT_MS / 1000
 
-    # 연결 성공 후 최소 유지 시간 – 이 미만이면 연결이 즉시 종료된 것으로 간주
-    MIN_CONNECTED_SEC = 30
-
     while True:
         # ── 장 운영 시간 외이면 개장까지 대기 ──────────────────────
-        await _wait_for_market_open()
+        if not BYPASS_MARKET_HOURS:
+            await _wait_for_market_open()
+        else:
+            # bypass 모드: MAX_RECONNECTS 초과 시 5분 대기 후 리셋
+            if reconnect_count > MAX_RECONNECTS:
+                logger.warning(
+                    "[WS] bypass 모드 최대 재연결 %d회 초과 – 5분 대기 후 재시도",
+                    MAX_RECONNECTS,
+                )
+                await asyncio.sleep(MAX_RECONNECT_SEC)
+                reconnect_count = 0
+                delay_sec       = BASE_RECONNECT_MS / 1000
 
         connect_time = None
         try:
@@ -282,6 +306,8 @@ async def run_ws_loop(rdb):
                 try:
                     async for message in ws:
                         await _handle_message(message, ws, rdb)
+                    # 정상 종료 (서버가 clean close 1000 보낸 경우)
+                    logger.info("[WS] 서버 정상 종료 (clean close)")
                 finally:
                     watchlist_task.cancel()
                     heartbeat_task.cancel()
@@ -292,26 +318,38 @@ async def run_ws_loop(rdb):
             if elapsed >= MIN_CONNECTED_SEC:
                 reconnect_count = 0
                 delay_sec       = BASE_RECONNECT_MS / 1000
+                logger.info("[WS] 연결 %.1f초 유지 후 종료 – 카운터 리셋", elapsed)
 
         except ConnectionClosed as e:
-            logger.warning("[WS] 연결 끊김: %s", e)
+            logger.warning("[WS] 연결 끊김 (ConnectionClosed): %s", e)
+            set_ws_connected(False)
+        except OSError as e:
+            logger.error("[WS] 네트워크 오류: %s", e)
             set_ws_connected(False)
         except Exception as e:
-            logger.error("[WS] 오류: %s", e)
+            logger.error("[WS] 예상치 못한 오류: %s", e)
             set_ws_connected(False)
 
-        # 장 종료 후 서버가 닫은 경우 재시도 대신 개장 대기
-        if not _is_market_hours():
-            logger.info("[WS] 장 종료 또는 비운영 시간 – 개장 대기 모드로 전환")
+        # ── 재연결 전 시장 시간 판단 ──────────────────────────────
+        if not BYPASS_MARKET_HOURS and not _is_market_hours():
+            logger.info("[WS] 장 종료 / 비운영 시간 감지 – 개장 대기 모드로 전환")
             reconnect_count = 0
             delay_sec       = BASE_RECONNECT_MS / 1000
+            # 다음 루프 상단의 _wait_for_market_open() 이 처리하므로 continue
             continue
 
+        # ── 지수 백오프 재연결 ────────────────────────────────────
         reconnect_count += 1
         if reconnect_count > MAX_RECONNECTS:
-            logger.critical("[WS] 최대 재연결 횟수 %d 초과 – 프로세스 종료", MAX_RECONNECTS)
-            sys.exit(1)
+            if BYPASS_MARKET_HOURS:
+                # bypass 모드는 루프 상단에서 처리
+                continue
+            else:
+                logger.critical(
+                    "[WS] 최대 재연결 횟수 %d 초과 – 프로세스 종료", MAX_RECONNECTS
+                )
+                sys.exit(1)
 
         logger.info("[WS] %.1f초 후 재연결 (%d번째)", delay_sec, reconnect_count)
         await asyncio.sleep(delay_sec)
-        delay_sec = min(delay_sec * 2, 60)
+        delay_sec = min(delay_sec * 2, MAX_RECONNECT_SEC)
