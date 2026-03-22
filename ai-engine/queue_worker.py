@@ -58,6 +58,30 @@ async def process_one(rdb) -> bool:
     signal   = item  # signal 필드들이 item 안에 flat하게 있음
 
     try:
+        # 0. 뉴스 기반 매매 중단 여부 확인 (PAUSE 시 즉시 CANCEL)
+        try:
+            news_control = await rdb.get("news:trading_control")
+            if news_control and news_control.upper() == "PAUSE":
+                reason = await rdb.get("news:analysis")
+                pause_reason = "뉴스 분석 결과 매매 중단"
+                try:
+                    import json as _json
+                    analysis = _json.loads(reason or "{}")
+                    pause_reason = analysis.get("summary", pause_reason)
+                except Exception:
+                    pass
+                result = {
+                    "action":     "CANCEL",
+                    "ai_score":   0.0,
+                    "confidence": "HIGH",
+                    "reason":     f"뉴스 기반 매매 중단 상태 – {pause_reason}",
+                }
+                await push_score_only_queue(rdb, {**item, **result, "rule_score": 0.0})
+                logger.info("[Worker] 뉴스 PAUSE – 신호 취소 [%s %s]", stk_cd, strategy)
+                return True
+        except Exception as news_err:
+            logger.debug("[Worker] 뉴스 제어 확인 실패 (무시): %s", news_err)
+
         # 1. 실시간 시세 수집
         ctx = await _build_market_ctx(rdb, stk_cd)
 
