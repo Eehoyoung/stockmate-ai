@@ -80,17 +80,38 @@ async function getClaudeUsage() {
     }
 }
 
-/** /상태 */
+/** /status */
 const status = guard(async (ctx) => {
     const h = await kiwoom.health();
     const usage = await getClaudeUsage();
     const maxCalls = Number(process.env.MAX_CLAUDE_CALLS_PER_DAY ?? 100);
+
+    // ws_solver.md 4.4: ws:heartbeat 로 Python WS 상태 진단
+    const redis = getClient();
+    let wsStatus = '❌ Offline (TTL expired)';
+    try {
+        const hb = await redis.hgetall('ws:heartbeat');
+        if (hb && hb.updated_at) {
+            const secAgo = Math.round(Date.now() / 1000 - parseFloat(hb.updated_at));
+            wsStatus = `✅ Online (${secAgo}s ago)`;
+        }
+    } catch (_) {}
+
+    let javaWsStatus = '❓ Unknown';
+    try {
+        const wsConn = await redis.get('ws:connected');
+        javaWsStatus = wsConn === '1' ? '✅ Connected' : '❌ Disconnected';
+    } catch (_) {}
+
     await ctx.reply(
-        `🟢 <b>시스템 상태</b>\n` +
-        `Java API: ${h.status}\n서비스: ${h.service}\n\n` +
-        `📊 <b>Claude AI 오늘 사용량</b>\n` +
-        `호출 횟수: <b>${usage.calls}</b> / ${maxCalls}\n` +
-        `총 토큰: <b>${usage.tokens.toLocaleString()}</b>`,
+        `🟢 <b>System Status</b>\n` +
+        `Java API: ${h.status} | ${h.service}\n\n` +
+        `📡 <b>WebSocket</b>\n` +
+        `Python WS: ${wsStatus}\n` +
+        `Java WS:   ${javaWsStatus}\n\n` +
+        `📊 <b>Claude AI Today</b>\n` +
+        `Calls: <b>${usage.calls}</b> / ${maxCalls}\n` +
+        `Tokens: <b>${usage.tokens.toLocaleString()}</b>`,
         { parse_mode: 'HTML' }
     );
 });

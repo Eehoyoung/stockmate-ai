@@ -41,6 +41,9 @@ public class KiwoomWebSocketClient {
                 return t;
             });
 
+    /** disconnect() 호출 시 true – onClosing 에서 재연결 방지 */
+    private volatile boolean voluntaryClose = false;
+
     private final OkHttpClient httpClient = new OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.SECONDS)   // WebSocket: 무제한 읽기
@@ -77,9 +80,10 @@ public class KiwoomWebSocketClient {
     }
 
     /**
-     * WebSocket 연결 종료
+     * WebSocket 연결 종료 (정상 종료 – 재연결 없음)
      */
     public void disconnect() {
+        voluntaryClose = true;
         if (webSocket != null) {
             webSocket.close(1000, "정상 종료");
         }
@@ -144,12 +148,19 @@ public class KiwoomWebSocketClient {
         public void onOpen(WebSocket ws, Response response) {
             connected.set(true);
             reconnectCount.set(0);
+            voluntaryClose = false;
             log.info("WebSocket 연결 성공");
+            redisService.setWsConnected(true);
 
-            // Ping 스케줄 시작
+            // Ping 스케줄 시작 (ping마다 Redis heartbeat 갱신)
             int pingInterval = properties.getWebsocket().getPingIntervalSeconds();
             pingExecutor.scheduleAtFixedRate(
-                    () -> { if (connected.get()) ws.send("{\"trnm\":\"PING\"}"); },
+                    () -> {
+                        if (connected.get()) {
+                            ws.send("{\"trnm\":\"PING\"}");
+                            redisService.refreshWsHeartbeat();
+                        }
+                    },
                     pingInterval, pingInterval, TimeUnit.SECONDS);
         }
 
@@ -176,14 +187,27 @@ public class KiwoomWebSocketClient {
         @Override
         public void onClosing(WebSocket ws, int code, String reason) {
             connected.set(false);
+            redisService.setWsConnected(false);
             log.info("WebSocket 연결 종료 code={} reason={}", code, reason);
+            // 서버 측 종료(비자발적) 이고 거래 시간 중이면 재연결
+            if (!voluntaryClose && org.invest.apiorchestrator.util.MarketTimeUtil.isTradingActive()) {
+                log.info("WebSocket 서버 측 종료 감지 – 재연결 예약");
+                scheduleReconnect();
+            } else if (!voluntaryClose) {
+                log.info("WebSocket 종료 감지 (거래 시간 외) – 재연결 보류");
+            }
         }
 
         @Override
         public void onFailure(WebSocket ws, Throwable t, Response response) {
             connected.set(false);
+            redisService.setWsConnected(false);
             log.error("WebSocket 오류: {}", t.getMessage());
-            scheduleReconnect();
+            if (org.invest.apiorchestrator.util.MarketTimeUtil.isTradingActive()) {
+                scheduleReconnect();
+            } else {
+                log.info("WebSocket 오류 (거래 시간 외) – 재연결 보류");
+            }
         }
     }
 

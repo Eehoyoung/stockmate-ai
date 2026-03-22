@@ -313,6 +313,9 @@ public class TradingController {
      */
     @GetMapping("/score/{stkCd}")
     public ResponseEntity<Map<String, Object>> scoreStock(@PathVariable String stkCd) {
+        // ws_solver.md 4.3: 조회 시 watchlist에 추가 → Python _watchlist_poller가 30초 내 WS 구독
+        redis.opsForSet().add("candidates:watchlist", stkCd);
+        redis.expire("candidates:watchlist", java.time.Duration.ofHours(2));
         Map<String, Object> result = overnightScoringService.calcManualScore(stkCd);
         return ResponseEntity.ok(result);
     }

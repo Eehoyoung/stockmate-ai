@@ -31,7 +31,7 @@ public class RedisMarketDataService {
 
     private static final Duration TICK_TTL      = Duration.ofSeconds(30);
     private static final Duration EXPECTED_TTL  = Duration.ofSeconds(60);
-    private static final Duration HOGA_TTL      = Duration.ofSeconds(10);
+    private static final Duration HOGA_TTL      = Duration.ofSeconds(30);
     private static final Duration STRENGTH_TTL  = Duration.ofMinutes(5);
     private static final Duration VI_TTL        = Duration.ofHours(1);
 
@@ -278,6 +278,33 @@ public class RedisMarketDataService {
     public void pushTelegramQueue(String message) {
         redis.opsForList().leftPush("telegram_queue", message);
         redis.expire("telegram_queue", Duration.ofHours(12));
+    }
+
+    /**
+     * Java WebSocket 연결 상태를 Redis 에 기록 (telegram-bot /상태 명령 표시용).
+     * ws:connected = "1" (TTL 60s) / 연결 끊김 시 "0" 설정 후 즉시 만료
+     */
+    public void setWsConnected(boolean connected) {
+        try {
+            if (connected) {
+                redis.opsForValue().set("ws:connected", "1", Duration.ofSeconds(60));
+            } else {
+                redis.opsForValue().set("ws:connected", "0", Duration.ofSeconds(5));
+            }
+        } catch (Exception e) {
+            log.debug("ws:connected 상태 저장 실패: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Java WebSocket heartbeat 갱신 (연결 유지 중 주기적 호출)
+     */
+    public void refreshWsHeartbeat() {
+        try {
+            redis.opsForValue().set("ws:connected", "1", Duration.ofSeconds(60));
+        } catch (Exception e) {
+            log.debug("ws:heartbeat 갱신 실패: {}", e.getMessage());
+        }
     }
 
     private String nvl(String v) { return v != null ? v : ""; }

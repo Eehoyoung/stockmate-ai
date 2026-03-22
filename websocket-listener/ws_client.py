@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, time as dtime, timedelta, timezone
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -21,6 +22,86 @@ from websockets.exceptions import ConnectionClosed
 from health_server import set_ws_connected
 from redis_writer import write_tick, write_expected, write_hoga, write_vi, write_heartbeat
 from token_loader import load_token
+
+KST = timezone(timedelta(hours=9))
+
+# 장 운영 시간대 (KST)
+_MARKET_OPEN_HOUR   = (7, 30)   # 07:30 – 장전 구독 시작
+_MARKET_CLOSE_HOUR  = (15, 35)  # 15:35 – 장 완전 종료
+_WEEKDAYS           = {0, 1, 2, 3, 4}  # Mon=0 … Fri=4
+
+
+def _is_market_hours() -> bool:
+    """현재 KST 시각이 장 운영 시간 (평일 07:30~15:35) 인지 확인"""
+    now = datetime.now(KST)
+    if now.weekday() not in _WEEKDAYS:
+        return False
+    t = dtime(now.hour, now.minute, now.second)
+    open_t  = dtime(*_MARKET_OPEN_HOUR)
+    close_t = dtime(*_MARKET_CLOSE_HOUR)
+    return open_t <= t < close_t
+
+
+async def _wait_for_market_open():
+    """
+    장 운영 시간이 아닌 경우 다음 개장 시각까지 대기.
+    평일 07:30 KST, 주말이면 다음 월요일 07:30 까지 대기.
+    """
+    now = datetime.now(KST)
+    wd  = now.weekday()
+    t   = dtime(now.hour, now.minute, now.second)
+
+    open_t  = dtime(*_MARKET_OPEN_HOUR)
+    close_t = dtime(*_MARKET_CLOSE_HOUR)
+
+    # 평일 장 시간 내이면 즉시 반환
+    if wd in _WEEKDAYS and open_t <= t < close_t:
+        return
+
+    # 다음 개장 시각 계산
+    target = now.replace(
+        hour=_MARKET_OPEN_HOUR[0], minute=_MARKET_OPEN_HOUR[1],
+        second=0, microsecond=0
+    )
+    if wd in _WEEKDAYS and t < open_t:
+        # 오늘 아직 개장 전
+        pass
+    else:
+        # 오늘 장 종료 또는 주말 → 다음 평일 07:30
+        days_ahead = 1
+        if wd >= 4:  # 금요일(4) 이후 → 다음 월요일
+            days_ahead = 7 - wd  # 토=2, 일=1
+        target += timedelta(days=days_ahead)
+
+    wait_sec = (target - now).total_seconds()
+    logger.info(
+        "[WS] 장 종료 시간 외 (현재 KST %02d:%02d, 평일 %02d:%02d 개장) – %.0f초 대기",
+        now.hour, now.minute, *_MARKET_OPEN_HOUR, wait_sec
+    )
+    # 최대 60초 단위로 체크하며 대기 (외부에서 취소 가능)
+    while wait_sec > 0:
+        await asyncio.sleep(min(60, wait_sec))
+        wait_sec = (_wait_next_open() - datetime.now(KST)).total_seconds()
+        if wait_sec <= 0:
+            break
+
+
+def _wait_next_open() -> datetime:
+    """다음 장 개장 datetime 반환"""
+    now = datetime.now(KST)
+    wd  = now.weekday()
+    t   = dtime(now.hour, now.minute, now.second)
+    open_t = dtime(*_MARKET_OPEN_HOUR)
+    target = now.replace(
+        hour=_MARKET_OPEN_HOUR[0], minute=_MARKET_OPEN_HOUR[1],
+        second=0, microsecond=0
+    )
+    if wd in _WEEKDAYS and t < open_t:
+        return target
+    days_ahead = 1
+    if wd >= 4:
+        days_ahead = 7 - wd
+    return target + timedelta(days=days_ahead)
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +224,7 @@ async def _heartbeat_writer(rdb):
 
 
 async def run_ws_loop(rdb):
-    """WebSocket 메인 루프 – 지수 백오프 재연결 포함"""
+    """WebSocket 메인 루프 – 장 운영 시간 감지 + 지수 백오프 재연결 포함"""
     # 실전/모의 환경 분기
     kiwoom_mode = os.getenv("KIWOOM_MODE", "mock").lower()
     if kiwoom_mode == "real":
@@ -155,12 +236,22 @@ async def run_ws_loop(rdb):
     reconnect_count = 0
     delay_sec       = BASE_RECONNECT_MS / 1000
 
+    # 연결 성공 후 최소 유지 시간 – 이 미만이면 연결이 즉시 종료된 것으로 간주
+    MIN_CONNECTED_SEC = 30
+
     while True:
+        # ── 장 운영 시간 외이면 개장까지 대기 ──────────────────────
+        await _wait_for_market_open()
+
+        connect_time = None
         try:
             token = await load_token(rdb)
             headers = {"authorization": f"Bearer {token}"}
 
             logger.info("[WS] 연결 시도 #%d → %s", reconnect_count + 1, url)
+
+            import time as _time
+            connect_time = _time.monotonic()
 
             async with websockets.connect(
                     url,
@@ -169,10 +260,13 @@ async def run_ws_loop(rdb):
                     ping_timeout=10,
                     open_timeout=15,
             ) as ws:
-                reconnect_count = 0
-                delay_sec       = BASE_RECONNECT_MS / 1000
                 logger.info("[WS] 연결 성공")
                 set_ws_connected(True)
+
+                # 연결 직후 즉시 heartbeat 기록 (TTL 소멸 방지)
+                await write_heartbeat(rdb, {
+                    "grp5": "ok", "grp6": "ok", "grp7": "ok", "grp8": "ok"
+                })
 
                 await _subscribe_all(ws, rdb)
 
@@ -193,12 +287,25 @@ async def run_ws_loop(rdb):
                     heartbeat_task.cancel()
                     set_ws_connected(False)
 
+            # 연결이 최소 유지 시간 이상 유지된 경우에만 카운터 리셋
+            elapsed = _time.monotonic() - connect_time
+            if elapsed >= MIN_CONNECTED_SEC:
+                reconnect_count = 0
+                delay_sec       = BASE_RECONNECT_MS / 1000
+
         except ConnectionClosed as e:
             logger.warning("[WS] 연결 끊김: %s", e)
             set_ws_connected(False)
         except Exception as e:
             logger.error("[WS] 오류: %s", e)
             set_ws_connected(False)
+
+        # 장 종료 후 서버가 닫은 경우 재시도 대신 개장 대기
+        if not _is_market_hours():
+            logger.info("[WS] 장 종료 또는 비운영 시간 – 개장 대기 모드로 전환")
+            reconnect_count = 0
+            delay_sec       = BASE_RECONNECT_MS / 1000
+            continue
 
         reconnect_count += 1
         if reconnect_count > MAX_RECONNECTS:

@@ -119,7 +119,7 @@ async def write_hoga(rdb, data: dict, stk_cd: str):
             "bid_req_base_tm":   data.get("bid_req_base_tm", ""),
         }
         await rdb.hset(key, mapping=mapping)
-        await rdb.expire(key, 10)
+        await rdb.expire(key, 30)
     except Exception as e:
         logger.warning("[Redis] hoga 저장 실패 [%s]: %s", stk_cd, e)
 

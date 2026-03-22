@@ -15,15 +15,15 @@ _DEFAULT_TIMEOUT = 10.0
 
 async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
     """
-    체결강도 조회 (ka10003 체결정보요청).
-    종목코드(stk_cd)를 입력받아 최근 체결정보의 cntr_str 반환.
+    체결강도 조회 (ka10046 체결강도추이시간별요청).
+    최근 5개 cntr_str 평균을 반환. 데이터 없거나 오류 시 100.0 반환.
     """
     try:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
             resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+                f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
                 headers={
-                    "api-id": "ka10003",
+                    "api-id": "ka10046",
                     "authorization": f"Bearer {token}",
                     "Content-Type": "application/json;charset=UTF-8",
                 },
@@ -32,15 +32,23 @@ async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
             resp.raise_for_status()
             data = resp.json()
 
-        cntr_infr = data.get("cntr_infr", [])
-        if not cntr_infr:
-            return 0.0
+        records = data.get("cntr_str_tm", [])
+        if not records:
+            return 100.0
 
-        latest = cntr_infr[0]
-        strength = latest.get("cntr_str", "0")
-        return float(strength)
-    except (ValueError, TypeError):
-        return 0.0
+        values = []
+        for rec in records[:5]:
+            raw = rec.get("cntr_str", "")
+            try:
+                values.append(float(str(raw).replace("+", "").replace(",", "")))
+            except (ValueError, TypeError):
+                continue
+
+        if not values:
+            return 100.0
+
+        return sum(values) / len(values)
+
     except Exception as e:
         logger.debug("[http_utils] fetch_cntr_strength [%s] 실패: %s", stk_cd, e)
-        return 0.0
+        return 100.0

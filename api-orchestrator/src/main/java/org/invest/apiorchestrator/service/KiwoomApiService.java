@@ -2,6 +2,7 @@ package org.invest.apiorchestrator.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.config.KiwoomRateLimiter;
 import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.exception.KiwoomApiException;
@@ -19,6 +20,7 @@ import java.time.Duration;
 public class KiwoomApiService {
     private final WebClient kiwoomWebClient;
     private final TokenService tokenService;
+    private final KiwoomRateLimiter rateLimiter;
 
     private static final int MAX_RETRIES = 3;
     private static final Duration RETRY_DELAY = Duration.ofSeconds(1);
@@ -82,8 +84,9 @@ public class KiwoomApiService {
         return result;
     }
 
-    // 공통 POST 스펙 생성 (인증/공통 헤더 포함)
+    // 공통 POST 스펙 생성 (인증/공통 헤더 포함, Rate Limiter 적용)
     private WebClient.RequestBodySpec createPostSpec(String apiId, String endpoint) {
+        rateLimiter.acquire(); // 초당 4회 제한
         String bearerToken = tokenService.getBearerToken();
         return kiwoomWebClient.post()
                 .uri(endpoint)

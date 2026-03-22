@@ -91,8 +91,14 @@ public class DataQualityScheduler {
         double missingRatio = (double) missing / candidates.size() * 100.0;
 
         if (missingRatio >= WS_MISSING_RATIO_THRESHOLD) {
-            log.warn("[DataQuality] tick 데이터 누락 {}/{} ({:.1f}%) → WS 재연결 시도",
-                    missing, candidates.size(), missingRatio);
+            log.warn("[DataQuality] tick 데이터 누락 {}/{} ({}%) → WS 재연결 시도",
+                    missing, candidates.size(), String.format("%.1f", missingRatio));
+
+            // 거래 시간 외에는 재연결 시도 안 함
+            if (!org.invest.apiorchestrator.util.MarketTimeUtil.isTradingActive()) {
+                log.info("[DataQuality] 거래 시간 외 → WS 재연결 건너뜀");
+                return;
+            }
 
             // 재연결
             subscriptionManager.setupMarketHoursSubscription();
