@@ -46,5 +46,11 @@ public class KiwoomProperties {
         private double commonTargetPct = 3.5;
         private int maxSignalsPerStrategy = 5;
         private long signalTtlSeconds = 3600;
+        /** 일일 전체 신호 상한 (Feature 4) */
+        private int maxDailySignals = 30;
+        /** 동일 섹터 1시간 내 과열 임계값 (Feature 4) */
+        private int sectorOverheatThreshold = 3;
+        /** 종목 크로스-전략 쿨다운 분 (Feature 4) */
+        private int stockCooldownMinutes = 30;
     }
 }

@@ -21,7 +21,6 @@ public class RedisMarketDataService {
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
-    private final org.invest.apiorchestrator.config.KiwoomProperties kiwoomProperties;
 
     // Redis 키 접두사
     private static final String KEY_TICK      = "ws:tick:";
@@ -182,28 +181,80 @@ public class RedisMarketDataService {
     }
 
     /**
-     * 신호 중복 여부 체크 (set → 전략별 TTL).
-     * 전략별 TTL: S1(갭상승)=1800s, S2(VI눌림목)=3600s, S7(동시호가)=7200s, 그외=기본값
-     * 기본값은 kiwoom.trading.signal-ttl-seconds (application.yml / SIGNAL_DUPLICATE_TTL 환경변수)
+     * 신호 중복 여부 체크 (set → TTL 1시간)
      */
     public boolean isSignalDuplicate(String stkCd, String strategy) {
         String key = "signal:" + stkCd + ":" + strategy;
-        long ttlSeconds = getSignalTtl(strategy);
-        Boolean absent = redis.opsForValue().setIfAbsent(key, "1", Duration.ofSeconds(ttlSeconds));
+        Boolean absent = redis.opsForValue().setIfAbsent(key, "1", Duration.ofSeconds(3600));
         return Boolean.FALSE.equals(absent);  // false = 이미 존재 = 중복
     }
 
     /**
-     * 전략별 신호 중복 방지 TTL 반환 (초)
+     * 종목 크로스-전략 쿨다운 (Feature 4).
+     * @return true = 쿨다운 없음(진행 허용), false = 쿨다운 중(거부)
      */
-    private long getSignalTtl(String strategy) {
-        if (strategy == null) return kiwoomProperties.getTrading().getSignalTtlSeconds();
-        return switch (strategy) {
-            case "S1_GAP_OPEN"    -> 1800L;   // 갭상승: 30분 (시초가 이후 의미 없음)
-            case "S2_VI_PULLBACK" -> 3600L;   // VI 눌림목: 1시간
-            case "S7_AUCTION"     -> 7200L;   // 동시호가: 2시간
-            default               -> kiwoomProperties.getTrading().getSignalTtlSeconds();
-        };
+    public boolean tryAcquireStockCooldown(String stkCd, int cooldownMinutes) {
+        String key = "signal:stock:" + stkCd;
+        Boolean absent = redis.opsForValue().setIfAbsent(key, "1", Duration.ofMinutes(cooldownMinutes));
+        return Boolean.TRUE.equals(absent);  // true = 새로 설정됨 = 허용
+    }
+
+    /**
+     * 일일 전체 신호 카운터 증가 (Feature 4).
+     * @return 오늘 발행된 총 신호 수 (증가 후 값)
+     */
+    public long incrementDailySignalCount() {
+        String key = "signal:daily_count:" + java.time.LocalDate.now();
+        Long count = redis.opsForValue().increment(key);
+        if (count != null && count == 1) {
+            redis.expire(key, Duration.ofHours(25));
+        }
+        return count != null ? count : 1L;
+    }
+
+    /**
+     * 섹터별 1시간 신호 카운터 증가 (Feature 4).
+     */
+    public long incrementSectorSignalCount(String sector) {
+        String key = "signal:sector:" + sector;
+        Long count = redis.opsForValue().increment(key);
+        if (count != null && count == 1) {
+            redis.expire(key, Duration.ofHours(1));
+        }
+        return count != null ? count : 1L;
+    }
+
+    /**
+     * ai_scored_queue 에 직접 발행 (SECTOR_OVERHEAT, CALENDAR_ALERT, SYSTEM_ALERT 용)
+     */
+    public void pushScoredQueue(String message) {
+        redis.opsForList().leftPush("ai_scored_queue", message);
+        redis.expire("ai_scored_queue", Duration.ofHours(12));
+    }
+
+    /**
+     * 오늘 일일 신호 카운터 조회
+     */
+    public long getDailySignalCount() {
+        String key = "signal:daily_count:" + java.time.LocalDate.now();
+        String val = redis.opsForValue().get(key);
+        return val != null ? Long.parseLong(val) : 0L;
+    }
+
+    /**
+     * telegram_queue 현재 길이 조회 (Feature 5 모니터링)
+     */
+    public long getTelegramQueueDepth() {
+        Long len = redis.opsForList().size("telegram_queue");
+        return len != null ? len : 0L;
+    }
+
+    /**
+     * error_queue 현재 길이 조회 (Feature 5 모니터링)
+     */
+    public long getErrorQueueDepth() {
+        Long len = redis.opsForList().size("error_queue");
+        return len != null ? len : 0L;
     }
 
     /**

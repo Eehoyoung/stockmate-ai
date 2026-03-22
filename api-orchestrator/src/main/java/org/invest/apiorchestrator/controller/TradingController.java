@@ -2,16 +2,20 @@ package org.invest.apiorchestrator.controller;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.domain.EconomicEvent;
 import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
-import org.invest.apiorchestrator.service.CandidateService;
-import org.invest.apiorchestrator.service.SignalService;
-import org.invest.apiorchestrator.service.StrategyService;
-import org.invest.apiorchestrator.service.TokenService;
+import org.invest.apiorchestrator.repository.TradingSignalRepository;
+import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.websocket.WebSocketSubscriptionManager;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 
@@ -26,6 +30,11 @@ public class TradingController {
     private final CandidateService candidateService;
     private final TokenService tokenService;
     private final WebSocketSubscriptionManager subscriptionManager;
+    private final EconomicCalendarService calendarService;
+    private final NewsControlService newsControlService;
+    private final RedisMarketDataService redisMarketDataService;
+    private final TradingSignalRepository signalRepository;
+    private final StringRedisTemplate redis;
 
     /** 토큰 수동 갱신 */
     @PostMapping("/token/refresh")
@@ -168,5 +177,149 @@ public class TradingController {
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> health() {
         return ResponseEntity.ok(Map.of("status", "UP", "service", "kiwoom-trading"));
+    }
+
+    /**
+     * 매매 제어 수동 전환 (CONTINUE / CAUTIOUS / PAUSE)
+     * 텔레그램 /매매중단, /매매재개 명령에서 호출
+     */
+    @PostMapping("/control/{mode}")
+    public ResponseEntity<Map<String, String>> setTradingControl(@PathVariable String mode) {
+        String upperMode = mode.trim().toUpperCase();
+        if (!upperMode.equals("CONTINUE") && !upperMode.equals("CAUTIOUS") && !upperMode.equals("PAUSE")) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "msg", "유효하지 않은 모드: " + mode + " (CONTINUE/CAUTIOUS/PAUSE)"));
+        }
+        try {
+            String prev = redis.opsForValue().get("news:trading_control");
+            redis.opsForValue().set("news:trading_control", upperMode);
+            log.info("[Control] 매매 제어 수동 변경: {} → {}", prev, upperMode);
+
+            // NEWS_ALERT 발행으로 변경 사항 텔레그램 전송
+            String emoji = switch (upperMode) {
+                case "PAUSE"    -> "🚨";
+                case "CAUTIOUS" -> "⚠️";
+                default         -> "✅";
+            };
+            String label = switch (upperMode) {
+                case "PAUSE"    -> "매매 중단";
+                case "CAUTIOUS" -> "신중 매매";
+                default         -> "정상 매매";
+            };
+            String message = String.format("%s [매매 제어 수동 변경]\n%s → <b>%s</b>\n관리자 명령에 의해 변경되었습니다.",
+                    emoji, prev != null ? prev : "CONTINUE", label);
+
+            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            String alert = om.writeValueAsString(java.util.Map.of(
+                    "type",            "NEWS_ALERT",
+                    "trading_control", upperMode,
+                    "message",         message
+            ));
+            redisMarketDataService.pushScoredQueue(alert);
+
+            return ResponseEntity.ok(Map.of("status", "ok", "mode", upperMode, "prev", prev != null ? prev : "CONTINUE"));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "msg", e.getMessage()));
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Feature 1 – 신호 성과 추적
+    // ──────────────────────────────────────────────────────────────
+
+    /** 오늘 신호 + 가상 P&L 목록 */
+    @GetMapping("/signals/performance")
+    public ResponseEntity<List<TradingSignal>> getSignalPerformance() {
+        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        List<TradingSignal> signals = signalRepository.findTodaySignals(startOfDay);
+        return ResponseEntity.ok(signals);
+    }
+
+    /** 전략별 가상 성과 요약 */
+    @GetMapping("/signals/performance/summary")
+    public ResponseEntity<List<Object[]>> getPerformanceSummary() {
+        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(startOfDay));
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Feature 2 – 경제 캘린더
+    // ──────────────────────────────────────────────────────────────
+
+    /** 이번 주 경제 이벤트 */
+    @GetMapping("/calendar/week")
+    public ResponseEntity<List<EconomicEvent>> getWeekCalendar() {
+        return ResponseEntity.ok(calendarService.getThisWeekEvents());
+    }
+
+    /** 오늘 경제 이벤트 */
+    @GetMapping("/calendar/today")
+    public ResponseEntity<List<EconomicEvent>> getTodayCalendar() {
+        return ResponseEntity.ok(calendarService.getTodayEvents());
+    }
+
+    /** 경제 이벤트 등록 */
+    @PostMapping("/calendar/event")
+    public ResponseEntity<EconomicEvent> addCalendarEvent(@RequestBody Map<String, Object> body) {
+        EconomicEvent event = EconomicEvent.builder()
+                .eventName((String) body.get("event_name"))
+                .eventType(EconomicEvent.EventType.valueOf(
+                        String.valueOf(body.getOrDefault("event_type", "CUSTOM")).toUpperCase()))
+                .eventDate(LocalDate.parse((String) body.get("event_date")))
+                .eventTime(body.containsKey("event_time") && body.get("event_time") != null
+                        ? java.time.LocalTime.parse((String) body.get("event_time")) : null)
+                .expectedImpact(EconomicEvent.ImpactLevel.valueOf(
+                        String.valueOf(body.getOrDefault("expected_impact", "MEDIUM")).toUpperCase()))
+                .description((String) body.getOrDefault("description", ""))
+                .build();
+        return ResponseEntity.ok(calendarService.addEvent(event));
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Feature 3 – 종목별 신호 이력
+    // ──────────────────────────────────────────────────────────────
+
+    /** 종목별 최근 N일 신호 이력 */
+    @GetMapping("/signals/stock/{stkCd}")
+    public ResponseEntity<List<TradingSignal>> getSignalHistory(
+            @PathVariable String stkCd,
+            @RequestParam(defaultValue = "7") int days) {
+        LocalDateTime since = LocalDateTime.now().minusDays(days);
+        List<TradingSignal> history =
+                signalRepository.findByStkCdAndCreatedAtAfterOrderByCreatedAtDesc(stkCd, since);
+        return ResponseEntity.ok(history);
+    }
+
+    /** 전략별 성과 상세 (Feature 3 – /전략분석) */
+    @GetMapping("/signals/strategy-analysis")
+    public ResponseEntity<List<Object[]>> getStrategyAnalysis() {
+        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(startOfDay));
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Feature 5 – 시스템 모니터링
+    // ──────────────────────────────────────────────────────────────
+
+    /** 시스템 종합 헬스 정보 */
+    @GetMapping("/monitor/health")
+    public ResponseEntity<Map<String, Object>> getMonitorHealth() {
+        long queueDepth    = redisMarketDataService.getTelegramQueueDepth();
+        long errorCount    = redisMarketDataService.getErrorQueueDepth();
+        long dailySignals  = redisMarketDataService.getDailySignalCount();
+        String preEvent    = redis.opsForValue().get("calendar:pre_event");
+        String tradingCtrl = newsControlService.getTradingControl().name();
+        String wsReconnect = redis.opsForValue().get("monitor:ws_reconnect_count");
+
+        return ResponseEntity.ok(Map.of(
+                "status",             "UP",
+                "trading_control",    tradingCtrl,
+                "calendar_pre_event", "true".equals(preEvent),
+                "telegram_queue",     queueDepth,
+                "error_queue",        errorCount,
+                "daily_signals",      dailySignals,
+                "ws_reconnect_today", wsReconnect != null ? Long.parseLong(wsReconnect) : 0L
+        ));
     }
 }

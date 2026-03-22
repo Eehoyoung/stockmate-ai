@@ -5,15 +5,14 @@ spring:
     password: ${POSTGRES_PASSWORD}
 
   jpa:
-    hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:create}  # create: 초기 스키마 생성, update: 운영, validate: 검증만
+    hibernate.ddl-auto: create
     show-sql: false
 
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:cv93523827}
+      password: ${REDIS_PASSWORD:}
 
 management:
   endpoints:
@@ -32,13 +31,18 @@ kiwoom:
     base-url: ${KIWOOM_BASE_URL}
     ws-url: ${KIWOOM_WS_URL}
   trading:
-    # 신호 중복 방지 TTL (초). 전략별 기본값:
-    # S1(갭상승)=1800, S2(VI눌림)=3600, S7(동시호가)=7200, 그외=3600
-    signal-ttl-seconds: ${SIGNAL_DUPLICATE_TTL:3600}
+    max-daily-signals: ${MAX_DAILY_SIGNALS:30}
+    sector-overheat-threshold: ${SECTOR_OVERHEAT_THRESHOLD:3}
+    stock-cooldown-minutes: ${STOCK_COOLDOWN_MINUTES:30}
 
 claude:
   api-key: ${CLAUDE_API_KEY}
   model: ${CLAUDE_MODEL}
+
+news:
+  enabled: ${NEWS_ENABLED:true}
+  trading-control-enabled: ${NEWS_TRADING_CONTROL:true}
+  sector-filter-enabled: ${NEWS_SECTOR_FILTER:true}
 
 telegram:
   bot-token: ${TELEGRAM_BOT_TOKEN}
