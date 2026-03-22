@@ -46,6 +46,11 @@ bot.command('help',     commands.help);
 bot.command('start',    commands.help);
 bot.command('report',   commands.report);
 bot.command('filter',   commands.filter);
+bot.command('뉴스',     commands.newsStatus);
+bot.command('섹터',     commands.sectorStatus);
+bot.command('신호이력',  commands.signalHistory);
+bot.command('전략분석',  commands.strategyAnalysis);
+bot.command('에러',     commands.systemErrors);
 
 // 허용되지 않은 사용자 차단
 bot.use((ctx, next) => {

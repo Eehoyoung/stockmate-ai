@@ -117,4 +117,112 @@ function formatDailySummary(stats) {
     return lines.join('\n');
 }
 
-module.exports = { formatSignal, formatForceClose, formatDailySummary };
+/**
+ * Feature 1 – 가상 성과 요약 포맷 (/성과추적)
+ */
+function formatPerformanceSummary(rows) {
+    if (!rows || rows.length === 0) {
+        return '📊 오늘 성과 데이터 없음';
+    }
+    const lines = ['📊 <b>전략별 가상 성과</b>', ''];
+    for (const row of rows) {
+        const [strategy, total, wins, losses, avgPnl] = row;
+        const winRate = total > 0 ? ((Number(wins) / Number(total)) * 100).toFixed(0) : '-';
+        const pnlStr  = avgPnl != null ? `${Number(avgPnl).toFixed(2)}%` : 'N/A';
+        lines.push(`${STRATEGY_EMOJI[strategy] ?? '•'} ${strategy}: ${total}건 | 승률 ${winRate}% | 평균 ${pnlStr}`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * Feature 3 – 뉴스 현황 포맷 (/뉴스)
+ */
+function formatNewsStatus({ analysis, control, sentiment, sectors }) {
+    const ctrlEmoji = { PAUSE: '🚨', CAUTIOUS: '⚠️', CONTINUE: '✅' };
+    const ctrlLabel = { PAUSE: '매매 중단', CAUTIOUS: '신중 매매', CONTINUE: '정상 매매' };
+    const sentLabel = { BULLISH: '강세 📈', BEARISH: '약세 📉', NEUTRAL: '중립 ➡️' };
+
+    const ctrl = control || 'CONTINUE';
+    const lines = [
+        `${ctrlEmoji[ctrl] ?? '📰'} <b>[뉴스 & 시장 현황]</b>`,
+        `매매 상태: <b>${ctrlLabel[ctrl] || ctrl}</b>`,
+        `시장심리: ${sentLabel[sentiment] || sentiment || '-'}`,
+    ];
+    if (sectors && sectors.length > 0) {
+        lines.push(`추천섹터: <b>${sectors.join(', ')}</b>`);
+    }
+    if (analysis && analysis.summary) {
+        lines.push(`\n💬 <i>${analysis.summary}</i>`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * Feature 3 – 섹터 분석 포맷 (/섹터)
+ */
+function formatSectorAnalysis({ sectors, sentiment, stats }) {
+    const sentLabel = { BULLISH: '강세 📈', BEARISH: '약세 📉', NEUTRAL: '중립 ➡️' };
+    const lines = [
+        `🔥 <b>[섹터 분석]</b>`,
+        `시장심리: ${sentLabel[sentiment] || sentiment || '-'}`,
+        '',
+    ];
+    if (sectors && sectors.length > 0) {
+        lines.push('<b>추천 섹터:</b>');
+        sectors.forEach((s, i) => lines.push(`  ${i + 1}. ${s}`));
+    } else {
+        lines.push('추천 섹터 없음');
+    }
+    if (stats && stats.length > 0) {
+        lines.push('');
+        lines.push('<b>오늘 전략별 신호:</b>');
+        for (const row of stats) {
+            const [strategy, count] = row;
+            lines.push(`  ${STRATEGY_EMOJI[strategy] ?? '•'} ${strategy}: ${count}건`);
+        }
+    }
+    return lines.join('\n');
+}
+
+/**
+ * Feature 3 – 종목 신호 이력 포맷 (/신호이력)
+ */
+function formatSignalHistory(stkCd, signals) {
+    if (!signals || signals.length === 0) {
+        return `📭 ${stkCd} 최근 신호 없음`;
+    }
+    const statusEmoji = { WIN: '✅', LOSS: '❌', SENT: '⏳', EXPIRED: '⌛', CANCELLED: '🚫', PENDING: '🕐' };
+    const lines = [`📋 <b>${stkCd} 신호 이력 (최근 ${signals.length}건)</b>`, ''];
+    for (const s of signals) {
+        const d    = new Date(s.createdAt).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' });
+        const t    = new Date(s.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+        const pnl  = s.realizedPnl != null ? ` | P&L: ${Number(s.realizedPnl).toFixed(2)}%` : '';
+        const emoji = statusEmoji[s.signalStatus] ?? '•';
+        lines.push(`${emoji} ${d} ${t} [${s.strategy}] 스코어:${s.signalScore ?? '-'}${pnl}`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * Feature 5 – 시스템 에러 현황 포맷 (/에러)
+ */
+function formatSystemHealth({ queueDepth, errorCount, dailySignals, tradingControl, calendarPreEvent, wsReconnect }) {
+    const ctrlEmoji = { PAUSE: '🚨', CAUTIOUS: '⚠️', CONTINUE: '✅' };
+    const ctrl = tradingControl || 'CONTINUE';
+    const lines = [
+        `🔧 <b>[시스템 상태]</b>`,
+        `매매 제어: ${ctrlEmoji[ctrl] ?? '•'} ${ctrl}`,
+        `이벤트 임박: ${calendarPreEvent ? '⚠️ 있음' : '없음'}`,
+        `텔레그램 큐: ${queueDepth ?? 0}건`,
+        `에러 큐: ${errorCount ?? 0}건`,
+        `오늘 신호: ${dailySignals ?? 0}건`,
+        `WS 재연결: ${wsReconnect ?? 0}회`,
+    ];
+    return lines.join('\n');
+}
+
+module.exports = {
+    formatSignal, formatForceClose, formatDailySummary,
+    formatPerformanceSummary, formatNewsStatus, formatSectorAnalysis,
+    formatSignalHistory, formatSystemHealth,
+};

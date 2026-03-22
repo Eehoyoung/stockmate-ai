@@ -22,9 +22,10 @@ public class NewsControlService {
 
     public enum TradingControl { CONTINUE, CAUTIOUS, PAUSE }
 
-    private static final String KEY_CONTROL  = "news:trading_control";
-    private static final String KEY_SECTORS  = "news:sector_recommend";
+    private static final String KEY_CONTROL   = "news:trading_control";
+    private static final String KEY_SECTORS   = "news:sector_recommend";
     private static final String KEY_SENTIMENT = "news:market_sentiment";
+    private static final String KEY_PRE_EVENT = "calendar:pre_event";
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
@@ -45,13 +46,26 @@ public class NewsControlService {
         }
         try {
             String value = redis.opsForValue().get(KEY_CONTROL);
+            TradingControl control;
             if (value == null) {
-                return TradingControl.CONTINUE;
+                control = TradingControl.CONTINUE;
+            } else {
+                try {
+                    control = TradingControl.valueOf(value.trim().toUpperCase());
+                } catch (IllegalArgumentException e) {
+                    log.warn("[NewsControl] 알 수 없는 trading_control 값 – CONTINUE 기본 적용");
+                    control = TradingControl.CONTINUE;
+                }
             }
-            return TradingControl.valueOf(value.trim().toUpperCase());
-        } catch (IllegalArgumentException e) {
-            log.warn("[NewsControl] 알 수 없는 trading_control 값 – CONTINUE 기본 적용");
-            return TradingControl.CONTINUE;
+            // Feature 2: 경제 이벤트 임박 시 CONTINUE → CAUTIOUS 격상
+            if (control == TradingControl.CONTINUE) {
+                String preEvent = redis.opsForValue().get(KEY_PRE_EVENT);
+                if ("true".equals(preEvent)) {
+                    log.debug("[NewsControl] calendar:pre_event 감지 → CAUTIOUS 격상");
+                    control = TradingControl.CAUTIOUS;
+                }
+            }
+            return control;
         } catch (Exception e) {
             log.warn("[NewsControl] Redis 읽기 오류: {} – CONTINUE 기본 적용", e.getMessage());
             return TradingControl.CONTINUE;

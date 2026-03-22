@@ -72,8 +72,47 @@ async function stopWs() {
     return data;
 }
 
+/** Feature 1 – 성과 목록 */
+async function getSignalPerformance() {
+    const { data } = await api.get('/api/trading/signals/performance');
+    return data;
+}
+
+/** Feature 1 – 성과 요약 */
+async function getPerformanceSummary() {
+    const { data } = await api.get('/api/trading/signals/performance/summary');
+    return data;
+}
+
+/** Feature 2 – 오늘 경제 이벤트 */
+async function getCalendarToday() {
+    const { data } = await api.get('/api/trading/calendar/today');
+    return data;
+}
+
+/** Feature 3 – 종목별 신호 이력 */
+async function getSignalHistory(stkCd, days = 7) {
+    const { data } = await api.get(`/api/trading/signals/stock/${stkCd}`, { params: { days } });
+    return data;
+}
+
+/** Feature 3 – 전략별 성과 분석 */
+async function getStrategyAnalysis() {
+    const { data } = await api.get('/api/trading/signals/strategy-analysis');
+    return data;
+}
+
+/** Feature 5 – 시스템 모니터링 헬스 */
+async function getMonitorHealth() {
+    const { data } = await api.get('/api/trading/monitor/health');
+    return data;
+}
+
 module.exports = {
     health, getTodaySignals, getTodayStats,
     getCandidates, refreshToken, runStrategy,
     startWs, stopWs,
+    getSignalPerformance, getPerformanceSummary,
+    getCalendarToday, getSignalHistory, getStrategyAnalysis,
+    getMonitorHealth,
 };

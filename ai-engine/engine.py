@@ -26,6 +26,7 @@ from aiohttp import web
 from queue_worker import run_worker
 from strategy_runner import run_strategy_scanner
 from news_scheduler import run_news_scheduler
+from monitor_worker import run_monitor
 
 load_dotenv()
 
@@ -115,6 +116,7 @@ async def main():
 
     enable_scanner = os.getenv("ENABLE_STRATEGY_SCANNER", "false").lower() == "true"
     enable_news    = os.getenv("NEWS_ENABLED",            "true").lower()  == "true"
+    enable_monitor = os.getenv("ENABLE_MONITOR",          "true").lower()  == "true"
     health_port    = int(os.getenv("AI_HEALTH_PORT", "8082"))
     logger.info("[Engine] AI Engine ready – telegram_queue 폴링 시작")
     if enable_scanner:
@@ -122,6 +124,9 @@ async def main():
     if enable_news:
         logger.info("[Engine] 뉴스 스케쥴러 활성화 (NEWS_ENABLED=true, 주기=%smin)",
                     os.getenv("NEWS_INTERVAL_MIN", "30"))
+    if enable_monitor:
+        logger.info("[Engine] 데이터 품질 모니터링 활성화 (ENABLE_MONITOR=true, 주기=%ss)",
+                    os.getenv("MONITOR_INTERVAL_SEC", "60"))
 
     tasks = [
         asyncio.create_task(run_worker(rdb)),
@@ -132,6 +137,8 @@ async def main():
         tasks.append(asyncio.create_task(run_strategy_scanner(rdb)))
     if enable_news:
         tasks.append(asyncio.create_task(run_news_scheduler(rdb)))
+    if enable_monitor:
+        tasks.append(asyncio.create_task(run_monitor(rdb)))
 
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for t in pending:

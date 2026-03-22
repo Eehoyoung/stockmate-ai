@@ -190,6 +190,74 @@ public class RedisMarketDataService {
     }
 
     /**
+     * 종목 크로스-전략 쿨다운 (Feature 4).
+     * @return true = 쿨다운 없음(진행 허용), false = 쿨다운 중(거부)
+     */
+    public boolean tryAcquireStockCooldown(String stkCd, int cooldownMinutes) {
+        String key = "signal:stock:" + stkCd;
+        Boolean absent = redis.opsForValue().setIfAbsent(key, "1", Duration.ofMinutes(cooldownMinutes));
+        return Boolean.TRUE.equals(absent);  // true = 새로 설정됨 = 허용
+    }
+
+    /**
+     * 일일 전체 신호 카운터 증가 (Feature 4).
+     * @return 오늘 발행된 총 신호 수 (증가 후 값)
+     */
+    public long incrementDailySignalCount() {
+        String key = "signal:daily_count:" + java.time.LocalDate.now();
+        Long count = redis.opsForValue().increment(key);
+        if (count != null && count == 1) {
+            redis.expire(key, Duration.ofHours(25));
+        }
+        return count != null ? count : 1L;
+    }
+
+    /**
+     * 섹터별 1시간 신호 카운터 증가 (Feature 4).
+     */
+    public long incrementSectorSignalCount(String sector) {
+        String key = "signal:sector:" + sector;
+        Long count = redis.opsForValue().increment(key);
+        if (count != null && count == 1) {
+            redis.expire(key, Duration.ofHours(1));
+        }
+        return count != null ? count : 1L;
+    }
+
+    /**
+     * ai_scored_queue 에 직접 발행 (SECTOR_OVERHEAT, CALENDAR_ALERT, SYSTEM_ALERT 용)
+     */
+    public void pushScoredQueue(String message) {
+        redis.opsForList().leftPush("ai_scored_queue", message);
+        redis.expire("ai_scored_queue", Duration.ofHours(12));
+    }
+
+    /**
+     * 오늘 일일 신호 카운터 조회
+     */
+    public long getDailySignalCount() {
+        String key = "signal:daily_count:" + java.time.LocalDate.now();
+        String val = redis.opsForValue().get(key);
+        return val != null ? Long.parseLong(val) : 0L;
+    }
+
+    /**
+     * telegram_queue 현재 길이 조회 (Feature 5 모니터링)
+     */
+    public long getTelegramQueueDepth() {
+        Long len = redis.opsForList().size("telegram_queue");
+        return len != null ? len : 0L;
+    }
+
+    /**
+     * error_queue 현재 길이 조회 (Feature 5 모니터링)
+     */
+    public long getErrorQueueDepth() {
+        Long len = redis.opsForList().size("error_queue");
+        return len != null ? len : 0L;
+    }
+
+    /**
      * VI 눌림목 감시 큐에 다시 넣기 (조건 미충족 → 재시도)
      */
     public void pushViWatchBack(String item) {

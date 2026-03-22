@@ -20,7 +20,14 @@
 
 const { getTickData, getClient } = require('../services/redis');
 const kiwoom          = require('../services/kiwoom');
-const { formatDailySummary } = require('../utils/formatter');
+const {
+    formatDailySummary,
+    formatPerformanceSummary,
+    formatNewsStatus,
+    formatSectorAnalysis,
+    formatSignalHistory,
+    formatSystemHealth,
+} = require('../utils/formatter');
 
 /** 허용된 Chat ID 확인 */
 function isAllowed(ctx) {
@@ -212,6 +219,70 @@ const filter = guard(async (ctx) => {
     return ctx.reply(`✅ 필터 설정: ${selected.join(', ')}`);
 });
 
+/** /뉴스 – 최근 뉴스 + 분석 결과 */
+const newsStatus = guard(async (ctx) => {
+    const redis   = getClient();
+    const control   = await redis.get('news:trading_control') || 'CONTINUE';
+    const sentiment = await redis.get('news:market_sentiment') || 'NEUTRAL';
+    const sectorsRaw = await redis.get('news:sector_recommend');
+    let sectors = [];
+    try { sectors = sectorsRaw ? JSON.parse(sectorsRaw) : []; } catch (_) {}
+
+    let analysis = null;
+    try {
+        const analysisRaw = await redis.get('news:analysis');
+        if (analysisRaw) analysis = JSON.parse(analysisRaw);
+    } catch (_) {}
+
+    await ctx.reply(formatNewsStatus({ analysis, control, sentiment, sectors }), { parse_mode: 'HTML' });
+});
+
+/** /섹터 – 섹터 분석 현황 */
+const sectorStatus = guard(async (ctx) => {
+    const redis     = getClient();
+    const sentiment = await redis.get('news:market_sentiment') || 'NEUTRAL';
+    const sectorsRaw = await redis.get('news:sector_recommend');
+    let sectors = [];
+    try { sectors = sectorsRaw ? JSON.parse(sectorsRaw) : []; } catch (_) {}
+
+    let stats = [];
+    try { stats = await kiwoom.getTodayStats(); } catch (_) {}
+
+    await ctx.reply(formatSectorAnalysis({ sectors, sentiment, stats }), { parse_mode: 'HTML' });
+});
+
+/** /신호이력 {종목코드} */
+const signalHistory = guard(async (ctx) => {
+    const args  = ctx.message.text.split(' ');
+    const stkCd = args[1];
+    if (!stkCd) return ctx.reply('사용법: /신호이력 005930');
+
+    const history = await kiwoom.getSignalHistory(stkCd);
+    await ctx.reply(formatSignalHistory(stkCd, history), { parse_mode: 'HTML' });
+});
+
+/** /전략분석 – 전략별 성과 상세 */
+const strategyAnalysis = guard(async (ctx) => {
+    const rows = await kiwoom.getStrategyAnalysis();
+    await ctx.reply(formatPerformanceSummary(rows), { parse_mode: 'HTML' });
+});
+
+/** /에러 – 시스템 에러 현황 */
+const systemErrors = guard(async (ctx) => {
+    const health = await kiwoom.getMonitorHealth();
+    await ctx.reply(
+        formatSystemHealth({
+            queueDepth:       health.telegram_queue,
+            errorCount:       health.error_queue,
+            dailySignals:     health.daily_signals,
+            tradingControl:   health.trading_control,
+            calendarPreEvent: health.calendar_pre_event,
+            wsReconnect:      health.ws_reconnect_today,
+        }),
+        { parse_mode: 'HTML' }
+    );
+});
+
 /** /help */
 const help = guard(async (ctx) => {
     await ctx.reply(
@@ -227,7 +298,12 @@ const help = guard(async (ctx) => {
         `/ws시작 – WebSocket 구독 시작\n` +
         `/ws종료 – WebSocket 구독 종료\n` +
         `/report – 오늘 신호 요약\n` +
-        `/filter [s1~s7|all] – 전략 필터 설정`,
+        `/filter [s1~s7|all] – 전략 필터 설정\n` +
+        `/뉴스 – 최근 뉴스 + 매매 제어 상태\n` +
+        `/섹터 – 섹터 분석 현황\n` +
+        `/신호이력 {종목코드} – 종목별 신호 이력\n` +
+        `/전략분석 – 전략별 가상 성과\n` +
+        `/에러 – 시스템 에러 현황`,
         { parse_mode: 'HTML' }
     );
 });
@@ -237,5 +313,6 @@ module.exports = {
     candidates, quote, runStrategy,
     refreshToken, wsStart, wsStop, help,
     report, filter,
+    newsStatus, sectorStatus, signalHistory, strategyAnalysis, systemErrors,
     isAllowed,
 };

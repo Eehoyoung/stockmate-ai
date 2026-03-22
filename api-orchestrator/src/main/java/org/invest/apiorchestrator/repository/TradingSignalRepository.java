@@ -60,4 +60,21 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
 
     boolean existsByStkCdAndStrategyAndCreatedAtAfter(
             String stkCd, TradingSignal.StrategyType strategy, LocalDateTime after);
+
+    /**
+     * Feature 1 – 전략별 가상 성과 통계 (WIN/LOSS/SENT 포함)
+     * 반환: [strategy, total, wins, losses, avgPnl]
+     */
+    @Query("""
+        SELECT s.strategy,
+               COUNT(s),
+               SUM(CASE WHEN s.signalStatus = 'WIN'  THEN 1 ELSE 0 END),
+               SUM(CASE WHEN s.signalStatus = 'LOSS' THEN 1 ELSE 0 END),
+               AVG(CASE WHEN s.realizedPnl IS NOT NULL THEN s.realizedPnl ELSE 0 END)
+        FROM TradingSignal s
+        WHERE s.createdAt >= :startAt
+          AND s.signalStatus IN ('WIN', 'LOSS', 'SENT', 'EXPIRED')
+        GROUP BY s.strategy
+        """)
+    List<Object[]> getStrategyPerformanceStats(@Param("startAt") LocalDateTime startAt);
 }

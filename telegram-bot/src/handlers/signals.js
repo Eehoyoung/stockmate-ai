@@ -71,6 +71,51 @@ async function processItem(bot, item) {
         return;
     }
 
+    // CALENDAR_ALERT – 경제 이벤트 임박/모닝 브리핑 (Feature 2)
+    if (item.type === 'CALENDAR_ALERT') {
+        const chatIds = getAllowedChatIds();
+        const message = item.message || `📅 [경제 캘린더] ${item.event_name || ''}`;
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
+            } catch (e) {
+                console.error(`[Signal] CALENDAR_ALERT 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        console.log(`[Signal] CALENDAR_ALERT 발송 완료 subtype=${item.subtype}`);
+        return;
+    }
+
+    // SECTOR_OVERHEAT – 섹터 과열 경고 (Feature 4)
+    if (item.type === 'SECTOR_OVERHEAT') {
+        const chatIds = getAllowedChatIds();
+        const message = item.message || `⚠️ [섹터 과열] ${item.sector || ''} ${item.count || ''}건`;
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
+            } catch (e) {
+                console.error(`[Signal] SECTOR_OVERHEAT 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        console.log(`[Signal] SECTOR_OVERHEAT 발송 완료 sector=${item.sector} count=${item.count}`);
+        return;
+    }
+
+    // SYSTEM_ALERT – 시스템 경고 (Feature 5)
+    if (item.type === 'SYSTEM_ALERT') {
+        const chatIds = getAllowedChatIds();
+        const message = item.message || `🔧 [시스템 경고]\n${(item.alerts || []).join('\n')}`;
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
+            } catch (e) {
+                console.error(`[Signal] SYSTEM_ALERT 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        console.log(`[Signal] SYSTEM_ALERT 발송 완료 alerts=${(item.alerts || []).length}건`);
+        return;
+    }
+
     // DAILY_REPORT 타입은 무조건 발송
     if (item.type === 'DAILY_REPORT') {
         const chatIds = getAllowedChatIds();

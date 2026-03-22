@@ -30,6 +30,10 @@ kiwoom:
     app-secret: ${KIWOOM_APP_SECRET}
     base-url: ${KIWOOM_BASE_URL}
     ws-url: ${KIWOOM_WS_URL}
+  trading:
+    max-daily-signals: ${MAX_DAILY_SIGNALS:30}
+    sector-overheat-threshold: ${SECTOR_OVERHEAT_THRESHOLD:3}
+    stock-cooldown-minutes: ${STOCK_COOLDOWN_MINUTES:30}
 
 claude:
   api-key: ${CLAUDE_API_KEY}
