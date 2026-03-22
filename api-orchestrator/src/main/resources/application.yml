@@ -6,14 +6,14 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:update}  # create: 초기 스키마 생성, update: 운영, validate: 검증만
+      ddl-auto: ${JPA_DDL_AUTO:create}  # create: 초기 스키마 생성, update: 운영, validate: 검증만
     show-sql: false
 
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
+      password: ${REDIS_PASSWORD:cv93523827}
 
 management:
   endpoints:

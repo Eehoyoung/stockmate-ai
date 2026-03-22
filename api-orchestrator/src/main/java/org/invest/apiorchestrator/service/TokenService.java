@@ -38,19 +38,27 @@ public class TokenService {
      * 유효한 액세스 토큰 반환 (캐시 우선 → DB → 신규 발급)
      */
     public String getValidToken() {
-        // 1. Redis 캐시에서 조회
-        String cached = stringRedisTemplate.opsForValue().get(REDIS_TOKEN_KEY);
-        if (cached != null && !cached.isBlank()) {
-            return cached;
+        // 1. Redis 캐시에서 조회 (Redis 장애 시 무시)
+        try {
+            String cached = stringRedisTemplate.opsForValue().get(REDIS_TOKEN_KEY);
+            if (cached != null && !cached.isBlank()) {
+                return cached;
+            }
+        } catch (Exception e) {
+            log.warn("Redis 캐시 조회 실패 (무시하고 DB 조회 진행): {}", e.getMessage());
         }
 
         // 2. 락 획득 후 DB 조회 / 신규 발급
         tokenLock.lock();
         try {
-            // double-check
-            cached = stringRedisTemplate.opsForValue().get(REDIS_TOKEN_KEY);
-            if (cached != null && !cached.isBlank()) {
-                return cached;
+            // double-check (Redis 장애 시 무시)
+            try {
+                String cached = stringRedisTemplate.opsForValue().get(REDIS_TOKEN_KEY);
+                if (cached != null && !cached.isBlank()) {
+                    return cached;
+                }
+            } catch (Exception e) {
+                log.warn("Redis double-check 실패 (무시하고 신규 발급 진행): {}", e.getMessage());
             }
 
             return refreshToken();
@@ -70,6 +78,7 @@ public class TokenService {
                 .appKey(properties.getApi().getAppKey())
                 .secretKey(properties.getApi().getAppSecret())
                 .build();
+        log.info(properties.getApi().getAppKey() + " / " + properties.getApi().getAppSecret());
 
         TokenResponse resp = kiwoomWebClient.post()
                 .uri(TOKEN_ISSUE_URL)
@@ -108,9 +117,13 @@ public class TokenService {
                 .build();
         tokenRepository.save(token);
 
-        // Redis 캐싱 (만료 15분 전 갱신되도록 TTL 단축)
-        stringRedisTemplate.opsForValue()
-                .set(REDIS_TOKEN_KEY, resp.getAccessToken(), Duration.ofMinutes(redisTtlMinutes));
+        // Redis 캐싱 (만료 15분 전 갱신되도록 TTL 단축, Redis 장애 시 무시)
+        try {
+            stringRedisTemplate.opsForValue()
+                    .set(REDIS_TOKEN_KEY, resp.getAccessToken(), Duration.ofMinutes(redisTtlMinutes));
+        } catch (Exception e) {
+            log.warn("Redis 토큰 캐싱 실패 (DB에는 저장됨): {}", e.getMessage());
+        }
 
         log.info("토큰 발급 완료 - 만료: {}", expiresAt);
         return resp.getAccessToken();
@@ -128,7 +141,11 @@ public class TokenService {
      */
     @Transactional
     public void revokeToken() {
-        stringRedisTemplate.delete(REDIS_TOKEN_KEY);
+        try {
+            stringRedisTemplate.delete(REDIS_TOKEN_KEY);
+        } catch (Exception e) {
+            log.warn("Redis 토큰 삭제 실패 (무시): {}", e.getMessage());
+        }
         tokenRepository.deactivateAllTokens();
         log.info("토큰 폐기 완료");
     }
