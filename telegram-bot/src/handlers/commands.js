@@ -222,10 +222,20 @@ const filter = guard(async (ctx) => {
     return ctx.reply(`✅ 필터 설정: ${selected.join(', ')}`);
 });
 
-/** /매매중단 – 매매 제어를 PAUSE 로 수동 변경 */
+/** /매매중단 – 매매 제어 PAUSE 전 사용자 컨펌 요청 */
 const pauseTrading = guard(async (ctx) => {
-    const result = await kiwoom.setTradingControl('PAUSE');
-    await ctx.reply(`🚨 매매 중단 설정 완료\n이전 상태: ${result.prev} → <b>PAUSE</b>`, { parse_mode: 'HTML' });
+    await ctx.reply(
+        '⚠️ <b>[매매 중단 확인]</b>\n\n매매를 중단하시겠습니까?\n중단 시 모든 신호 발행이 일시 정지됩니다.',
+        {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [[
+                    { text: '✅ 확인 (중단)', callback_data: 'confirm_pause' },
+                    { text: '❌ 취소',        callback_data: 'cancel_pause'  },
+                ]],
+            },
+        }
+    );
 });
 
 /** /매매재개 – 매매 제어를 CONTINUE 로 수동 복귀 */

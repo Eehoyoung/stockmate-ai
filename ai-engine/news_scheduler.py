@@ -34,7 +34,8 @@ _KEY_CONTROL     = "news:trading_control"
 _KEY_SECTORS     = "news:sector_recommend"
 _KEY_SENTIMENT   = "news:market_sentiment"
 _KEY_PREV_CTRL   = "news:prev_control"
-_KEY_ALERT_QUEUE = "news_alert_queue"
+_KEY_ALERT_QUEUE  = "news_alert_queue"
+_KEY_SCORED_QUEUE = "ai_scored_queue"
 
 _TTL_LATEST    = 7200   # 2h
 _TTL_ANALYSIS  = 3600   # 1h
@@ -75,30 +76,51 @@ async def _save_to_redis(rdb, news_list: list, analysis: dict) -> None:
 
 async def _check_and_alert(rdb, new_control: str, analysis: dict) -> None:
     """
-    trading_control 상태 변경 시 news_alert_queue에 알림 발행.
-    PAUSE ↔ CAUTIOUS ↔ CONTINUE 전환 시 텔레그램 봇에게 알림.
+    trading_control 상태 변경 시 알림 발행.
+    - PAUSE 전환: 사용자 확인이 필요하므로 PAUSE_CONFIRM_REQUEST 를 ai_scored_queue 에 발행.
+      Redis 키는 아직 변경하지 않음 (사용자 컨펌 후 Node.js 봇이 직접 API 호출).
+    - CONTINUE / CAUTIOUS 전환: 기존대로 NEWS_ALERT 를 news_alert_queue 에 발행.
     """
     try:
         prev_control = await rdb.get(_KEY_PREV_CTRL) or "CONTINUE"
         if prev_control == new_control:
             return
 
-        logger.info("[NewsScheduler] 매매 제어 변경: %s → %s", prev_control, new_control)
+        logger.info("[NewsScheduler] 매매 제어 변경 감지: %s → %s", prev_control, new_control)
 
-        alert = {
-            "type":            "NEWS_ALERT",
-            "trading_control": new_control,
-            "prev_control":    prev_control,
-            "market_sentiment": analysis.get("market_sentiment", "NEUTRAL"),
-            "sectors":         analysis.get("recommended_sectors", []),
-            "risk_factors":    analysis.get("risk_factors", []),
-            "summary":         analysis.get("summary", ""),
-            "confidence":      analysis.get("confidence", "LOW"),
-            "ts":              time.time(),
-        }
-        await rdb.lpush(_KEY_ALERT_QUEUE, json.dumps(alert, ensure_ascii=False))
-        await rdb.expire(_KEY_ALERT_QUEUE, _TTL_ALERT_Q)
-        await rdb.set(_KEY_PREV_CTRL, new_control, ex=_TTL_LATEST)
+        if new_control == "PAUSE":
+            # PAUSE 는 사용자 컨펌 요청으로 대체 – Redis 키는 변경하지 않음
+            confirm_req = {
+                "type":             "PAUSE_CONFIRM_REQUEST",
+                "prev_control":     prev_control,
+                "market_sentiment": analysis.get("market_sentiment", "NEUTRAL"),
+                "sectors":          analysis.get("recommended_sectors", []),
+                "risk_factors":     analysis.get("risk_factors", []),
+                "summary":          analysis.get("summary", ""),
+                "confidence":       analysis.get("confidence", "LOW"),
+                "ts":               time.time(),
+            }
+            await rdb.lpush(_KEY_SCORED_QUEUE, json.dumps(confirm_req, ensure_ascii=False))
+            await rdb.expire(_KEY_SCORED_QUEUE, _TTL_ALERT_Q)
+            logger.info("[NewsScheduler] PAUSE_CONFIRM_REQUEST 발행 (사용자 컨펌 대기 중)")
+            # prev_control 은 업데이트하지 않음 – 컨펌 전까지 이전 상태 유지
+        else:
+            # CONTINUE / CAUTIOUS 전환 – 즉시 적용
+            alert = {
+                "type":             "NEWS_ALERT",
+                "trading_control":  new_control,
+                "prev_control":     prev_control,
+                "market_sentiment": analysis.get("market_sentiment", "NEUTRAL"),
+                "sectors":          analysis.get("recommended_sectors", []),
+                "risk_factors":     analysis.get("risk_factors", []),
+                "summary":          analysis.get("summary", ""),
+                "confidence":       analysis.get("confidence", "LOW"),
+                "ts":               time.time(),
+            }
+            await rdb.lpush(_KEY_ALERT_QUEUE, json.dumps(alert, ensure_ascii=False))
+            await rdb.expire(_KEY_ALERT_QUEUE, _TTL_ALERT_Q)
+            await rdb.set(_KEY_PREV_CTRL, new_control, ex=_TTL_LATEST)
+            logger.info("[NewsScheduler] NEWS_ALERT 발행 control=%s", new_control)
 
     except Exception as e:
         logger.warning("[NewsScheduler] 알림 발행 실패: %s", e)

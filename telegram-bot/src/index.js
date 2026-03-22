@@ -20,6 +20,7 @@ const { Telegraf }       = require('telegraf');
 const { close: closeRedis } = require('./services/redis');
 const commands           = require('./handlers/commands');
 const { startPolling }   = require('./handlers/signals');
+const kiwoom             = require('./services/kiwoom');
 
 // ── 환경변수 검증 ────────────────────────────────────────────
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -58,6 +59,41 @@ bot.command('성과추적',  commands.performanceDetail);
 bot.command('관심등록',  commands.watchlistAdd);
 bot.command('관심해제',  commands.watchlistRemove);
 bot.command('설정',     commands.userSettings);
+
+// ── 인라인 키보드 콜백 ───────────────────────────────────────
+/** 매매 중단 컨펌 – AI 권고 또는 /매매중단 수동 요청 후 사용자 확인 */
+bot.action('confirm_pause', async (ctx) => {
+    if (!commands.isAllowed(ctx)) {
+        return ctx.answerCbQuery('⛔ 권한 없음');
+    }
+    try {
+        const result = await kiwoom.setTradingControl('PAUSE');
+        await ctx.editMessageText(
+            `🚨 <b>매매 중단</b> 설정 완료\n이전 상태: ${result.prev} → <b>PAUSE</b>`,
+            { parse_mode: 'HTML' }
+        );
+        await ctx.answerCbQuery('매매 중단 처리되었습니다.');
+        console.log(`[Bot] confirm_pause – chatId=${ctx.chat?.id}`);
+    } catch (e) {
+        console.error('[Bot] confirm_pause 오류:', e.message);
+        await ctx.answerCbQuery(`오류: ${e.message}`);
+    }
+});
+
+/** 매매 중단 취소 – 현재 상태 유지 */
+bot.action('cancel_pause', async (ctx) => {
+    if (!commands.isAllowed(ctx)) {
+        return ctx.answerCbQuery('⛔ 권한 없음');
+    }
+    try {
+        await ctx.editMessageText('✅ 매매 중단 취소 – 기존 상태 유지', { parse_mode: 'HTML' });
+        await ctx.answerCbQuery('매매 중단이 취소되었습니다.');
+        console.log(`[Bot] cancel_pause – chatId=${ctx.chat?.id}`);
+    } catch (e) {
+        console.error('[Bot] cancel_pause 오류:', e.message);
+        await ctx.answerCbQuery(`오류: ${e.message}`);
+    }
+});
 
 // 허용되지 않은 사용자 차단
 bot.use((ctx, next) => {

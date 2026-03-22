@@ -71,6 +71,42 @@ async function isAllowedByWatchlist(chatId, stkCd) {
 async function processItem(bot, item) {
     const { action, ai_score } = item;
 
+    // PAUSE_CONFIRM_REQUEST – AI가 PAUSE를 권고했으나 사용자 컨펌 필요
+    if (item.type === 'PAUSE_CONFIRM_REQUEST') {
+        const chatIds = getAllowedChatIds();
+        const sentimentLabel = { BULLISH: '강세 📈', BEARISH: '약세 📉', NEUTRAL: '중립 ➡️' };
+        const sentiment = sentimentLabel[item.market_sentiment] || item.market_sentiment || '-';
+        const riskLines = (item.risk_factors || []).map((r) => `• ${r}`).join('\n');
+        const message = [
+            '⚠️ <b>[매매 중단 권고]</b>',
+            '',
+            'AI 뉴스 분석 결과 매매 중단이 권고되었습니다.',
+            `시장 심리: ${sentiment}`,
+            item.summary ? `요약: ${item.summary}` : null,
+            riskLines ? `리스크:\n${riskLines}` : null,
+            '',
+            '매매를 중단하시겠습니까?',
+        ].filter((l) => l !== null).join('\n');
+
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, {
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '✅ 확인 (중단)', callback_data: 'confirm_pause' },
+                            { text: '❌ 취소',        callback_data: 'cancel_pause'  },
+                        ]],
+                    },
+                });
+            } catch (e) {
+                console.error(`[Signal] PAUSE_CONFIRM_REQUEST 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        console.log('[Signal] PAUSE_CONFIRM_REQUEST 발송 완료');
+        return;
+    }
+
     // NEWS_ALERT 타입 처리 – 뉴스 기반 매매 제어 변경 알림
     if (item.type === 'NEWS_ALERT') {
         const chatIds = getAllowedChatIds();
