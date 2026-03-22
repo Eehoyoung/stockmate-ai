@@ -7,6 +7,7 @@ import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.service.*;
+import org.invest.apiorchestrator.service.NewsControlService.TradingControl;
 import org.invest.apiorchestrator.websocket.WebSocketSubscriptionManager;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -41,6 +42,7 @@ public class TradingScheduler {
     private final BidUpperService bidUpperService;
     private final KiwoomApiService kiwoomApiService;
     private final RedisMarketDataService redisMarketDataService;
+    private final NewsControlService newsControlService;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
 
@@ -82,7 +84,13 @@ public class TradingScheduler {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(8, 30)) || now.isAfter(LocalTime.of(9, 0))) return;
 
-        log.info("[S7] 동시호가 스캔 실행 (사전 필터링 적용)");
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S7] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S7] 동시호가 스캔 실행 (사전 필터링 적용, news={}){}",
+                newsControl, newsControl == TradingControl.CAUTIOUS ? " [신중모드]" : "");
         try {
             // 사전 필터 1: ka10029 갭 2~10% 종목
             Set<String> gapSet = new java.util.HashSet<>();
@@ -139,11 +147,14 @@ public class TradingScheduler {
             log.info("[S7] 사전 필터 – gap={}건 vol={}건 bid={}건 교집합={}건",
                     gapSet.size(), volSet.size(), bidSet.size(), preFiltered.size());
 
+            int maxSignals = newsControlService.getMaxSignals(5);
             List<TradingSignalDto> kospiSignals  = strategyService.scanAuction("001", preFiltered);
             List<TradingSignalDto> kosdaqSignals = strategyService.scanAuction("101", preFiltered);
-            int cnt = signalService.processSignals(kospiSignals)
-                    + signalService.processSignals(kosdaqSignals);
-            log.info("[S7] 동시호가 신호 발행: {}건", cnt);
+            int cnt = signalService.processSignals(
+                    kospiSignals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()))
+                    + signalService.processSignals(
+                    kosdaqSignals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
+            log.info("[S7] 동시호가 신호 발행: {}건 (max={})", cnt, maxSignals);
         } catch (Exception e) {
             log.error("[S7] 스케줄 오류: {}", e.getMessage());
         }
@@ -174,12 +185,19 @@ public class TradingScheduler {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(9, 0)) || now.isAfter(LocalTime.of(9, 10))) return;
 
-        log.info("[S1] 갭상승 시초가 스캔");
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S1] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S1] 갭상승 시초가 스캔 (news={})", newsControl);
         try {
             List<String> candidates = candidateService.getAllCandidates();
             List<TradingSignalDto> signals = strategyService.scanGapOpening(candidates);
-            int cnt = signalService.processSignals(signals);
-            log.info("[S1] 갭상승 신호 발행: {}건", cnt);
+            int maxSignals = newsControlService.getMaxSignals(5);
+            int cnt = signalService.processSignals(
+                    signals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
+            log.info("[S1] 갭상승 신호 발행: {}건 (max={})", cnt, maxSignals);
         } catch (Exception e) {
             log.error("[S1] 스케줄 오류: {}", e.getMessage());
         }
@@ -195,6 +213,7 @@ public class TradingScheduler {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(9, 0)) || now.isAfter(LocalTime.of(15, 20))) return;
 
+        if (newsControlService.isPaused()) return;
         viWatchService.processViWatchQueue();
     }
 
@@ -208,12 +227,20 @@ public class TradingScheduler {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(9, 30)) || now.isAfter(LocalTime.of(14, 30))) return;
 
-        log.info("[S3] 외인+기관 스캔");
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S3] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        int maxSignals = newsControlService.getMaxSignals(5);
+        log.info("[S3] 외인+기관 스캔 (news={}, max={})", newsControl, maxSignals);
         try {
             List<TradingSignalDto> kospiSignals  = strategyService.scanInstFrgn("001");
             List<TradingSignalDto> kosdaqSignals = strategyService.scanInstFrgn("101");
-            int cnt = signalService.processSignals(kospiSignals)
-                    + signalService.processSignals(kosdaqSignals);
+            int cnt = signalService.processSignals(
+                    kospiSignals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()))
+                    + signalService.processSignals(
+                    kosdaqSignals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
             if (cnt > 0) log.info("[S3] 신호 발행: {}건", cnt);
         } catch (Exception e) {
             log.error("[S3] 스케줄 오류: {}", e.getMessage());
@@ -230,7 +257,12 @@ public class TradingScheduler {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(9, 30)) || now.isAfter(LocalTime.of(14, 30))) return;
 
-        log.info("[S4] 장대양봉 스캔 (사전 필터링 적용)");
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S4] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S4] 장대양봉 스캔 (사전 필터링 적용, news={})", newsControl);
         try {
             // 사전 필터: 거래량급증 + 가격급등 합집합
             Set<String> volSurge   = volSurgeService.fetchSurgeCandidates();
@@ -252,15 +284,16 @@ public class TradingScheduler {
                         .collect(Collectors.toList());
             }
 
+            int maxSignals = newsControlService.getMaxSignals(5);
             int cnt = 0;
             for (String stkCd : candidates) {
                 var sigOpt = strategyService.checkBigCandle(stkCd);
                 if (sigOpt.isPresent() && signalService.processSignal(sigOpt.get())) {
                     cnt++;
-                    if (cnt >= 5) break;
+                    if (cnt >= maxSignals) break;
                 }
             }
-            if (cnt > 0) log.info("[S4] 신호 발행: {}건", cnt);
+            if (cnt > 0) log.info("[S4] 신호 발행: {}건 (max={})", cnt, maxSignals);
         } catch (Exception e) {
             log.error("[S4] 스케줄 오류: {}", e.getMessage());
         }
@@ -276,12 +309,20 @@ public class TradingScheduler {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(10, 0)) || now.isAfter(LocalTime.of(14, 0))) return;
 
-        log.info("[S5] 프로그램+외인 스캔");
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S5] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        int maxSignals = newsControlService.getMaxSignals(5);
+        log.info("[S5] 프로그램+외인 스캔 (news={}, max={})", newsControl, maxSignals);
         try {
             List<TradingSignalDto> kospiSignals  = strategyService.scanProgramFrgn("001");
             List<TradingSignalDto> kosdaqSignals = strategyService.scanProgramFrgn("101");
-            int cnt = signalService.processSignals(kospiSignals)
-                    + signalService.processSignals(kosdaqSignals);
+            int cnt = signalService.processSignals(
+                    kospiSignals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()))
+                    + signalService.processSignals(
+                    kosdaqSignals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
             if (cnt > 0) log.info("[S5] 신호 발행: {}건", cnt);
         } catch (Exception e) {
             log.error("[S5] 스케줄 오류: {}", e.getMessage());
@@ -298,10 +339,17 @@ public class TradingScheduler {
         LocalTime now = LocalTime.now();
         if (now.isBefore(LocalTime.of(9, 30)) || now.isAfter(LocalTime.of(13, 0))) return;
 
-        log.info("[S6] 테마 후발주 스캔");
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S6] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        int maxSignals = newsControlService.getMaxSignals(5);
+        log.info("[S6] 테마 후발주 스캔 (news={}, max={})", newsControl, maxSignals);
         try {
             List<TradingSignalDto> signals = strategyService.scanThemeLaggard();
-            int cnt = signalService.processSignals(signals);
+            int cnt = signalService.processSignals(
+                    signals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
             if (cnt > 0) log.info("[S6] 신호 발행: {}건", cnt);
         } catch (Exception e) {
             log.error("[S6] 스케줄 오류: {}", e.getMessage());

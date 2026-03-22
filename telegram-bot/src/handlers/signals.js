@@ -53,6 +53,24 @@ async function isAllowedByFilter(chatId, strategy) {
 async function processItem(bot, item) {
     const { action, ai_score } = item;
 
+    // NEWS_ALERT 타입 처리 – 뉴스 기반 매매 제어 변경 알림
+    if (item.type === 'NEWS_ALERT') {
+        const chatIds = getAllowedChatIds();
+        const message = item.message || formatNewsAlert(item);
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, {
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true,
+                });
+            } catch (e) {
+                console.error(`[Signal] 뉴스 알림 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        console.log(`[Signal] NEWS_ALERT 발송 완료 control=${item.trading_control}`);
+        return;
+    }
+
     // DAILY_REPORT 타입은 무조건 발송
     if (item.type === 'DAILY_REPORT') {
         const chatIds = getAllowedChatIds();
@@ -148,6 +166,30 @@ async function startPolling(bot) {
     };
 
     setTimeout(poll, POLL_INTERVAL_MS);
+}
+
+/**
+ * NEWS_ALERT 메시지 포맷 (Java 측에서 message 필드가 없을 경우 폴백)
+ */
+function formatNewsAlert(item) {
+    const controlEmoji = { PAUSE: '🚨', CAUTIOUS: '⚠️', CONTINUE: '✅' };
+    const controlLabel = { PAUSE: '매매 중단', CAUTIOUS: '신중 매매', CONTINUE: '정상 매매' };
+    const sentimentLabel = { BULLISH: '강세 📈', BEARISH: '약세 📉', NEUTRAL: '중립 ➡️' };
+
+    const ctrl = item.trading_control || 'CONTINUE';
+    const emoji = controlEmoji[ctrl] || '📰';
+    const lines = [
+        `${emoji} <b>[뉴스 기반 매매 제어]</b>`,
+        `상태: <b>${controlLabel[ctrl] || ctrl}</b>`,
+        `시장심리: ${sentimentLabel[item.market_sentiment] || item.market_sentiment || '-'}`,
+    ];
+    if (item.sectors && item.sectors.length > 0) {
+        lines.push(`추천섹터: ${item.sectors.join(', ')}`);
+    }
+    if (item.summary) {
+        lines.push(`요약: ${item.summary}`);
+    }
+    return lines.join('\n');
 }
 
 module.exports = { startPolling };

@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 from aiohttp import web
 from queue_worker import run_worker
 from strategy_runner import run_strategy_scanner
+from news_scheduler import run_news_scheduler
 
 load_dotenv()
 
@@ -113,10 +114,14 @@ async def main():
     signal.signal(signal.SIGTERM, _shutdown)
 
     enable_scanner = os.getenv("ENABLE_STRATEGY_SCANNER", "false").lower() == "true"
-    health_port = int(os.getenv("AI_HEALTH_PORT", "8082"))
+    enable_news    = os.getenv("NEWS_ENABLED",            "true").lower()  == "true"
+    health_port    = int(os.getenv("AI_HEALTH_PORT", "8082"))
     logger.info("[Engine] AI Engine ready – telegram_queue 폴링 시작")
     if enable_scanner:
         logger.info("[Engine] 전술 스캐너 활성화 (ENABLE_STRATEGY_SCANNER=true)")
+    if enable_news:
+        logger.info("[Engine] 뉴스 스케쥴러 활성화 (NEWS_ENABLED=true, 주기=%smin)",
+                    os.getenv("NEWS_INTERVAL_MIN", "30"))
 
     tasks = [
         asyncio.create_task(run_worker(rdb)),
@@ -125,6 +130,8 @@ async def main():
     ]
     if enable_scanner:
         tasks.append(asyncio.create_task(run_strategy_scanner(rdb)))
+    if enable_news:
+        tasks.append(asyncio.create_task(run_news_scheduler(rdb)))
 
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for t in pending:

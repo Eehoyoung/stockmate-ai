@@ -35,6 +35,11 @@ claude:
   api-key: ${CLAUDE_API_KEY}
   model: ${CLAUDE_MODEL}
 
+news:
+  enabled: ${NEWS_ENABLED:true}
+  trading-control-enabled: ${NEWS_TRADING_CONTROL:true}
+  sector-filter-enabled: ${NEWS_SECTOR_FILTER:true}
+
 telegram:
   bot-token: ${TELEGRAM_BOT_TOKEN}
   allowed-chat-ids: ${TELEGRAM_ALLOWED_CHAT_IDS}
