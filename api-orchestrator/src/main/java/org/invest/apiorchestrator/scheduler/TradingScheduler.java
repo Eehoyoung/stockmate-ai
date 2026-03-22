@@ -3,6 +3,8 @@ package org.invest.apiorchestrator.scheduler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import com.fasterxml.jackson.core.type.TypeReference;
+import org.invest.apiorchestrator.config.KiwoomProperties;
 import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
@@ -43,6 +45,8 @@ public class TradingScheduler {
     private final KiwoomApiService kiwoomApiService;
     private final RedisMarketDataService redisMarketDataService;
     private final NewsControlService newsControlService;
+    private final EconomicCalendarService calendarService;
+    private final KiwoomProperties properties;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
 
@@ -172,6 +176,58 @@ public class TradingScheduler {
             subscriptionManager.setupMarketHoursSubscription();
         } catch (Exception e) {
             log.error("정규장 구독 전환 실패: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 장시작 브리핑 (09:01)
+    // ─────────────────────────────────────────────
+
+    /** 09:01 - 장시작 브리핑 자동 알림 */
+    @Scheduled(cron = "0 1 9 * * MON-FRI")
+    public void marketOpenBrief() {
+        log.info("=== 장시작 브리핑 발행 (09:01) ===");
+        try {
+            List<String> kospi  = candidateService.getCandidates("001");
+            List<String> kosdaq = candidateService.getCandidates("101");
+
+            TradingControl control = newsControlService.getTradingControl();
+            String sentiment = redis.opsForValue().get("news:market_sentiment");
+            String sectorsRaw = redis.opsForValue().get("news:sector_recommend");
+
+            List<String> sectors = List.of();
+            try {
+                if (sectorsRaw != null && !sectorsRaw.isBlank())
+                    sectors = objectMapper.readValue(sectorsRaw, new TypeReference<List<String>>() {});
+            } catch (Exception e) { /* ignore */ }
+
+            String ctrlLabel = switch (control) {
+                case PAUSE    -> "🚨 매매 중단";
+                case CAUTIOUS -> "⚠️ 신중 매매";
+                default       -> "✅ 정상 매매";
+            };
+            String sentLabel = "BULLISH".equals(sentiment) ? "강세 📈"
+                    : "BEARISH".equals(sentiment) ? "약세 📉" : "중립 ➡️";
+
+            StringBuilder sb = new StringBuilder("📢 <b>[장시작 브리핑] 09:00</b>\n\n");
+            sb.append("매매 상태: ").append(ctrlLabel).append("\n");
+            sb.append("시장 심리: ").append(sentLabel).append("\n");
+            sb.append("후보 종목: 코스피 ").append(kospi.size()).append("개 / 코스닥 ").append(kosdaq.size()).append("개\n");
+            if (!sectors.isEmpty()) {
+                sb.append("추천 섹터: ").append(String.join(", ", sectors)).append("\n");
+            }
+
+            String eventLine = buildTodayEventLine();
+            if (!eventLine.isBlank()) sb.append("오늘 이벤트: ").append(eventLine);
+
+            Map<String, Object> msg = Map.of(
+                    "type",    "MARKET_OPEN_BRIEF",
+                    "message", sb.toString().trim()
+            );
+            redisMarketDataService.pushScoredQueue(objectMapper.writeValueAsString(msg));
+            log.info("[OpenBrief] 장시작 브리핑 발행 완료");
+        } catch (Exception e) {
+            log.error("[OpenBrief] 브리핑 발행 실패: {}", e.getMessage());
         }
     }
 
@@ -448,6 +504,79 @@ public class TradingScheduler {
     }
 
     // ─────────────────────────────────────────────
+    // 오전 중간 보고 (12:30)
+    // ─────────────────────────────────────────────
+
+    /** 12:30 – 오전 신호 현황 중간 보고 */
+    @Scheduled(cron = "0 30 12 * * MON-FRI")
+    public void compileMiddayReport() {
+        log.info("=== 오전 중간 보고 (12:30) ===");
+        try {
+            List<Object[]> stats = signalService.getTodayStats();
+            long dailyCount = redisMarketDataService.getDailySignalCount();
+            int maxDaily    = properties.getTrading().getMaxDailySignals();
+            TradingControl control = newsControlService.getTradingControl();
+
+            long totalSignals = stats.stream()
+                    .mapToLong(r -> r[1] instanceof Number ? ((Number) r[1]).longValue() : 0L)
+                    .sum();
+
+            // TOP 신호 – 오늘 신호 중 스코어 상위 2건
+            List<org.invest.apiorchestrator.domain.TradingSignal> todaySignals = signalService.getTodaySignals();
+            List<String> topLines = todaySignals.stream()
+                    .filter(s -> s.getSignalScore() != null)
+                    .sorted((a, b) -> Double.compare(
+                            b.getSignalScore() != null ? b.getSignalScore() : 0,
+                            a.getSignalScore() != null ? a.getSignalScore() : 0))
+                    .limit(2)
+                    .map(s -> String.format("  %s [%s] %.0f점", s.getStkNm() != null ? s.getStkNm() : s.getStkCd(), s.getStrategy(), s.getSignalScore()))
+                    .toList();
+
+            String ctrlLabel = switch (control) {
+                case PAUSE    -> "🚨 매매 중단";
+                case CAUTIOUS -> "⚠️ 신중 매매";
+                default       -> "✅ 정상 매매";
+            };
+
+            StringBuilder sb = new StringBuilder("📊 <b>[오전 신호 현황] 12:30</b>\n\n");
+            sb.append("총 신호: ").append(totalSignals).append("건");
+            sb.append(" (남은 한도: ").append(Math.max(0, maxDaily - dailyCount)).append("건)\n");
+            sb.append("매매 제어: ").append(ctrlLabel).append("\n");
+
+            if (!topLines.isEmpty()) {
+                sb.append("\nTOP 신호:\n").append(String.join("\n", topLines)).append("\n");
+            }
+
+            // 섹터별 신호 집계 – 오늘 신호에서 테마명 기반
+            Map<String, Long> sectorCount = todaySignals.stream()
+                    .filter(s -> s.getThemeName() != null)
+                    .collect(java.util.stream.Collectors.groupingBy(
+                            s -> s.getThemeName().length() > 6 ? s.getThemeName().substring(0, 6) : s.getThemeName(),
+                            java.util.stream.Collectors.counting()))
+                    .entrySet().stream()
+                    .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                    .limit(3)
+                    .collect(java.util.stream.Collectors.toMap(
+                            Map.Entry::getKey, Map.Entry::getValue,
+                            (a, b) -> a, java.util.LinkedHashMap::new));
+
+            if (!sectorCount.isEmpty()) {
+                sb.append("\n집중 테마:\n");
+                sectorCount.forEach((k, v) -> sb.append("  ").append(k).append(": ").append(v).append("건\n"));
+            }
+
+            Map<String, Object> msg = Map.of(
+                    "type",    "MIDDAY_REPORT",
+                    "message", sb.toString().trim()
+            );
+            redisMarketDataService.pushScoredQueue(objectMapper.writeValueAsString(msg));
+            log.info("[Midday] 오전 중간 보고 발행 완료 (총 {}건)", totalSignals);
+        } catch (Exception e) {
+            log.error("[Midday] 오전 중간 보고 실패: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
     // Phase 4-A: 일별 성과 집계 (15:35)
     // ─────────────────────────────────────────────
 
@@ -489,6 +618,25 @@ public class TradingScheduler {
             }
             redis.expire(summaryKey, Duration.ofDays(7));
 
+            // 가상 P&L 성과 데이터 (Feature 1)
+            long totalWins = 0, totalLosses = 0;
+            double totalPnl = 0.0;
+            int pnlCount = 0;
+            try {
+                List<Object[]> perfStats = signalService.getPerformanceStats();
+                for (Object[] row : perfStats) {
+                    long wins   = row[2] instanceof Number ? ((Number) row[2]).longValue() : 0L;
+                    long losses = row[3] instanceof Number ? ((Number) row[3]).longValue() : 0L;
+                    double pnl  = row[4] instanceof Number ? ((Number) row[4]).doubleValue() : 0.0;
+                    totalWins   += wins;
+                    totalLosses += losses;
+                    if (wins + losses > 0) { totalPnl += pnl; pnlCount++; }
+                }
+            } catch (Exception ex) {
+                log.debug("[DailySummary] P&L 집계 오류 (무시): {}", ex.getMessage());
+            }
+            double avgPnl = pnlCount > 0 ? totalPnl / pnlCount : 0.0;
+
             // telegram_queue 에 일일 리포트 메시지 발행
             try {
                 java.util.Map<String, Object> report = new java.util.LinkedHashMap<>();
@@ -497,14 +645,40 @@ public class TradingScheduler {
                 report.put("total_signals", totalSignals);
                 report.put("avg_score", avgScore);
                 report.put("by_strategy", byStrategy);
+                report.put("total_wins",   totalWins);
+                report.put("total_losses", totalLosses);
+                report.put("avg_pnl",      avgPnl);
                 redisMarketDataService.pushTelegramQueue(objectMapper.writeValueAsString(report));
             } catch (Exception ex) {
                 log.warn("[DailySummary] 리포트 큐 발행 실패: {}", ex.getMessage());
             }
 
-            log.info("[DailySummary] 집계 완료 – totalSignals={} avgScore={}", totalSignals, String.format("%.1f", avgScore));
+            log.info("[DailySummary] 집계 완료 – totalSignals={} avgScore={} wins={} losses={} avgPnl={}",
+                    totalSignals, String.format("%.1f", avgScore), totalWins, totalLosses, String.format("%.2f", avgPnl));
         } catch (Exception e) {
             log.error("[DailySummary] 집계 실패: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 오늘 경제 이벤트 한 줄 요약 (장시작 브리핑용)
+     */
+    private String buildTodayEventLine() {
+        try {
+            List<org.invest.apiorchestrator.domain.EconomicEvent> events = calendarService.getTodayEvents();
+            if (events.isEmpty()) return "";
+            return events.stream()
+                    .limit(2)
+                    .map(e -> {
+                        String impact = e.getExpectedImpact() ==
+                                org.invest.apiorchestrator.domain.EconomicEvent.ImpactLevel.HIGH ? "🔴" : "🟡";
+                        String time = e.getEventTime() != null
+                                ? e.getEventTime().toString().substring(0, 5) + " " : "";
+                        return impact + " " + time + e.getEventName();
+                    })
+                    .collect(java.util.stream.Collectors.joining(" / "));
+        } catch (Exception e) {
+            return "";
         }
     }
 

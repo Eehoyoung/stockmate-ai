@@ -139,6 +139,51 @@ public class TradingController {
         return ResponseEntity.ok(Map.of("status", "UP", "service", "kiwoom-trading"));
     }
 
+    /**
+     * 매매 제어 수동 전환 (CONTINUE / CAUTIOUS / PAUSE)
+     * 텔레그램 /매매중단, /매매재개 명령에서 호출
+     */
+    @PostMapping("/control/{mode}")
+    public ResponseEntity<Map<String, String>> setTradingControl(@PathVariable String mode) {
+        String upperMode = mode.trim().toUpperCase();
+        if (!upperMode.equals("CONTINUE") && !upperMode.equals("CAUTIOUS") && !upperMode.equals("PAUSE")) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "msg", "유효하지 않은 모드: " + mode + " (CONTINUE/CAUTIOUS/PAUSE)"));
+        }
+        try {
+            String prev = redis.opsForValue().get("news:trading_control");
+            redis.opsForValue().set("news:trading_control", upperMode);
+            log.info("[Control] 매매 제어 수동 변경: {} → {}", prev, upperMode);
+
+            // NEWS_ALERT 발행으로 변경 사항 텔레그램 전송
+            String emoji = switch (upperMode) {
+                case "PAUSE"    -> "🚨";
+                case "CAUTIOUS" -> "⚠️";
+                default         -> "✅";
+            };
+            String label = switch (upperMode) {
+                case "PAUSE"    -> "매매 중단";
+                case "CAUTIOUS" -> "신중 매매";
+                default         -> "정상 매매";
+            };
+            String message = String.format("%s [매매 제어 수동 변경]\n%s → <b>%s</b>\n관리자 명령에 의해 변경되었습니다.",
+                    emoji, prev != null ? prev : "CONTINUE", label);
+
+            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            String alert = om.writeValueAsString(java.util.Map.of(
+                    "type",            "NEWS_ALERT",
+                    "trading_control", upperMode,
+                    "message",         message
+            ));
+            redisMarketDataService.pushScoredQueue(alert);
+
+            return ResponseEntity.ok(Map.of("status", "ok", "mode", upperMode, "prev", prev != null ? prev : "CONTINUE"));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "msg", e.getMessage()));
+        }
+    }
+
     // ──────────────────────────────────────────────────────────────
     // Feature 1 – 신호 성과 추적
     // ──────────────────────────────────────────────────────────────

@@ -51,6 +51,13 @@ bot.command('섹터',     commands.sectorStatus);
 bot.command('신호이력',  commands.signalHistory);
 bot.command('전략분석',  commands.strategyAnalysis);
 bot.command('에러',     commands.systemErrors);
+bot.command('매매중단',  commands.pauseTrading);
+bot.command('매매재개',  commands.resumeTrading);
+bot.command('이벤트',   commands.calendarEvents);
+bot.command('성과추적',  commands.performanceDetail);
+bot.command('관심등록',  commands.watchlistAdd);
+bot.command('관심해제',  commands.watchlistRemove);
+bot.command('설정',     commands.userSettings);
 
 // 허용되지 않은 사용자 차단
 bot.use((ctx, next) => {

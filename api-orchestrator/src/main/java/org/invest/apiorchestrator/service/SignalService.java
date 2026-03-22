@@ -138,6 +138,15 @@ public class SignalService {
     }
 
     /**
+     * 전략별 당일 가상 성과 통계 (WIN/LOSS/SENT 포함)
+     */
+    @Transactional(readOnly = true)
+    public List<Object[]> getPerformanceStats() {
+        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        return signalRepository.getStrategyPerformanceStats(startOfDay);
+    }
+
+    /**
      * 만료된 신호 상태 업데이트 (배치)
      */
     @Transactional

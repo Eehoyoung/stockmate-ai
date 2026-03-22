@@ -11,8 +11,8 @@
  * 취소(CANCEL) 신호는 발송하지 않음
  */
 
-const { popScoredQueue, getClient }        = require('../services/redis');
-const { formatSignal, formatForceClose }   = require('../utils/formatter');
+const { popScoredQueue, getClient }                          = require('../services/redis');
+const { formatSignal, formatForceClose, formatDailyReportEnhanced } = require('../utils/formatter');
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 2000);
 const MIN_AI_SCORE     = Number(process.env.MIN_AI_SCORE     ?? 65);
@@ -43,6 +43,24 @@ async function isAllowedByFilter(chatId, strategy) {
         return filterList.includes(strategy);
     } catch (e) {
         console.error('[Signal] 필터 확인 오류:', e.message);
+        return true; // 오류 시 허용
+    }
+}
+
+/**
+ * 관심 종목 필터 확인 (watchlist)
+ * watchlist가 비어있으면 모든 종목 허용
+ * @param {string} chatId
+ * @param {string} stkCd
+ * @returns {Promise<boolean>} true = 발송 허용
+ */
+async function isAllowedByWatchlist(chatId, stkCd) {
+    try {
+        const watchlist = await getClient().smembers(`watchlist:${chatId}`);
+        if (!watchlist || watchlist.length === 0) return true; // 관심목록 없음 → 전부 허용
+        return watchlist.includes(stkCd);
+    } catch (e) {
+        console.error('[Signal] watchlist 확인 오류:', e.message);
         return true; // 오류 시 허용
     }
 }
@@ -116,21 +134,40 @@ async function processItem(bot, item) {
         return;
     }
 
-    // DAILY_REPORT 타입은 무조건 발송
+    // MARKET_OPEN_BRIEF – 09:01 장시작 브리핑
+    if (item.type === 'MARKET_OPEN_BRIEF') {
+        const chatIds = getAllowedChatIds();
+        const message = item.message || '📢 장시작 브리핑';
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
+            } catch (e) {
+                console.error(`[Signal] MARKET_OPEN_BRIEF 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        console.log('[Signal] MARKET_OPEN_BRIEF 발송 완료');
+        return;
+    }
+
+    // MIDDAY_REPORT – 12:30 오전 중간 보고
+    if (item.type === 'MIDDAY_REPORT') {
+        const chatIds = getAllowedChatIds();
+        const message = item.message || '📊 오전 신호 현황';
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
+            } catch (e) {
+                console.error(`[Signal] MIDDAY_REPORT 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        console.log('[Signal] MIDDAY_REPORT 발송 완료');
+        return;
+    }
+
+    // DAILY_REPORT 타입 – 가상 P&L 포함 향상된 포맷으로 발송
     if (item.type === 'DAILY_REPORT') {
         const chatIds = getAllowedChatIds();
-        const lines = [
-            `📊 <b>일일 신호 리포트 (${item.date ?? ''})</b>`,
-            `총 신호: ${item.total_signals ?? 0}건`,
-            `평균 스코어: ${typeof item.avg_score === 'number' ? item.avg_score.toFixed(1) : '-'}점`,
-        ];
-        if (item.by_strategy) {
-            const byStr = typeof item.by_strategy === 'object'
-                ? Object.entries(item.by_strategy).map(([s, c]) => `  ${s}: ${c}건`).join('\n')
-                : String(item.by_strategy);
-            lines.push(`전략별:\n${byStr}`);
-        }
-        const msg = lines.join('\n');
+        const msg = formatDailyReportEnhanced(item);
         for (const chatId of chatIds) {
             try {
                 await bot.telegram.sendMessage(chatId, msg, { parse_mode: 'HTML', disable_web_page_preview: true });
@@ -161,12 +198,20 @@ async function processItem(bot, item) {
         : formatSignal(item);
 
     for (const chatId of chatIds) {
-        // 사용자별 전략 필터 확인
+        // 1. 전략 필터 확인
         const allowed = await isAllowedByFilter(chatId, item.strategy);
         if (!allowed) {
-            console.log(`[Signal] 필터로 건너뜀 chatId=${chatId} strategy=${item.strategy}`);
+            console.log(`[Signal] 전략 필터로 건너뜀 chatId=${chatId} strategy=${item.strategy}`);
             continue;
         }
+
+        // 2. 관심 종목 필터 확인 (watchlist가 있을 때 해당 종목만 발송)
+        const watchAllowed = await isAllowedByWatchlist(chatId, item.stk_cd);
+        if (!watchAllowed) {
+            console.log(`[Signal] 관심목록 필터로 건너뜀 chatId=${chatId} stk_cd=${item.stk_cd}`);
+            continue;
+        }
+
         try {
             await bot.telegram.sendMessage(chatId, message, {
                 parse_mode:               'HTML',

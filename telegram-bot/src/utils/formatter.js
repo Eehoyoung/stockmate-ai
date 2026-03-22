@@ -221,8 +221,120 @@ function formatSystemHealth({ queueDepth, errorCount, dailySignals, tradingContr
     return lines.join('\n');
 }
 
+/**
+ * DAILY_REPORT 확장 포맷 – 가상 P&L 포함
+ */
+function formatDailyReportEnhanced(item) {
+    const lines = [
+        `📊 <b>일일 종합 리포트 (${item.date ?? ''})</b>`,
+        `총 신호: <b>${item.total_signals ?? 0}건</b>  |  평균 스코어: ${typeof item.avg_score === 'number' ? item.avg_score.toFixed(1) : '-'}점`,
+    ];
+
+    // 가상 P&L (새로 추가된 필드)
+    if (item.total_wins != null || item.total_losses != null) {
+        const wins   = Number(item.total_wins   ?? 0);
+        const losses = Number(item.total_losses ?? 0);
+        const total  = wins + losses;
+        const winRate = total > 0 ? ((wins / total) * 100).toFixed(0) : '-';
+        const pnl    = item.avg_pnl != null ? Number(item.avg_pnl).toFixed(2) : 'N/A';
+        lines.push(`가상 성과: ✅ ${wins}건 / ❌ ${losses}건  |  승률 ${winRate}%  |  평균 ${pnl}%`);
+    }
+
+    if (item.by_strategy) {
+        const byStr = typeof item.by_strategy === 'object'
+            ? Object.entries(item.by_strategy).map(([s, c]) => `  ${STRATEGY_EMOJI[s] ?? '•'} ${s}: ${c}건`).join('\n')
+            : String(item.by_strategy);
+        lines.push(`\n전략별:\n${byStr}`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * /이벤트 – 이번 주 경제 캘린더 포맷
+ */
+function formatCalendarWeek(events) {
+    if (!events || events.length === 0) {
+        return '📅 이번 주 예정 경제 이벤트 없음';
+    }
+    const impactEmoji = { HIGH: '🔴', MEDIUM: '🟡', LOW: '⚪' };
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const lines = ['📅 <b>[이번 주 경제 일정]</b>', ''];
+
+    let lastDate = null;
+    for (const e of events) {
+        const d = new Date(e.eventDate + 'T00:00:00');
+        const dateStr = `${d.getMonth() + 1}/${d.getDate()}(${dayNames[d.getDay()]})`;
+        if (dateStr !== lastDate) {
+            lines.push(`<b>${dateStr}</b>`);
+            lastDate = dateStr;
+        }
+        const impact = impactEmoji[e.expectedImpact] ?? '•';
+        const time   = e.eventTime ? e.eventTime.substring(0, 5) + ' ' : '';
+        lines.push(`  ${impact} ${time}${e.eventName} [${e.eventType}]`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * /성과추적 – 오늘 신호 가상 P&L 상세 포맷
+ */
+function formatPerformanceDetail(signals, summaryRows) {
+    const lines = ['📈 <b>[오늘의 가상 성과]</b>', ''];
+
+    // 요약 집계
+    if (summaryRows && summaryRows.length > 0) {
+        let totalWins = 0, totalLosses = 0, totalSent = 0, pnlSum = 0, pnlCount = 0;
+        for (const row of summaryRows) {
+            const [, total, wins, losses, avgPnl] = row;
+            totalWins   += Number(wins   ?? 0);
+            totalLosses += Number(losses ?? 0);
+            totalSent   += Number(total  ?? 0);
+            if (avgPnl != null) { pnlSum += Number(avgPnl); pnlCount++; }
+        }
+        const winRate = (totalWins + totalLosses) > 0
+            ? ((totalWins / (totalWins + totalLosses)) * 100).toFixed(0) : '-';
+        const avgPnl  = pnlCount > 0 ? (pnlSum / pnlCount).toFixed(2) : 'N/A';
+        lines.push(`✅ WIN ${totalWins}건 / ❌ LOSS ${totalLosses}건 / ⏳ 미결 ${Math.max(0, totalSent - totalWins - totalLosses)}건`);
+        lines.push(`승률: <b>${winRate}%</b>  |  평균 P&L: <b>${avgPnl}%</b>`);
+        lines.push('');
+    }
+
+    // 베스트/워스트
+    if (signals && signals.length > 0) {
+        const closed = signals.filter(s => s.realizedPnl != null);
+        if (closed.length > 0) {
+            const best  = closed.reduce((a, b) => a.realizedPnl > b.realizedPnl ? a : b);
+            const worst = closed.reduce((a, b) => a.realizedPnl < b.realizedPnl ? a : b);
+            lines.push(`최고: ${best.stkNm ?? best.stkCd} <b>+${Number(best.realizedPnl).toFixed(2)}%</b>`);
+            if (worst.stkCd !== best.stkCd) {
+                lines.push(`최저: ${worst.stkNm ?? worst.stkCd} <b>${Number(worst.realizedPnl).toFixed(2)}%</b>`);
+            }
+        }
+    }
+    return lines.join('\n');
+}
+
+/**
+ * /설정 – 개인 알림 설정 포맷
+ */
+function formatUserSettings(filter, watchlist) {
+    const lines = ['⚙️ <b>[내 알림 설정]</b>', ''];
+    if (filter && filter.length > 0) {
+        lines.push(`전략 필터: ${filter.join(', ')}`);
+    } else {
+        lines.push('전략 필터: 없음 (모든 전략 수신)');
+    }
+    if (watchlist && watchlist.length > 0) {
+        lines.push(`관심 종목: ${watchlist.join(', ')}`);
+    } else {
+        lines.push('관심 종목: 없음 (모든 종목 수신)');
+    }
+    return lines.join('\n');
+}
+
 module.exports = {
     formatSignal, formatForceClose, formatDailySummary,
     formatPerformanceSummary, formatNewsStatus, formatSectorAnalysis,
     formatSignalHistory, formatSystemHealth,
+    formatDailyReportEnhanced, formatCalendarWeek, formatPerformanceDetail, formatUserSettings,
 };

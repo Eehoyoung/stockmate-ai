@@ -27,6 +27,9 @@ const {
     formatSectorAnalysis,
     formatSignalHistory,
     formatSystemHealth,
+    formatCalendarWeek,
+    formatPerformanceDetail,
+    formatUserSettings,
 } = require('../utils/formatter');
 
 /** 허용된 Chat ID 확인 */
@@ -219,6 +222,69 @@ const filter = guard(async (ctx) => {
     return ctx.reply(`✅ 필터 설정: ${selected.join(', ')}`);
 });
 
+/** /매매중단 – 매매 제어를 PAUSE 로 수동 변경 */
+const pauseTrading = guard(async (ctx) => {
+    const result = await kiwoom.setTradingControl('PAUSE');
+    await ctx.reply(`🚨 매매 중단 설정 완료\n이전 상태: ${result.prev} → <b>PAUSE</b>`, { parse_mode: 'HTML' });
+});
+
+/** /매매재개 – 매매 제어를 CONTINUE 로 수동 복귀 */
+const resumeTrading = guard(async (ctx) => {
+    const result = await kiwoom.setTradingControl('CONTINUE');
+    await ctx.reply(`✅ 매매 재개 설정 완료\n이전 상태: ${result.prev} → <b>CONTINUE</b>`, { parse_mode: 'HTML' });
+});
+
+/** /이벤트 – 이번 주 경제 캘린더 */
+const calendarEvents = guard(async (ctx) => {
+    const events = await kiwoom.getCalendarWeek();
+    await ctx.reply(formatCalendarWeek(events), { parse_mode: 'HTML' });
+});
+
+/** /성과추적 – 오늘의 가상 P&L 상세 */
+const performanceDetail = guard(async (ctx) => {
+    const [signals, summaryRows] = await Promise.all([
+        kiwoom.getSignalPerformance(),
+        kiwoom.getPerformanceSummary(),
+    ]);
+    await ctx.reply(formatPerformanceDetail(signals, summaryRows), { parse_mode: 'HTML' });
+});
+
+/** /관심등록 {종목코드} – 특정 종목 알림만 받기 */
+const watchlistAdd = guard(async (ctx) => {
+    const args   = ctx.message.text.split(' ');
+    const stkCd  = args[1];
+    if (!stkCd) return ctx.reply('사용법: /관심등록 005930');
+    const redis   = getClient();
+    const chatId  = String(ctx.chat.id);
+    await redis.sadd(`watchlist:${chatId}`, stkCd);
+    const members = await redis.smembers(`watchlist:${chatId}`);
+    await ctx.reply(`⭐ 관심 종목 등록: <b>${stkCd}</b>\n현재 관심 목록: ${members.join(', ')}`, { parse_mode: 'HTML' });
+});
+
+/** /관심해제 {종목코드} – 관심 종목 제거 */
+const watchlistRemove = guard(async (ctx) => {
+    const args   = ctx.message.text.split(' ');
+    const stkCd  = args[1];
+    if (!stkCd) return ctx.reply('사용법: /관심해제 005930');
+    const redis   = getClient();
+    const chatId  = String(ctx.chat.id);
+    await redis.srem(`watchlist:${chatId}`, stkCd);
+    const members = await redis.smembers(`watchlist:${chatId}`);
+    const listStr = members.length > 0 ? members.join(', ') : '없음 (모든 종목 수신)';
+    await ctx.reply(`🗑 관심 종목 해제: <b>${stkCd}</b>\n현재 관심 목록: ${listStr}`, { parse_mode: 'HTML' });
+});
+
+/** /설정 – 개인 알림 설정 조회 */
+const userSettings = guard(async (ctx) => {
+    const redis  = getClient();
+    const chatId = String(ctx.chat.id);
+    const filterRaw   = await redis.get(`user_filter:${chatId}`);
+    const watchRaw    = await redis.smembers(`watchlist:${chatId}`);
+    let filter = [];
+    try { filter = filterRaw ? JSON.parse(filterRaw) : []; } catch (_) {}
+    await ctx.reply(formatUserSettings(filter, watchRaw), { parse_mode: 'HTML' });
+});
+
 /** /뉴스 – 최근 뉴스 + 분석 결과 */
 const newsStatus = guard(async (ctx) => {
     const redis   = getClient();
@@ -287,23 +353,32 @@ const systemErrors = guard(async (ctx) => {
 const help = guard(async (ctx) => {
     await ctx.reply(
         `📖 <b>StockMate AI 명령어</b>\n\n` +
-        `/ping – 봇 동작 확인\n` +
-        `/상태 – 시스템 헬스체크\n` +
-        `/신호 – 당일 신호 목록 (최근 10건)\n` +
-        `/성과 – 당일 전략별 성과\n` +
-        `/후보 [market] – 후보 종목 (000/001/101)\n` +
+        `<b>── 조회 ──</b>\n` +
+        `/신호 – 당일 신호 목록\n` +
+        `/성과 – 당일 전략별 통계\n` +
+        `/성과추적 – 오늘의 가상 P&L 상세\n` +
+        `/전략분석 – 전략별 가상 승률/수익률\n` +
+        `/신호이력 {종목코드} – 종목별 신호 이력\n` +
         `/시세 {종목코드} – 실시간 시세\n` +
+        `/후보 [market] – 후보 종목\n\n` +
+        `<b>── 뉴스·시장 ──</b>\n` +
+        `/뉴스 – 뉴스 분석 + 매매 상태\n` +
+        `/섹터 – 섹터 분석 현황\n` +
+        `/이벤트 – 이번 주 경제 캘린더\n\n` +
+        `<b>── 개인 설정 ──</b>\n` +
+        `/설정 – 내 알림 설정 조회\n` +
+        `/filter [s1~s7|all] – 전략 필터\n` +
+        `/관심등록 {종목코드} – 관심 종목 추가\n` +
+        `/관심해제 {종목코드} – 관심 종목 제거\n\n` +
+        `<b>── 시스템 제어 ──</b>\n` +
+        `/매매중단 – 매매 제어 PAUSE\n` +
+        `/매매재개 – 매매 제어 CONTINUE\n` +
+        `/에러 – 시스템 에러 현황\n` +
         `/전술 {s1~s7} – 전술 수동 실행\n` +
         `/토큰갱신 – 키움 토큰 갱신\n` +
-        `/ws시작 – WebSocket 구독 시작\n` +
-        `/ws종료 – WebSocket 구독 종료\n` +
-        `/report – 오늘 신호 요약\n` +
-        `/filter [s1~s7|all] – 전략 필터 설정\n` +
-        `/뉴스 – 최근 뉴스 + 매매 제어 상태\n` +
-        `/섹터 – 섹터 분석 현황\n` +
-        `/신호이력 {종목코드} – 종목별 신호 이력\n` +
-        `/전략분석 – 전략별 가상 성과\n` +
-        `/에러 – 시스템 에러 현황`,
+        `/ws시작 / /ws종료 – WebSocket 제어\n` +
+        `/상태 – 시스템 헬스체크\n` +
+        `/report – 오늘 신호 요약`,
         { parse_mode: 'HTML' }
     );
 });
@@ -314,5 +389,7 @@ module.exports = {
     refreshToken, wsStart, wsStop, help,
     report, filter,
     newsStatus, sectorStatus, signalHistory, strategyAnalysis, systemErrors,
+    pauseTrading, resumeTrading, calendarEvents, performanceDetail,
+    watchlistAdd, watchlistRemove, userSettings,
     isAllowed,
 };

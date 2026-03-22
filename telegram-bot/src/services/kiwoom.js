@@ -108,11 +108,23 @@ async function getMonitorHealth() {
     return data;
 }
 
+/** 이번 주 경제 캘린더 */
+async function getCalendarWeek() {
+    const { data } = await api.get('/api/trading/calendar/week');
+    return data;
+}
+
+/** 매매 제어 수동 전환 (mode: CONTINUE | CAUTIOUS | PAUSE) */
+async function setTradingControl(mode) {
+    const { data } = await api.post(`/api/trading/control/${mode}`);
+    return data;
+}
+
 module.exports = {
     health, getTodaySignals, getTodayStats,
     getCandidates, refreshToken, runStrategy,
     startWs, stopWs,
     getSignalPerformance, getPerformanceSummary,
     getCalendarToday, getSignalHistory, getStrategyAnalysis,
-    getMonitorHealth,
+    getMonitorHealth, getCalendarWeek, setTradingControl,
 };
