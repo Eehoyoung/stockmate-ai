@@ -265,6 +265,14 @@ public class RedisMarketDataService {
     }
 
     /**
+     * 오버나잇 Claude 평가 큐에 푸시 (ForceCloseScheduler → overnight_worker.py)
+     */
+    public void pushOvernightEvalQueue(String message) {
+        redis.opsForList().leftPush("overnight_eval_queue", message);
+        redis.expire("overnight_eval_queue", Duration.ofHours(2));
+    }
+
+    /**
      * 텔레그램 알림 큐에 푸시
      */
     public void pushTelegramQueue(String message) {

@@ -7,6 +7,7 @@ import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.service.*;
+import org.invest.apiorchestrator.service.OvernightScoringService;
 import org.invest.apiorchestrator.websocket.WebSocketSubscriptionManager;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -33,6 +34,7 @@ public class TradingController {
     private final EconomicCalendarService calendarService;
     private final NewsControlService newsControlService;
     private final RedisMarketDataService redisMarketDataService;
+    private final OvernightScoringService overnightScoringService;
     private final TradingSignalRepository signalRepository;
     private final StringRedisTemplate redis;
 
@@ -298,6 +300,21 @@ public class TradingController {
     public ResponseEntity<List<Object[]>> getStrategyAnalysis() {
         LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
         return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(startOfDay));
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // 종목 오버나잇 점수 조회 (개인 종목 수동 확인)
+    // ──────────────────────────────────────────────────────────────
+
+    /**
+     * GET /api/trading/score/{stkCd}
+     * 전략·진입가 없이 실시간 시세만으로 오버나잇 가능성 점수 반환.
+     * 텔레그램 /점수 명령어에서 호출.
+     */
+    @GetMapping("/score/{stkCd}")
+    public ResponseEntity<Map<String, Object>> scoreStock(@PathVariable String stkCd) {
+        Map<String, Object> result = overnightScoringService.calcManualScore(stkCd);
+        return ResponseEntity.ok(result);
     }
 
     // ──────────────────────────────────────────────────────────────

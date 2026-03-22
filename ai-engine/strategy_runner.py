@@ -24,6 +24,9 @@ import json
 import logging
 import os
 
+# 키움 REST API 초당 약 5회 제한 → 루프 내 공통 대기 시간
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+
 from telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
@@ -155,6 +158,7 @@ async def _run_once(rdb):
                 candidates = list(dict.fromkeys(kospi + kosdaq))[:30]  # 상위 30개만
                 s4_signals = []
                 for stk_cd in candidates:
+                    await asyncio.sleep(_API_INTERVAL)   # Rate limit: ka10080 호출 전 대기
                     result = await check_big_candle(token, stk_cd, rdb=rdb)
                     if result:
                         s4_signals.append(result)

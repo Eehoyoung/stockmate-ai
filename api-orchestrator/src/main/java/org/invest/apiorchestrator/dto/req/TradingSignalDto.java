@@ -95,7 +95,7 @@ public class TradingSignalDto {
         m.put("vol_rank",        volRank);
         m.put("market_type",     marketType);
         m.put("body_ratio",      bodyRatio);
-        m.put("signal_time",     signalTime != null ? signalTime.toString() : java.time.LocalDateTime.now().toString());
+        m.put("signal_time",     signalTime != null ? signalTime.toString() : LocalDateTime.now().toString());
         m.put("cur_prc",         entryPrice);  // 진입가 = 현재가 (신호 발생 시점)
         m.put("message",         toTelegramMessage());
         return m;
@@ -111,6 +111,11 @@ public class TradingSignalDto {
             case S5_PROG_FRGN     -> "💻";
             case S6_THEME_LAGGARD -> "🔥";
             case S7_AUCTION       -> "⚡";
+            case S8_VI_OPEN -> "🚀";
+            case S9_VI_CLOSE -> "🚀";
+            case S10_NEW_HIGH -> "🚀";
+            case S11_FRGN_CONT -> "🚀";
+            case S12_CLOSING -> "🚀";
         };
 
         StringBuilder sb = new StringBuilder();

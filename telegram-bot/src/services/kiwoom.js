@@ -116,6 +116,12 @@ async function getCalendarWeek() {
     return data;
 }
 
+/** 종목 오버나잇 점수 조회 (개인 수동 확인용) */
+async function scoreStock(stkCd) {
+    const { data } = await api.get(`/api/trading/score/${stkCd}`);
+    return data;
+}
+
 /** 매매 제어 수동 전환 (mode: CONTINUE | CAUTIOUS | PAUSE) */
 async function setTradingControl(mode) {
     const { data } = await api.post(`/api/trading/control/${mode}`);
@@ -129,4 +135,5 @@ module.exports = {
     getSignalPerformance, getPerformanceSummary,
     getCalendarToday, getSignalHistory, getStrategyAnalysis,
     getMonitorHealth, getCalendarWeek, setTradingControl,
+    scoreStock,
 };

@@ -43,13 +43,12 @@ _TTL_ALERT_Q   = 43200  # 12h
 
 
 def _is_market_hours() -> bool:
-    """현재 시간이 한국 주식시장 운영 시간(09:00~15:30)인지 확인"""
+    """현재 시간이 뉴스 분석 허용 시간대(월~금 08:00~16:00)인지 확인"""
     from datetime import datetime
-    now  = datetime.now()
-    hour = now.hour
-    minute = now.minute
-    # 09:00 ~ 15:30 (월~금 체크는 생략, 스케쥴러 호출 시점에서 처리)
-    return (hour == 9 and minute >= 0) or (10 <= hour <= 14) or (hour == 15 and minute <= 30)
+    now = datetime.now()
+    if now.weekday() >= 5:  # 토(5), 일(6) 제외
+        return False
+    return (8, 0) <= (now.hour, now.minute) < (16, 0)
 
 
 async def _save_to_redis(rdb, news_list: list, analysis: dict) -> None:
@@ -167,16 +166,19 @@ async def run_news_scheduler(rdb) -> None:
         return
 
     interval_sec = NEWS_INTERVAL_MIN * 60
-    logger.info("[NewsScheduler] 시작 – 주기=%d분 장중전용=%s",
-                NEWS_INTERVAL_MIN, NEWS_MARKET_ONLY)
+    logger.info("[NewsScheduler] 시작 – 주기=%d분 허용시간=월~금 08:00~16:00",
+                NEWS_INTERVAL_MIN)
 
-    # 시작 시 즉시 1회 실행
-    await run_once(rdb)
+    # 시작 시 즉시 1회 실행 (허용 시간대인 경우에만)
+    if _is_market_hours():
+        await run_once(rdb)
+    else:
+        logger.info("[NewsScheduler] 장외 시간 – 시작 시 실행 건너뜀")
 
     while True:
         await asyncio.sleep(interval_sec)
 
-        if NEWS_MARKET_ONLY and not _is_market_hours():
+        if not _is_market_hours():
             logger.debug("[NewsScheduler] 장외 시간 – 건너뜀")
             continue
 

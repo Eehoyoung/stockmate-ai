@@ -27,6 +27,7 @@ from queue_worker import run_worker
 from strategy_runner import run_strategy_scanner
 from news_scheduler import run_news_scheduler
 from monitor_worker import run_monitor
+from overnight_worker import run_overnight_worker
 
 load_dotenv()
 
@@ -120,10 +121,11 @@ async def main():
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    enable_scanner = os.getenv("ENABLE_STRATEGY_SCANNER", "false").lower() == "true"
-    enable_news    = os.getenv("NEWS_ENABLED",            "true").lower()  == "true"
-    enable_monitor = os.getenv("ENABLE_MONITOR",          "true").lower()  == "true"
-    health_port    = int(os.getenv("AI_HEALTH_PORT", "8082"))
+    enable_scanner   = os.getenv("ENABLE_STRATEGY_SCANNER", "false").lower() == "true"
+    enable_news      = os.getenv("NEWS_ENABLED",            "true").lower()  == "true"
+    enable_monitor   = os.getenv("ENABLE_MONITOR",          "true").lower()  == "true"
+    enable_overnight = os.getenv("ENABLE_OVERNIGHT_WORKER", "true").lower()  == "true"
+    health_port      = int(os.getenv("AI_HEALTH_PORT", "8082"))
     logger.info("[Engine] AI Engine ready – telegram_queue 폴링 시작")
     if enable_scanner:
         logger.info("[Engine] 전술 스캐너 활성화 (ENABLE_STRATEGY_SCANNER=true)")
@@ -133,6 +135,8 @@ async def main():
     if enable_monitor:
         logger.info("[Engine] 데이터 품질 모니터링 활성화 (ENABLE_MONITOR=true, 주기=%ss)",
                     os.getenv("MONITOR_INTERVAL_SEC", "60"))
+    if enable_overnight:
+        logger.info("[Engine] 오버나잇 평가 워커 활성화 (ENABLE_OVERNIGHT_WORKER=true)")
 
     tasks = [
         asyncio.create_task(run_worker(rdb)),
@@ -145,6 +149,8 @@ async def main():
         tasks.append(asyncio.create_task(run_news_scheduler(rdb)))
     if enable_monitor:
         tasks.append(asyncio.create_task(run_monitor(rdb)))
+    if enable_overnight:
+        tasks.append(asyncio.create_task(run_overnight_worker(rdb)))
 
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for t in pending:

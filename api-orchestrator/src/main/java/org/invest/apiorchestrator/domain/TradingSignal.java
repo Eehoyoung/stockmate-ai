@@ -109,11 +109,12 @@ public class TradingSignal {
     }
 
     public enum SignalStatus {
-        PENDING, SENT, EXECUTED, WIN, LOSS, EXPIRED, CANCELLED
+        PENDING, SENT, EXECUTED, WIN, LOSS, EXPIRED, CANCELLED, OVERNIGHT_HOLD
     }
 
     public enum StrategyType {
         S1_GAP_OPEN, S2_VI_PULLBACK, S3_INST_FRGN,
         S4_BIG_CANDLE, S5_PROG_FRGN, S6_THEME_LAGGARD, S7_AUCTION
+        , S8_VI_OPEN, S9_VI_CLOSE, S10_NEW_HIGH, S11_FRGN_CONT, S12_CLOSING
     }
 }

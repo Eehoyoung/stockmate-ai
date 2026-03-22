@@ -57,7 +57,7 @@ function guard(handler) {
 
 /** /ping */
 const ping = guard(async (ctx) => {
-    await ctx.reply('🏓 pong! StockMate AI 작동 중');
+    await ctx.reply('🏓 pong! StockMate AI is running');
 });
 
 /**
@@ -127,16 +127,16 @@ const candidates = guard(async (ctx) => {
     );
 });
 
-/** /시세 {종목코드} */
+/** /quote {종목코드} */
 const quote = guard(async (ctx) => {
     const args   = ctx.message.text.split(' ');
     const stkCd  = args[1]?.trim();
-    if (!stkCd) return ctx.reply('사용법: /시세 005930');
-    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /시세 005930');
+    if (!stkCd) return ctx.reply('Usage: /quote 005930');
+    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ Stock code must be 6 digits. e.g. /quote 005930');
 
     const tick = await getTickData(stkCd);
     if (!tick || Object.keys(tick).length === 0) {
-        return ctx.reply(`❓ ${stkCd} 실시간 데이터 없음 (WebSocket 미구독 또는 TTL 만료)`);
+        return ctx.reply(`❓ ${stkCd} – No realtime data (WebSocket not subscribed or TTL expired)`);
     }
     const fluRt  = tick.flu_rt ?? '-';
     const fluSign = Number(fluRt) > 0 ? '+' : '';
@@ -151,16 +151,16 @@ const quote = guard(async (ctx) => {
     );
 });
 
-/** /전술 {s1~s7} */
+/** /strategy {s1~s7} */
 const runStrategy = guard(async (ctx) => {
     const args     = ctx.message.text.split(' ');
     const strategy = args[1];
-    if (!strategy) return ctx.reply('사용법: /전술 s1');
+    if (!strategy) return ctx.reply('Usage: /strategy s1');
 
-    await ctx.reply(`⚙️ ${strategy.toUpperCase()} 수동 실행 중...`);
+    await ctx.reply(`⚙️ Running ${strategy.toUpperCase()} manually...`);
     const result = await kiwoom.runStrategy(strategy);
     await ctx.reply(
-        `✅ <b>${result.strategy}</b> 실행 완료\n발행 신호: ${result.published}건`,
+        `✅ <b>${result.strategy}</b> complete\nPublished signals: ${result.published}`,
         { parse_mode: 'HTML' }
     );
 });
@@ -232,7 +232,7 @@ const filter = guard(async (ctx) => {
 
     if (args[0].toLowerCase() === 'all') {
         await redis.del(filterKey);
-        return ctx.reply('✅ 필터 해제 – 모든 전략 수신');
+        return ctx.reply('✅ Filter cleared – receiving all strategies');
     }
 
     // /filter s1 s4 → ["S1_GAP_OPEN", "S4_BIG_CANDLE"]
@@ -245,33 +245,33 @@ const filter = guard(async (ctx) => {
         .filter(Boolean);
 
     if (selected.length === 0) {
-        return ctx.reply('❌ 유효한 전략 없음. 예: /filter s1 s4');
+        return ctx.reply('❌ No valid strategy. e.g. /filter s1 s4');
     }
 
     await redis.set(filterKey, JSON.stringify(selected));
-    return ctx.reply(`✅ 필터 설정: ${selected.join(', ')}`);
+    return ctx.reply(`✅ Filter set: ${selected.join(', ')}`);
 });
 
-/** /매매중단 – 매매 제어 PAUSE 전 사용자 컨펌 요청 */
+/** /pause – 매매 제어 PAUSE 전 사용자 컨펌 요청 */
 const pauseTrading = guard(async (ctx) => {
     await ctx.reply(
-        '⚠️ <b>[매매 중단 확인]</b>\n\n매매를 중단하시겠습니까?\n중단 시 모든 신호 발행이 일시 정지됩니다.',
+        '⚠️ <b>[Pause Trading – Confirm]</b>\n\nAll signal publishing will be suspended.',
         {
             parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [[
-                    { text: '✅ 확인 (중단)', callback_data: 'confirm_pause' },
-                    { text: '❌ 취소',        callback_data: 'cancel_pause'  },
+                    { text: '✅ Confirm (Pause)', callback_data: 'confirm_pause' },
+                    { text: '❌ Cancel',           callback_data: 'cancel_pause'  },
                 ]],
             },
         }
     );
 });
 
-/** /매매재개 – 매매 제어를 CONTINUE 로 수동 복귀 */
+/** /resume – 매매 제어를 CONTINUE 로 수동 복귀 */
 const resumeTrading = guard(async (ctx) => {
     const result = await kiwoom.setTradingControl('CONTINUE');
-    await ctx.reply(`✅ 매매 재개 설정 완료\n이전 상태: ${result.prev} → <b>CONTINUE</b>`, { parse_mode: 'HTML' });
+    await ctx.reply(`✅ Trading resumed\nPrev: ${result.prev} → <b>CONTINUE</b>`, { parse_mode: 'HTML' });
 });
 
 /** /이벤트 – 이번 주 경제 캘린더 */
@@ -289,29 +289,29 @@ const performanceDetail = guard(async (ctx) => {
     await ctx.reply(formatPerformanceDetail(signals, summaryRows), { parse_mode: 'HTML' });
 });
 
-/** /관심등록 {종목코드} – 특정 종목 알림만 받기 */
+/** /watchAdd {종목코드} – 특정 종목 알림만 받기 */
 const watchlistAdd = guard(async (ctx) => {
     const args   = ctx.message.text.split(' ');
     const stkCd  = args[1];
-    if (!stkCd) return ctx.reply('사용법: /관심등록 005930');
+    if (!stkCd) return ctx.reply('Usage: /watchAdd 005930');
     const redis   = getClient();
     const chatId  = String(ctx.chat.id);
     await redis.sadd(`watchlist:${chatId}`, stkCd);
     const members = await redis.smembers(`watchlist:${chatId}`);
-    await ctx.reply(`⭐ 관심 종목 등록: <b>${stkCd}</b>\n현재 관심 목록: ${members.join(', ')}`, { parse_mode: 'HTML' });
+    await ctx.reply(`⭐ Added to watchlist: <b>${stkCd}</b>\nCurrent: ${members.join(', ')}`, { parse_mode: 'HTML' });
 });
 
-/** /관심해제 {종목코드} – 관심 종목 제거 */
+/** /watchRemove {종목코드} – 관심 종목 제거 */
 const watchlistRemove = guard(async (ctx) => {
     const args   = ctx.message.text.split(' ');
     const stkCd  = args[1];
-    if (!stkCd) return ctx.reply('사용법: /관심해제 005930');
+    if (!stkCd) return ctx.reply('Usage: /watchRemove 005930');
     const redis   = getClient();
     const chatId  = String(ctx.chat.id);
     await redis.srem(`watchlist:${chatId}`, stkCd);
     const members = await redis.smembers(`watchlist:${chatId}`);
-    const listStr = members.length > 0 ? members.join(', ') : '없음 (모든 종목 수신)';
-    await ctx.reply(`🗑 관심 종목 해제: <b>${stkCd}</b>\n현재 관심 목록: ${listStr}`, { parse_mode: 'HTML' });
+    const listStr = members.length > 0 ? members.join(', ') : 'None (receiving all)';
+    await ctx.reply(`🗑 Removed from watchlist: <b>${stkCd}</b>\nCurrent: ${listStr}`, { parse_mode: 'HTML' });
 });
 
 /** /설정 – 개인 알림 설정 조회 */
@@ -357,11 +357,98 @@ const sectorStatus = guard(async (ctx) => {
     await ctx.reply(formatSectorAnalysis({ sectors, sentiment, stats }), { parse_mode: 'HTML' });
 });
 
-/** /신호이력 {종목코드} */
+/**
+ * /점수 {종목코드} – 개인 보유/관심 종목 오버나잇 가능성 점수 조회
+ * 전략 신호 없이 실시간 시세(등락률·체결강도·호가비율)만으로 점수 계산
+ */
+const scoreStock = guard(async (ctx) => {
+    const args  = ctx.message.text.split(' ');
+    const stkCd = args[1]?.trim();
+    if (!stkCd) return ctx.reply('Usage: /score 005930');
+    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ Stock code must be 6 digits. e.g. /score 005930');
+
+    await ctx.reply(`🔍 Calculating score for ${stkCd}...`);
+
+    const d = await kiwoom.scoreStock(stkCd);
+
+    if (!d.data_available) {
+        return ctx.reply(
+            `❓ <b>${stkCd}</b> – Data unavailable\n` +
+            `No response from Kiwoom REST API or WebSocket.\n` +
+            `Check token validity or retry later.`,
+            { parse_mode: 'HTML' }
+        );
+    }
+
+    const score      = Number(d.score ?? 0);
+    const threshold  = Number(d.overnight_threshold ?? 65);
+    const fluRt      = Number(d.flu_rt ?? 0);
+    const fluSign    = fluRt > 0 ? '+' : '';
+    const bidRatio   = Number(d.bid_ratio ?? 0);
+    const strength   = Number(d.cntr_strength ?? 0);
+    const curPrc     = Number(d.cur_prc ?? 0);
+    const dataSource = d.data_source ?? 'NONE';
+    const stkNm      = d.stk_nm ? `${d.stk_nm} ` : '';
+
+    // 점수 등급 및 이모지
+    let grade, gradeEmoji;
+    if (score >= 80)      { grade = 'A';  gradeEmoji = '🟢'; }
+    else if (score >= 65) { grade = 'B+'; gradeEmoji = '🟡'; }
+    else if (score >= 50) { grade = 'B';  gradeEmoji = '🟠'; }
+    else                  { grade = 'C';  gradeEmoji = '🔴'; }
+
+    const aboveThreshold = score >= threshold;
+    const thresholdLine  = aboveThreshold
+        ? `✅ 오버나잇 기준(<b>${threshold}점</b>) 초과 – Claude 평가 대상`
+        : `❌ 오버나잇 기준(<b>${threshold}점</b>) 미달 – 강제청산 대상`;
+
+    // 세부 점수 바 시각화 (10단계)
+    const bar = (v, max) => {
+        const filled = Math.max(0, Math.round((v / max) * 10));
+        return '█'.repeat(filled) + '░'.repeat(10 - filled);
+    };
+
+    const mom  = Number(d.score_momentum  ?? 0);
+    const pres = Number(d.score_pressure  ?? 0);
+    const str  = Number(d.score_strength  ?? 0);
+
+    // REST fallback 시 호가·체결강도 데이터 없음 안내
+    const dataNote = dataSource === 'REST'
+        ? `\n⚠️ <i>WS not subscribed – score based on price change only (no hoga/strength)\nRun /wsStart then retry for full accuracy</i>`
+        : '';
+
+    const hogaLine     = dataSource === 'WS'
+        ? `Bid ratio (buy/sell): <b>${bidRatio}</b>\n`
+        : `Bid ratio: <i>N/A (WS not subscribed)</i>\n`;
+    const strengthLine = dataSource === 'WS'
+        ? `Exec strength: <b>${strength}</b>\n`
+        : `Exec strength: <i>N/A (WS not subscribed)</i>\n`;
+
+    await ctx.reply(
+        `${gradeEmoji} <b>${stkNm}(${stkCd}) Score Analysis</b>\n\n` +
+        `📊 Total Score: <b>${score}pt</b> (Grade ${grade})\n` +
+        `${thresholdLine}\n\n` +
+        `<b>── Live Data ──</b>\n` +
+        `Price: <b>${curPrc.toLocaleString()}₩</b>\n` +
+        `Change: <b>${fluSign}${fluRt}%</b>\n` +
+        strengthLine +
+        hogaLine +
+        `\n<b>── Score Breakdown ──</b>\n` +
+        `Momentum  : ${bar(Math.max(0, mom), 25)} ${mom > 0 ? '+' : ''}${mom}pt\n` +
+        `Buy press. : ${bar(pres, 20)} +${pres}pt\n` +
+        `Strength   : ${bar(str, 10)} +${str}pt\n` +
+        `Base       : +25pt\n` +
+        dataNote + `\n\n` +
+        `💡 <i>65+: Claude overnight eval | 50-65: Caution | <50: Close recommended</i>`,
+        { parse_mode: 'HTML' }
+    );
+});
+
+/** /history {종목코드} */
 const signalHistory = guard(async (ctx) => {
     const args  = ctx.message.text.split(' ');
     const stkCd = args[1];
-    if (!stkCd) return ctx.reply('사용법: /신호이력 005930');
+    if (!stkCd) return ctx.reply('Usage: /history 005930');
 
     const history = await kiwoom.getSignalHistory(stkCd);
     await ctx.reply(formatSignalHistory(stkCd, history), { parse_mode: 'HTML' });
@@ -392,33 +479,35 @@ const systemErrors = guard(async (ctx) => {
 /** /help */
 const help = guard(async (ctx) => {
     await ctx.reply(
-        `📖 <b>StockMate AI 명령어</b>\n\n` +
-        `<b>── 조회 ──</b>\n` +
-        `/신호 – 당일 신호 목록\n` +
-        `/성과 – 당일 전략별 통계\n` +
-        `/성과추적 – 오늘의 가상 P&L 상세\n` +
-        `/전략분석 – 전략별 가상 승률/수익률\n` +
-        `/신호이력 {종목코드} – 종목별 신호 이력\n` +
-        `/시세 {종목코드} – 실시간 시세\n` +
-        `/후보 [market] – 후보 종목\n\n` +
-        `<b>── 뉴스·시장 ──</b>\n` +
-        `/뉴스 – 뉴스 분석 + 매매 상태\n` +
-        `/섹터 – 섹터 분석 현황\n` +
-        `/이벤트 – 이번 주 경제 캘린더\n\n` +
-        `<b>── 개인 설정 ──</b>\n` +
-        `/설정 – 내 알림 설정 조회\n` +
-        `/filter [s1~s7|all] – 전략 필터\n` +
-        `/관심등록 {종목코드} – 관심 종목 추가\n` +
-        `/관심해제 {종목코드} – 관심 종목 제거\n\n` +
-        `<b>── 시스템 제어 ──</b>\n` +
-        `/매매중단 – 매매 제어 PAUSE\n` +
-        `/매매재개 – 매매 제어 CONTINUE\n` +
-        `/에러 – 시스템 에러 현황\n` +
-        `/전술 {s1~s7} – 전술 수동 실행\n` +
-        `/토큰갱신 – 키움 토큰 갱신\n` +
-        `/ws시작 / /ws종료 – WebSocket 제어\n` +
-        `/상태 – 시스템 헬스체크\n` +
-        `/report – 오늘 신호 요약`,
+        `📖 <b>StockMate AI Commands</b>\n\n` +
+        `<b>── Query ──</b>\n` +
+        `/signals – Today's signal list\n` +
+        `/perf – Today's strategy stats\n` +
+        `/track – Today's virtual P&L detail\n` +
+        `/analysis – Strategy win rate & return\n` +
+        `/history {code} – Signal history for a stock\n` +
+        `/quote {code} – Realtime quote\n` +
+        `/score {code} – Overnight score\n` +
+        `/candidates [market] – Candidate stocks\n` +
+        `/report – Today's signal summary\n\n` +
+        `<b>── News & Market ──</b>\n` +
+        `/news – News analysis + trading status\n` +
+        `/sector – Sector analysis\n` +
+        `/events – This week's economic calendar\n\n` +
+        `<b>── Personal Settings ──</b>\n` +
+        `/settings – My notification settings\n` +
+        `/filter [s1~s7|all] – Strategy filter\n` +
+        `/watchAdd {code} – Add to watchlist\n` +
+        `/watchRemove {code} – Remove from watchlist\n\n` +
+        `<b>── System Control ──</b>\n` +
+        `/pause – Pause trading signals\n` +
+        `/resume – Resume trading (CONTINUE)\n` +
+        `/errors – System error status\n` +
+        `/strategy {s1~s7} – Run strategy manually\n` +
+        `/token – Refresh Kiwoom token\n` +
+        `/wsStart / /wsStop – WebSocket control\n` +
+        `/status – System health check\n` +
+        `/ping – Bot alive check`,
         { parse_mode: 'HTML' }
     );
 });
@@ -431,5 +520,6 @@ module.exports = {
     newsStatus, sectorStatus, signalHistory, strategyAnalysis, systemErrors,
     pauseTrading, resumeTrading, calendarEvents, performanceDetail,
     watchlistAdd, watchlistRemove, userSettings,
+    scoreStock,
     isAllowed,
 };
