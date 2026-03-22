@@ -122,6 +122,30 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"규칙점수: {rule_score}/100\n"
             f"시초가 매수 적합성을 JSON으로 답하세요."
         )
+    elif strategy == "S10_NEW_HIGH":
+        return (
+            f"52주 신고가 돌파 스윙 신호 평가:\n"
+            f"종목: {stk_nm}({stk_cd}), 등락: {flu_rt}%, "
+            f"거래량급증률: {signal.get('vol_surge_rt', 'N/A')}%, "
+            f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
+            f"신고가 돌파 후 스윙 진입 적합성을 JSON으로 답하세요."
+        )
+    elif strategy == "S11_FRGN_CONT":
+        return (
+            f"외국인 연속 순매수 스윙 신호 평가:\n"
+            f"종목: {stk_nm}({stk_cd}), 등락: {flu_rt}%, "
+            f"D-1순매수: {signal.get('dm1', 'N/A')}, D-2: {signal.get('dm2', 'N/A')}, D-3: {signal.get('dm3', 'N/A')}, "
+            f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
+            f"외국인 수급 기반 스윙 진입 적합성을 JSON으로 답하세요."
+        )
+    elif strategy == "S12_CLOSING":
+        return (
+            f"종가 강도 확인 매수 신호 평가:\n"
+            f"종목: {stk_nm}({stk_cd}), 등락: {flu_rt}%, "
+            f"체결강도: {signal.get('cntr_strength', round(strength, 1))}, "
+            f"호가비율: {bid_ratio}, 규칙점수: {rule_score}/100\n"
+            f"종가 매수 진입 적합성을 JSON으로 답하세요."
+        )
     else:
         return (
             f"매매 신호 평가:\n"

@@ -9,11 +9,15 @@ ka10131 기관외국인연속매매: 최근 3일 연속 기관+외인 순매수
 현재가가 5일선 위 (ka10080 5분봉 데이터로 MA 계산)
 당일 거래량이 전일 동시간 대비 ≥ 1.5배 (ka10055)
 """
+import asyncio
 import httpx
 import logging
 import os
 
 logger = logging.getLogger(__name__)
+
+# 키움 REST API 초당 약 5회 제한 → 루프 내 0.25s 대기
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
@@ -112,6 +116,7 @@ async def scan_inst_foreign(token: str, market: str = "000") -> list:
         if stk_cd not in cont_map:
             continue
 
+        await asyncio.sleep(_API_INTERVAL)   # Rate limit: ka10055 × 2회 호출 전 대기
         vol_ratio = await fetch_volume_compare(token, stk_cd)
         if vol_ratio < 1.5:
             continue

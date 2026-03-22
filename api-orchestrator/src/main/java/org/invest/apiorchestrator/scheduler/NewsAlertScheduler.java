@@ -51,9 +51,9 @@ public class NewsAlertScheduler {
             // DB 저장
             persistNewsAnalysis(alert, control, sentiment, confidence, summary);
 
-            // 텔레그램 알림 발행
+            // 텔레그램 알림 발행 (ai_scored_queue → telegram-bot 직접 전달)
             String telegramMsg = buildTelegramMessage(alert, control, prevCtrl, sentiment, summary);
-            redisMarketDataService.pushTelegramQueue(telegramMsg);
+            redisMarketDataService.pushScoredQueue(telegramMsg);
 
             log.info("[NewsAlert] 텔레그램 알림 발행 완료");
 

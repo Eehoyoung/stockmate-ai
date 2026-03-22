@@ -138,7 +138,7 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
         score = flu_rt * 0.5 + (cntr_str - 100) * 0.3
         results.append({
             "stk_cd": stk_cd,
-            "strategy": "S12_CLOSING_BUY",
+            "strategy": "S12_CLOSING",
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
             "score": round(score, 2),

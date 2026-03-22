@@ -69,6 +69,30 @@ bot.command('관심등록',  commands.watchlistAdd);
 bot.command('관심해제',  commands.watchlistRemove);
 bot.command('설정',     commands.userSettings);
 
+// ── 영문 명령어 별칭 (한국어 명령어가 일부 클라이언트에서 동작하지 않을 경우 대비) ──
+// Telegram Bot API 명령어는 [a-z0-9_] 만 허용 – 한국어 명령이 인식 안 될 때 사용
+bot.command('status',     commands.status);
+bot.command('sigs',       commands.signals);
+bot.command('perf',       commands.performance);
+bot.command('cands',      commands.candidates);
+bot.command('quote',      commands.quote);
+bot.command('strategy',   commands.runStrategy);
+bot.command('token',      commands.refreshToken);
+bot.command('wsstart',    commands.wsStart);
+bot.command('wsstop',     commands.wsStop);
+bot.command('news',       commands.newsStatus);
+bot.command('sector',     commands.sectorStatus);
+bot.command('history',    commands.signalHistory);
+bot.command('analysis',   commands.strategyAnalysis);
+bot.command('errs',       commands.systemErrors);
+bot.command('pause',      commands.pauseTrading);
+bot.command('resume',     commands.resumeTrading);
+bot.command('events',     commands.calendarEvents);
+bot.command('track',      commands.performanceDetail);
+bot.command('watch',      commands.watchlistAdd);
+bot.command('unwatch',    commands.watchlistRemove);
+bot.command('settings',   commands.userSettings);
+
 // ── 인라인 키보드 콜백 ───────────────────────────────────────
 /** 매매 중단 컨펌 – AI 권고 또는 /매매중단 수동 요청 후 사용자 확인 */
 bot.action('confirm_pause', async (ctx) => {

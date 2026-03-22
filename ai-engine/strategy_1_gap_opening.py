@@ -13,6 +13,9 @@ import os
 import logging
 from datetime import datetime
 
+# 키움 REST API 초당 약 5회 제한 → 루프 내 0.25s 대기
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+
 logger = logging.getLogger(__name__)
 
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
@@ -89,6 +92,7 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
         if gap_pct < 3.0:  # 갭 3% 미만 제외
             continue
 
+        await asyncio.sleep(_API_INTERVAL)   # Rate limit: 초당 5회 제한
         strength = await fetch_cntr_strength(token, stk_cd)
 
         if strength < 130:  # 체결강도 130% 미만 제외

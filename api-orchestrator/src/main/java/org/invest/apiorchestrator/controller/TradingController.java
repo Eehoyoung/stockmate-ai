@@ -193,6 +193,8 @@ public class TradingController {
         try {
             String prev = redis.opsForValue().get("news:trading_control");
             redis.opsForValue().set("news:trading_control", upperMode);
+            // Python news_scheduler 의 prev_control 도 동기화하여 상태 불일치 방지
+            redis.opsForValue().set("news:prev_control", upperMode);
             log.info("[Control] 매매 제어 수동 변경: {} → {}", prev, upperMode);
 
             // NEWS_ALERT 발행으로 변경 사항 텔레그램 전송

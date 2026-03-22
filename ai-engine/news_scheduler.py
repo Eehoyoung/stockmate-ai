@@ -102,8 +102,10 @@ async def _check_and_alert(rdb, new_control: str, analysis: dict) -> None:
             }
             await rdb.lpush(_KEY_SCORED_QUEUE, json.dumps(confirm_req, ensure_ascii=False))
             await rdb.expire(_KEY_SCORED_QUEUE, _TTL_ALERT_Q)
+            # prev_control 을 PAUSE 로 업데이트하여 30분 뒤 중복 컨펌 요청 방지
+            # (news:trading_control 은 사용자 컨펌 후 Node.js 봇이 API 호출로 변경)
+            await rdb.set(_KEY_PREV_CTRL, "PAUSE", ex=_TTL_LATEST)
             logger.info("[NewsScheduler] PAUSE_CONFIRM_REQUEST 발행 (사용자 컨펌 대기 중)")
-            # prev_control 은 업데이트하지 않음 – 컨펌 전까지 이전 상태 유지
         else:
             # CONTINUE / CAUTIOUS 전환 – 즉시 적용
             alert = {

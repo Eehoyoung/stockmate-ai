@@ -23,6 +23,9 @@ CLAUDE_THRESHOLDS = {
     "S5_PROG_FRGN":     65,
     "S6_THEME_LAGGARD": 60,
     "S7_AUCTION":       70,
+    "S10_NEW_HIGH":     65,
+    "S11_FRGN_CONT":    60,
+    "S12_CLOSING":      65,
 }
 
 MAX_CLAUDE_CALLS_PER_DAY = int(os.getenv("MAX_CLAUDE_CALLS_PER_DAY", "100"))
@@ -125,6 +128,31 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             score += 30 if bid_ratio > 3 else (25 if bid_ratio > 2 else (10 if bid_ratio > 1.5 else 0))
             vol_rank = int(signal.get("vol_rank", 999) or 999)
             score += 20 if vol_rank <= 10 else (15 if vol_rank <= 20 else (5 if vol_rank <= 30 else 0))
+
+        case "S10_NEW_HIGH":
+            # 52주 신고가: 등락률 + 거래량 급증률 + 체결강도
+            vol_surge = _safe_float(signal.get("vol_surge_rt", 0))
+            score += 30 if vol_surge >= 300 else (20 if vol_surge >= 200 else (10 if vol_surge >= 100 else 0))
+            score += 20 if 2 <= flu_rt <= 8 else (10 if flu_rt <= 15 else -10)
+            score += 30 if strength > 130 else (20 if strength > 110 else (10 if strength > 100 else 0))
+
+        case "S11_FRGN_CONT":
+            # 외국인 연속 순매수: 연속일수 + 누적수량 + 체결강도
+            dm1 = _safe_float(signal.get("dm1", 0))
+            dm2 = _safe_float(signal.get("dm2", 0))
+            dm3 = _safe_float(signal.get("dm3", 0))
+            cont_days = sum(1 for d in (dm1, dm2, dm3) if d > 0)
+            score += 30 if cont_days >= 3 else (20 if cont_days >= 2 else 0)
+            score += 20 if flu_rt > 0 else (-10 if flu_rt < -3 else 0)
+            score += 30 if strength > 120 else (20 if strength > 100 else 0)
+
+        case "S12_CLOSING":
+            # 종가강도: 등락률 + 체결강도(응답 포함) + 호가비율
+            cntr_str_sig = _safe_float(signal.get("cntr_strength", 0))
+            effective_str = cntr_str_sig if cntr_str_sig > 0 else strength
+            score += 30 if 4 <= flu_rt <= 10 else (15 if flu_rt <= 15 else -10)
+            score += 35 if effective_str >= 130 else (25 if effective_str >= 110 else (10 if effective_str >= 100 else 0))
+            score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
 
     # 공통 페널티
     if flu_rt > 15:   # 이미 15% 이상 상승 → 과열

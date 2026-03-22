@@ -188,6 +188,42 @@ async def _run_once(rdb):
                 logger.error("[Runner] S6 스캔 오류: %s", e)
         tasks.append(_run_strategy_with_semaphore("S6", _s6()))
 
+    # ── S10: 52주 신고가 돌파 스윙 (09:30 ~ 14:30) ────────────────
+    if datetime.time(9, 30) <= now <= datetime.time(14, 30):
+        async def _s10():
+            try:
+                from strategy_10_new_high import scan_new_high_swing
+                for market in ("000",):  # 전체 시장
+                    signals = await scan_new_high_swing(token, market, rdb=rdb)
+                    await _push_signals(rdb, signals, "S10_NEW_HIGH")
+            except Exception as e:
+                logger.error("[Runner] S10 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S10", _s10()))
+
+    # ── S11: 외국인 연속 순매수 스윙 (09:30 ~ 14:30) ──────────────
+    if datetime.time(9, 30) <= now <= datetime.time(14, 30):
+        async def _s11():
+            try:
+                from strategy_11_frgn_cont import scan_frgn_cont_swing
+                for market in ("001", "101"):
+                    signals = await scan_frgn_cont_swing(token, market, rdb=rdb)
+                    await _push_signals(rdb, signals, "S11_FRGN_CONT")
+            except Exception as e:
+                logger.error("[Runner] S11 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S11", _s11()))
+
+    # ── S12: 종가 강도 확인 매수 (14:30 ~ 14:50) ──────────────────
+    if datetime.time(14, 30) <= now <= datetime.time(14, 50):
+        async def _s12():
+            try:
+                from strategy_12_closing import scan_closing_buy
+                for market in ("001", "101"):
+                    signals = await scan_closing_buy(token, market, rdb=rdb)
+                    await _push_signals(rdb, signals, "S12_CLOSING")
+            except Exception as e:
+                logger.error("[Runner] S12 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S12", _s12()))
+
     # 활성화된 전술들을 병렬 실행 (세마포어가 동시 실행 수 제한)
     if tasks:
         logger.debug("[Runner] 전술 %d개 병렬 실행 시작 (세마포어 한도: %d)",
