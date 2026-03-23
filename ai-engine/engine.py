@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 
 from aiohttp import web
 from queue_worker import run_worker
+from confirm_worker import run_confirm_worker
 from strategy_runner import run_strategy_scanner
 from news_scheduler import run_news_scheduler
 from monitor_worker import run_monitor
@@ -77,7 +78,7 @@ async def _run_health_server(port: int, rdb):
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("[Health] AI Engine 헬스체크 서버 시작 → http://0.0.0.0:%d/health", port)
+    logger.info("[Health] AI Engine 헬스체크 서버 시작 → http://localhost:%d/health", port)
 
     # 서버를 계속 실행 (태스크 취소 시 자동 종료)
     try:
@@ -140,6 +141,7 @@ async def main():
 
     tasks = [
         asyncio.create_task(run_worker(rdb)),
+        asyncio.create_task(run_confirm_worker(rdb)),
         asyncio.create_task(stop_event.wait()),
         asyncio.create_task(_run_health_server(health_port, rdb)),
     ]

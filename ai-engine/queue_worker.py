@@ -27,6 +27,7 @@ from redis_reader import (
     get_avg_cntr_strength,
     get_vi_status,
     push_score_only_queue,
+    push_human_confirm_queue,
 )
 from scorer import rule_score, should_skip_ai, check_daily_limit
 
@@ -115,23 +116,19 @@ async def process_one(rdb) -> bool:
                 "reason":     f"1차 스코어 {r_score}점 미달 – 진입 취소",
             }
         else:
-            # 5. 일별 호출 상한 확인
-            within_limit = await check_daily_limit(rdb)
-            if not within_limit:
-                # 상한 초과 시 규칙 스코어만으로 발행
-                result = _fallback(r_score)
-                result["reason"] = "일별 Claude 호출 상한 초과 – 규칙 스코어 기반 처리"
-            else:
-                # 6. Claude API 분석
-                try:
-                    result = await analyze_signal(signal, ctx, r_score, rdb=rdb)
-                except Exception as claude_err:
-                    logger.warning("[Worker] Claude API 오류 [%s %s]: %s – 규칙 스코어로 대체",
-                                   stk_cd, strategy, claude_err)
-                    result = _fallback(r_score)
-                    result["reason"] = f"Claude API 오류 – 규칙 스코어 기반 처리: {claude_err}"
+            # 5. 규칙점수 기준 통과 → 인간 컨펌 게이트
+            await push_human_confirm_queue(rdb, {
+                **item,
+                "rule_score": r_score,
+                "market_ctx": ctx,
+            })
+            logger.info(
+                "[Worker] 컨펌 대기 등록 [%s %s] rule_score=%.1f",
+                stk_cd, strategy, r_score
+            )
+            return True  # confirm_worker 가 Claude 처리 담당
 
-        # 7. 결과 합산 후 ai_scored_queue 에 발행
+        # 6. 기준 미달(CANCEL) 결과 발행 - 기준 이상은 위에서 return
         enriched = {
             **item,
             "rule_score":          r_score,

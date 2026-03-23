@@ -333,4 +333,106 @@ function formatNewsAlert(item) {
     return lines.join('\n');
 }
 
-module.exports = { startPolling };
+// ── Human Confirm Gate ────────────────────────────────────────
+
+const CONFIRM_POLL_INTERVAL_MS = Number(process.env.CONFIRM_POLL_INTERVAL_MS ?? 2000);
+const CONFIRM_PENDING_TTL      = 1800; // seconds (30분)
+
+/**
+ * human_confirm_queue 에서 항목을 꺼내 인라인 키보드와 함께 텔레그램으로 발송
+ * @param {import('telegraf').Telegraf} bot
+ * @param {string[]} allowedChatIds
+ */
+async function sendConfirmRequest(bot, allowedChatIds, item) {
+    const sigId    = String(item.id || item.stk_cd || 'unknown');
+    const stkCd    = item.stk_cd    || '-';
+    const strategy = item.strategy  || '-';
+    const rScore   = typeof item.rule_score === 'number' ? item.rule_score.toFixed(1) : item.rule_score || '-';
+    const message  = item.message   || `[${strategy}] ${stkCd}`;
+
+    const text = [
+        '🔔 <b>[매매 신호 컨펌 요청]</b>',
+        '',
+        `종목: <b>${stkCd}</b>`,
+        `전략: ${strategy}`,
+        `규칙 스코어: <b>${rScore}점</b>`,
+        `신호: ${message}`,
+        '',
+        'Claude AI 분석을 진행하시겠습니까?',
+    ].join('\n');
+
+    // confirm_pending:{sigId} 에 페이로드 저장 (TTL 1800s)
+    try {
+        const redis = getClient();
+        await redis.set(
+            `confirm_pending:${sigId}`,
+            JSON.stringify(item),
+            'EX',
+            CONFIRM_PENDING_TTL
+        );
+    } catch (e) {
+        console.error(`[Confirm] confirm_pending 저장 실패 sigId=${sigId}:`, e.message);
+    }
+
+    for (const chatId of allowedChatIds) {
+        try {
+            await bot.telegram.sendMessage(chatId, text, {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [[
+                        { text: '✅ 분석 진행', callback_data: `confirm_yes:${sigId}` },
+                        { text: '❌ 취소',      callback_data: `confirm_no:${sigId}`  },
+                    ]],
+                },
+            });
+        } catch (e) {
+            console.error(`[Confirm] 컨펌 요청 발송 실패 chatId=${chatId}:`, e.message);
+        }
+    }
+    console.log(`[Confirm] 컨펌 요청 발송 완료 sigId=${sigId} [${stkCd} ${strategy}] rule_score=${rScore}`);
+}
+
+/**
+ * human_confirm_queue 폴링 루프 시작
+ * @param {import('telegraf').Telegraf} bot
+ * @param {string[]} allowedChatIds
+ */
+async function startConfirmPoller(bot, allowedChatIds) {
+    console.log(`[Confirm] human_confirm_queue 폴링 시작 (interval=${CONFIRM_POLL_INTERVAL_MS}ms)`);
+
+    let emptyCount = 0;
+
+    const poll = async () => {
+        try {
+            const redis = getClient();
+            const raw   = await redis.rpop('human_confirm_queue');
+            if (raw) {
+                emptyCount = 0;
+                let item;
+                try {
+                    item = JSON.parse(raw);
+                } catch (e) {
+                    console.error('[Confirm] JSON 파싱 실패:', e.message);
+                    item = null;
+                }
+                if (item) {
+                    await sendConfirmRequest(bot, allowedChatIds, item);
+                }
+            } else {
+                emptyCount++;
+            }
+        } catch (e) {
+            console.error('[Confirm] 폴링 오류:', e.message);
+        }
+
+        const nextDelay = emptyCount === 0
+            ? CONFIRM_POLL_INTERVAL_MS
+            : Math.min(CONFIRM_POLL_INTERVAL_MS * (1 + emptyCount * 0.1), 10_000);
+
+        setTimeout(poll, nextDelay);
+    };
+
+    setTimeout(poll, CONFIRM_POLL_INTERVAL_MS);
+}
+
+module.exports = { startPolling, startConfirmPoller };

@@ -19,7 +19,7 @@ require('dotenv').config();
 const { Telegraf }       = require('telegraf');
 const { close: closeRedis } = require('./services/redis');
 const commands           = require('./handlers/commands');
-const { startPolling }   = require('./handlers/signals');
+const { startPolling, startConfirmPoller } = require('./handlers/signals');
 const kiwoom             = require('./services/kiwoom');
 
 // ── 환경변수 검증 ────────────────────────────────────────────
@@ -115,6 +115,59 @@ bot.action('cancel_pause', async (ctx) => {
     }
 });
 
+// ── Human Confirm Gate 콜백 ───────────────────────────────────
+const { getClient: getRedis } = require('./services/redis');
+
+/** 신호 컨펌 – confirmed_queue 에 등록 후 Claude 분석 진행 */
+bot.action(/^confirm_yes:(.+)$/, async (ctx) => {
+    if (!commands.isAllowed(ctx)) {
+        return ctx.answerCbQuery('⛔ Access denied');
+    }
+    const sigId = ctx.match[1];
+    try {
+        const redis      = getRedis();
+        const pendingRaw = await redis.get(`confirm_pending:${sigId}`);
+        if (!pendingRaw) {
+            await ctx.editMessageText('⏰ 컨펌 시간 초과 – 신호가 만료되었습니다.', { parse_mode: 'HTML' });
+            await ctx.answerCbQuery('신호가 만료되었습니다.');
+            return;
+        }
+        // confirmed_queue 에 LPUSH (confirm_worker 가 RPOP)
+        await redis.lpush('confirmed_queue', pendingRaw);
+        await redis.del(`confirm_pending:${sigId}`);
+        await ctx.editMessageText(
+            `✅ <b>분석 진행</b>\n신호 ID: ${sigId}\nClaude AI 분석이 시작되었습니다.`,
+            { parse_mode: 'HTML' }
+        );
+        await ctx.answerCbQuery('Claude 분석을 시작합니다.');
+        console.log(`[Bot] confirm_yes – sigId=${sigId} chatId=${ctx.chat?.id}`);
+    } catch (e) {
+        console.error('[Bot] confirm_yes 오류:', e.message);
+        await ctx.answerCbQuery(`Error: ${e.message}`);
+    }
+});
+
+/** 신호 취소 – confirm_pending 삭제 후 무시 */
+bot.action(/^confirm_no:(.+)$/, async (ctx) => {
+    if (!commands.isAllowed(ctx)) {
+        return ctx.answerCbQuery('⛔ Access denied');
+    }
+    const sigId = ctx.match[1];
+    try {
+        const redis = getRedis();
+        await redis.del(`confirm_pending:${sigId}`);
+        await ctx.editMessageText(
+            `❌ <b>신호 취소</b>\n신호 ID: ${sigId}\nClaude 분석 없이 취소되었습니다.`,
+            { parse_mode: 'HTML' }
+        );
+        await ctx.answerCbQuery('신호를 취소했습니다.');
+        console.log(`[Bot] confirm_no – sigId=${sigId} chatId=${ctx.chat?.id}`);
+    } catch (e) {
+        console.error('[Bot] confirm_no 오류:', e.message);
+        await ctx.answerCbQuery(`Error: ${e.message}`);
+    }
+});
+
 // ── 오류 핸들러 ──────────────────────────────────────────────
 bot.catch((err, ctx) => {
     console.error(`[Bot] 처리되지 않은 오류 (update_type=${ctx.updateType}):`, err.message);
@@ -133,6 +186,8 @@ async function main() {
 
     const chatIds = (process.env.TELEGRAM_ALLOWED_CHAT_IDS ?? '')
         .split(',').map((id) => id.trim()).filter(Boolean);
+    startConfirmPoller(bot, chatIds);
+
     for (const chatId of chatIds) {
         try {
             await bot.telegram.sendMessage(chatId,

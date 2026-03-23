@@ -69,3 +69,30 @@ async def push_score_only_queue(rdb, payload: dict):
         return
     await rdb.lpush("ai_scored_queue", serialized)
     await rdb.expire("ai_scored_queue", 43200)
+
+
+# ─── Human Confirm Gate ───────────────────────────────────────
+HUMAN_CONFIRM_QUEUE = "human_confirm_queue"
+CONFIRMED_QUEUE     = "confirmed_queue"
+CONFIRM_PENDING_PFX = "confirm_pending:"
+CONFIRM_TIMEOUT_SEC = 1800  # 30분
+
+async def push_human_confirm_queue(rdb, item: dict):
+    """규칙점수 통과 신호를 인간 컨펌 대기 큐에 등록"""
+    payload = json.dumps(item, ensure_ascii=False, default=str)
+    await rdb.lpush(HUMAN_CONFIRM_QUEUE, payload)
+    sig_id = str(item.get("id") or item.get("stk_cd") or "unknown")
+    await rdb.setex(f"{CONFIRM_PENDING_PFX}{sig_id}", CONFIRM_TIMEOUT_SEC, payload)
+    logger.debug("[Redis] human_confirm_queue push [%s]", sig_id)
+
+async def pop_confirmed_queue(rdb) -> dict | None:
+    """인간 컨펌 완료 큐에서 항목 꺼내기"""
+    raw = await rdb.rpop(CONFIRMED_QUEUE)
+    if not raw:
+        return None
+    return json.loads(raw)
+
+async def push_confirmed_queue(rdb, payload_str: str):
+    """인간 컨펌 완료 신호를 Claude 처리 큐에 등록 (telegram-bot 에서 호출)"""
+    await rdb.lpush(CONFIRMED_QUEUE, payload_str)
+    logger.debug("[Redis] confirmed_queue push")
