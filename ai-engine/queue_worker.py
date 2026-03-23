@@ -102,11 +102,11 @@ async def process_one(rdb) -> bool:
         ctx = await _build_market_ctx(rdb, stk_cd)
         ctx["ws_online"] = ws_online
 
-        # 2. 규칙 기반 1차 스코어링
+        # 3. 규칙 기반 1차 스코어링
         r_score = rule_score(signal, ctx)
         logger.info("[Worker] 1차 스코어 [%s %s]: %.1f", stk_cd, strategy, r_score)
 
-        # 3. 전략별 임계값 미달 → Claude 호출 없이 CANCEL
+        # 4. 전략별 임계값 미달 → Claude 호출 없이 CANCEL
         if should_skip_ai(r_score, strategy):
             result = {
                 "action":     "CANCEL",
@@ -115,14 +115,14 @@ async def process_one(rdb) -> bool:
                 "reason":     f"1차 스코어 {r_score}점 미달 – 진입 취소",
             }
         else:
-            # 4. 일별 호출 상한 확인
+            # 5. 일별 호출 상한 확인
             within_limit = await check_daily_limit(rdb)
             if not within_limit:
                 # 상한 초과 시 규칙 스코어만으로 발행
                 result = _fallback(r_score)
                 result["reason"] = "일별 Claude 호출 상한 초과 – 규칙 스코어 기반 처리"
             else:
-                # 5. Claude API 분석
+                # 6. Claude API 분석
                 try:
                     result = await analyze_signal(signal, ctx, r_score, rdb=rdb)
                 except Exception as claude_err:
@@ -131,7 +131,7 @@ async def process_one(rdb) -> bool:
                     result = _fallback(r_score)
                     result["reason"] = f"Claude API 오류 – 규칙 스코어 기반 처리: {claude_err}"
 
-        # 6. 결과 합산 후 ai_scored_queue 에 발행
+        # 7. 결과 합산 후 ai_scored_queue 에 발행
         enriched = {
             **item,
             "rule_score":          r_score,

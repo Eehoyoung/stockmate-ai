@@ -89,8 +89,8 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     if strength < 110:
         return None
 
-    bid_qty = float(cur.get("total_bid_qty", 1))
-    ask_qty = float(cur.get("total_ask_qty", 1))
+    bid_qty = float(cur.get("total_buy_bid_req", 1) or 1)
+    ask_qty = float(cur.get("total_sel_bid_req", 1) or 1)
     bid_ratio = bid_qty / ask_qty if ask_qty > 0 else 0
 
     if bid_ratio < 1.3:
