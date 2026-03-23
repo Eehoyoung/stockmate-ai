@@ -413,6 +413,77 @@ public class TradingScheduler {
     }
 
     // ─────────────────────────────────────────────
+    // 전술 10: 52주 신고가 돌파 (11:00~14:00, 15분마다)
+    // ─────────────────────────────────────────────
+
+    /** 11:00~14:00 매 15분 - 전술 10 52주 신고가 돌파 */
+    @Scheduled(cron = "0 0/15 11-13 * * MON-FRI")
+    public void scanNewHigh() {
+        LocalTime now = LocalTime.now();
+        if (now.isBefore(LocalTime.of(11, 0)) || now.isAfter(LocalTime.of(14, 0))) return;
+
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S10] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S10] 52주 신고가 돌파 스캔 (news={})", newsControl);
+        try {
+            // PriceSurge 사전 필터로 후보 축소 (rate limit 절약)
+            Set<String> priceSurge = priceSurgeService.fetchSurgeCandidates();
+            List<String> candidates = !priceSurge.isEmpty()
+                    ? new ArrayList<>(priceSurge).stream().limit(20).collect(Collectors.toList())
+                    : candidateService.getAllCandidates().stream().limit(30).collect(Collectors.toList());
+
+            int maxSignals = newsControlService.getMaxSignals(3);
+            int cnt = 0;
+            for (String stkCd : candidates) {
+                var sigOpt = strategyService.checkNewHigh(stkCd);
+                if (sigOpt.isPresent() && signalService.processSignal(sigOpt.get())) {
+                    cnt++;
+                    if (cnt >= maxSignals) break;
+                }
+            }
+            if (cnt > 0) log.info("[S10] 52주 신고가 돌파 신호 발행: {}건 (max={})", cnt, maxSignals);
+        } catch (Exception e) {
+            log.error("[S10] 스케줄 오류: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 전술 12: 종가 강도 매수 (14:30~15:10, 5분마다)
+    // ─────────────────────────────────────────────
+
+    /** 14:30~15:10 매 5분 - 전술 12 종가 강도 매수 */
+    @Scheduled(cron = "0 0/5 14 * * MON-FRI")
+    public void scanClosingStrength() {
+        LocalTime now = LocalTime.now();
+        if (now.isBefore(LocalTime.of(14, 30)) || now.isAfter(LocalTime.of(15, 10))) return;
+
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S12] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S12] 종가강도 스캔 (news={})", newsControl);
+        try {
+            List<String> candidates = candidateService.getAllCandidates();
+            int maxSignals = newsControlService.getMaxSignals(5);
+            int cnt = 0;
+            for (String stkCd : candidates) {
+                var sigOpt = strategyService.checkClosingStrength(stkCd);
+                if (sigOpt.isPresent() && signalService.processSignal(sigOpt.get())) {
+                    cnt++;
+                    if (cnt >= maxSignals) break;
+                }
+            }
+            if (cnt > 0) log.info("[S12] 종가강도 신호 발행: {}건 (max={})", cnt, maxSignals);
+        } catch (Exception e) {
+            log.error("[S12] 스케줄 오류: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
     // 공통 유지보수 스케줄
     // ─────────────────────────────────────────────
 
@@ -464,6 +535,75 @@ public class TradingScheduler {
             tokenService.refreshToken();
         } catch (Exception e) {
             log.error("사전 토큰 발급 실패: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 장전 뉴스 브리핑 (08:30)
+    // ─────────────────────────────────────────────
+
+    /** 08:30 - 장전 뉴스 분석 결과 브리핑 발행 */
+    @Scheduled(cron = "0 30 8 * * MON-FRI")
+    public void preMarketNewsBrief() {
+        log.info("=== 장전 뉴스 브리핑 발행 (08:30) ===");
+        try {
+            String control   = redis.opsForValue().get("news:trading_control");
+            String sentiment = redis.opsForValue().get("news:market_sentiment");
+            String sectorsRaw = redis.opsForValue().get("news:sector_recommend");
+            String analysisRaw = redis.opsForValue().get("news:analysis");
+            if (control == null) control = "CONTINUE";
+            if (sentiment == null) sentiment = "NEUTRAL";
+
+            List<String> sectors = List.of();
+            if (sectorsRaw != null && !sectorsRaw.isBlank()) {
+                try { sectors = objectMapper.readValue(sectorsRaw, new TypeReference<List<String>>() {}); }
+                catch (Exception e) { /* ignore */ }
+            }
+            String summary = "";
+            if (analysisRaw != null) {
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> analysis = objectMapper.readValue(analysisRaw, Map.class);
+                    Object s = analysis.get("summary");
+                    if (s != null && !s.toString().equals("null")) summary = s.toString();
+                } catch (Exception e) { /* ignore */ }
+            }
+
+            String ctrlEmoji = switch (control) {
+                case "PAUSE"    -> "🚨";
+                case "CAUTIOUS" -> "⚠️";
+                default         -> "✅";
+            };
+            String ctrlLabel = switch (control) {
+                case "PAUSE"    -> "매매 중단";
+                case "CAUTIOUS" -> "신중 매매";
+                default         -> "정상 매매";
+            };
+            String sentLabel = "BULLISH".equals(sentiment) ? "강세 📈"
+                    : "BEARISH".equals(sentiment) ? "약세 📉" : "중립 ➡️";
+
+            StringBuilder sb = new StringBuilder("📰 <b>[장전 뉴스 브리핑] 08:30</b>\n\n");
+            sb.append(ctrlEmoji).append(" 매매 상태: <b>").append(ctrlLabel).append("</b>\n");
+            sb.append("시장 심리: ").append(sentLabel).append("\n");
+            if (!sectors.isEmpty()) {
+                sb.append("추천 섹터: ").append(String.join(", ", sectors)).append("\n");
+            }
+            if (!summary.isBlank()) {
+                sb.append("\n").append(summary);
+            } else {
+                sb.append("\n⚠️ 뉴스 분석 데이터 없음 – ai-engine 확인 필요");
+            }
+            String eventLine = buildTodayEventLine();
+            if (!eventLine.isBlank()) sb.append("\n\n📅 오늘 이벤트: ").append(eventLine);
+
+            Map<String, Object> msg = Map.of(
+                    "type",    "PRE_MARKET_BRIEF",
+                    "message", sb.toString().trim()
+            );
+            redisMarketDataService.pushScoredQueue(objectMapper.writeValueAsString(msg));
+            log.info("[PreMarketBrief] 장전 뉴스 브리핑 발행 완료 – control={} sentiment={}", control, sentiment);
+        } catch (Exception e) {
+            log.error("[PreMarketBrief] 장전 뉴스 브리핑 실패: {}", e.getMessage());
         }
     }
 

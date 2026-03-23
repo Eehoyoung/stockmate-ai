@@ -1,181 +1,150 @@
-2026-03-23T02:39:52.319+09:00  INFO 44352 --- [           main] o.i.a.service.TokenService               : 토큰 발급 완료 - 만료: 2026-03-23T23:47:39
-2026-03-23T02:39:52.330+09:00  INFO 44352 --- [           main] o.i.a.ApplicationStartupRunner           : 초기 토큰 발급 완료
-2026-03-23T02:39:52.331+09:00  INFO 44352 --- [           main] o.i.a.ApplicationStartupRunner           : 거래 시간 외 - WebSocket 대기 상태
-2026-03-23T02:39:52.331+09:00  INFO 44352 --- [           main] o.i.a.ApplicationStartupRunner           : === 시스템 초기화 완료 ===
-2026-03-23T02:39:52.722+09:00  INFO 44352 --- [192.168.219.108] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
-2026-03-23T02:39:52.722+09:00  INFO 44352 --- [192.168.219.108] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
-2026-03-23T02:39:52.723+09:00  INFO 44352 --- [192.168.219.108] o.s.web.servlet.DispatcherServlet        : Completed initialization in 1 ms
-2026-03-23T02:41:14.896+09:00  INFO 44352 --- [nio-8080-exec-3] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 시도: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23T02:41:15.038+09:00  INFO 44352 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 성공
-2026-03-23T02:41:17.063+09:00  INFO 44352 --- [nio-8080-exec-3] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=1개
-2026-03-23T02:41:17.375+09:00  INFO 44352 --- [nio-8080-exec-3] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=1개
-2026-03-23T02:41:17.680+09:00  INFO 44352 --- [nio-8080-exec-3] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
-2026-03-23T02:41:17.680+09:00  INFO 44352 --- [nio-8080-exec-3] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=1개, 호가=1개
-2026-03-23T02:41:27.700+09:00  INFO 44352 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 종료 code=1000 reason=Bye
-2026-03-23T02:41:47.106+09:00  INFO 44352 --- [nio-8080-exec-6] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 시도: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23T02:41:47.214+09:00  INFO 44352 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 성공
-2026-03-23T02:41:49.135+09:00  INFO 44352 --- [nio-8080-exec-6] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=1개
-2026-03-23T02:41:49.436+09:00  INFO 44352 --- [nio-8080-exec-6] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=1개
-2026-03-23T02:41:49.737+09:00  INFO 44352 --- [nio-8080-exec-6] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
-2026-03-23T02:41:49.737+09:00  INFO 44352 --- [nio-8080-exec-6] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=1개, 호가=1개
-2026-03-23T02:41:51.069+09:00  WARN 44352 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] tick 데이터 누락 1/1 ({:.1f}%) → WS 재연결 시도
-2026-03-23T02:41:51.086+09:00 ERROR 44352 --- [ctor-http-nio-5] o.i.a.service.KiwoomApiService           : 4xx 오류 [ka10029] status=429 body={"return_msg":"허용된 요청 개수를 초과하였습니다[1700:허용된 요청 개수를 초과하였습니다. API ID=ka10029]","return_code":5}
-2026-03-23T02:41:51.086+09:00  WARN 44352 --- [ctor-http-nio-5] o.i.a.service.KiwoomApiService           : 1700 Rate Limit [ka10029] – 재시도 예정
-2026-03-23T02:41:51.099+09:00  WARN 44352 --- [ctor-http-nio-5] o.i.a.service.KiwoomApiService           : API 재시도 [ka10029] attempt=1
-2026-03-23T02:41:52.290+09:00  INFO 44352 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=1개
-2026-03-23T02:41:52.591+09:00  INFO 44352 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=1개
-2026-03-23T02:41:52.892+09:00  INFO 44352 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
-2026-03-23T02:41:52.892+09:00  INFO 44352 --- [   scheduling-1] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=1개, 호가=1개
-2026-03-23T02:41:52.897+09:00  INFO 44352 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] SYSTEM_ALERT 발행: 1건 경고
-2026-03-23T02:42:02.906+09:00  INFO 44352 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 종료 code=1000 reason=Bye
-2026-03-23T02:42:52.949+09:00  WARN 44352 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] tick 데이터 누락 1/1 ({:.1f}%) → WS 재연결 시도
-2026-03-23T02:42:52.950+09:00  INFO 44352 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 시도: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23T02:42:53.027+09:00  INFO 44352 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 성공
-2026-03-23T02:42:54.970+09:00  INFO 44352 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=1개
-2026-03-23T02:42:55.272+09:00  INFO 44352 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=1개
-2026-03-23T02:42:55.573+09:00  INFO 44352 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
-2026-03-23T02:42:55.573+09:00  INFO 44352 --- [   scheduling-1] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=1개, 호가=1개
-2026-03-23T02:42:55.575+09:00  INFO 44352 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] SYSTEM_ALERT 발행: 1건 경고
-2026-03-23T02:43:05.589+09:00  INFO 44352 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 종료 code=1000 reason=Bye
-2026-03-23T02:43:13.592+09:00  INFO 44352 --- [ionShutdownHook] o.s.boot.tomcat.GracefulShutdown         : Commencing graceful shutdown. Waiting for active requests to complete
-2026-03-23T02:43:13.600+09:00  INFO 44352 --- [tomcat-shutdown] o.s.boot.tomcat.GracefulShutdown         : Graceful shutdown complete
-2026-03-23T02:43:13.722+09:00  INFO 44352 --- [ionShutdownHook] j.LocalContainerEntityManagerFactoryBean : Closing JPA EntityManagerFactory for persistence unit 'default'
-2026-03-23T02:43:13.726+09:00  INFO 44352 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
-2026-03-23T02:43:13.730+09:00  INFO 44352 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+
+
+C:\Users\LeeHoYoung\.jdks\openjdk-25.0.2\bin\java.exe -XX:TieredStopAtLevel=1 -Dspring.output.ansi.enabled=always -Dcom.sun.management.jmxremote -Dspring.jmx.enabled=true -Dspring.liveBeansView.mbeanDomain -Dspring.application.admin.enabled=true "-Dmanagement.endpoints.jmx.exposure.include=*" "-javaagent:C:\Program Files\JetBrains\IntelliJ IDEA 2025.2\lib\idea_rt.jar=61625" -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -classpath C:\Users\LeeHoYoung\IdeaProjects\t\stockmate-ai\api-orchestrator\build\classes\java\main;C:\Users\LeeHoYoung\IdeaProjects\t\stockmate-ai\api-orchestrator\build\resources\main;C:\gradle\caches\modules-2\files-2.1\org.projectlombok\lombok\1.18.42\8365263844ebb62398e0dc33057ba10ba472d3b8\lombok-1.18.42.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-batch\4.0.3\9e9b99130717b8016cedbea8db64f98acf2d8a80\spring-boot-starter-batch-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-data-jpa\4.0.3\3c979e063184e0bf2cde9a7d5c7a66401fee0615\spring-boot-starter-data-jpa-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-data-redis\4.0.3\6bd0ea1d29b6e282f22ada9b37a014ff8a224c39\spring-boot-starter-data-redis-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-webmvc\4.0.3\b5e7b864a336375c785df7f5db22061adf99fdcc\spring-boot-starter-webmvc-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-webclient\4.1.0-M2\42a88f0bd06e1e1f9cfcc8502a27e3c3f52d631d\spring-boot-starter-webclient-4.1.0-M2.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-actuator\4.0.3\a3a1f12b8096b30e8b3d6971cd907a089503302\spring-boot-starter-actuator-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\com.fasterxml.jackson.module\jackson-module-parameter-names\2.20.2\b3c8baed5ec87c56f09fc073ca7551957f1b5565\jackson-module-parameter-names-2.20.2.jar;C:\gradle\caches\modules-2\files-2.1\com.fasterxml.jackson.datatype\jackson-datatype-jsr310\2.20.2\bbc60368883d441467f334ac4a0e974738698a7e\jackson-datatype-jsr310-2.20.2.jar;C:\gradle\caches\modules-2\files-2.1\com.fasterxml.jackson.core\jackson-databind\2.20.2\257229ed4142d1b01a46b71105fd016e9cf7063e\jackson-databind-2.20.2.jar;C:\gradle\caches\modules-2\files-2.1\io.github.cdimascio\dotenv-java\3.2.0\89d08b3014567fd589cbbe00a3fadf83810f32dc\dotenv-java-3.2.0.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter\4.0.3\4e6cfad940a6f23ca7d1e1cc18c19e8d573830ef\spring-boot-starter-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-batch\4.0.3\741ccfb3a9c95117d18fbfc238cc926123668473\spring-boot-batch-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-jdbc\4.0.3\c6ed739bbc5ce99dfcb81272f9fcfd259b8e325f\spring-boot-starter-jdbc-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-data-jpa\4.0.3\ed3bec355933bfb43f5c26e85999fb26714805b0\spring-boot-data-jpa-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-jdbc\4.0.3\a4868d5751c42cc1da95ee6c60a9e3046131741d\spring-boot-jdbc-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-data-redis\4.0.3\41bade8fee87ab3ea84de718ba60d487f056f77b\spring-boot-data-redis-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-jackson\4.0.3\1e02c5c501f5a8559a18d608ca847ae6f240dde\spring-boot-starter-jackson-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-tomcat\4.0.3\458c27ddeb83ee9cb7a022ac8abbc3563167161e\spring-boot-starter-tomcat-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-http-converter\4.0.3\72a29a59c5b1b55a151e851c3c823f01bfca106\spring-boot-http-converter-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-webmvc\4.0.3\8100d8a8c357271d8d78ecdee0d8441b00243786\spring-boot-webmvc-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-webclient\4.0.3\2f45bc884f2e8df249e0dfc4507eddd552e31289\spring-boot-webclient-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\io.projectreactor.netty\reactor-netty-http\1.3.3\e3135c9951e07b1e39cf5ce58e60b8b610e9269f\reactor-netty-http-1.3.3.jar;C:\gradle\caches\modules-2\files-2.1\com.squareup.okhttp3\okhttp-jvm\5.3.2\f31e8de27feebe1e56d6c9d354a0986b65be0e1d\okhttp-jvm-5.3.2.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-micrometer-metrics\4.0.3\371cb699b09c40aecbbacee2abdbcdc84044ec39\spring-boot-starter-micrometer-metrics-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-actuator-autoconfigure\4.0.3\803d63b164bfacd85784ac34b37252efd9402c82\spring-boot-actuator-autoconfigure-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-health\4.0.3\a26d91fe08c055b28499583ff606fdc0809a688e\spring-boot-health-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\io.micrometer\micrometer-jakarta9\1.16.3\efde61d5eb6f754fbd48850f9c39b52003c66bea\micrometer-jakarta9-1.16.3.jar;C:\gradle\caches\modules-2\files-2.1\io.micrometer\micrometer-observation\1.16.3\2846fee03dd959802e7cebf0f26c9ae2a59176a4\micrometer-observation-1.16.3.jar;C:\gradle\caches\modules-2\files-2.1\com.fasterxml.jackson.core\jackson-core\2.20.2\615d3bd6d47b569e93d2ad45423f93ca9b002d73\jackson-core-2.20.2.jar;C:\gradle\caches\modules-2\files-2.1\com.fasterxml.jackson.core\jackson-annotations\2.20\6a5e7291ea3f2b590a7ce400adb7b3aea4d7e12c\jackson-annotations-2.20.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-autoconfigure\4.0.3\22e2d188c24d65ed1ffe97363c61e8246d2ed430\spring-boot-autoconfigure-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-logging\4.0.3\a53f6e8b383c6b5bac002a6ff6cd142f480944c6\spring-boot-starter-logging-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\jakarta.annotation\jakarta.annotation-api\3.0.0\54f928fadec906a99d558536756d171917b9d936\jakarta.annotation-api-3.0.0.jar;C:\gradle\caches\modules-2\files-2.1\org.yaml\snakeyaml\2.5\2d53ddec134280cb384c1e35d094e5f71c1f2316\snakeyaml-2.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.batch\spring-batch-core\6.0.2\442493336fb1447602140f0eeab14c90a906d786\spring-batch-core-6.0.2.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot\4.0.3\3cdf46caf2392aa752dfb956ee010b1d70fb9acd\spring-boot-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\com.zaxxer\HikariCP\7.0.2\c2b43c946b86a14a96342379e22b004c56c6166d\HikariCP-7.0.2.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-hibernate\4.0.3\edd51fa97e27adfe033493dd367c34f853559221\spring-boot-hibernate-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-data-commons\4.0.3\f8aae3b50818226648f19b1040cb720ee422c16\spring-boot-data-commons-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.data\spring-data-jpa\4.0.3\1e2f573cfeef6894fa077c7de0f7ee7502556ee3\spring-data-jpa-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-aspects\7.0.5\69189ba1f8996e79ae0317d45c6b969893b93e7a\spring-aspects-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-sql\4.0.3\afe39a694d946d9fc185922fd755e7d3fe197571\spring-boot-sql-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-transaction\4.0.3\e62e8857548d32ffc5666f0b947073930b12fe8b\spring-boot-transaction-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-jdbc\7.0.5\10cc68ecb63975683ceb923c2d07f09565ba5e82\spring-jdbc-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.data\spring-data-redis\4.0.3\484485bf5c0ee4cb8466fb0c95885eb481fb645c\spring-data-redis-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\io.lettuce\lettuce-core\6.8.2.RELEASE\a9dfbcd214fa6914220013de76da2657d47f8aa5\lettuce-core-6.8.2.RELEASE.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-jackson\4.0.3\ad6f3dff63a566bc57e100335dc5646b5b62f592\spring-boot-jackson-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-starter-tomcat-runtime\4.0.3\f6e949420af2eda6aa89192ffca5eb9f0e7dea6b\spring-boot-starter-tomcat-runtime-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-tomcat\4.0.3\28975c97048bac17c944b7b402715428dddf9c65\spring-boot-tomcat-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-web\7.0.5\b2edb5890bb10edcf1ac539b0a4ef1c105fe8db3\spring-web-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-servlet\4.0.3\7d435c96323d8fa917be8d70b2c2a001a8794ff4\spring-boot-servlet-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-webmvc\7.0.5\77b2de8c45182565be884a7158845cb3d6f23788\spring-webmvc-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-http-client\4.0.3\cf032939b133591d6fd7f0b56dbda83a80f7a4e7\spring-boot-http-client-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-webflux\7.0.5\773bda9dcc65d21d393253be85f4201120ef232f\spring-webflux-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-http2\4.2.10.Final\ce03862f1ce5e4bd5a8af688ac9f5146a8192867\netty-codec-http2-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-http3\4.2.10.Final\184732adcbe055968420c4f0ae84ac55d7a4ae89\netty-codec-http3-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.projectreactor.netty\reactor-netty-core\1.3.3\6765f13295369dbcfa1326167b265031c4caa231\reactor-netty-core-1.3.3.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-http\4.2.10.Final\93e6b3df76177423742ed10d48612b59e46f0c8c\netty-codec-http-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-resolver-dns-native-macos\4.2.10.Final\2248e8e4c2515e6a6cd39dc1e047a6db27853d7e\netty-resolver-dns-native-macos-4.2.10.Final-osx-x86_64.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-resolver-dns\4.2.10.Final\7424b52366c642e833e4cd5846c6ef07d05eb5c2\netty-resolver-dns-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-transport-native-epoll\4.2.10.Final\e629961393a508daab9480f6f2ae7b79deb5ea66\netty-transport-native-epoll-4.2.10.Final-linux-x86_64.jar;C:\gradle\caches\modules-2\files-2.1\io.projectreactor\reactor-core\3.8.3\513c88a7befa2e87519ff1797a739ea2a06edd80\reactor-core-3.8.3.jar;C:\gradle\caches\modules-2\files-2.1\org.jspecify\jspecify\1.0.0\7425a601c1c7ec76645a78d22b8c6a627edee507\jspecify-1.0.0.jar;C:\gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-stdlib\2.2.21\fa374a986e128314c3db00a20aae55f72a258511\kotlin-stdlib-2.2.21.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-micrometer-metrics\4.0.3\71e3082be1b56777f93f6d2c11b5754469c45f0f\spring-boot-micrometer-metrics-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-actuator\4.0.3\3a2f91c853b37198a49dd79daedffb868ce2b0a6\spring-boot-actuator-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\io.micrometer\micrometer-core\1.16.3\28555194fd12cb90560963520e157274ed1c9fbe\micrometer-core-1.16.3.jar;C:\gradle\caches\modules-2\files-2.1\io.micrometer\micrometer-commons\1.16.3\2ee3cbdd1c32d8cc6defd6ed8b21695dfcb1e763\micrometer-commons-1.16.3.jar;C:\gradle\caches\modules-2\files-2.1\org.apache.logging.log4j\log4j-to-slf4j\2.25.3\30adfb40cca243ec88cf7ec1fddb411ab55faa4f\log4j-to-slf4j-2.25.3.jar;C:\gradle\caches\modules-2\files-2.1\ch.qos.logback\logback-classic\1.5.32\2b1042c50f508f2eb402bd4d22ccbdf94cc37d2e\logback-classic-1.5.32.jar;C:\gradle\caches\modules-2\files-2.1\org.slf4j\jul-to-slf4j\2.0.17\524cb6ccc2b68a57604750e1ab8b13b5a786a6aa\jul-to-slf4j-2.0.17.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-context\7.0.5\f0bed37a25f4880f3e93a9556425394087bdc1e9\spring-context-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.batch\spring-batch-infrastructure\6.0.2\556aef3339d191befbe1cb71f8430c728e3ea158\spring-batch-infrastructure-6.0.2.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-aop\7.0.5\647607a091a862fdf1562764a8f41ef962b6c3cc\spring-aop-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-tx\7.0.5\d305e839f8d6a11ba4e12f3abbfda23e8ff7f946\spring-tx-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-beans\7.0.5\e20d1006aca78c2c58f5eb85d58bc60672a3527c\spring-beans-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-core\7.0.5\186a59c9647b6a87e9c5ca8a862b8ac478e9ea14\spring-core-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.slf4j\slf4j-api\2.0.17\d9e58ac9c7779ba3bf8142aff6c830617a7fe60f\slf4j-api-2.0.17.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-jpa\4.0.3\efae2341e25e140f4ccd2bf70337752193c10b8c\spring-boot-jpa-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-orm\7.0.5\bd9d32356ea016214154fe86cc49ec8d8eed854\spring-orm-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.hibernate.orm\hibernate-core\7.2.4.Final\b23aac4c9681a7f6a539e94fd18a985e517c7dcb\hibernate-core-7.2.4.Final.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-persistence\4.0.3\58ed08c6834a22536086d650a34a733baf37313d\spring-boot-persistence-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.data\spring-data-commons\4.0.3\da67d50cde92cade5e3e184266bc70a99cbf20af\spring-data-commons-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.antlr\antlr4-runtime\4.13.2\fc3db6d844df652a3d5db31c87fa12757f13691d\antlr4-runtime-4.13.2.jar;C:\gradle\caches\modules-2\files-2.1\org.aspectj\aspectjweaver\1.9.25.1\a713c790da4d794c7dfb542b550d4e44898d5e23\aspectjweaver-1.9.25.1.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.data\spring-data-keyvalue\4.0.3\8f93a9cdfbf93d35dcf251c898067138caed15b8\spring-data-keyvalue-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-context-support\7.0.5\b8edfc367e02a10bb72d8edb296c6a23f1802a6d\spring-context-support-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-oxm\7.0.5\6b94497f50a8bbec0f1a0d7c3e5d759a88df28a7\spring-oxm-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\redis.clients.authentication\redis-authx-core\0.1.1-beta2\4037345ff29fb22c737bab2ed116a34262718ae5\redis-authx-core-0.1.1-beta2.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-handler\4.2.10.Final\730b1c0df761ecae4de489b974efe29135d996f5\netty-handler-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-transport\4.2.10.Final\d9ce85a6b94fe584b0dec4b07230ac455ff975c1\netty-transport-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-common\4.2.10.Final\c55e97d9bd061a2d88418d2d831e1fa39cb975e7\netty-common-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\tools.jackson.core\jackson-databind\3.0.4\b5f818b0b9c79d344aede4b87064cc0e323f9ef2\jackson-databind-3.0.4.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-web-server\4.0.3\ed321647244629861a510d7df598d28689b2aa36\spring-boot-web-server-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.apache.tomcat.embed\tomcat-embed-websocket\11.0.18\7b0009018394a033e922e8e956d4947dce1ffd07\tomcat-embed-websocket-11.0.18.jar;C:\gradle\caches\modules-2\files-2.1\org.apache.tomcat.embed\tomcat-embed-core\11.0.18\a96bb1b8a21ee7e93ce01cce7fd63f8e7561ec92\tomcat-embed-core-11.0.18.jar;C:\gradle\caches\modules-2\files-2.1\org.apache.tomcat.embed\tomcat-embed-el\11.0.18\44a04ab91a1e046f436c1746d5a93d1fff57982f\tomcat-embed-el-11.0.18.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework\spring-expression\7.0.5\601ded105fb8580fe6c26cb87b1b005033c66350\spring-expression-7.0.5.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-base\4.2.10.Final\e81b71d93024736f174397bff1fdd590e0aa9c44\netty-codec-base-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-buffer\4.2.10.Final\b9b67175347d45b1caa5525440258904e01fac22\netty-buffer-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-compression\4.2.10.Final\5cc88546ee2ac730041eb33dff868037c8e85e78\netty-codec-compression-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-transport-native-unix-common\4.2.10.Final\8a8495c494ab2f5b0fdd93d2f670a1ea50a6b7de\netty-transport-native-unix-common-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-resolver\4.2.10.Final\888daac4608a9b5fa1a74763e0de88d0dbf459a4\netty-resolver-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-classes-quic\4.2.10.Final\348a01cb15365c3fa6ff704cdc67e1304291b263\netty-codec-classes-quic-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-handler-proxy\4.2.10.Final\4bbc9268168336caee75955a53b37867c99555c7\netty-handler-proxy-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-resolver-dns-classes-macos\4.2.10.Final\5a651824c09feba5cee9c99bd0b46a4ffbad1ad4\netty-resolver-dns-classes-macos-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-dns\4.2.10.Final\693b6a173f4e510c00d784f80d309c25ba547aaa\netty-codec-dns-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-transport-classes-epoll\4.2.10.Final\6d3396999238ce440c15c5258381f23b5f6083f3\netty-transport-classes-epoll-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\org.reactivestreams\reactive-streams\1.0.4\3864a1320d97d7b045f729a326e1e077661f31b7\reactive-streams-1.0.4.jar;C:\gradle\caches\modules-2\files-2.1\com.squareup.okio\okio-jvm\3.16.4\ceb794cf0bbf8d0d20f49aa91ce20db7fd77675d\okio-jvm-3.16.4.jar;C:\gradle\caches\modules-2\files-2.1\org.jetbrains\annotations\13.0\919f0dfe192fb4e063e7dacadee7f8bb9a2672a9\annotations-13.0.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-micrometer-observation\4.0.3\1da1d86ff5a7828e9713689c481f4deb4edee6ff\spring-boot-micrometer-observation-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.apache.logging.log4j\log4j-api\2.25.3\fb385330d89c2d61058ef649403f214633569205\log4j-api-2.25.3.jar;C:\gradle\caches\modules-2\files-2.1\biz.aQute.bnd\biz.aQute.bnd.annotation\7.1.0\2f2be18c936d08cf46ea6cfa0043f34afdf38705\biz.aQute.bnd.annotation-7.1.0.jar;C:\gradle\caches\modules-2\files-2.1\com.google.errorprone\error_prone_annotations\2.38.0\fc0ae991433e8590ba51cd558421478318a74c8c\error_prone_annotations-2.38.0.jar;C:\gradle\caches\modules-2\files-2.1\org.osgi\org.osgi.annotation.bundle\2.0.0\f5c2cd6e670c3c5d440d3003efd5ef2ead5c68eb\org.osgi.annotation.bundle-2.0.0.jar;C:\gradle\caches\modules-2\files-2.1\org.osgi\org.osgi.annotation.versioning\1.1.2\dc3cd4ec96c0b3c5459fe00694bd73a816ecf93e\org.osgi.annotation.versioning-1.1.2.jar;C:\gradle\caches\modules-2\files-2.1\ch.qos.logback\logback-core\1.5.32\fdfb3ff9a842303d4a95207294a6c6bc64e2605d\logback-core-1.5.32.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.retry\spring-retry\2.0.12\62a14736086ffd6f382f0df3bf066a5a34f174fa\spring-retry-2.0.12.jar;C:\gradle\caches\modules-2\files-2.1\commons-logging\commons-logging\1.3.5\a3fcc5d3c29b2b03433aa2d2f2d2c1b1638924a1\commons-logging-1.3.5.jar;C:\gradle\caches\modules-2\files-2.1\jakarta.persistence\jakarta.persistence-api\3.2.0\bb75a113f3fa191c2c7ee7b206d8e674251b3129\jakarta.persistence-api-3.2.0.jar;C:\gradle\caches\modules-2\files-2.1\jakarta.transaction\jakarta.transaction-api\2.0.1\51a520e3fae406abb84e2e1148e6746ce3f80a1a\jakarta.transaction-api-2.0.1.jar;C:\gradle\caches\modules-2\files-2.1\tools.jackson.core\jackson-core\3.0.4\c5be0f5814e161030c29fc48b92c27331729ab7f\jackson-core-3.0.4.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-socks\4.2.10.Final\e5d86f1a262144797acdd875f8a3ca55f22125b2\netty-codec-socks-4.2.10.Final.jar;C:\gradle\caches\modules-2\files-2.1\org.osgi\org.osgi.resource\1.0.0\343c88949132984b3f2d4175a72c40b77dc65619\org.osgi.resource-1.0.0.jar;C:\gradle\caches\modules-2\files-2.1\org.osgi\org.osgi.service.serviceloader\1.0.0\3728ff37909c6a3c1870b3e851342d9f2bd3cc63\org.osgi.service.serviceloader-1.0.0.jar;C:\gradle\caches\modules-2\files-2.1\org.postgresql\postgresql\42.7.10\35100a3f0899551e27af8fed4a3414619a4663b3\postgresql-42.7.10.jar;C:\gradle\caches\modules-2\files-2.1\org.checkerframework\checker-qual\3.52.0\9c17f496846ab1fca8975c6a50ceac0b3bbe63f0\checker-qual-3.52.0.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-netty\4.0.3\9fac5e7a1faaf5a62df0b5fa3a4b0bb78bbfb21\spring-boot-netty-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.springframework.boot\spring-boot-http-codec\4.0.3\6f6ce2f0cbf72cfbd7bb5cbcff7a6e432cf3fa8f\spring-boot-http-codec-4.0.3.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-native-quic\4.2.10.Final\9a20d34319b3ea82432ce862b4d567e5df7f1123\netty-codec-native-quic-4.2.10.Final-linux-aarch_64.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-native-quic\4.2.10.Final\5b9b0c3d98adff43db51bdf7e96b06732546c7f9\netty-codec-native-quic-4.2.10.Final-linux-x86_64.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-native-quic\4.2.10.Final\b9ccc13af94185c895dbeafbb24e7fef0adab117\netty-codec-native-quic-4.2.10.Final-osx-aarch_64.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-native-quic\4.2.10.Final\2b71f2360588cc57075ed35fe3684eb04a02a67c\netty-codec-native-quic-4.2.10.Final-osx-x86_64.jar;C:\gradle\caches\modules-2\files-2.1\io.netty\netty-codec-native-quic\4.2.10.Final\552442784cc9304b6ffe6a6bcce05881012890bb\netty-codec-native-quic-4.2.10.Final-windows-x86_64.jar;C:\gradle\caches\modules-2\files-2.1\org.hdrhistogram\HdrHistogram\2.2.2\7959933ebcc0f05b2eaa5af0a0c8689fa257b15c\HdrHistogram-2.2.2.jar;C:\gradle\caches\modules-2\files-2.1\org.latencyutils\LatencyUtils\2.0.3\769c0b82cb2421c8256300e907298a9410a2a3d3\LatencyUtils-2.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.hibernate.models\hibernate-models\1.0.1\3158c5f9309494b905de62c72f6f02d108aea651\hibernate-models-1.0.1.jar;C:\gradle\caches\modules-2\files-2.1\org.jboss.logging\jboss-logging\3.6.2.Final\3e0a139d7a74cc13b5e01daa8aaa7f71dccd577e\jboss-logging-3.6.2.Final.jar;C:\gradle\caches\modules-2\files-2.1\com.fasterxml\classmate\1.7.3\f61c7e7b81e9249b0f6a05914eff9d54fb09f4a0\classmate-1.7.3.jar;C:\gradle\caches\modules-2\files-2.1\net.bytebuddy\byte-buddy\1.17.8\af5735f63d00ca47a9375fae5c7471a36331c6ed\byte-buddy-1.17.8.jar;C:\gradle\caches\modules-2\files-2.1\org.glassfish.jaxb\jaxb-runtime\4.0.6\fb95ebb62564657b2fedfe165b859789ef3a8711\jaxb-runtime-4.0.6.jar;C:\gradle\caches\modules-2\files-2.1\jakarta.xml.bind\jakarta.xml.bind-api\4.0.4\d6d2327f3817d9a33a3b6b8f2e15a96bc2e7afdc\jakarta.xml.bind-api-4.0.4.jar;C:\gradle\caches\modules-2\files-2.1\jakarta.inject\jakarta.inject-api\2.0.1\4c28afe1991a941d7702fe1362c365f0a8641d1e\jakarta.inject-api-2.0.1.jar;C:\gradle\caches\modules-2\files-2.1\org.glassfish.jaxb\jaxb-core\4.0.6\8e61282303777fc98a00cc3affd0560d68748a75\jaxb-core-4.0.6.jar;C:\gradle\caches\modules-2\files-2.1\jakarta.activation\jakarta.activation-api\2.1.4\9e5c2a0d75dde71a0bedc4dbdbe47b78a5dc50f8\jakarta.activation-api-2.1.4.jar;C:\gradle\caches\modules-2\files-2.1\org.eclipse.angus\angus-activation\2.0.3\7f80607ea5014fef0b1779e6c33d63a88a45a563\angus-activation-2.0.3.jar;C:\gradle\caches\modules-2\files-2.1\org.glassfish.jaxb\txw2\4.0.6\4f4cd53b5ff9a2c5aa1211f15ed2569c57dfb044\txw2-4.0.6.jar;C:\gradle\caches\modules-2\files-2.1\com.sun.istack\istack-commons-runtime\4.1.2\18ec117c85f3ba0ac65409136afa8e42bc74e739\istack-commons-runtime-4.1.2.jar org.invest.apiorchestrator.ApiOrchestratorApplication
+[dotenv] .env 로드: C:\Users\LeeHoYoung\IdeaProjects\t\stockmate-ai\.env
+
+.   ____          _            __ _ _
+/\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+\\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+'  |____| .__|_| |_|_| |_\__, | / / / /
+=========|_|==============|___/=/_/_/_/
+
+:: Spring Boot ::                (v4.0.3)
+
+2026-03-23T10:40:43.383+09:00  INFO 43964 --- [           main] o.i.a.ApiOrchestratorApplication         : Starting ApiOrchestratorApplication using Java 25.0.2 with PID 43964 (C:\Users\LeeHoYoung\IdeaProjects\t\stockmate-ai\api-orchestrator\build\classes\java\main started by LeeHoYoung in C:\Users\LeeHoYoung\IdeaProjects\t\stockmate-ai)
+2026-03-23T10:40:43.386+09:00  INFO 43964 --- [           main] o.i.a.ApiOrchestratorApplication         : No active profile set, falling back to 1 default profile: "default"
+2026-03-23T10:40:44.087+09:00  INFO 43964 --- [           main] .s.d.r.c.RepositoryConfigurationDelegate : Multiple Spring Data modules found, entering strict repository configuration mode
+2026-03-23T10:40:44.087+09:00  INFO 43964 --- [           main] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data JPA repositories in DEFAULT mode.
+2026-03-23T10:40:44.236+09:00  INFO 43964 --- [           main] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 140 ms. Found 6 JPA repository interfaces.
+2026-03-23T10:40:44.505+09:00  INFO 43964 --- [           main] .s.d.r.c.RepositoryConfigurationDelegate : Multiple Spring Data modules found, entering strict repository configuration mode
+2026-03-23T10:40:44.506+09:00  INFO 43964 --- [           main] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-03-23T10:40:44.554+09:00  INFO 43964 --- [           main] .RepositoryConfigurationExtensionSupport : Spring Data Redis - Could not safely identify store assignment for repository candidate interface org.invest.apiorchestrator.repository.EconomicEventRepository; If you want this repository to be a Redis repository, consider annotating your entities with one of these annotations: org.springframework.data.redis.core.RedisHash (preferred), or consider extending one of the following types with your repository: org.springframework.data.keyvalue.repository.KeyValueRepository
+2026-03-23T10:40:44.554+09:00  INFO 43964 --- [           main] .RepositoryConfigurationExtensionSupport : Spring Data Redis - Could not safely identify store assignment for repository candidate interface org.invest.apiorchestrator.repository.KiwoomTokenRepository; If you want this repository to be a Redis repository, consider annotating your entities with one of these annotations: org.springframework.data.redis.core.RedisHash (preferred), or consider extending one of the following types with your repository: org.springframework.data.keyvalue.repository.KeyValueRepository
+2026-03-23T10:40:44.555+09:00  INFO 43964 --- [           main] .RepositoryConfigurationExtensionSupport : Spring Data Redis - Could not safely identify store assignment for repository candidate interface org.invest.apiorchestrator.repository.NewsAnalysisRepository; If you want this repository to be a Redis repository, consider annotating your entities with one of these annotations: org.springframework.data.redis.core.RedisHash (preferred), or consider extending one of the following types with your repository: org.springframework.data.keyvalue.repository.KeyValueRepository
+2026-03-23T10:40:44.555+09:00  INFO 43964 --- [           main] .RepositoryConfigurationExtensionSupport : Spring Data Redis - Could not safely identify store assignment for repository candidate interface org.invest.apiorchestrator.repository.TradingSignalRepository; If you want this repository to be a Redis repository, consider annotating your entities with one of these annotations: org.springframework.data.redis.core.RedisHash (preferred), or consider extending one of the following types with your repository: org.springframework.data.keyvalue.repository.KeyValueRepository
+2026-03-23T10:40:44.555+09:00  INFO 43964 --- [           main] .RepositoryConfigurationExtensionSupport : Spring Data Redis - Could not safely identify store assignment for repository candidate interface org.invest.apiorchestrator.repository.ViEventRepository; If you want this repository to be a Redis repository, consider annotating your entities with one of these annotations: org.springframework.data.redis.core.RedisHash (preferred), or consider extending one of the following types with your repository: org.springframework.data.keyvalue.repository.KeyValueRepository
+2026-03-23T10:40:44.555+09:00  INFO 43964 --- [           main] .RepositoryConfigurationExtensionSupport : Spring Data Redis - Could not safely identify store assignment for repository candidate interface org.invest.apiorchestrator.repository.WsTickDataRepository; If you want this repository to be a Redis repository, consider annotating your entities with one of these annotations: org.springframework.data.redis.core.RedisHash (preferred), or consider extending one of the following types with your repository: org.springframework.data.keyvalue.repository.KeyValueRepository
+2026-03-23T10:40:44.555+09:00  INFO 43964 --- [           main] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 40 ms. Found 0 Redis repository interfaces.
+2026-03-23T10:40:45.207+09:00  INFO 43964 --- [           main] o.s.boot.tomcat.TomcatWebServer          : Tomcat initialized with port 8080 (http)
+2026-03-23T10:40:45.220+09:00  INFO 43964 --- [           main] o.apache.catalina.core.StandardService   : Starting service [Tomcat]
+2026-03-23T10:40:45.220+09:00  INFO 43964 --- [           main] o.apache.catalina.core.StandardEngine    : Starting Servlet engine: [Apache Tomcat/11.0.18]
+2026-03-23T10:40:45.325+09:00  INFO 43964 --- [           main] b.w.c.s.WebApplicationContextInitializer : Root WebApplicationContext: initialization completed in 1895 ms
+2026-03-23T10:40:45.567+09:00  INFO 43964 --- [           main] org.hibernate.orm.jpa                    : HHH008540: Processing PersistenceUnitInfo [name: default]
+2026-03-23T10:40:45.634+09:00  INFO 43964 --- [           main] org.hibernate.orm.core                   : HHH000001: Hibernate ORM core version 7.2.4.Final
+2026-03-23T10:40:46.181+09:00  INFO 43964 --- [           main] o.s.o.j.p.SpringPersistenceUnitInfo      : No LoadTimeWeaver setup: ignoring JPA class transformer
+2026-03-23T10:40:46.216+09:00  INFO 43964 --- [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Starting...
+2026-03-23T10:40:46.399+09:00  INFO 43964 --- [           main] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@623a891d
+2026-03-23T10:40:46.400+09:00  INFO 43964 --- [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Start completed.
+2026-03-23T10:40:46.472+09:00  INFO 43964 --- [           main] org.hibernate.orm.connections.pooling    : HHH10001005: Database info:
+Database JDBC URL [jdbc:postgresql://localhost:5432/SMA]
+Database driver: PostgreSQL JDBC Driver
+Database dialect: PostgreSQLDialect
+Database version: 18.3
+Default catalog/schema: SMA/public
+Autocommit mode: undefined/unknown
+Isolation level: READ_COMMITTED [default READ_COMMITTED]
+JDBC fetch size: none
+Pool: DataSourceConnectionProvider
+Minimum pool size: undefined/unknown
+Maximum pool size: undefined/unknown
+2026-03-23T10:40:47.611+09:00  INFO 43964 --- [           main] org.hibernate.orm.core                   : HHH000489: No JTA platform available (set 'hibernate.transaction.jta.platform' to enable JTA platform integration)
+2026-03-23T10:40:47.744+09:00  INFO 43964 --- [           main] j.LocalContainerEntityManagerFactoryBean : Initialized JPA EntityManagerFactory for persistence unit 'default'
+2026-03-23T10:40:47.976+09:00  INFO 43964 --- [           main] o.s.d.j.r.query.QueryEnhancerFactories   : Hibernate is in classpath; If applicable, HQL parser will be used.
+2026-03-23T10:40:48.533+09:00  INFO 43964 --- [           main] o.i.apiorchestrator.config.RedisConfig   : Redis 연결 설정 - localhost:6379:cv93523827 (인증 사용)
+2026-03-23T10:40:48.873+09:00  INFO 43964 --- [           main] o.i.a.config.KiwoomRateLimiter           : [RateLimiter] 키움 API Rate Limiter 시작 – 최대 3req/s (333ms 간격)
+2026-03-23T10:40:49.575+09:00  WARN 43964 --- [           main] JpaBaseConfiguration$JpaWebConfiguration : spring.jpa.open-in-view is enabled by default. Therefore, database queries may be performed during view rendering. Explicitly configure spring.jpa.open-in-view to disable this warning
+2026-03-23T10:40:50.115+09:00  INFO 43964 --- [           main] o.s.b.a.e.web.EndpointLinksResolver      : Exposing 2 endpoints beneath base path '/actuator'
+2026-03-23T10:40:50.187+09:00  INFO 43964 --- [           main] o.s.boot.tomcat.TomcatWebServer          : Tomcat started on port 8080 (http) with context path '/'
+2026-03-23T10:40:50.200+09:00  INFO 43964 --- [           main] o.i.a.ApiOrchestratorApplication         : Started ApiOrchestratorApplication in 7.228 seconds (process running for 7.891)
+2026-03-23T10:40:50.207+09:00  INFO 43964 --- [           main] o.s.b.b.a.JobLauncherApplicationRunner   : Running default command line with: []
+2026-03-23T10:40:50.208+09:00  INFO 43964 --- [           main] o.i.a.ApplicationStartupRunner           : === 키움 트레이딩 시스템 시작 ===
+2026-03-23T10:40:50.217+09:00  INFO 43964 --- [           main] o.i.a.service.TokenService               : 키움 액세스 토큰 발급 요청
+2026-03-23T10:40:50.218+09:00  INFO 43964 --- [           main] o.i.a.service.TokenService               : yIsCIHF-XhMzSo1IeC6lLRFO-yDI7yWXbvVD6DhsXZY / lt3YJHrNgE2bid6shK3J1aaCZXa5UATbCILHATG09Sw
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/C:/gradle/caches/modules-2/files-2.1/io.netty/netty-common/4.2.10.Final/c55e97d9bd061a2d88418d2d831e1fa39cb975e7/netty-common-4.2.10.Final.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+2026-03-23T10:40:51.311+09:00  INFO 43964 --- [           main] o.i.a.service.TokenService               : 토큰 발급 완료 - 만료: 2026-03-24T10:06:34
+2026-03-23T10:40:51.323+09:00  INFO 43964 --- [           main] o.i.a.ApplicationStartupRunner           : 초기 토큰 발급 완료
+2026-03-23T10:40:51.324+09:00  INFO 43964 --- [           main] o.i.a.ApplicationStartupRunner           : 정규장 시간 - 실시간 시세 구독 시작
+2026-03-23T10:40:51.358+09:00  INFO 43964 --- [           main] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 시도: wss://api.kiwoom.com:10000/api/dostk/websocket
+2026-03-23T10:40:51.491+09:00  INFO 43964 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 연결 성공 – LOGIN 패킷 전송 중
+2026-03-23T10:40:51.521+09:00  INFO 43964 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : LOGIN 패킷 전송 완료
+2026-03-23T10:40:51.575+09:00  INFO 43964 --- [m.com:10000/...] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket LOGIN 성공 – connected = true
+2026-03-23T10:40:53.426+09:00  INFO 43964 --- [           main] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=32개
+2026-03-23T10:40:53.727+09:00  INFO 43964 --- [           main] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=32개
+2026-03-23T10:40:54.029+09:00  INFO 43964 --- [           main] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
+2026-03-23T10:40:54.031+09:00  INFO 43964 --- [           main] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=32개, 호가=32개
+2026-03-23T10:40:54.031+09:00  INFO 43964 --- [           main] o.i.a.ApplicationStartupRunner           : === 시스템 초기화 완료 ===
+2026-03-23T10:40:54.108+09:00  INFO 43964 --- [192.168.219.108] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-03-23T10:40:54.109+09:00  INFO 43964 --- [192.168.219.108] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
+2026-03-23T10:40:54.112+09:00  INFO 43964 --- [192.168.219.108] o.s.web.servlet.DispatcherServlet        : Completed initialization in 3 ms
+2026-03-23T10:42:00.003+09:00  INFO 43964 --- [   scheduling-1] o.i.a.scheduler.TradingScheduler         : [S4] 장대양봉 스캔 (사전 필터링 적용, news=CONTINUE)
+2026-03-23T10:42:00.073+09:00  INFO 43964 --- [   scheduling-1] o.i.a.scheduler.TradingScheduler         : [S4] 사전 필터 결과 – volSurge=14건 priceSurge=65건 union=74건
+2026-03-23T10:42:50.208+09:00  WARN 43964 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] tick 데이터 누락 32/32 (100.0%) → WS 재연결 시도
+2026-03-23T10:42:50.210+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=32개
+2026-03-23T10:42:50.511+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=32개
+2026-03-23T10:42:50.812+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
+2026-03-23T10:42:50.812+09:00  INFO 43964 --- [   scheduling-1] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=32개, 호가=32개
+2026-03-23T10:42:50.818+09:00  INFO 43964 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] SYSTEM_ALERT 발행: 1건 경고
+2026-03-23T10:43:50.827+09:00  WARN 43964 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] tick 데이터 누락 32/32 (100.0%) → WS 재연결 시도
+2026-03-23T10:43:50.828+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=32개
+2026-03-23T10:43:51.129+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=32개
+2026-03-23T10:43:51.431+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
+2026-03-23T10:43:51.431+09:00  INFO 43964 --- [   scheduling-1] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=32개, 호가=32개
+2026-03-23T10:44:51.536+09:00  WARN 43964 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] tick 데이터 누락 32/32 (100.0%) → WS 재연결 시도
+2026-03-23T10:44:51.537+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=32개
+2026-03-23T10:44:51.839+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=32개
+2026-03-23T10:44:52.140+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
+2026-03-23T10:44:52.140+09:00  INFO 43964 --- [   scheduling-1] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=32개, 호가=32개
+2026-03-23T10:44:59.998+09:00  INFO 43964 --- [   scheduling-1] o.i.a.scheduler.TradingScheduler         : [S3] 외인+기관 스캔 (news=CONTINUE, max=5)
+2026-03-23T10:44:59.998+09:00  INFO 43964 --- [   scheduling-1] o.i.a.service.StrategyService            : [S3] 외인+기관 동시 순매수 스캔 [001]
+2026-03-23T10:45:00.018+09:00  INFO 43964 --- [   scheduling-1] o.i.a.service.StrategyService            : [S3] 외인+기관 동시 순매수 스캔 [101]
+2026-03-23T10:45:00.040+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=32개
+2026-03-23T10:45:00.340+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=32개
+2026-03-23T10:45:00.642+09:00  INFO 43964 --- [   scheduling-1] o.i.a.scheduler.TradingScheduler         : [S4] 장대양봉 스캔 (사전 필터링 적용, news=CONTINUE)
+2026-03-23T10:45:00.697+09:00  INFO 43964 --- [   scheduling-1] o.i.a.scheduler.TradingScheduler         : [S4] 사전 필터 결과 – volSurge=9건 priceSurge=47건 union=56건
+2026-03-23T10:45:52.152+09:00  WARN 43964 --- [   scheduling-1] o.i.a.scheduler.DataQualityScheduler     : [DataQuality] tick 데이터 누락 32/32 (100.0%) → WS 재연결 시도
+2026-03-23T10:45:52.153+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=1 type=0B items=32개
+2026-03-23T10:45:52.454+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=2 type=0D items=32개
+2026-03-23T10:45:52.755+09:00  INFO 43964 --- [   scheduling-1] o.i.a.websocket.KiwoomWebSocketClient    : WebSocket 구독 등록 grp=4 type=1h items=1개
+2026-03-23T10:45:52.755+09:00  INFO 43964 --- [   scheduling-1] o.i.a.w.WebSocketSubscriptionManager     : 정규장 구독 완료: 체결=32개, 호가=32개
+
 
 위 콘솔 로그는 [api-orchestrator](api-orchestrator) 입니다.
 
 C:\Users\LeeHoYoung\IdeaProjects\t\stockmate-ai\.venv\Scripts\python.exe C:/Users/LeeHoYoung/IdeaProjects/t/stockmate-ai/websocket-listener/main.py
-2026-03-23 02:40:29,935 [INFO] main – ==================================================
-2026-03-23 02:40:29,935 [INFO] main –   StockMate AI – WebSocket Listener 시작
-2026-03-23 02:40:29,935 [INFO] main – ==================================================
-2026-03-23 02:40:29,945 [INFO] main – [Redis] 연결 성공 → localhost:6379
-2026-03-23 02:40:29,946 [INFO] health_server – [Health] 헬스체크 서버 시작 → http://0.0.0.0:8081/health
-2026-03-23 02:40:29,946 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:40:29,946 [INFO] ws_client – [WS] 연결 시도 #1 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:40:30,081 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:40:30,082 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:40:40,092 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:40:43,103 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:40:43,103 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:40:43,223 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:40:43,224 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:40:53,234 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:40:56,248 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:40:56,248 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:40:56,382 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:40:56,383 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:41:06,391 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:41:09,392 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:41:09,392 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:41:09,521 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:41:09,522 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:41:19,533 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:41:22,547 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:41:22,547 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:41:22,651 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:41:22,653 [INFO] ws_client – [WS] 구독 grp=5 type=0B 1개
-2026-03-23 02:41:22,963 [INFO] ws_client – [WS] 구독 grp=6 type=0H 1개
-2026-03-23 02:41:23,269 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:41:23,585 [INFO] ws_client – [WS] 구독 grp=8 type=0D 1개
-2026-03-23 02:41:33,594 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:41:36,604 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:41:36,604 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:41:36,715 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:41:36,716 [INFO] ws_client – [WS] 구독 grp=5 type=0B 1개
-2026-03-23 02:41:37,031 [INFO] ws_client – [WS] 구독 grp=6 type=0H 1개
-2026-03-23 02:41:37,335 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:41:37,643 [INFO] ws_client – [WS] 구독 grp=8 type=0D 1개
-2026-03-23 02:41:47,652 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:41:50,653 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:41:50,654 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:41:50,792 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:41:50,793 [INFO] ws_client – [WS] 구독 grp=5 type=0B 1개
-2026-03-23 02:41:51,094 [INFO] ws_client – [WS] 구독 grp=6 type=0H 1개
-2026-03-23 02:41:51,400 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:41:51,706 [INFO] ws_client – [WS] 구독 grp=8 type=0D 1개
-2026-03-23 02:42:01,717 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:42:04,725 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:42:04,725 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:42:04,826 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:42:04,827 [INFO] ws_client – [WS] 구독 grp=5 type=0B 1개
-2026-03-23 02:42:05,136 [INFO] ws_client – [WS] 구독 grp=6 type=0H 1개
-2026-03-23 02:42:05,440 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:42:05,746 [INFO] ws_client – [WS] 구독 grp=8 type=0D 1개
-2026-03-23 02:42:15,755 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:42:18,762 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:42:18,762 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:42:18,901 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:42:18,902 [INFO] ws_client – [WS] 구독 grp=5 type=0B 1개
-2026-03-23 02:42:19,216 [INFO] ws_client – [WS] 구독 grp=6 type=0H 1개
-2026-03-23 02:42:19,521 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:42:19,828 [INFO] ws_client – [WS] 구독 grp=8 type=0D 1개
-2026-03-23 02:42:29,837 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:42:32,839 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:42:32,839 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:42:32,967 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:42:32,968 [INFO] ws_client – [WS] 구독 grp=5 type=0B 1개
-2026-03-23 02:42:33,279 [INFO] ws_client – [WS] 구독 grp=6 type=0H 1개
-2026-03-23 02:42:33,586 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:42:33,890 [INFO] ws_client – [WS] 구독 grp=8 type=0D 1개
-2026-03-23 02:42:44,120 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:42:47,122 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:42:47,122 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:42:47,235 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:42:47,236 [INFO] ws_client – [WS] 구독 grp=5 type=0B 1개
-2026-03-23 02:42:47,548 [INFO] ws_client – [WS] 구독 grp=6 type=0H 1개
-2026-03-23 02:42:47,854 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:42:48,165 [INFO] ws_client – [WS] 구독 grp=8 type=0D 1개
-2026-03-23 02:42:58,173 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:43:01,184 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
-2026-03-23 02:43:01,185 [INFO] ws_client – [WS] 연결 시도 #2 → wss://mockapi.kiwoom.com:10000/api/dostk/websocket
-2026-03-23 02:43:01,303 [INFO] ws_client – [WS] 연결 성공
-2026-03-23 02:43:01,304 [INFO] ws_client – [WS] 구독 grp=5 type=0B 1개
-2026-03-23 02:43:01,609 [INFO] ws_client – [WS] 구독 grp=6 type=0H 1개
-2026-03-23 02:43:01,915 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
-2026-03-23 02:43:02,220 [INFO] ws_client – [WS] 구독 grp=8 type=0D 1개
-2026-03-23 02:43:12,229 [INFO] ws_client – [WS] 3.0초 후 재연결 (1번째)
-2026-03-23 02:43:13,578 [INFO] main – [Main] 종료 시그널 수신 (2)
-2026-03-23 02:43:13,579 [INFO] main – [Main] 종료 완료
+2026-03-23 10:41:13,063 [INFO] main – ==================================================
+2026-03-23 10:41:13,063 [INFO] main –   StockMate AI – WebSocket Listener 시작
+2026-03-23 10:41:13,063 [INFO] main – ==================================================
+2026-03-23 10:41:13,072 [INFO] main – [Redis] 연결 성공 → localhost:6379
+2026-03-23 10:41:13,073 [INFO] health_server – [Health] 헬스체크 서버 시작 → http://0.0.0.0:8081/health
+2026-03-23 10:41:13,074 [INFO] token_loader – [Token] Redis 토큰 로드 성공 (시도 1회)
+2026-03-23 10:41:13,074 [INFO] ws_client – [WS] 연결 시도 #1 → wss://api.kiwoom.com:10000/api/dostk/websocket
+2026-03-23 10:41:13,190 [INFO] ws_client – [WS] 연결 성공
+2026-03-23 10:41:13,190 [INFO] ws_client – [WS] LOGIN 패킷 전송 완료
+2026-03-23 10:41:13,229 [INFO] ws_client – [WS] LOGIN 성공 – return_code=0
+2026-03-23 10:41:13,231 [INFO] ws_client – [WS] 구독 grp=5 type=0B 32개
+2026-03-23 10:41:13,535 [INFO] ws_client – [WS] 구독 grp=6 type=0H 32개
+2026-03-23 10:41:13,841 [INFO] ws_client – [WS] 구독 grp=7 type=1h 1개
+2026-03-23 10:41:14,147 [INFO] ws_client – [WS] 구독 grp=8 type=0D 32개
+
 
 이것은 [websocket-listener](websocket-listener) 콘솔 로그입니다.,
 
-[2026-03-23 오전 2:41] 이 호영: /status
-[2026-03-23 오전 2:41] SMA: 🟢 System Status
-Java API: UP | kiwoom-trading
 
-📡 WebSocket
-Python WS: ❌ Offline (TTL expired)
-Java WS:   ❌ Disconnected
+ai_scored_queue
 
-📊 Claude AI Today
-Calls: 0 / 100
-Tokens: 0
-[2026-03-23 오전 2:41] 이 호영: /wsStart
-[2026-03-23 오전 2:41] SMA: 📡 WebSocket 구독 시작 완료
-[2026-03-23 오전 2:41] 이 호영: /status
-[2026-03-23 오전 2:41] SMA: 🟢 System Status
-Java API: UP | kiwoom-trading
+key=1, value ={"alerts":["📡 WebSocket 데이터 이상 (누락 100%) – 재연결 완료"],"type":"SYSTEM_ALERT","message":"🔧 <b>[시스템 경고]</b>\n📡 WebSocket 데이터 이상 (누락 100%) – 재연결 완료"}\
 
-📡 WebSocket
-Python WS: ❌ Offline (TTL expired)
-Java WS:   ❌ Disconnected
+ws:connected
 
-📊 Claude AI Today
-Calls: 0 / 100
-Tokens: 0
-[2026-03-23 오전 2:41] 이 호영: /wsStart
-[2026-03-23 오전 2:41] SMA: 📡 WebSocket 구독 시작 완료
-[2026-03-23 오전 2:42] 이 호영: /status
-[2026-03-23 오전 2:42] SMA: 🟢 System Status
-Java API: UP | kiwoom-trading
+key = 1, value = 1
+ws:heartbeat
 
-📡 WebSocket
-Python WS: ❌ Offline (TTL expired)
-Java WS:   ❌ Disconnected
+key = 1, value = 1
+ws:stable
 
-📊 Claude AI Today
-Calls: 0 / 100
-Tokens: 0
-
-텔레그램 메시지 내역 입니다.
+key = 1, value = 1

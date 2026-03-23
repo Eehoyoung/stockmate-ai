@@ -185,6 +185,21 @@ async function processItem(bot, item) {
         return;
     }
 
+    // PRE_MARKET_BRIEF – 08:30 장전 뉴스 브리핑
+    if (item.type === 'PRE_MARKET_BRIEF') {
+        const chatIds = getAllowedChatIds();
+        const message = item.message || '📰 장전 뉴스 브리핑';
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
+            } catch (e) {
+                console.error(`[Signal] PRE_MARKET_BRIEF 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        console.log('[Signal] PRE_MARKET_BRIEF 발송 완료');
+        return;
+    }
+
     // MIDDAY_REPORT – 12:30 오전 중간 보고
     if (item.type === 'MIDDAY_REPORT') {
         const chatIds = getAllowedChatIds();

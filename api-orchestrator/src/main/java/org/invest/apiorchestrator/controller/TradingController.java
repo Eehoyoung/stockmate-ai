@@ -138,6 +138,37 @@ public class TradingController {
                 "signals", signals, "published", cnt));
     }
 
+    /** 전술 10 수동 실행 (52주 신고가 돌파) */
+    @PostMapping("/strategy/s10/run")
+    public ResponseEntity<Map<String, Object>> runS10() {
+        List<String> candidates = candidateService.getAllCandidates().stream()
+                .limit(30).toList();
+        int cnt = 0;
+        for (String stkCd : candidates) {
+            var sigOpt = strategyService.checkNewHigh(stkCd);
+            if (sigOpt.isPresent() && signalService.processSignal(sigOpt.get())) {
+                cnt++;
+                if (cnt >= 5) break;
+            }
+        }
+        return ResponseEntity.ok(Map.of("strategy", "S10_NEW_HIGH", "published", cnt));
+    }
+
+    /** 전술 12 수동 실행 (종가 강도 매수) */
+    @PostMapping("/strategy/s12/run")
+    public ResponseEntity<Map<String, Object>> runS12() {
+        List<String> candidates = candidateService.getAllCandidates();
+        int cnt = 0;
+        for (String stkCd : candidates) {
+            var sigOpt = strategyService.checkClosingStrength(stkCd);
+            if (sigOpt.isPresent() && signalService.processSignal(sigOpt.get())) {
+                cnt++;
+                if (cnt >= 5) break;
+            }
+        }
+        return ResponseEntity.ok(Map.of("strategy", "S12_CLOSING", "published", cnt));
+    }
+
     /** WebSocket 수동 연결/구독 */
     @PostMapping("/ws/connect")
     public ResponseEntity<Map<String, String>> connectWs() {

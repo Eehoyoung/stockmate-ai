@@ -149,26 +149,24 @@ public class KiwoomWebSocketClient {
 
         @Override
         public void onOpen(WebSocket ws, Response response) {
-            connected.set(true);
             reconnectCount.set(0);
             voluntaryClose = false;
-            log.info("WebSocket 연결 성공");
-            redisService.setWsConnected(true);
+            log.info("WebSocket 연결 성공 – LOGIN 패킷 전송 중");
+            // connected 는 LOGIN 응답(return_code=0) 수신 후 설정됨
 
-            // 이전 ping 스케줄 취소 (재연결 시 중복 방지)
-            if (pingFuture != null && !pingFuture.isCancelled()) {
-                pingFuture.cancel(false);
+            // ── LOGIN 패킷 전송 (키움 WS 프로토콜 필수) ──────────────
+            // HTTP 헤더 인증과 별개로 반드시 LOGIN 패킷을 먼저 전송해야
+            // 실시간 데이터 구독(REG)이 가능함. 미전송 시 서버가 ~10초 후
+            // code=1000 "Bye" 로 연결 종료.
+            try {
+                String loginJson = objectMapper.writeValueAsString(
+                        Map.of("trnm", "LOGIN", "token", tokenService.getValidToken()));
+                ws.send(loginJson);
+                log.info("LOGIN 패킷 전송 완료");
+            } catch (Exception e) {
+                log.error("LOGIN 패킷 전송 실패: {}", e.getMessage());
+                ws.close(1011, "LOGIN 전송 오류");
             }
-            // 새 Ping 스케줄 시작 (ping마다 Redis heartbeat 갱신)
-            int pingInterval = properties.getWebsocket().getPingIntervalSeconds();
-            pingFuture = pingExecutor.scheduleAtFixedRate(
-                    () -> {
-                        if (connected.get()) {
-                            ws.send("{\"trnm\":\"PING\"}");
-                            redisService.refreshWsHeartbeat();
-                        }
-                    },
-                    pingInterval, pingInterval, TimeUnit.SECONDS);
         }
 
         @Override
@@ -178,12 +176,13 @@ public class KiwoomWebSocketClient {
                 String trnm = root.path("trnm").asText("");
 
                 switch (trnm) {
-                    case "PING" -> ws.send("{\"trnm\":\"PONG\"}");
-                    case "0B"   -> handleStockTick(root);
-                    case "0D"   -> handleHoga(root);
-                    case "0H"   -> handleExpected(root);
-                    case "1h"   -> handleVi(root);
-                    default     -> log.trace("WS 메시지 [{}]: {}", trnm, text.length() > 200 ? text.substring(0,200) : text);
+                    case "LOGIN" -> handleLogin(ws, root);
+                    case "PING"  -> ws.send("{\"trnm\":\"PONG\"}");
+                    case "0B"    -> handleStockTick(root);
+                    case "0D"    -> handleHoga(root);
+                    case "0H"    -> handleExpected(root);
+                    case "1h"    -> handleVi(root);
+                    default      -> log.trace("WS 메시지 [{}]: {}", trnm, text.length() > 200 ? text.substring(0,200) : text);
                 }
             } catch (Exception e) {
                 log.error("WS 메시지 파싱 오류: {} / msg={}", e.getMessage(),
@@ -219,6 +218,42 @@ public class KiwoomWebSocketClient {
     }
 
     // ───── 메시지 핸들러 ─────
+
+    /**
+     * LOGIN 응답 처리.
+     * return_code == "0" 일 때 connected = true 로 전환하고 ping 스케줄 시작.
+     * 실패 시 ws 종료 → onClosing → scheduleReconnect 흐름으로 재연결.
+     */
+    private void handleLogin(WebSocket ws, JsonNode root) {
+        // return_code 필드명 snake_case / camelCase 모두 대응
+        String returnCode = root.path("return_code").asText(
+                root.path("returnCode").asText("-1"));
+
+        if (!"0".equals(returnCode)) {
+            log.error("WebSocket LOGIN 실패 – return_code={} msg={}",
+                    returnCode, root.path("return_msg").asText(""));
+            ws.close(1008, "LOGIN 실패");
+            return;
+        }
+
+        log.info("WebSocket LOGIN 성공 – connected = true");
+        connected.set(true);
+        redisService.setWsConnected(true);
+
+        // 이전 ping 스케줄 취소 후 새 스케줄 등록
+        if (pingFuture != null && !pingFuture.isCancelled()) {
+            pingFuture.cancel(false);
+        }
+        int pingInterval = properties.getWebsocket().getPingIntervalSeconds();
+        pingFuture = pingExecutor.scheduleAtFixedRate(
+                () -> {
+                    if (connected.get()) {
+                        ws.send("{\"trnm\":\"PING\"}");
+                        redisService.refreshWsHeartbeat();
+                    }
+                },
+                pingInterval, pingInterval, TimeUnit.SECONDS);
+    }
 
     private void handleStockTick(JsonNode root) {
         try {

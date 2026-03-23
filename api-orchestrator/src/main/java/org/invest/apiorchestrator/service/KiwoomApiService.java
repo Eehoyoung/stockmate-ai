@@ -196,4 +196,11 @@ public class KiwoomApiService {
                 StrategyRequests.StkBasicInfoRequest.builder().stkCd(stkCd).build(),
                 KiwoomApiResponses.StkBasicInfoResponse.class);
     }
+
+    /** ka10081 주식일봉차트 (52주 신고가 확인용) */
+    public KiwoomApiResponses.DailyCandleResponse fetchKa10081(String stkCd) {
+        return post("ka10081", "/api/dostk/chart",
+                StrategyRequests.DailyCandleRequest.builder().stkCd(stkCd).build(),
+                KiwoomApiResponses.DailyCandleResponse.class);
+    }
 }

@@ -465,6 +465,132 @@ public class StrategyService {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // 전술 10: 52주 신고가 돌파  (11:00~14:00, 15분마다)
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * 당일 고가가 52주(약 250 거래일) 신고가를 돌파했는지 확인.
+     * ka10081 일봉차트를 활용하며, 거래량·등락률·체결강도 복합 조건 적용.
+     */
+    public Optional<TradingSignalDto> checkNewHigh(String stkCd) {
+        try {
+            var resp = apiService.fetchKa10081(stkCd);
+            if (resp.getCandles() == null || resp.getCandles().size() < 20) return Optional.empty();
+
+            var candles = resp.getCandles();
+            var today   = candles.get(0);
+
+            double todayHigh  = parseDoubleStr(today.getHighPric());
+            double todayClose = parseDoubleStr(today.getCurPrc());
+            double todayOpen  = parseDoubleStr(today.getOpenPric());
+            long   todayVol   = parseLongStr(today.getTrdeQty());
+
+            if (todayHigh <= 0 || todayClose <= 0 || todayOpen <= 0) return Optional.empty();
+            if (todayClose <= todayOpen) return Optional.empty(); // 음봉 제외
+
+            // 52주 최고가 (전일까지)
+            int historyDays = Math.min(250, candles.size() - 1);
+            double yearHigh = candles.subList(1, historyDays + 1).stream()
+                    .mapToDouble(c -> parseDoubleStr(c.getHighPric()))
+                    .max().orElse(0);
+            if (yearHigh <= 0) return Optional.empty();
+
+            // 신고가 돌파 조건 (0.1% 이내 근접도 허용)
+            if (todayHigh < yearHigh * 0.999) return Optional.empty();
+
+            // 등락률 0.5~15%
+            double prevClose = parseDoubleStr(candles.get(1).getCurPrc());
+            if (prevClose <= 0) return Optional.empty();
+            double fluRt = (todayClose - prevClose) / prevClose * 100;
+            if (fluRt < 0.5 || fluRt > 15.0) return Optional.empty();
+
+            // 최근 20일 평균 거래량 대비 1.5배 이상
+            double avgVol = candles.subList(1, Math.min(21, candles.size())).stream()
+                    .mapToLong(c -> parseLongStr(c.getTrdeQty()))
+                    .average().orElse(1);
+            double volRatio = avgVol > 0 ? (double) todayVol / avgVol : 0;
+            if (volRatio < 1.5) return Optional.empty();
+
+            double strength = redisService.getAvgCntrStrength(stkCd, 5);
+            double score = fluRt * 2 + volRatio * 3
+                    + (strength > 100 ? (strength - 100) * 0.2 : 0)
+                    + (todayHigh >= yearHigh ? 20 : 10);
+
+            return Optional.of(TradingSignalDto.builder()
+                    .stkCd(stkCd)
+                    .strategy(TradingSignal.StrategyType.S10_NEW_HIGH)
+                    .signalScore(round(score))
+                    .entryPrice(todayClose)
+                    .gapPct(round(fluRt))
+                    .volRatio(round(volRatio))
+                    .cntrStrength(round(strength))
+                    .isNewHigh(true)
+                    .entryType("시장가_돌파매수")
+                    .targetPct(4.0)
+                    .target2Pct(7.0)
+                    .stopPct(-3.0)
+                    .build());
+        } catch (Exception e) {
+            log.warn("[S10] {} 처리 오류: {}", stkCd, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 전술 12: 종가 강도 매수  (14:30~15:10, 5분마다)
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * 장마감 전 실시간 틱 데이터 기반 종가 강도 전략.
+     * 등락률·체결강도·호가비율 복합 조건으로 익일 갭상승 가능 종목 포착.
+     */
+    public Optional<TradingSignalDto> checkClosingStrength(String stkCd) {
+        try {
+            var tickOpt = redisService.getTickData(stkCd);
+            if (tickOpt.isEmpty()) return Optional.empty();
+            Map<Object, Object> tick = tickOpt.get();
+
+            double fluRt  = parseDouble(tick, "flu_rt");
+            double curPrc = parseDouble(tick, "cur_prc");
+            if (curPrc <= 0) return Optional.empty();
+
+            // 등락률 0.5~5%
+            if (fluRt < 0.5 || fluRt > 5.0) return Optional.empty();
+
+            // 체결강도 120 이상
+            double strength = redisService.getAvgCntrStrength(stkCd, 5);
+            if (strength < 120.0) return Optional.empty();
+
+            // 호가 매수 우위 (bid/ask > 1.5)
+            var hogaOpt = redisService.getHogaData(stkCd);
+            if (hogaOpt.isEmpty()) return Optional.empty();
+            double bid      = parseDouble(hogaOpt.get(), "total_buy_bid_req");
+            double ask      = parseDouble(hogaOpt.get(), "total_sel_bid_req");
+            double bidRatio = ask > 0 ? bid / ask : 0;
+            if (bidRatio < 1.5) return Optional.empty();
+
+            double score = fluRt * 3 + (strength - 100) * 0.3 + bidRatio * 5;
+
+            return Optional.of(TradingSignalDto.builder()
+                    .stkCd(stkCd)
+                    .strategy(TradingSignal.StrategyType.S12_CLOSING)
+                    .signalScore(round(score))
+                    .entryPrice(curPrc)
+                    .gapPct(round(fluRt))
+                    .cntrStrength(round(strength))
+                    .bidRatio(round(bidRatio))
+                    .entryType("종가_시장가")
+                    .targetPct(2.0)
+                    .target2Pct(4.0)
+                    .stopPct(-2.0)
+                    .build());
+        } catch (Exception e) {
+            log.warn("[S12] {} 처리 오류: {}", stkCd, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // 유틸
     // ─────────────────────────────────────────────────────────────
     private double calcVolRatio(String stkCd) {

@@ -282,14 +282,16 @@ public class RedisMarketDataService {
 
     /**
      * Java WebSocket 연결 상태를 Redis 에 기록 (telegram-bot /상태 명령 표시용).
-     * ws:connected = "1" (TTL 60s) / 연결 끊김 시 "0" 설정 후 즉시 만료
+     * 연결 시: ws:connected="1" TTL 45s (ping 주기 30s 보다 짧게 – ping 없으면 자동 만료)
+     * 끊김 시: ws:connected="0" TTL 10s, ws:stable 삭제
      */
     public void setWsConnected(boolean connected) {
         try {
             if (connected) {
-                redis.opsForValue().set("ws:connected", "1", Duration.ofSeconds(60));
+                redis.opsForValue().set("ws:connected", "1", Duration.ofSeconds(45));
             } else {
-                redis.opsForValue().set("ws:connected", "0", Duration.ofSeconds(5));
+                redis.opsForValue().set("ws:connected", "0", Duration.ofSeconds(10));
+                redis.delete("ws:stable");   // 안정 연결 플래그 즉시 해제
             }
         } catch (Exception e) {
             log.debug("ws:connected 상태 저장 실패: {}", e.getMessage());
@@ -297,11 +299,28 @@ public class RedisMarketDataService {
     }
 
     /**
-     * Java WebSocket heartbeat 갱신 (연결 유지 중 주기적 호출)
+     * WS 가 실제로 안정적으로 연결 중인지 확인.
+     * ws:stable 키는 ping 전송 성공 시(≥30초 유지)에만 설정되므로,
+     * 잠깐 연결됐다 끊기는 brief reconnect 는 false 반환.
+     */
+    public boolean isWsConnected() {
+        try {
+            return "1".equals(redis.opsForValue().get("ws:stable"));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Java WebSocket heartbeat 갱신 – ping 전송 성공마다 호출 (30s 주기).
+     * ws:heartbeat 와 ws:stable 을 함께 갱신하여 "안정 연결" 상태 표시.
+     * ws:stable 이 존재하는 동안만 DataQualityScheduler 가 tick 체크를 수행함.
      */
     public void refreshWsHeartbeat() {
         try {
-            redis.opsForValue().set("ws:connected", "1", Duration.ofSeconds(60));
+            redis.opsForValue().set("ws:connected", "1", Duration.ofSeconds(45));
+            redis.opsForValue().set("ws:stable",    "1", Duration.ofSeconds(45));
+            redis.opsForValue().set("ws:heartbeat", "1", Duration.ofSeconds(45));
         } catch (Exception e) {
             log.debug("ws:heartbeat 갱신 실패: {}", e.getMessage());
         }

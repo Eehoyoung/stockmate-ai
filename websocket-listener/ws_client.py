@@ -226,6 +226,25 @@ async def _heartbeat_writer(rdb):
             logger.debug("[WS] heartbeat 오류: %s", e)
 
 
+async def _ws_ping_sender(ws):
+    """30초마다 애플리케이션 레벨 PING 전송 (키움 프로토콜 keepalive)"""
+    while True:
+        try:
+            await asyncio.sleep(30)
+            await ws.send('{"trnm":"PING"}')
+            logger.debug("[WS] PING 전송")
+        except Exception as e:
+            logger.debug("[WS] PING 전송 오류: %s", e)
+            break
+
+
+async def _run_message_loop(ws, rdb):
+    """메시지 수신 루프 – 서버 PING 포함 모든 메시지 즉시 처리"""
+    async for message in ws:
+        await _handle_message(message, ws, rdb)
+    logger.info("[WS] 서버 정상 종료 (clean close)")
+
+
 async def run_ws_loop(rdb):
     """
     WebSocket 메인 루프 – 장 운영 시간 감지 + 지수 백오프 재연결 포함.
@@ -280,17 +299,43 @@ async def run_ws_loop(rdb):
             async with websockets.connect(
                     url,
                     additional_headers=headers,
-                    ping_interval=30,
-                    ping_timeout=10,
+                    ping_interval=None,   # 키움 앱레벨 PING/PONG 사용 – 라이브러리 ping 비활성화
                     open_timeout=15,
             ) as ws:
                 logger.info("[WS] 연결 성공")
                 set_ws_connected(True)
 
+                # ── LOGIN 패킷 전송 (키움 WS 프로토콜 필수) ─────────────
+                # 연결 후 실시간 데이터 요청 전 반드시 LOGIN 패킷을 보내야 함.
+                # 미전송 시 서버가 약 10초 후 code=1000 "Bye" 로 종료.
+                login_packet = {"trnm": "LOGIN", "token": token}
+                await ws.send(json.dumps(login_packet))
+                logger.info("[WS] LOGIN 패킷 전송 완료")
+
+                # LOGIN 응답 수신 (timeout 10초)
+                try:
+                    login_resp_raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                    login_resp     = json.loads(login_resp_raw)
+                    return_code    = str(login_resp.get("return_code", login_resp.get("returnCode", "-1")))
+                    if return_code != "0":
+                        logger.error("[WS] LOGIN 실패 – return_code=%s body=%s", return_code, login_resp)
+                        raise ConnectionError(f"WS LOGIN 실패 (return_code={return_code})")
+                    logger.info("[WS] LOGIN 성공 – return_code=0")
+                except asyncio.TimeoutError:
+                    logger.error("[WS] LOGIN 응답 타임아웃 (10초)")
+                    raise ConnectionError("WS LOGIN 응답 없음")
+                except json.JSONDecodeError as e:
+                    logger.error("[WS] LOGIN 응답 JSON 파싱 오류: %s", e)
+                    raise
+
                 # 연결 직후 즉시 heartbeat 기록 (TTL 소멸 방지)
                 await write_heartbeat(rdb, {
                     "grp5": "ok", "grp6": "ok", "grp7": "ok", "grp8": "ok"
                 })
+
+                # ── 메시지 루프를 구독보다 먼저 시작 ──────────────────────
+                # 구독(REG) 도중 서버가 PING을 보내도 즉시 PONG 응답 가능
+                message_task = asyncio.create_task(_run_message_loop(ws, rdb))
 
                 await _subscribe_all(ws, rdb)
 
@@ -299,18 +344,18 @@ async def run_ws_loop(rdb):
                 kosdaq = await _get_candidates(rdb, "101")
                 subscribed_set: set = set(dict.fromkeys(kospi + kosdaq))
 
-                # 동적 구독 watchlist 폴러 + heartbeat 시작
+                # 동적 구독 watchlist 폴러 + heartbeat + 앱레벨 PING 시작
                 watchlist_task  = asyncio.create_task(_watchlist_poller(ws, rdb, subscribed_set))
                 heartbeat_task  = asyncio.create_task(_heartbeat_writer(rdb))
+                ws_ping_task    = asyncio.create_task(_ws_ping_sender(ws))
 
                 try:
-                    async for message in ws:
-                        await _handle_message(message, ws, rdb)
-                    # 정상 종료 (서버가 clean close 1000 보낸 경우)
-                    logger.info("[WS] 서버 정상 종료 (clean close)")
+                    await message_task  # 서버가 연결을 닫을 때까지 대기
                 finally:
                     watchlist_task.cancel()
                     heartbeat_task.cancel()
+                    ws_ping_task.cancel()
+                    message_task.cancel()
                     set_ws_connected(False)
 
             # 연결이 최소 유지 시간 이상 유지된 경우에만 카운터 리셋
@@ -341,14 +386,21 @@ async def run_ws_loop(rdb):
         # ── 지수 백오프 재연결 ────────────────────────────────────
         reconnect_count += 1
         if reconnect_count > MAX_RECONNECTS:
-            if BYPASS_MARKET_HOURS:
-                # bypass 모드는 루프 상단에서 처리
-                continue
+            # bypass 모드 또는 장 운영 중: 프로세스 종료 대신 5분 대기 후 재시도
+            if BYPASS_MARKET_HOURS or _is_market_hours():
+                logger.warning(
+                    "[WS] 최대 재연결 %d회 초과 – %.0f분 대기 후 재시도",
+                    MAX_RECONNECTS, MAX_RECONNECT_SEC / 60,
+                )
+                await asyncio.sleep(MAX_RECONNECT_SEC)
+                reconnect_count = 0
+                delay_sec       = BASE_RECONNECT_MS / 1000
             else:
                 logger.critical(
-                    "[WS] 최대 재연결 횟수 %d 초과 – 프로세스 종료", MAX_RECONNECTS
+                    "[WS] 최대 재연결 횟수 %d 초과 (장 외 시간) – 프로세스 종료", MAX_RECONNECTS
                 )
                 sys.exit(1)
+            continue
 
         logger.info("[WS] %.1f초 후 재연결 (%d번째)", delay_sec, reconnect_count)
         await asyncio.sleep(delay_sec)

@@ -260,6 +260,7 @@ const filter = guard(async (ctx) => {
     const strategyMap = {
         s1: 'S1_GAP_OPEN', s2: 'S2_VI_PULLBACK', s3: 'S3_INST_FRGN',
         s4: 'S4_BIG_CANDLE', s5: 'S5_PROG_FRGN', s6: 'S6_THEME_LAGGARD', s7: 'S7_AUCTION',
+        s10: 'S10_NEW_HIGH', s12: 'S12_CLOSING',
     };
     const selected = args
         .map((a) => strategyMap[a.toLowerCase()])
@@ -524,11 +525,16 @@ const help = guard(async (ctx) => {
         `/pause – Pause trading signals\n` +
         `/resume – Resume trading (CONTINUE)\n` +
         `/errors – System error status\n` +
-        `/strategy {s1~s7} – Run strategy manually\n` +
+        `/strategy {s1~s7|s10|s12} – Run strategy manually\n` +
         `/token – Refresh Kiwoom token\n` +
         `/wsStart / /wsStop – WebSocket control\n` +
         `/status – System health check\n` +
-        `/ping – Bot alive check`,
+        `/ping – Bot alive check\n\n` +
+        `<b>── Strategies ──</b>\n` +
+        `s1: Gap open | s2: VI pullback | s3: Inst+Frgn\n` +
+        `s4: Big candle | s5: Prog+Frgn | s6: Theme laggard\n` +
+        `s7: Auction | s10: 52w New High | s12: Closing strength\n` +
+        `\n💡 /score works anytime (even outside trading hours)`,
         { parse_mode: 'HTML' }
     );
 });

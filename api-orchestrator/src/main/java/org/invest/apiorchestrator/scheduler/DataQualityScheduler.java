@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Feature 5 – 데이터 품질 모니터링 스케쥴러.
@@ -27,10 +28,14 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class DataQualityScheduler {
 
-    private static final int WS_MISSING_RATIO_THRESHOLD = 30; // 후보 종목 30% 이상 누락 시 재연결
-    private static final int QUEUE_DEPTH_WARN           = 50; // 텔레그램 큐 적체 임계값
-    private static final int ERROR_QUEUE_WARN           = 5;  // error_queue 경고 임계값
-    private static final String KEY_WS_RECONNECT_COUNT  = "monitor:ws_reconnect_count";
+    private static final int  WS_MISSING_RATIO_THRESHOLD = 30;   // 후보 종목 30% 이상 누락 시 재연결
+    private static final int  QUEUE_DEPTH_WARN            = 50;   // 텔레그램 큐 적체 임계값
+    private static final int  ERROR_QUEUE_WARN            = 5;    // error_queue 경고 임계값
+    private static final long WS_ALERT_COOLDOWN_MS        = 10 * 60 * 1000L; // WS 경고 최소 간격 10분
+    private static final String KEY_WS_RECONNECT_COUNT    = "monitor:ws_reconnect_count";
+
+    /** WS 경고 마지막 발행 시각 – 연속 스팸 방지 */
+    private final AtomicLong lastWsAlertMs = new AtomicLong(0);
 
     private final CandidateService candidateService;
     private final RedisMarketDataService redisService;
@@ -81,6 +86,12 @@ public class DataQualityScheduler {
     }
 
     private void checkWebSocketHealth(List<String> alerts) {
+        // WS 자체가 끊긴 상태면 tick 데이터 없는 게 당연 – 알림 스팸 방지
+        if (!redisService.isWsConnected()) {
+            log.debug("[DataQuality] WS 미연결 상태 – tick 체크 스킵");
+            return;
+        }
+
         List<String> candidates = candidateService.getAllCandidates();
         if (candidates.isEmpty()) return;
 
@@ -108,6 +119,14 @@ public class DataQualityScheduler {
             if (reconnectCount != null && reconnectCount == 1) {
                 redis.expire(KEY_WS_RECONNECT_COUNT, Duration.ofHours(24));
             }
+
+            // 쿨다운 내 중복 경고 발행 방지 (10분)
+            long now = System.currentTimeMillis();
+            if (now - lastWsAlertMs.get() < WS_ALERT_COOLDOWN_MS) {
+                log.debug("[DataQuality] WS 경고 쿨다운 중 – SYSTEM_ALERT 생략");
+                return;
+            }
+            lastWsAlertMs.set(now);
 
             alerts.add(String.format("📡 WebSocket 데이터 이상 (누락 %.0f%%) – 재연결 완료", missingRatio));
         }
