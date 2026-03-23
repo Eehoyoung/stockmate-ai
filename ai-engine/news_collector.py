@@ -156,18 +156,23 @@ async def collect_news(rdb) -> List[Dict]:
 
         dedup_key = f"news:dedup:{h}"
         try:
-            # Redis에 이미 있으면 중복
+            # Redis에 이미 있으면 중복 (이번 주기에 분석된 항목)
             if await rdb.exists(dedup_key):
                 continue
-            await rdb.set(dedup_key, "1", ex=_DEDUP_TTL)
         except Exception:
             pass  # Redis 오류 시 중복 체크 건너뜀
 
         news["hash"] = h
         unique_news.append(news)
 
-    # 최대 건수 제한
+    # 최대 건수 제한 후 실제 분석 대상에만 dedup 마크 설정
     result = unique_news[:NEWS_MAX_ITEMS]
+    for item in result:
+        try:
+            await rdb.set(f"news:dedup:{item['hash']}", "1", ex=_DEDUP_TTL)
+        except Exception:
+            pass
+
     logger.info("[NewsCollector] 수집 완료 – 전체=%d건 신규=%d건 반환=%d건",
                 len(all_news), len(unique_news), len(result))
     return result
