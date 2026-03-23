@@ -197,13 +197,19 @@ public class TradingController {
         return ResponseEntity.ok(Map.of("status", "ok", "msg", "WebSocket 구독 종료 완료"));
     }
 
-    /** 후보 종목 조회 */
+    /** 후보 종목 조회 (전략 태그 포함) */
     @GetMapping("/candidates")
     public ResponseEntity<Map<String, Object>> getCandidates(
             @RequestParam(defaultValue = "000") String market) {
-        List<String> candidates = candidateService.getCandidates(market);
-        return ResponseEntity.ok(Map.of("market", market,
-                "count", candidates.size(), "codes", candidates));
+        List<Map<String, Object>> withTags = candidateService.getCandidatesWithTags(market);
+        List<String> codes = withTags.stream()
+                .map(m -> (String) m.get("code"))
+                .collect(java.util.stream.Collectors.toList());
+        return ResponseEntity.ok(Map.of(
+                "market", market,
+                "count", codes.size(),
+                "codes", codes,
+                "candidates", withTags));
     }
 
     /** 헬스체크 */

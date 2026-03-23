@@ -10,7 +10,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -23,7 +26,9 @@ public class CandidateService {
 
     private static final String CANDIDATE_KEY   = "candidates:";
     private static final String WATCHLIST_KEY   = "candidates:watchlist";
+    private static final String TAG_KEY         = "candidates:tag:";   // Set – 전략 태그
     private static final Duration CANDIDATE_TTL = Duration.ofMinutes(3);
+    private static final Duration TAG_TTL       = Duration.ofHours(24);
 
     /**
      * 예상체결등락률 상위 종목코드 반환 (ka10029, 캐시 3분).
@@ -89,6 +94,46 @@ public class CandidateService {
             log.error("후보 종목 조회 실패 [{}]: {}", market, e.getMessage());
             return Collections.emptyList();
         }
+    }
+
+    /**
+     * 전략 신호 발행 시 해당 종목에 전략 태그 기록.
+     * candidates:tag:{stkCd} (Set, TTL 24h)
+     */
+    public void tagStrategy(String stkCd, String strategy) {
+        try {
+            String key = TAG_KEY + stkCd;
+            redis.opsForSet().add(key, strategy);
+            redis.expire(key, TAG_TTL);
+        } catch (Exception e) {
+            log.debug("[Candidate] 전략 태그 기록 실패 [{} {}]: {}", stkCd, strategy, e.getMessage());
+        }
+    }
+
+    /**
+     * 특정 종목에 기록된 전략 태그 조회.
+     */
+    public Set<String> getStrategyTags(String stkCd) {
+        try {
+            Set<String> tags = redis.opsForSet().members(TAG_KEY + stkCd);
+            return tags != null ? tags : Collections.emptySet();
+        } catch (Exception e) {
+            return Collections.emptySet();
+        }
+    }
+
+    /**
+     * 후보 종목 목록 + 전략 태그 맵 반환.
+     * 반환 형태: [{code: "005930", strategies: ["S1_GAP_OPEN", "S3_INST_FRGN"]}, ...]
+     */
+    public List<Map<String, Object>> getCandidatesWithTags(String market) {
+        List<String> codes = getCandidates(market);
+        return codes.stream().map(code -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("code", code);
+            item.put("strategies", getStrategyTags(code));
+            return item;
+        }).collect(Collectors.toList());
     }
 
     /**

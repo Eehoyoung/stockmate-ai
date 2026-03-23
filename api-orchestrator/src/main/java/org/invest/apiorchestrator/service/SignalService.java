@@ -25,6 +25,7 @@ public class SignalService {
 
     private final TradingSignalRepository signalRepository;
     private final RedisMarketDataService redisService;
+    private final CandidateService candidateService;
     private final KiwoomProperties properties;
     private final ObjectMapper objectMapper;
 
@@ -43,9 +44,10 @@ public class SignalService {
             Map.entry("에너지", "에너지"), Map.entry("태양광", "에너지"), Map.entry("수소", "에너지")
     );
 
-    public SignalService(TradingSignalRepository signalRepository, RedisMarketDataService redisService, KiwoomProperties properties, ObjectMapper objectMapper) {
+    public SignalService(TradingSignalRepository signalRepository, RedisMarketDataService redisService, CandidateService candidateService, KiwoomProperties properties, ObjectMapper objectMapper) {
         this.signalRepository = signalRepository;
         this.redisService = redisService;
+        this.candidateService = candidateService;
         this.properties = properties;
         this.objectMapper = objectMapper;
     }
@@ -86,10 +88,13 @@ public class SignalService {
             TradingSignal signal = buildSignalEntity(dto);
             signalRepository.save(signal);
 
-            // 5. 섹터 과열 추적 + 알림
+            // 5. 전략 태그 기록 (Redis – 후보 종목 출처 추적)
+            candidateService.tagStrategy(stkCd, strategy);
+
+            // 6. 섹터 과열 추적 + 알림
             trackSectorOverheat(dto.getThemeName());
 
-            // 6. 텔레그램 큐 발행 – TradingSignalDto.toQueuePayload() 로 필드 계약 중앙화
+            // 7. 텔레그램 큐 발행 – TradingSignalDto.toQueuePayload() 로 필드 계약 중앙화
             try {
                 String telegramMsg = objectMapper.writeValueAsString(dto.toQueuePayload(signal.getId()));
                 redisService.pushTelegramQueue(telegramMsg);

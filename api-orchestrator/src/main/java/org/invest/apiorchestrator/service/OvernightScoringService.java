@@ -128,7 +128,7 @@ public class OvernightScoringService {
                 KiwoomApiResponses.StkBasicInfoResponse basic = kiwoomApiService.fetchKa10001(stkCd);
                 if (basic != null) {
                     fluRt  = safeDouble(basic.getFluRt());
-                    curPrc = safeDouble(basic.getCurPrc());
+                    curPrc = Math.abs(safeDouble(basic.getCurPrc()));  // 키움: 하락 종목은 cur_prc에 '-' 부호 포함 → 절댓값으로 실제 가격 추출
                     stkNm  = basic.getStkNm() != null ? basic.getStkNm() : "";
                     momentum = momentumScore(fluRt);
                     dataSource = "REST";

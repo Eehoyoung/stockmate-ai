@@ -140,14 +140,14 @@ async def _subscribe_all(ws, rdb):
         if not items:
             continue
         # 100개 단위 배치 구독
+        # 키움 WS 프로토콜: item 배열에 종목코드 목록, type 배열에 실시간 항목을 담아 전송
         for i in range(0, len(items), 100):
             batch = items[i:i + 100]
             payload = {
                 "trnm":    "REG",
                 "grp_no":  grp_no,
                 "refresh": "1",
-                # 키움 WS 프로토콜: item 과 type 은 배열로 전송해야 함
-                "data":    [{"item": [it], "type": [ttype]} for it in batch],
+                "data":    [{"item": batch, "type": [ttype]}],
             }
             await ws.send(json.dumps(payload))
             logger.info("[WS] 구독 grp=%s type=%s %d개", grp_no, ttype, len(batch))
@@ -214,7 +214,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
             for code in removed_codes:
                 for grp_no, ttype in [("5", "0B"), ("6", "0H"), ("8", "0D")]:
                     payload = {"trnm": "UNREG", "grp_no": grp_no,
-                               "data": [{"item": code, "type": ttype}]}
+                               "data": [{"item": [code], "type": [ttype]}]}
                     await ws.send(json.dumps(payload))
                 subscribed_set.discard(code)
                 logger.info("[WS] 동적 구독 해제 [%s]", code)

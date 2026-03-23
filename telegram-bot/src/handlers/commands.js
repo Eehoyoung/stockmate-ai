@@ -142,8 +142,32 @@ const candidates = guard(async (ctx) => {
     const args   = ctx.message.text.split(' ');
     const market = args[1] ?? '000';
     const result = await kiwoom.getCandidates(market);
+
+    const withTags = (result.candidates ?? []).slice(0, 20);
+    const marketLabel = market === '001' ? '코스피' : market === '101' ? '코스닥' : '전체';
+
+    let lines;
+    if (withTags.length > 0) {
+        lines = withTags.map(({ code, strategies }) => {
+            const tags = strategies && strategies.length > 0
+                ? ` <i>[${[...strategies].join(', ')}]</i>`
+                : '';
+            return `• <b>${code}</b>${tags}`;
+        });
+    } else {
+        lines = (result.codes ?? []).slice(0, 20).map(code => `• <b>${code}</b>`);
+    }
+
+    const total = result.count ?? 0;
+    const tagNote = withTags.some(c => c.strategies && c.strategies.length > 0)
+        ? '\n<i>괄호 안: 오늘 해당 종목에 신호를 발생시킨 전략</i>'
+        : '\n<i>아직 전략 신호 없음 (장 중 전략 실행 후 표시됩니다)</i>';
+
     await ctx.reply(
-        `📋 <b>후보 종목 [${result.market}]</b>\n총 ${result.count}개\n${(result.codes ?? []).slice(0, 20).join(', ')}…`,
+        `📋 <b>후보 종목 [${marketLabel}] – 총 ${total}개</b>\n\n` +
+        lines.join('\n') +
+        (total > 20 ? `\n… 외 ${total - 20}개` : '') +
+        tagNote,
         { parse_mode: 'HTML' }
     );
 });
@@ -436,32 +460,32 @@ const scoreStock = guard(async (ctx) => {
 
     // REST fallback 시 호가·체결강도 데이터 없음 안내
     const dataNote = dataSource === 'REST'
-        ? `\n⚠️ <i>WS not subscribed – score based on price change only (no hoga/strength)\nRun /wsStart then retry for full accuracy</i>`
+        ? `\n⚠️ <i>장 마감 후 종가 기준 점수 (호가·체결강도 없음)\n장 중 정확도를 높이려면 /wsStart 후 재조회하세요</i>`
         : '';
 
     const hogaLine     = dataSource === 'WS'
-        ? `Bid ratio (buy/sell): <b>${bidRatio}</b>\n`
-        : `Bid ratio: <i>N/A (WS not subscribed)</i>\n`;
+        ? `호가비율(매수/매도): <b>${bidRatio}</b>\n`
+        : `호가비율: <i>조회불가 (실시간 WebSocket 전용)</i>\n`;
     const strengthLine = dataSource === 'WS'
-        ? `Exec strength: <b>${strength}</b>\n`
-        : `Exec strength: <i>N/A (WS not subscribed)</i>\n`;
+        ? `체결강도: <b>${strength}</b>\n`
+        : `체결강도: <i>조회불가 (실시간 WebSocket 전용)</i>\n`;
 
     await ctx.reply(
-        `${gradeEmoji} <b>${stkNm}(${stkCd}) Score Analysis</b>\n\n` +
-        `📊 Total Score: <b>${score}pt</b> (Grade ${grade})\n` +
+        `${gradeEmoji} <b>${stkNm}(${stkCd}) 오버나잇 점수 분석</b>\n\n` +
+        `📊 종합 점수: <b>${score}점</b> (등급 ${grade})\n` +
         `${thresholdLine}\n\n` +
-        `<b>── Live Data ──</b>\n` +
-        `Price: <b>${curPrc.toLocaleString()}₩</b>\n` +
-        `Change: <b>${fluSign}${fluRt}%</b>\n` +
+        `<b>── 현재 시세 ──</b>\n` +
+        `현재가: <b>${curPrc.toLocaleString()}원</b>\n` +
+        `등락률: <b>${fluSign}${fluRt}%</b>\n` +
         strengthLine +
         hogaLine +
-        `\n<b>── Score Breakdown ──</b>\n` +
-        `Momentum  : ${bar(Math.max(0, mom), 25)} ${mom > 0 ? '+' : ''}${mom}pt\n` +
-        `Buy press. : ${bar(pres, 20)} +${pres}pt\n` +
-        `Strength   : ${bar(str, 10)} +${str}pt\n` +
-        `Base       : +25pt\n` +
+        `\n<b>── 점수 구성 ──</b>\n` +
+        `모멘텀   : ${bar(Math.max(0, mom), 25)} ${mom > 0 ? '+' : ''}${mom}점\n` +
+        `매수 우위 : ${bar(pres, 20)} +${pres}점\n` +
+        `체결강도  : ${bar(str, 10)} +${str}점\n` +
+        `기본 점수 : +25점\n` +
         dataNote + `\n\n` +
-        `💡 <i>65+: Claude overnight eval | 50-65: Caution | <50: Close recommended</i>`,
+        `💡 <i>65점 이상: Claude AI 오버나잇 평가 | 50~65점: 주의 | 50점 미만: 청산 권고</i>`,
         { parse_mode: 'HTML' }
     );
 });

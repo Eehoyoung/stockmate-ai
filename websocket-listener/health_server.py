@@ -45,7 +45,7 @@ async def run_health_server(port: int = 8081):
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("[Health] 헬스체크 서버 시작 → http://0.0.0.0:%d/health", port)
+    logger.info("[Health] 헬스체크 서버 시작 → http://localhost:%d/health", port)
 
     # 서버를 계속 실행 (태스크 취소 시 자동 종료)
     try:
