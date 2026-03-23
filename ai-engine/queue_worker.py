@@ -89,8 +89,18 @@ async def process_one(rdb) -> bool:
         except Exception as news_err:
             logger.debug("[Worker] 뉴스 제어 확인 실패 (무시): %s", news_err)
 
-        # 1. 실시간 시세 수집
+        # 1. WS 온라인 여부 확인 (ws:heartbeat TTL 기반)
+        try:
+            hb = await rdb.hgetall("ws:heartbeat")
+            ws_online = bool(hb and hb.get("updated_at"))
+        except Exception:
+            ws_online = False
+        if not ws_online:
+            logger.warning("[Worker] WS 오프라인 – 실시간 데이터 없음 [%s %s]", stk_cd, strategy)
+
+        # 2. 실시간 시세 수집
         ctx = await _build_market_ctx(rdb, stk_cd)
+        ctx["ws_online"] = ws_online
 
         # 2. 규칙 기반 1차 스코어링
         r_score = rule_score(signal, ctx)

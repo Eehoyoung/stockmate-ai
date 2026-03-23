@@ -4,7 +4,7 @@ WebSocket 수신 데이터를 Redis 에 저장하는 전담 모듈.
 키 규약 (Java api-orchestrator 와 공유):
   ws:tick:{stkCd}        TTL 30s  – 0B 체결
   ws:expected:{stkCd}    TTL 60s  – 0H 예상체결
-  ws:hoga:{stkCd}        TTL 10s  – 0D 호가잔량
+  ws:hoga:{stkCd}        TTL 30s  – 0D 호가잔량
   ws:strength:{stkCd}    TTL 300s – 체결강도 리스트 (최근 10개)
   vi:{stkCd}             TTL 3600s – VI 이벤트 상태
   vi_watch_queue                   – VI 눌림목 감시 큐 (TTL 7200s)

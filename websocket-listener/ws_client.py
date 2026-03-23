@@ -160,7 +160,7 @@ async def _handle_message(msg_str: str, ws, rdb):
         trnm  = msg.get("trnm", "")
 
         if trnm == "PING":
-            await ws.send(json.dumps({"trnm": "PONG"}))
+            await ws.send(msg_str)   # 키움 가이드: 수신값 그대로 송신
             return
 
         data   = msg.get("data") or {}
