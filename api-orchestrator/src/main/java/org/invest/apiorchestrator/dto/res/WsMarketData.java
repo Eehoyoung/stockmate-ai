@@ -116,7 +116,8 @@ public class WsMarketData {
 
         public boolean isActivation() { return "1".equals(viStat); }
         public boolean isRelease()    { return "2".equals(viStat); }
-        public boolean isDynamic()    { return "2".equals(viType) || "3".equals(viType); }
+        // 1225 필드: "정적"/"동적"/"동적+정적" 문자열로 수신됨
+        public boolean isDynamic()    { return "동적".equals(viType) || "동적+정적".equals(viType); }
         public double  getViPricDouble() {
             try { return viPric == null ? 0 : Double.parseDouble(viPric.replace(",","")); }
             catch (Exception e) { return 0; }

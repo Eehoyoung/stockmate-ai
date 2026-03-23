@@ -146,7 +146,8 @@ async def _subscribe_all(ws, rdb):
                 "trnm":    "REG",
                 "grp_no":  grp_no,
                 "refresh": "1",
-                "data":    [{"item": it, "type": ttype} for it in batch],
+                # 키움 WS 프로토콜: item 과 type 은 배열로 전송해야 함
+                "data":    [{"item": [it], "type": [ttype]} for it in batch],
             }
             await ws.send(json.dumps(payload))
             logger.info("[WS] 구독 grp=%s type=%s %d개", grp_no, ttype, len(batch))
@@ -154,24 +155,32 @@ async def _subscribe_all(ws, rdb):
 
 
 async def _handle_message(msg_str: str, ws, rdb):
-    """수신 메시지 파싱 및 Redis 저장 분기"""
+    """수신 메시지 파싱 및 Redis 저장 분기.
+
+    키움 실시간 메시지 형식:
+      {"trnm":"REAL","data":[{"type":"0B","item":"005930","values":{"10":"-20800",...}}]}
+    """
     try:
-        msg   = json.loads(msg_str)
-        trnm  = msg.get("trnm", "")
+        msg  = json.loads(msg_str)
+        trnm = msg.get("trnm", "")
 
         if trnm == "PING":
             await ws.send(msg_str)   # 키움 가이드: 수신값 그대로 송신
             return
 
-        data   = msg.get("data") or {}
-        stk_cd = msg.get("item") or (data.get("stk_cd", "") if isinstance(data, dict) else "")
-
-        match trnm:
-            case "0B": await write_tick(rdb, data, stk_cd)
-            case "0H": await write_expected(rdb, data, stk_cd)
-            case "0D": await write_hoga(rdb, data, stk_cd)
-            case "1h": await write_vi(rdb, data, stk_cd)
-            case _:    pass
+        # 키움 실시간 데이터는 trnm="REAL", data 배열 안에 type/item/values 포함
+        if trnm == "REAL":
+            data_list = msg.get("data") or []
+            for entry in data_list:
+                entry_type = entry.get("type", "")
+                stk_cd     = entry.get("item", "")
+                values     = entry.get("values") or {}
+                match entry_type:
+                    case "0B": await write_tick(rdb, values, stk_cd)
+                    case "0H": await write_expected(rdb, values, stk_cd)
+                    case "0D": await write_hoga(rdb, values, stk_cd)
+                    case "1h": await write_vi(rdb, values, stk_cd)
+            return
 
     except json.JSONDecodeError:
         logger.debug("[WS] JSON 파싱 실패: %.100s", msg_str)
@@ -197,7 +206,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
             for code in new_codes:
                 for grp_no, ttype in [("5", "0B"), ("6", "0H"), ("8", "0D")]:
                     payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "0",
-                               "data": [{"item": code, "type": ttype}]}
+                               "data": [{"item": [code], "type": [ttype]}]}
                     await ws.send(json.dumps(payload))
                 subscribed_set.add(code)
                 logger.info("[WS] 동적 구독 추가 [%s]", code)

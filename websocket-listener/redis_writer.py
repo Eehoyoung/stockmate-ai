@@ -32,26 +32,29 @@ async def write_heartbeat(rdb, grp_status: dict):
         logger.debug("[Redis] heartbeat 저장 실패: %s", e)
 
 
-async def write_tick(rdb, data: dict, stk_cd: str):
-    """0B 체결 데이터 저장"""
+async def write_tick(rdb, values: dict, stk_cd: str):
+    """0B 체결 데이터 저장.
+    values 는 키움 숫자키 dict:
+      10:현재가, 11:전일대비, 12:등락율, 13:누적거래량, 14:누적거래대금, 20:체결시간, 228:체결강도
+    """
     if not stk_cd:
         return
     key = f"ws:tick:{stk_cd}"
     try:
         mapping = {
-            "cur_prc":        data.get("cur_prc", ""),
-            "pred_pre":       data.get("pred_pre", ""),
-            "flu_rt":         data.get("flu_rt", ""),
-            "acc_trde_qty":   data.get("acc_trde_qty", ""),
-            "acc_trde_prica": data.get("acc_trde_prica", ""),
-            "cntr_str":       data.get("cntr_str", ""),
-            "cntr_tm":        data.get("cntr_tm", ""),
+            "cur_prc":        values.get("10", ""),
+            "pred_pre":       values.get("11", ""),
+            "flu_rt":         values.get("12", ""),
+            "acc_trde_qty":   values.get("13", ""),
+            "acc_trde_prica": values.get("14", ""),
+            "cntr_tm":        values.get("20", ""),
+            "cntr_str":       values.get("228", ""),
         }
         await rdb.hset(key, mapping=mapping)
         await rdb.expire(key, 30)
 
         # 체결강도 리스트 (최근 10개)
-        cntr_str = data.get("cntr_str", "").strip()
+        cntr_str = values.get("228", "").strip()
         if cntr_str:
             sk = f"ws:strength:{stk_cd}"
             await rdb.lpush(sk, cntr_str)
@@ -62,19 +65,19 @@ async def write_tick(rdb, data: dict, stk_cd: str):
         logger.warning("[Redis] tick 저장 실패 [%s]: %s", stk_cd, e)
 
 
-async def write_expected(rdb, data: dict, stk_cd: str):
+async def write_expected(rdb, values: dict, stk_cd: str):
     """0H 예상체결 데이터 저장.
-    필드 10: exp_cntr_pric, 필드 12: exp_flu_rt, 필드 15: exp_cntr_qty, 필드 20: exp_cntr_tm.
-    exp_flu_rt 와 exp_cntr_pric 가 있으면 pred_pre_pric 역산 저장.
+    values 숫자키: 10:예상체결가, 12:예상등락율, 15:예상체결수량, 20:예상체결시간
+    pred_pre_pric(전일종가) = exp_cntr_pric / (1 + exp_flu_rt/100) 로 역산
     """
     if not stk_cd:
         return
     key = f"ws:expected:{stk_cd}"
     try:
-        exp_cntr_pric = data.get("exp_cntr_pric") or data.get("10", "")
-        exp_flu_rt    = data.get("exp_flu_rt")    or data.get("12", "")
-        exp_cntr_qty  = data.get("exp_cntr_qty")  or data.get("15", "")
-        exp_cntr_tm   = data.get("exp_cntr_tm")   or data.get("20", "")
+        exp_cntr_pric = values.get("10", "")
+        exp_flu_rt    = values.get("12", "")
+        exp_cntr_qty  = values.get("15", "")
+        exp_cntr_tm   = values.get("20", "")
 
         mapping = {
             "exp_cntr_pric": exp_cntr_pric,
@@ -84,18 +87,14 @@ async def write_expected(rdb, data: dict, stk_cd: str):
         }
 
         # pred_pre_pric 역산: 전일종가 = exp_cntr_pric / (1 + exp_flu_rt/100)
-        pred_pre_pric = data.get("pred_pre_pric", "")
-        if not pred_pre_pric and exp_cntr_pric and exp_flu_rt:
+        if exp_cntr_pric and exp_flu_rt:
             try:
-                pric = float(str(exp_cntr_pric).replace(",", ""))
+                pric = float(str(exp_cntr_pric).replace(",", "").replace("+", "").replace("-", ""))
                 flu  = float(str(exp_flu_rt).replace("+", "").replace(",", ""))
                 if pric > 0 and flu != -100:
-                    pred_pre_pric = str(round(pric / (1 + flu / 100)))
+                    mapping["pred_pre_pric"] = str(round(pric / (1 + flu / 100)))
             except Exception:
-                pred_pre_pric = ""
-
-        if pred_pre_pric:
-            mapping["pred_pre_pric"] = pred_pre_pric
+                pass
 
         await rdb.hset(key, mapping=mapping)
         await rdb.expire(key, 60)
@@ -103,20 +102,23 @@ async def write_expected(rdb, data: dict, stk_cd: str):
         logger.warning("[Redis] expected 저장 실패 [%s]: %s", stk_cd, e)
 
 
-async def write_hoga(rdb, data: dict, stk_cd: str):
-    """0D 호가잔량 데이터 저장"""
+async def write_hoga(rdb, values: dict, stk_cd: str):
+    """0D 호가잔량 데이터 저장.
+    values 숫자키: 21:호가시간, 41:매도1호가, 51:매수1호가, 61:매도1수량, 71:매수1수량,
+                  121:매도호가총잔량, 125:매수호가총잔량
+    """
     if not stk_cd:
         return
     key = f"ws:hoga:{stk_cd}"
     try:
         mapping = {
-            "total_buy_bid_req": data.get("total_buy_bid_req", ""),
-            "total_sel_bid_req": data.get("total_sel_bid_req", ""),
-            "buy_bid_pric_1":    data.get("buy_bid_pric_1", ""),
-            "sel_bid_pric_1":    data.get("sel_bid_pric_1", ""),
-            "buy_bid_req_1":     data.get("buy_bid_req_1", ""),
-            "sel_bid_req_1":     data.get("sel_bid_req_1", ""),
-            "bid_req_base_tm":   data.get("bid_req_base_tm", ""),
+            "total_buy_bid_req": values.get("125", ""),
+            "total_sel_bid_req": values.get("121", ""),
+            "buy_bid_pric_1":    values.get("51", ""),
+            "sel_bid_pric_1":    values.get("41", ""),
+            "buy_bid_req_1":     values.get("71", ""),
+            "sel_bid_req_1":     values.get("61", ""),
+            "bid_req_base_tm":   values.get("21", ""),
         }
         await rdb.hset(key, mapping=mapping)
         await rdb.expire(key, 30)
@@ -124,31 +126,37 @@ async def write_hoga(rdb, data: dict, stk_cd: str):
         logger.warning("[Redis] hoga 저장 실패 [%s]: %s", stk_cd, e)
 
 
-async def write_vi(rdb, data: dict, stk_cd: str):
+async def write_vi(rdb, values: dict, stk_cd: str):
     """1h VI 발동/해제 데이터 저장.
+    values 숫자키: 9001:종목코드, 9068:VI발동구분(1발동/2해제), 1225:VI적용구분,
+                  1221:VI발동가격, 9008:시장구분
+    stk_cd 는 values["9001"] 이 있으면 그것을 우선 사용.
 
     vi_watch_queue 등록은 api-orchestrator(ViWatchService)가 단독 담당한다.
     이 함수는 vi:{stk_cd} 상태 해시만 기록하여 역할 중복을 방지한다.
     """
-    if not stk_cd:
+    # values.9001 우선 사용 (item 필드와 다를 수 있음)
+    real_stk_cd = values.get("9001", stk_cd)
+    if not real_stk_cd:
         return
-    vi_stat  = data.get("vi_stat", "")
-    vi_price = data.get("vi_pric", "0")
-    vi_type  = data.get("vi_type", "")
 
-    key = f"vi:{stk_cd}"
+    vi_stat  = values.get("9068", "")   # "1"=발동, "2"=해제
+    vi_price = values.get("1221", "0")
+    vi_type  = values.get("1225", "")   # "정적"/"동적"/"동적+정적"
+
+    key = f"vi:{real_stk_cd}"
     try:
         mapping = {
             "vi_price": vi_price,
             "vi_type":  vi_type,
             "status":   "active" if vi_stat == "1" else "released",
-            "mrkt_cls": data.get("mrkt_cls", ""),
+            "mrkt_cls": values.get("9008", ""),
         }
         await rdb.hset(key, mapping=mapping)
         await rdb.expire(key, 3600)
 
         status_str = "발동" if vi_stat == "1" else "해제"
-        logger.debug("[VI] %s [%s] type=%s price=%s", status_str, stk_cd, vi_type, vi_price)
+        logger.debug("[VI] %s [%s] type=%s price=%s", status_str, real_stk_cd, vi_type, vi_price)
 
     except Exception as e:
-        logger.warning("[Redis] VI 저장 실패 [%s]: %s", stk_cd, e)
+        logger.warning("[Redis] VI 저장 실패 [%s]: %s", real_stk_cd, e)

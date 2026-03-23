@@ -107,8 +107,11 @@ public class KiwoomWebSocketClient {
             return;
         }
         try {
-            List<Map<String, String>> dataList = items.stream()
-                    .map(item -> Map.of("item", item, "type", type))
+            // 키움 WS 프로토콜: item 과 type 은 배열로 전송해야 함
+            List<Map<String, Object>> dataList = items.stream()
+                    .map(item -> Map.<String, Object>of(
+                            "item", List.of(item),
+                            "type", List.of(type)))
                     .toList();
             Map<String, Object> req = Map.of(
                     "trnm",    "REG",
@@ -178,10 +181,8 @@ public class KiwoomWebSocketClient {
                 switch (trnm) {
                     case "LOGIN" -> handleLogin(ws, root);
                     case "PING"  -> ws.send("{\"trnm\":\"PONG\"}");
-                    case "0B"    -> handleStockTick(root);
-                    case "0D"    -> handleHoga(root);
-                    case "0H"    -> handleExpected(root);
-                    case "1h"    -> handleVi(root);
+                    // 키움 실시간 데이터는 trnm="REAL" 로 수신되며 data 배열 안에 type 으로 구분됨
+                    case "REAL"  -> handleRealData(root);
                     default      -> log.trace("WS 메시지 [{}]: {}", trnm, text.length() > 200 ? text.substring(0,200) : text);
                 }
             } catch (Exception e) {
@@ -220,6 +221,25 @@ public class KiwoomWebSocketClient {
     // ───── 메시지 핸들러 ─────
 
     /**
+     * 키움 실시간 데이터 공통 진입점.
+     * trnm="REAL", data=[{type, item, values:{숫자키:값}}] 형식
+     */
+    private void handleRealData(JsonNode root) {
+        JsonNode dataArray = root.path("data");
+        if (!dataArray.isArray()) return;
+        for (JsonNode item : dataArray) {
+            String type = item.path("type").asText("");
+            switch (type) {
+                case "0B" -> handleStockTick(item);
+                case "0D" -> handleHoga(item);
+                case "0H" -> handleExpected(item);
+                case "1h" -> handleVi(item);
+                default   -> log.trace("[WS] 미처리 실시간 타입: {}", type);
+            }
+        }
+    }
+
+    /**
      * LOGIN 응답 처리.
      * return_code == "0" 일 때 connected = true 로 전환하고 ping 스케줄 시작.
      * 실패 시 ws 종료 → onClosing → scheduleReconnect 흐름으로 재연결.
@@ -255,53 +275,105 @@ public class KiwoomWebSocketClient {
                 pingInterval, pingInterval, TimeUnit.SECONDS);
     }
 
-    private void handleStockTick(JsonNode root) {
+    /**
+     * 0B 주식체결 – values 숫자키 파싱
+     * 10:현재가, 11:전일대비, 12:등락율, 13:누적거래량, 14:누적거래대금, 20:체결시간, 228:체결강도
+     */
+    private void handleStockTick(JsonNode item) {
         try {
-            JsonNode data = root.path("data");
-            if (data.isMissingNode()) return;
-            WsMarketData.StockTick tick = objectMapper.treeToValue(data, WsMarketData.StockTick.class);
-            tick.setStkCd(root.path("item").asText(tick.getStkCd()));
+            String stkCd = item.path("item").asText("");
+            if (stkCd.isEmpty()) return;
+            JsonNode v = item.path("values");
+            if (v.isMissingNode()) return;
+
+            WsMarketData.StockTick tick = new WsMarketData.StockTick();
+            tick.setStkCd(stkCd);
+            tick.setCurPrc(v.path("10").asText(""));
+            tick.setPredPre(v.path("11").asText(""));
+            tick.setFluRt(v.path("12").asText(""));
+            tick.setAccTrdeQty(v.path("13").asText(""));
+            tick.setAccTrdePrica(v.path("14").asText(""));
+            tick.setCntrTm(v.path("20").asText(""));
+            tick.setCntrStr(v.path("228").asText(""));
             redisService.saveStockTick(tick);
         } catch (Exception e) {
-            log.debug("StockTick 파싱 오류: {}", e.getMessage());
+            log.warn("[WS] StockTick 파싱 오류: {}", e.getMessage());
         }
     }
 
-    private void handleHoga(JsonNode root) {
+    /**
+     * 0D 호가잔량 – values 숫자키 파싱
+     * 21:호가시간, 41:매도1호가, 51:매수1호가, 61:매도1수량, 71:매수1수량, 121:매도총잔량, 125:매수총잔량
+     */
+    private void handleHoga(JsonNode item) {
         try {
-            JsonNode data = root.path("data");
-            if (data.isMissingNode()) return;
-            WsMarketData.StockHoga hoga = objectMapper.treeToValue(data, WsMarketData.StockHoga.class);
-            hoga.setStkCd(root.path("item").asText(hoga.getStkCd()));
+            String stkCd = item.path("item").asText("");
+            if (stkCd.isEmpty()) return;
+            JsonNode v = item.path("values");
+            if (v.isMissingNode()) return;
+
+            WsMarketData.StockHoga hoga = new WsMarketData.StockHoga();
+            hoga.setStkCd(stkCd);
+            hoga.setBidReqBaseTm(v.path("21").asText(""));
+            hoga.setSelBidPric1(v.path("41").asText(""));
+            hoga.setBuyBidPric1(v.path("51").asText(""));
+            hoga.setSelBidReq1(v.path("61").asText(""));
+            hoga.setBuyBidReq1(v.path("71").asText(""));
+            hoga.setTotalSelBidReq(v.path("121").asText(""));
+            hoga.setTotalBuyBidReq(v.path("125").asText(""));
             redisService.saveHoga(hoga);
         } catch (Exception e) {
-            log.debug("Hoga 파싱 오류: {}", e.getMessage());
+            log.warn("[WS] Hoga 파싱 오류: {}", e.getMessage());
         }
     }
 
-    private void handleExpected(JsonNode root) {
+    /**
+     * 0H 예상체결 – values 숫자키 파싱
+     * 10:예상체결가, 12:예상등락율, 15:예상체결수량, 20:예상체결시간
+     */
+    private void handleExpected(JsonNode item) {
         try {
-            JsonNode data = root.path("data");
-            if (data.isMissingNode()) return;
-            WsMarketData.ExpectedExecution exp =
-                    objectMapper.treeToValue(data, WsMarketData.ExpectedExecution.class);
-            exp.setStkCd(root.path("item").asText(exp.getStkCd()));
+            String stkCd = item.path("item").asText("");
+            if (stkCd.isEmpty()) return;
+            JsonNode v = item.path("values");
+            if (v.isMissingNode()) return;
+
+            WsMarketData.ExpectedExecution exp = new WsMarketData.ExpectedExecution();
+            exp.setStkCd(stkCd);
+            exp.setExpCntrPric(v.path("10").asText(""));
+            exp.setExpFluRt(v.path("12").asText(""));
+            exp.setExpCntrQty(v.path("15").asText(""));
+            exp.setExpCntrTm(v.path("20").asText(""));
             redisService.saveExpectedExecution(exp);
         } catch (Exception e) {
-            log.debug("Expected 파싱 오류: {}", e.getMessage());
+            log.warn("[WS] Expected 파싱 오류: {}", e.getMessage());
         }
     }
 
-    private void handleVi(JsonNode root) {
+    /**
+     * 1h VI발동/해제 – values 숫자키 파싱
+     * 9001:종목코드, 9068:VI발동구분(1발동/2해제), 1225:VI적용구분(정적/동적/동적+정적),
+     * 1221:VI발동가격, 9008:시장구분
+     */
+    private void handleVi(JsonNode item) {
         try {
-            JsonNode data = root.path("data");
-            if (data.isMissingNode()) return;
-            WsMarketData.ViActivation vi =
-                    objectMapper.treeToValue(data, WsMarketData.ViActivation.class);
-            vi.setStkCd(root.path("item").asText(vi.getStkCd()));
+            JsonNode v = item.path("values");
+            if (v.isMissingNode()) return;
+
+            // values.9001 우선, fallback: item 필드
+            String stkCd = v.path("9001").asText(item.path("item").asText(""));
+            if (stkCd.isEmpty()) return;
+
+            WsMarketData.ViActivation vi = new WsMarketData.ViActivation();
+            vi.setStkCd(stkCd);
+            vi.setStkNm(v.path("302").asText(""));
+            vi.setViStat(v.path("9068").asText(""));   // "1"=발동, "2"=해제
+            vi.setViType(v.path("1225").asText(""));   // "정적"/"동적"/"동적+정적"
+            vi.setViPric(v.path("1221").asText(""));
+            vi.setMrktCls(v.path("9008").asText(""));
             viWatchService.handleViEvent(vi);
         } catch (Exception e) {
-            log.debug("VI 파싱 오류: {}", e.getMessage());
+            log.warn("[WS] VI 파싱 오류: {}", e.getMessage());
         }
     }
 

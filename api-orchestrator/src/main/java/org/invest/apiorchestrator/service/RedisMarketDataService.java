@@ -320,7 +320,7 @@ public class RedisMarketDataService {
         try {
             redis.opsForValue().set("ws:connected", "1", Duration.ofSeconds(45));
             redis.opsForValue().set("ws:stable",    "1", Duration.ofSeconds(45));
-            redis.opsForValue().set("ws:heartbeat", "1", Duration.ofSeconds(45));
+            // ws:heartbeat 는 Python websocket-listener 가 Hash 로 관리 – String 으로 덮어쓰지 않음
         } catch (Exception e) {
             log.debug("ws:heartbeat 갱신 실패: {}", e.getMessage());
         }
