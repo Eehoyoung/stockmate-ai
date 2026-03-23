@@ -86,11 +86,11 @@ const status = guard(async (ctx) => {
     const usage = await getClaudeUsage();
     const maxCalls = Number(process.env.MAX_CLAUDE_CALLS_PER_DAY ?? 100);
 
-    // ws_solver.md 4.4: ws:heartbeat 로 Python WS 상태 진단
+    // ws_solver.md 4.4: ws:py_heartbeat 로 Python WS 상태 진단
     const redis = getClient();
     let wsStatus = '❌ Offline (TTL expired)';
     try {
-        const hb = await redis.hgetall('ws:heartbeat');
+        const hb = await redis.hgetall('ws:py_heartbeat');
         if (hb && hb.updated_at) {
             const secAgo = Math.round(Date.now() / 1000 - parseFloat(hb.updated_at));
             wsStatus = `✅ Online (${secAgo}s ago)`;

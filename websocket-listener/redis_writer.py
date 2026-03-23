@@ -8,7 +8,7 @@ WebSocket 수신 데이터를 Redis 에 저장하는 전담 모듈.
   ws:strength:{stkCd}    TTL 300s – 체결강도 리스트 (최근 10개)
   vi:{stkCd}             TTL 3600s – VI 이벤트 상태
   vi_watch_queue                   – VI 눌림목 감시 큐 (TTL 7200s)
-  ws:heartbeat           TTL 30s  – WebSocket 연결 상태 heartbeat
+  ws:py_heartbeat           TTL 30s  – WebSocket 연결 상태 heartbeat
 """
 
 import json
@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 async def write_heartbeat(rdb, grp_status: dict):
     """
     WebSocket 연결 상태 heartbeat 갱신.
-    ws:heartbeat (Hash, TTL 30s): updated_at + 각 그룹 상태
+    ws:py_heartbeat (Hash, TTL 30s): updated_at + 각 그룹 상태
     """
     try:
         mapping = {"updated_at": str(time.time())}
         mapping.update(grp_status)
-        await rdb.hset("ws:heartbeat", mapping=mapping)
-        await rdb.expire("ws:heartbeat", 30)
+        await rdb.hset("ws:py_heartbeat", mapping=mapping)
+        await rdb.expire("ws:py_heartbeat", 30)
     except Exception as e:
         logger.debug("[Redis] heartbeat 저장 실패: %s", e)
 

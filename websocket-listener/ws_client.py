@@ -215,7 +215,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
 
 
 async def _heartbeat_writer(rdb):
-    """10초마다 ws:heartbeat 갱신 (TTL 30s)"""
+    """10초마다 ws:py_heartbeat 갱신 (TTL 30s)"""
     while True:
         try:
             await asyncio.sleep(HEARTBEAT_INTERVAL)

@@ -89,9 +89,9 @@ async def process_one(rdb) -> bool:
         except Exception as news_err:
             logger.debug("[Worker] 뉴스 제어 확인 실패 (무시): %s", news_err)
 
-        # 1. WS 온라인 여부 확인 (ws:heartbeat TTL 기반)
+        # 1. WS 온라인 여부 확인 (ws:py_heartbeat TTL 기반)
         try:
-            hb = await rdb.hgetall("ws:heartbeat")
+            hb = await rdb.hgetall("ws:py_heartbeat")
             ws_online = bool(hb and hb.get("updated_at"))
         except Exception:
             ws_online = False
