@@ -30,6 +30,11 @@ kiwoom:
     app-secret: ${KIWOOM_APP_SECRET}
     base-url: ${KIWOOM_BASE_URL}
     ws-url: ${KIWOOM_WS_URL}
+  websocket:
+    # Python websocket-listener 와 동일 토큰을 사용하므로 기본 비활성화.
+    # Kiwoom 은 토큰당 1개 연결만 허용 → 두 서비스 동시 연결 시 서로 킥킹 발생.
+    # Python websocket-listener 를 사용하지 않을 경우에만 true 로 변경.
+    enabled: ${JAVA_WS_ENABLED:false}
   trading:
     max-daily-signals: ${MAX_DAILY_SIGNALS:30}
     sector-overheat-threshold: ${SECTOR_OVERHEAT_THRESHOLD:3}

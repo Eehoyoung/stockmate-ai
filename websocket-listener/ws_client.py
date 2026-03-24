@@ -2,11 +2,15 @@
 ws_client.py
 키움 WebSocket 연결·구독·재연결을 담당하는 모듈.
 
-그룹 할당 (Java GRP 1~4 와 충돌 방지):
-  GRP 5  0B 체결      – 후보 종목
-  GRP 6  0H 예상체결  – 장전용
-  GRP 7  1h VI발동해제 – 전체
-  GRP 8  0D 호가잔량  – 상위 100
+그룹 할당 (Python 단독 WS 연결 – Java WS 비활성화):
+  GRP 1  0B 체결      – 후보 종목 (최대 200)
+  GRP 2  0H 예상체결  – 상위 100
+  GRP 3  1h VI발동해제 – 전체
+  GRP 4  0D 호가잔량  – 상위 100
+
+  Kiwoom 은 토큰당 1개 WS 연결만 허용.
+  Java api-orchestrator 의 WS 클라이언트(JAVA_WS_ENABLED=false)는 비활성화하고
+  Python 이 단독으로 모든 실시간 데이터를 수신하여 Redis 에 기록한다.
 
 환경변수:
   BYPASS_MARKET_HOURS=true  : 장 시간 외에도 연결 시도 (모의 테스트용)
@@ -24,7 +28,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from health_server import set_ws_connected
+from health_server import set_ws_connected, record_message_received
 from redis_writer import write_tick, write_expected, write_hoga, write_vi, write_heartbeat
 from token_loader import load_token
 
@@ -110,8 +114,8 @@ WS_PATH              = "/api/dostk/websocket"
 MAX_RECONNECTS       = 10
 BASE_RECONNECT_MS    = 3000   # ms
 MAX_RECONNECT_SEC    = 300    # 최대 재연결 대기 5분
-WATCHLIST_POLL_SEC   = 30     # candidates:watchlist 폴링 간격
-HEARTBEAT_INTERVAL   = 10     # 초
+WATCHLIST_POLL_SEC   = 5      # candidates:watchlist 폴링 간격 (/score 호출 후 빠른 구독 반영)
+HEARTBEAT_INTERVAL   = 30     # 초 (ws:py_heartbeat Redis 갱신 주기)
 MIN_CONNECTED_SEC    = 30     # 이 미만으로 연결이 유지되면 "즉시 종료" 로 간주
 
 
@@ -123,17 +127,22 @@ async def _get_candidates(rdb, market: str = "001") -> list[str]:
 
 
 async def _subscribe_all(ws, rdb):
-    """장 구분에 따른 전체 구독 설정"""
+    """장 구분에 따른 전체 구독 설정.
+
+    GRP 번호는 키움 서버 내 논리 그룹 식별자이며,
+    Python이 단독으로 WS 연결을 담당하므로 GRP 1-4 를 사용.
+    (Java websocket-listener 비활성화 시 충돌 없음)
+    """
     kospi  = await _get_candidates(rdb, "001")
     kosdaq = await _get_candidates(rdb, "101")
     all_cands = list(dict.fromkeys(kospi + kosdaq))[:200]
     top100 = all_cands[:100]
 
     groups = [
-        ("5", "0B", all_cands),    # 체결 – 전체 후보
-        ("6", "0H", top100),       # 예상체결 – 상위 100
-        ("7", "1h", [""]),         # VI – 전종목
-        ("8", "0D", top100),       # 호가잔량 – 상위 100
+        ("1", "0B", all_cands),    # 체결 – 전체 후보
+        ("2", "0H", top100),       # 예상체결 – 상위 100
+        ("3", "1h", [""]),         # VI – 전종목
+        ("4", "0D", top100),       # 호가잔량 – 상위 100
     ]
 
     for grp_no, ttype, items in groups:
@@ -180,6 +189,7 @@ async def _handle_message(msg_str: str, ws, rdb):
                     case "0H": await write_expected(rdb, values, stk_cd)
                     case "0D": await write_hoga(rdb, values, stk_cd)
                     case "1h": await write_vi(rdb, values, stk_cd)
+            record_message_received()
             return
 
     except json.JSONDecodeError:
@@ -204,7 +214,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
             removed_codes = subscribed_set - watchlist
 
             for code in new_codes:
-                for grp_no, ttype in [("5", "0B"), ("6", "0H"), ("8", "0D")]:
+                for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("4", "0D")]:
                     payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "0",
                                "data": [{"item": [code], "type": [ttype]}]}
                     await ws.send(json.dumps(payload))
@@ -212,7 +222,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                 logger.info("[WS] 동적 구독 추가 [%s]", code)
 
             for code in removed_codes:
-                for grp_no, ttype in [("5", "0B"), ("6", "0H"), ("8", "0D")]:
+                for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("4", "0D")]:
                     payload = {"trnm": "UNREG", "grp_no": grp_no,
                                "data": [{"item": [code], "type": [ttype]}]}
                     await ws.send(json.dumps(payload))
@@ -229,7 +239,7 @@ async def _heartbeat_writer(rdb):
         try:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             await write_heartbeat(rdb, {
-                "grp5": "ok", "grp6": "ok", "grp7": "ok", "grp8": "ok"
+                "grp1": "ok", "grp2": "ok", "grp3": "ok", "grp4": "ok"
             })
         except Exception as e:
             logger.debug("[WS] heartbeat 오류: %s", e)
@@ -339,7 +349,7 @@ async def run_ws_loop(rdb):
 
                 # 연결 직후 즉시 heartbeat 기록 (TTL 소멸 방지)
                 await write_heartbeat(rdb, {
-                    "grp5": "ok", "grp6": "ok", "grp7": "ok", "grp8": "ok"
+                    "grp1": "ok", "grp2": "ok", "grp3": "ok", "grp4": "ok"
                 })
 
                 # ── 메시지 루프를 구독보다 먼저 시작 ──────────────────────
@@ -375,14 +385,20 @@ async def run_ws_loop(rdb):
                 logger.info("[WS] 연결 %.1f초 유지 후 종료 – 카운터 리셋", elapsed)
 
         except ConnectionClosed as e:
-            logger.warning("[WS] 연결 끊김 (ConnectionClosed): %s", e)
-            set_ws_connected(False)
+            reason = f"ConnectionClosed:{e.rcvd.code if e.rcvd else 'unknown'}"
+            logger.warning("[WS] 연결 끊김 (ConnectionClosed): %s", e,
+                           extra={"error_code": reason})
+            set_ws_connected(False, reason=reason)
         except OSError as e:
-            logger.error("[WS] 네트워크 오류: %s", e)
-            set_ws_connected(False)
+            reason = f"OSError:{type(e).__name__}"
+            logger.error("[WS] 네트워크 오류: %s", e,
+                         extra={"error_code": reason})
+            set_ws_connected(False, reason=reason)
         except Exception as e:
-            logger.error("[WS] 예상치 못한 오류: %s", e)
-            set_ws_connected(False)
+            reason = f"Exception:{type(e).__name__}"
+            logger.error("[WS] 예상치 못한 오류: %s", e,
+                         extra={"error_code": reason})
+            set_ws_connected(False, reason=reason)
 
         # ── 재연결 전 시장 시간 판단 ──────────────────────────────
         if not BYPASS_MARKET_HOURS and not _is_market_hours():

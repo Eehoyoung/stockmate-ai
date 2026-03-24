@@ -26,8 +26,8 @@ async def write_heartbeat(rdb, grp_status: dict):
     try:
         mapping = {"updated_at": str(time.time())}
         mapping.update(grp_status)
-        await rdb.hset("ws:py_heartbeat", mapping=mapping)
-        await rdb.expire("ws:py_heartbeat", 30)
+        await rdb.hmset("ws:py_heartbeat", mapping)
+        await rdb.expire("ws:py_heartbeat", 90)   # TTL = heartbeat 간격(30s) × 3
     except Exception as e:
         logger.debug("[Redis] heartbeat 저장 실패: %s", e)
 
@@ -50,7 +50,7 @@ async def write_tick(rdb, values: dict, stk_cd: str):
             "cntr_tm":        values.get("20", ""),
             "cntr_str":       values.get("228", ""),
         }
-        await rdb.hset(key, mapping=mapping)
+        await rdb.hmset(key, mapping)
         await rdb.expire(key, 30)
 
         # 체결강도 리스트 (최근 10개)
@@ -96,7 +96,7 @@ async def write_expected(rdb, values: dict, stk_cd: str):
             except Exception:
                 pass
 
-        await rdb.hset(key, mapping=mapping)
+        await rdb.hmset(key, mapping)
         await rdb.expire(key, 60)
     except Exception as e:
         logger.warning("[Redis] expected 저장 실패 [%s]: %s", stk_cd, e)
@@ -120,7 +120,7 @@ async def write_hoga(rdb, values: dict, stk_cd: str):
             "sel_bid_req_1":     values.get("61", ""),
             "bid_req_base_tm":   values.get("21", ""),
         }
-        await rdb.hset(key, mapping=mapping)
+        await rdb.hmset(key, mapping)
         await rdb.expire(key, 30)
     except Exception as e:
         logger.warning("[Redis] hoga 저장 실패 [%s]: %s", stk_cd, e)
@@ -129,11 +129,10 @@ async def write_hoga(rdb, values: dict, stk_cd: str):
 async def write_vi(rdb, values: dict, stk_cd: str):
     """1h VI 발동/해제 데이터 저장.
     values 숫자키: 9001:종목코드, 9068:VI발동구분(1발동/2해제), 1225:VI적용구분,
-                  1221:VI발동가격, 9008:시장구분
-    stk_cd 는 values["9001"] 이 있으면 그것을 우선 사용.
+                  1221:VI발동가격, 9008:시장구분, 302:종목명
 
-    vi_watch_queue 등록은 api-orchestrator(ViWatchService)가 단독 담당한다.
-    이 함수는 vi:{stk_cd} 상태 해시만 기록하여 역할 중복을 방지한다.
+    Java WS 비활성화(JAVA_WS_ENABLED=false) 상태에서 Python이 단독으로 WS를 담당하므로
+    VI 해제 시 vi_watch_queue 에 직접 등록한다 (전략 2 지원).
     """
     # values.9001 우선 사용 (item 필드와 다를 수 있음)
     real_stk_cd = values.get("9001", stk_cd)
@@ -152,11 +151,31 @@ async def write_vi(rdb, values: dict, stk_cd: str):
             "status":   "active" if vi_stat == "1" else "released",
             "mrkt_cls": values.get("9008", ""),
         }
-        await rdb.hset(key, mapping=mapping)
+        await rdb.hmset(key, mapping)
         await rdb.expire(key, 3600)
 
         status_str = "발동" if vi_stat == "1" else "해제"
         logger.debug("[VI] %s [%s] type=%s price=%s", status_str, real_stk_cd, vi_type, vi_price)
+
+        # VI 해제 시 vi_watch_queue 등록 (전략 2: VI 눌림목)
+        # Java RedisMarketDataService.saveViEvent() 와 동일한 포맷
+        if vi_stat == "2":
+            try:
+                vi_price_f = float(vi_price.replace(",", "").replace("+", "").replace("-", "") or "0")
+            except ValueError:
+                vi_price_f = 0.0
+            is_dynamic = "동적" in vi_type
+            watch_item = json.dumps({
+                "stk_cd":      real_stk_cd,
+                "stk_nm":      values.get("302", ""),
+                "vi_price":    vi_price_f,
+                "watch_until": int(time.time() * 1000) + 600_000,  # 10분 (ms)
+                "is_dynamic":  is_dynamic,
+            }, ensure_ascii=False)
+            await rdb.lpush("vi_watch_queue", watch_item)
+            await rdb.expire("vi_watch_queue", 7200)
+            logger.info("[VI] 해제 → vi_watch_queue 등록 [%s] price=%s dynamic=%s",
+                        real_stk_cd, vi_price_f, is_dynamic)
 
     except Exception as e:
         logger.warning("[Redis] VI 저장 실패 [%s]: %s", real_stk_cd, e)

@@ -66,6 +66,10 @@ public class KiwoomWebSocketClient {
      * WebSocket 연결 시작
      */
     public void connect() {
+        if (!properties.getWebsocket().isEnabled()) {
+            log.info("WebSocket 클라이언트 비활성화됨 (kiwoom.websocket.enabled=false). Python websocket-listener 사용 중.");
+            return;
+        }
         if (connected.get()) {
             log.debug("WebSocket 이미 연결됨");
             return;
@@ -102,6 +106,7 @@ public class KiwoomWebSocketClient {
      * @param type  TR 타입 (0B, 0D, 0H, 1h 등)
      */
     public void subscribe(String grpNo, List<String> items, String type) {
+        if (!properties.getWebsocket().isEnabled()) return;
         if (!connected.get()) {
             log.warn("WebSocket 미연결 상태 - 구독 불가");
             return;
@@ -131,6 +136,7 @@ public class KiwoomWebSocketClient {
      * 구독 해제
      */
     public void unsubscribe(String grpNo, String type) {
+        if (!properties.getWebsocket().isEnabled()) return;
         if (!connected.get()) return;
         try {
             Map<String, Object> req = Map.of(
@@ -152,6 +158,7 @@ public class KiwoomWebSocketClient {
 
         @Override
         public void onOpen(WebSocket ws, Response response) {
+            response.close(); // OkHttp 연결 누수 방지
             reconnectCount.set(0);
             voluntaryClose = false;
             log.info("WebSocket 연결 성공 – LOGIN 패킷 전송 중");
@@ -180,7 +187,8 @@ public class KiwoomWebSocketClient {
 
                 switch (trnm) {
                     case "LOGIN" -> handleLogin(ws, root);
-                    case "PING"  -> ws.send("{\"trnm\":\"PONG\"}");
+                    // 키움 가이드: PING 수신값을 그대로 echo (trnm=PING으로 동일하게 전송)
+                    case "PING"  -> ws.send(text);
                     // 키움 실시간 데이터는 trnm="REAL" 로 수신되며 data 배열 안에 type 으로 구분됨
                     case "REAL"  -> handleRealData(root);
                     default      -> log.trace("WS 메시지 [{}]: {}", trnm, text.length() > 200 ? text.substring(0,200) : text);

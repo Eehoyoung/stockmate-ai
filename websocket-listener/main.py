@@ -14,7 +14,6 @@ StockMate AI – 키움 WebSocket 리스너 (Python)
 """
 
 import asyncio
-import logging
 import os
 import signal
 import sys
@@ -22,23 +21,19 @@ import sys
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
 
-from health_server import run_health_server
+from health_server import run_health_server, set_redis
+from logger import get_logger, setup_logging
 from ws_client import run_ws_loop
 
-load_dotenv()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
-# ── 로깅 설정 ────────────────────────────────────────────────
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-os.makedirs("logs", exist_ok=True)
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/websocket-listener.log", encoding="utf-8"),
-    ],
+# ── JSON 구조화 로깅 초기화 ───────────────────────────────────
+setup_logging(
+    service="websocket-listener",
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    log_file="logs/websocket-listener.log",
 )
-logger = logging.getLogger("main")
+logger = get_logger("main")
 
 # ── Redis 설정 ────────────────────────────────────────────────
 REDIS_HOST     = os.getenv("REDIS_HOST",     "localhost")
@@ -61,6 +56,7 @@ async def main():
     try:
         await rdb.ping()
         logger.info("[Redis] 연결 성공 → %s:%d", REDIS_HOST, REDIS_PORT)
+        set_redis(rdb)   # 헬스체크 서버에 Redis 클라이언트 주입
     except Exception as e:
         logger.critical("[Redis] 연결 실패: %s", e)
         sys.exit(1)

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  logback-spring.xml
+  StockMate AI – api-orchestrator JSON 구조화 로그 설정.
+
+  출력 형식 (JSON Lines, 1줄 = 1 로그):
+    {"ts":"2026-03-24T01:53:00.123+09:00","level":"INFO","service":"api-orchestrator",
+     "module":"o.i.a.service.TokenService","thread":"main",
+     "request_id":"","signal_id":"","stk_cd":"","error_code":"",
+     "msg":"토큰 갱신 완료","stack":""}
+
+  추적 키 설정 예시:
+    MDC.put("request_id", rid);
+    MDC.put("signal_id",  sid);
+    MDC.put("stk_cd",     code);
+    MDC.put("error_code", errCode);
+
+  [주의] Logback PatternLayout 은 \" 이스케이프 시퀀스를 허용하지 않습니다.
+         %mdc{key} 조건부 삽입 대신 %X{key} 직접 참조를 사용합니다.
+         MDC 값이 없을 경우 빈 문자열("")로 출력됩니다.
+         %nopex 로 스택트레이스 인라인 삽입을 억제해 JSON Lines 1줄 포맷을 유지합니다.
+         (스택트레이스는 예외 메시지가 %message 필드에 포함되어 추적 가능합니다.)
+-->
+<configuration>
+
+    <property name="SERVICE"  value="api-orchestrator"/>
+    <property name="LOG_DIR"  value="logs"/>
+    <property name="LOG_FILE" value="${LOG_DIR}/api-orchestrator.log"/>
+
+    <!-- ── 콘솔 출력 ── -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <charset>UTF-8</charset>
+            <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX,Asia/Seoul}","level":"%level","service":"${SERVICE}","module":"%logger{40}","thread":"%thread","request_id":"%X{request_id}","signal_id":"%X{signal_id}","stk_cd":"%X{stk_cd}","error_code":"%X{error_code}","msg":"%message","stack":""}%nopex%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ── 파일 출력 (일별 롤링) ── -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_FILE}</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/api-orchestrator.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <charset>UTF-8</charset>
+            <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX,Asia/Seoul}","level":"%level","service":"${SERVICE}","module":"%logger{40}","thread":"%thread","request_id":"%X{request_id}","signal_id":"%X{signal_id}","stk_cd":"%X{stk_cd}","error_code":"%X{error_code}","msg":"%message","stack":""}%nopex%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ── 노이즈 억제 ── -->
+    <logger name="org.springframework"          level="WARN"/>
+    <logger name="org.hibernate"                level="WARN"/>
+    <logger name="io.lettuce"                   level="WARN"/>
+    <logger name="reactor.netty"                level="WARN"/>
+    <logger name="org.invest.apiorchestrator"   level="INFO"/>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+        <appender-ref ref="FILE"/>
+    </root>
+
+</configuration>

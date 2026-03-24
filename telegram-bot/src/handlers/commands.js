@@ -97,11 +97,15 @@ const status = guard(async (ctx) => {
         }
     } catch (_) {}
 
-    let javaWsStatus = '❓ Unknown';
-    try {
-        const wsConn = await redis.get('ws:connected');
-        javaWsStatus = wsConn === '1' ? '✅ Connected' : '❌ Disconnected';
-    } catch (_) {}
+    // JAVA_WS_ENABLED=false 일 때 Java WS 는 의도적으로 비활성화됨 (Python 단독 담당)
+    const javaWsEnabled = (process.env.JAVA_WS_ENABLED ?? 'false').toLowerCase() === 'true';
+    let javaWsStatus = '⚪ Disabled (Python WS 단독)';
+    if (javaWsEnabled) {
+        try {
+            const wsConn = await redis.get('ws:connected');
+            javaWsStatus = wsConn === '1' ? '✅ Connected' : '❌ Disconnected';
+        } catch (_) {}
+    }
 
     await ctx.reply(
         `🟢 <b>System Status</b>\n` +
@@ -219,7 +223,25 @@ const refreshToken = guard(async (ctx) => {
 /** /ws시작 */
 const wsStart = guard(async (ctx) => {
     const result = await kiwoom.startWs();
-    await ctx.reply(`📡 ${result.msg}`);
+
+    // Python WS 상태 함께 확인
+    const redis = getClient();
+    let pyStatus = '❌ Offline';
+    try {
+        const hb = await redis.hgetall('ws:py_heartbeat');
+        if (hb && hb.updated_at) {
+            const secAgo = Math.round(Date.now() / 1000 - parseFloat(hb.updated_at));
+            pyStatus = secAgo < 90 ? `✅ Online (${secAgo}s ago)` : '❌ Offline (TTL expired)';
+        }
+    } catch (_) {}
+
+    await ctx.reply(
+        `📡 ${result.msg}\n\n` +
+        `Python WS: ${pyStatus}\n` +
+        `ℹ️ Python WS는 별도 프로세스입니다.\n` +
+        `오프라인이면 서버에서 <code>python main.py</code> 를 실행하세요.`,
+        { parse_mode: 'HTML' }
+    );
 });
 
 /** /ws종료 */
@@ -459,9 +481,25 @@ const scoreStock = guard(async (ctx) => {
     const str  = Number(d.score_strength  ?? 0);
 
     // REST fallback 시 호가·체결강도 데이터 없음 안내
-    const dataNote = dataSource === 'REST'
-        ? `\n⚠️ <i>장 마감 후 종가 기준 점수 (호가·체결강도 없음)\n장 중 정확도를 높이려면 /wsStart 후 재조회하세요</i>`
-        : '';
+    // WS 온라인 여부에 따라 다른 메시지 표시
+    let dataNote = '';
+    if (dataSource !== 'WS') {
+        let pyWsOnline = false;
+        try {
+            const hb = await redis.hgetall('ws:py_heartbeat');
+            if (hb && hb.updated_at) {
+                pyWsOnline = (Date.now() / 1000 - parseFloat(hb.updated_at)) < 90;
+            }
+        } catch (_) {}
+
+        if (pyWsOnline) {
+            // WS는 켜져 있지만 이 종목이 구독 목록에 없었던 경우 → 방금 구독 추가됨
+            dataNote = `\n⚠️ <i>${stkCd} 실시간 미구독 종목 (구독 추가 완료)\n약 10초 후 재조회하면 체결강도·호가비율 포함됩니다</i>`;
+        } else {
+            // WS 자체가 꺼진 경우
+            dataNote = `\n⚠️ <i>장 마감 후 종가 기준 점수 (호가·체결강도 없음)\nWS 미연결 – /wsStart 후 재조회하세요</i>`;
+        }
+    }
 
     const hogaLine     = dataSource === 'WS'
         ? `호가비율(매수/매도): <b>${bidRatio}</b>\n`
