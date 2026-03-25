@@ -151,15 +151,21 @@ public class StrategyService {
                     StrategyRequests.InstFrgnContinuousRequest.builder().mrktTp(market).build(),
                     KiwoomApiResponses.InstFrgnContinuousResponse.class);
 
-            Set<String> contSet = contResp.getItems() == null ? Collections.emptySet()
+            // ka10131 응답에서 종목코드 → 실제 연속일수 매핑 (cont_dt_cnt 필드)
+            Map<String, Integer> contMap = contResp.getItems() == null ? Collections.emptyMap()
                     : contResp.getItems().stream()
-                    .map(KiwoomApiResponses.InstFrgnContinuousResponse.ContTrdeItem::getStkCd)
-                    .collect(Collectors.toSet());
+                    .filter(c -> c.getStkCd() != null)
+                    .collect(Collectors.toMap(
+                            KiwoomApiResponses.InstFrgnContinuousResponse.ContTrdeItem::getStkCd,
+                            c -> { int d = parseInt(c.getContDtCnt()); return d > 0 ? d : 1; },
+                            (a, b) -> a  // 중복 키 시 첫 번째 값 사용
+                    ));
 
             List<TradingSignalDto> results = new ArrayList<>();
             for (var item : intradayResp.getItems()) {
                 String stkCd = item.getStkCd();
-                if (!contSet.contains(stkCd)) continue;
+                if (!contMap.containsKey(stkCd)) continue;
+                int actualDays = contMap.get(stkCd);
 
                 // 거래량 비율 (Redis 당일 vs 전일)
                 double volRatio = calcVolRatio(stkCd);
@@ -175,7 +181,7 @@ public class StrategyService {
                         .signalScore(round(score))
                         .netBuyAmt(netBuyAmt)
                         .volRatio(round(volRatio))
-                        .continuousDays(3)
+                        .continuousDays(actualDays)
                         .marketType(market)
                         .entryType("지정가_1호가")
                         .targetPct(3.5)
@@ -512,6 +518,9 @@ public class StrategyService {
             if (volRatio < 1.5) return Optional.empty();
 
             double strength = redisService.getAvgCntrStrength(stkCd, 5);
+            // 거래량 급증률 % 환산 (scorer.py vol_surge_rt 필드와 통일): 2.0x → 100%
+            double volSurgePct = Math.max(0.0, (volRatio - 1.0) * 100.0);
+
             double score = fluRt * 2 + volRatio * 3
                     + (strength > 100 ? (strength - 100) * 0.2 : 0)
                     + (todayHigh >= yearHigh ? 20 : 10);
@@ -523,12 +532,13 @@ public class StrategyService {
                     .entryPrice(todayClose)
                     .gapPct(round(fluRt))
                     .volRatio(round(volRatio))
+                    .volSurgeRt(round(volSurgePct))
                     .cntrStrength(round(strength))
                     .isNewHigh(true)
-                    .entryType("시장가_돌파매수")
-                    .targetPct(4.0)
-                    .target2Pct(7.0)
-                    .stopPct(-3.0)
+                    .entryType("당일종가_또는_익일시가")
+                    .targetPct(12.0)
+                    .target2Pct(18.0)
+                    .stopPct(-5.0)
                     .build());
         } catch (Exception e) {
             log.warn("[S10] {} 처리 오류: {}", stkCd, e.getMessage());
@@ -554,12 +564,12 @@ public class StrategyService {
             double curPrc = parseDouble(tick, "cur_prc");
             if (curPrc <= 0) return Optional.empty();
 
-            // 등락률 0.5~5%
-            if (fluRt < 0.5 || fluRt > 5.0) return Optional.empty();
+            // 등락률 4~15% (ka10027 스펙: 충분한 장중 모멘텀, 과열 제외)
+            if (fluRt < 4.0 || fluRt > 15.0) return Optional.empty();
 
-            // 체결강도 120 이상
+            // 체결강도 110 이상 (ka10027 스펙 기준)
             double strength = redisService.getAvgCntrStrength(stkCd, 5);
-            if (strength < 120.0) return Optional.empty();
+            if (strength < 110.0) return Optional.empty();
 
             // 호가 매수 우위 (bid/ask > 1.5)
             var hogaOpt = redisService.getHogaData(stkCd);
@@ -579,10 +589,10 @@ public class StrategyService {
                     .gapPct(round(fluRt))
                     .cntrStrength(round(strength))
                     .bidRatio(round(bidRatio))
-                    .entryType("종가_시장가")
-                    .targetPct(2.0)
-                    .target2Pct(4.0)
-                    .stopPct(-2.0)
+                    .entryType("종가_동시호가")
+                    .targetPct(5.0)
+                    .target2Pct(7.5)
+                    .stopPct(-3.0)
                     .build());
         } catch (Exception e) {
             log.warn("[S12] {} 처리 오류: {}", stkCd, e.getMessage());

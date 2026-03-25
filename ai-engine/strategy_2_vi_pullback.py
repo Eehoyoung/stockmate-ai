@@ -98,9 +98,9 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
 
     return {
         "stk_cd": stk_cd,
+        "cur_prc": round(cur_price),   # 눌림 진입 기준가
         "strategy": "S2_VI_PULLBACK",
         "vi_price": vi_price,
-        "cur_price": cur_price,
         "pullback_pct": round(pullback_pct, 2),
         "cntr_strength": round(strength, 1),
         "bid_ratio": round(bid_ratio, 2),

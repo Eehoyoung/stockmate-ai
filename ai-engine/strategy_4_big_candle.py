@@ -87,6 +87,7 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
 
     return {
         "stk_cd": stk_cd,
+        "cur_prc": round(c),   # 캔들 종가 = 현재 진입 기준가
         "strategy": "S4_BIG_CANDLE",
         "gain_pct": round(gain_pct, 2),
         "body_ratio": round(body_ratio, 2),

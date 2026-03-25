@@ -77,9 +77,29 @@ async def _load_token(rdb) -> str | None:
 
 
 async def _push_signals(rdb, signals: list, strategy_name: str):
-    """신호 목록을 telegram_queue 에 LPUSH 하고 Telegram 알림 즉시 발송."""
+    """신호 목록을 telegram_queue 에 LPUSH 하고 Telegram 알림 즉시 발송.
+
+    Redis dedup 키(scanner:dedup:{strategy}:{stk_cd}, TTL 1h)로 동일 종목을
+    1시간 내 중복 발송하지 않는다. Java api-orchestrator 의 signal:{stk_cd}:{strategy}
+    키와 동일한 논리를 Python 스캐너 경로에 적용하여 이중 발송을 방지한다.
+    """
     notifier = _get_notifier()
     for sig in signals:
+        stk_cd = sig.get("stk_cd", "")
+
+        # ── 중복 방지 (1시간 TTL) ─────────────────────────────────
+        dedup_key = f"scanner:dedup:{strategy_name}:{stk_cd}"
+        try:
+            # SET … NX EX: 키가 없을 때만 세팅 → 성공(True)이면 신규, 실패(None/False)면 중복
+            is_new = await rdb.set(dedup_key, "1", nx=True, ex=3600)
+        except Exception as dedup_err:
+            logger.debug("[Runner] dedup 확인 실패 (통과): %s", dedup_err)
+            is_new = True  # Redis 오류 시 보수적으로 통과
+        if not is_new:
+            logger.debug("[Runner] 중복 무시 [%s %s] (dedup TTL 1h)", strategy_name, stk_cd)
+            continue
+        # ─────────────────────────────────────────────────────────
+
         try:
             payload = json.dumps(sig, ensure_ascii=False, default=str)
             await rdb.lpush("telegram_queue", payload)

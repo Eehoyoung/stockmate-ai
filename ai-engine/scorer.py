@@ -134,7 +134,12 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
 
         case "S10_NEW_HIGH":
             # 52주 신고가: 등락률 + 거래량 급증률 + 체결강도
+            # vol_surge_rt: Python 스캐너(ka10023 급증률 %)
+            # vol_ratio: Java api-orchestrator(20일 평균 대비 배율) → 급증률로 환산
             vol_surge = _safe_float(signal.get("vol_surge_rt", 0))
+            if vol_surge == 0:
+                vol_ratio_java = _safe_float(signal.get("vol_ratio", 0))
+                vol_surge = max(0.0, (vol_ratio_java - 1.0) * 100)  # 2배 → 100%
             score += 30 if vol_surge >= 300 else (20 if vol_surge >= 200 else (10 if vol_surge >= 100 else 0))
             score += 20 if 2 <= flu_rt <= 8 else (10 if flu_rt <= 15 else -10)
             score += 30 if strength > 130 else (20 if strength > 110 else (10 if strength > 100 else 0))

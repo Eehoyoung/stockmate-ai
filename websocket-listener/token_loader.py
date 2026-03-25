@@ -8,7 +8,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-REDIS_TOKEN_KEY = "kiwoom:token"  # Java TokenService 와 동일한 키
+REDIS_TOKEN_KEY = "kiwoom:token"  # Java TokenService.REDIS_TOKEN_KEY 와 동일한 키
 MAX_RETRIES     = 12
 RETRY_INTERVAL  = 5  # seconds
 

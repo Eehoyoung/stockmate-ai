@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 
 async def get_expected_execution(rdb, stk_cd: str) -> dict:
@@ -101,6 +101,7 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
         score = gap_pct * 0.5 + (strength - 100) * 0.5
         results.append({
             "stk_cd": stk_cd,
+            "cur_prc": round(exp_price),   # 예상체결가 = 시초가 진입가
             "strategy": "S1_GAP_OPEN",
             "gap_pct": round(gap_pct, 2),
             "cntr_strength": round(strength, 1),

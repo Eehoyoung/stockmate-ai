@@ -245,17 +245,6 @@ async def _heartbeat_writer(rdb):
             logger.debug("[WS] heartbeat 오류: %s", e)
 
 
-async def _ws_ping_sender(ws):
-    """30초마다 애플리케이션 레벨 PING 전송 (키움 프로토콜 keepalive)"""
-    while True:
-        try:
-            await asyncio.sleep(30)
-            await ws.send('{"trnm":"PING"}')
-            logger.debug("[WS] PING 전송")
-        except Exception as e:
-            logger.debug("[WS] PING 전송 오류: %s", e)
-            break
-
 
 async def _run_message_loop(ws, rdb):
     """메시지 수신 루프 – 서버 PING 포함 모든 메시지 즉시 처리"""
@@ -308,7 +297,6 @@ async def run_ws_loop(rdb):
         connect_time = None
         try:
             token = await load_token(rdb)
-            headers = {"authorization": f"Bearer {token}"}
 
             logger.info("[WS] 연결 시도 #%d → %s", reconnect_count + 1, url)
 
@@ -317,7 +305,6 @@ async def run_ws_loop(rdb):
 
             async with websockets.connect(
                     url,
-                    additional_headers=headers,
                     ping_interval=None,   # 키움 앱레벨 PING/PONG 사용 – 라이브러리 ping 비활성화
                     open_timeout=15,
             ) as ws:
@@ -335,7 +322,7 @@ async def run_ws_loop(rdb):
                 try:
                     login_resp_raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
                     login_resp     = json.loads(login_resp_raw)
-                    return_code    = str(login_resp.get("return_code", login_resp.get("returnCode", "-1")))
+                    return_code    = str(login_resp.get("return_code", "-1"))
                     if return_code != "0":
                         logger.error("[WS] LOGIN 실패 – return_code=%s body=%s", return_code, login_resp)
                         raise ConnectionError(f"WS LOGIN 실패 (return_code={return_code})")
@@ -363,17 +350,17 @@ async def run_ws_loop(rdb):
                 kosdaq = await _get_candidates(rdb, "101")
                 subscribed_set: set = set(dict.fromkeys(kospi + kosdaq))
 
-                # 동적 구독 watchlist 폴러 + heartbeat + 앱레벨 PING 시작
-                watchlist_task  = asyncio.create_task(_watchlist_poller(ws, rdb, subscribed_set))
-                heartbeat_task  = asyncio.create_task(_heartbeat_writer(rdb))
-                ws_ping_task    = asyncio.create_task(_ws_ping_sender(ws))
+                # 동적 구독 watchlist 폴러 + heartbeat 시작
+                # 키움 공식 가이드: PING 은 서버→클라이언트 방향만 정의됨.
+                # 수신한 PING 은 _handle_message 에서 그대로 에코, 클라이언트 주도 PING 은 없음.
+                watchlist_task = asyncio.create_task(_watchlist_poller(ws, rdb, subscribed_set))
+                heartbeat_task = asyncio.create_task(_heartbeat_writer(rdb))
 
                 try:
                     await message_task  # 서버가 연결을 닫을 때까지 대기
                 finally:
                     watchlist_task.cancel()
                     heartbeat_task.cancel()
-                    ws_ping_task.cancel()
                     message_task.cancel()
                     set_ws_connected(False)
 
@@ -394,6 +381,13 @@ async def run_ws_loop(rdb):
             logger.error("[WS] 네트워크 오류: %s", e,
                          extra={"error_code": reason})
             set_ws_connected(False, reason=reason)
+        except RuntimeError as e:
+            # load_token 실패: Java api-orchestrator 미기동 (kiwoom:access_token 없음)
+            # WS reconnect 카운터를 소모하지 않고 30초 대기 후 재시도
+            logger.warning("[WS] 토큰 미발급 – Java 서버 기동 대기: %s | 30초 후 재시도", e)
+            set_ws_connected(False, reason="token_not_available")
+            await asyncio.sleep(30)
+            continue  # reconnect_count 증가 없이 루프 재시작
         except Exception as e:
             reason = f"Exception:{type(e).__name__}"
             logger.error("[WS] 예상치 못한 오류: %s", e,

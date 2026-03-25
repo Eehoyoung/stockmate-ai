@@ -4,7 +4,7 @@ WebSocket 수신 데이터를 Redis 에 저장하는 전담 모듈.
 키 규약 (Java api-orchestrator 와 공유):
   ws:tick:{stkCd}        TTL 30s  – 0B 체결
   ws:expected:{stkCd}    TTL 60s  – 0H 예상체결
-  ws:hoga:{stkCd}        TTL 30s  – 0D 호가잔량
+  ws:hoga:{stkCd}        TTL 10s  – 0D 호가잔량
   ws:strength:{stkCd}    TTL 300s – 체결강도 리스트 (최근 10개)
   vi:{stkCd}             TTL 3600s – VI 이벤트 상태
   vi_watch_queue                   – VI 눌림목 감시 큐 (TTL 7200s)
@@ -67,20 +67,23 @@ async def write_tick(rdb, values: dict, stk_cd: str):
 
 async def write_expected(rdb, values: dict, stk_cd: str):
     """0H 예상체결 데이터 저장.
-    values 숫자키: 10:예상체결가, 12:예상등락율, 15:예상체결수량, 20:예상체결시간
+    values 숫자키: 10:예상체결가, 11:전일대비, 12:예상등락율, 15:예상체결수량, 20:예상체결시간
     pred_pre_pric(전일종가) = exp_cntr_pric / (1 + exp_flu_rt/100) 로 역산
+    Java RedisMarketDataService.saveExpectedExecution() 와 동일한 필드 셋 유지.
     """
     if not stk_cd:
         return
     key = f"ws:expected:{stk_cd}"
     try:
         exp_cntr_pric = values.get("10", "")
+        exp_pred_pre  = values.get("11", "")   # 전일대비 (Java: exp_pred_pre)
         exp_flu_rt    = values.get("12", "")
         exp_cntr_qty  = values.get("15", "")
         exp_cntr_tm   = values.get("20", "")
 
         mapping = {
             "exp_cntr_pric": exp_cntr_pric,
+            "exp_pred_pre":  exp_pred_pre,
             "exp_flu_rt":    exp_flu_rt,
             "exp_cntr_qty":  exp_cntr_qty,
             "exp_cntr_tm":   exp_cntr_tm,
@@ -121,7 +124,7 @@ async def write_hoga(rdb, values: dict, stk_cd: str):
             "bid_req_base_tm":   values.get("21", ""),
         }
         await rdb.hmset(key, mapping)
-        await rdb.expire(key, 30)
+        await rdb.expire(key, 10)
     except Exception as e:
         logger.warning("[Redis] hoga 저장 실패 [%s]: %s", stk_cd, e)
 

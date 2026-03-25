@@ -119,18 +119,34 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         if sdnin_rt < 100.0:
             continue
 
-        # 체결강도 확인 (Redis)
+        # 현재가 파싱 (ka10016 응답 필드 cur_prc, 부호 제거 후 절대값 사용)
+        try:
+            cur_prc = abs(float(str(item.get("cur_prc", "0")).replace(",", "").replace("+", "") or "0"))
+        except (TypeError, ValueError):
+            cur_prc = 0.0
+
+        # 종목명 (표시용)
+        stk_nm = str(item.get("stk_nm", "")).strip()
+
+        # 체결강도 확인 (Redis ws:strength TTL 300s 우선, 없으면 ws:tick TTL 30s fallback)
         cntr_str = 100.0
         if rdb:
             try:
-                tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
-                cntr_str = float(tick.get("cntr_str", 100))
+                strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 4)
+                if strength_data:
+                    cntr_str = sum(float(s) for s in strength_data) / len(strength_data)
+                else:
+                    tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+                    if tick:
+                        cntr_str = float(tick.get("cntr_str", 100))
             except Exception:
                 pass
 
         score = flu_rt * 0.4 + min(sdnin_rt / 100, 5.0) * 10 + max(cntr_str - 100, 0) * 0.2
         results.append({
             "stk_cd": stk_cd,
+            "stk_nm": stk_nm,
+            "cur_prc": round(cur_prc) if cur_prc > 0 else None,
             "strategy": "S10_NEW_HIGH",
             "flu_rt": round(flu_rt, 2),
             "vol_surge_rt": round(sdnin_rt, 1),
@@ -139,6 +155,7 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             "entry_type": "당일종가_또는_익일시가",
             "holding_days": "5~10거래일",
             "target_pct": 12.0,
+            "target2_pct": 18.0,
             "stop_pct": -5.0,
         })
 

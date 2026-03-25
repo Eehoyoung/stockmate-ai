@@ -36,6 +36,7 @@ public class TradingSignalDto {
     private Integer continuousDays;
     private Long netBuyAmt;
     private Double bodyRatio;      // S4 장대양봉 몸통 비율
+    private Double volSurgeRt;     // S10: 거래량 급증률 % (scorer.py vol_surge_rt 필드용)
 
     private Map<String, Object> extra;
     private LocalDateTime signalTime;
@@ -87,6 +88,7 @@ public class TradingSignalDto {
         m.put("cntr_strength",   cntrStrength);
         m.put("bid_ratio",       bidRatio);
         m.put("vol_ratio",       volRatio);
+        m.put("vol_surge_rt",    volSurgeRt);
         m.put("pullback_pct",    pullbackPct);
         m.put("theme_name",      themeName);
         m.put("net_buy_amt",     netBuyAmt);

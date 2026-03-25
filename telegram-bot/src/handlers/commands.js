@@ -484,6 +484,7 @@ const scoreStock = guard(async (ctx) => {
     // WS 온라인 여부에 따라 다른 메시지 표시
     let dataNote = '';
     if (dataSource !== 'WS') {
+        const redis = getClient();
         let pyWsOnline = false;
         try {
             const hb = await redis.hgetall('ws:py_heartbeat');

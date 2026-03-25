@@ -86,14 +86,23 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         if tot <= 0:
             continue
 
-        # 등락률 및 체결강도는 응답에 없으므로 Redis에서 조회
+        # 등락률·현재가·체결강도는 응답에 없으므로 Redis에서 조회
         flu_rt = 0.0
+        cur_prc = 0.0
         cntr_str = 100.0
         if rdb:
             try:
                 tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
                 flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", "").replace(",", ""))
-                cntr_str = float(tick.get("cntr_str", 100))
+                # 현재가 (부호 제거 후 절대값)
+                raw_prc = tick.get("cur_prc", "")
+                cur_prc = abs(float(raw_prc.replace(",", "").replace("+", "") or "0")) if raw_prc else 0.0
+                # 체결강도: ws:strength(TTL 300s) 우선, 없으면 ws:tick(TTL 30s) fallback
+                strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 4)
+                if strength_data:
+                    cntr_str = sum(float(s) for s in strength_data) / len(strength_data)
+                elif tick:
+                    cntr_str = float(tick.get("cntr_str", 100))
             except Exception:
                 pass
 
@@ -108,6 +117,7 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         score = (tot / 1_000_000) * 5 + (dm1 / 1_000_000) * 3 + flu_rt * 0.5
         results.append({
             "stk_cd": stk_cd,
+            "cur_prc": round(cur_prc) if cur_prc > 0 else None,
             "strategy": "S11_FRGN_CONT",
             "dm1": dm1,
             "dm2": dm2,

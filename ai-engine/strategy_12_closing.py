@@ -135,9 +135,16 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
         if stk_cd not in inst_set:
             continue
 
+        # 현재가 파싱 (ka10027 응답 cur_prc, 부호 제거 후 절대값)
+        try:
+            cur_prc = abs(float(str(item.get("cur_prc", "0")).replace(",", "").replace("+", "") or "0"))
+        except (TypeError, ValueError):
+            cur_prc = 0.0
+
         score = flu_rt * 0.5 + (cntr_str - 100) * 0.3
         results.append({
             "stk_cd": stk_cd,
+            "cur_prc": round(cur_prc) if cur_prc > 0 else None,
             "strategy": "S12_CLOSING",
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
