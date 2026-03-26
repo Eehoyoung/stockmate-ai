@@ -58,61 +58,56 @@ async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
 
 
 
+"""
+전술 6: 테마 상위 + 후발주 매수
+수정 사항: 데이터 정제 로직 보강 및 API 호출 안정화
+"""
 async def scan_theme_laggard(token: str) -> list:
     themes = await fetch_theme_groups(token)
     results = []
 
     for theme in themes:
         thema_grp_cd = theme.get("thema_grp_cd")
-        try:
-            theme_flu_rt = float(str(theme.get("flu_rt", "0")).replace("+", "").replace(",", ""))
-        except (TypeError, ValueError):
-            theme_flu_rt = 0.0
+        # 부호 제거 및 float 변환 유틸
+        def parse_rt(val): return float(str(val).replace("+", "").replace(",", "")) if val else 0.0
 
-        if theme_flu_rt < 2.0:  # 테마 자체 등락률 2% 미만 제외
+        theme_flu_rt = parse_rt(theme.get("flu_rt"))
+        if theme_flu_rt < 2.0:
             continue
 
-        await asyncio.sleep(_API_INTERVAL)   # Rate limit: ka90002 호출 전 대기
+        await asyncio.sleep(_API_INTERVAL)
         stocks = await fetch_theme_stocks(token, thema_grp_cd)
-        flu_rates = []
-        for s in stocks:
-            try:
-                flu_rates.append(float(str(s.get("flu_rt", "0")).replace("+", "").replace(",", "")))
-            except (TypeError, ValueError):
-                flu_rates.append(0.0)
+        if not stocks: continue
 
-        if not flu_rates:
-            continue
-
-        p70 = sorted(flu_rates)[int(len(flu_rates) * 0.7)]  # 상위 30% 기준
+        # 테마 내 등락률 분포 계산
+        flu_rates = sorted([parse_rt(s.get("flu_rt")) for s in stocks])
+        # 상위 30% 커트라인 (선도주 제외 기준)
+        p70_threshold = flu_rates[int(len(flu_rates) * 0.7)]
 
         for stk in stocks:
             stk_cd = stk.get("stk_cd")
-            try:
-                flu_rt = float(str(stk.get("flu_rt", "0")).replace("+", "").replace(",", ""))
-            except (TypeError, ValueError):
-                flu_rt = 0.0
+            flu_rt = parse_rt(stk.get("flu_rt"))
 
-            # 후발주 조건: 테마 평균보다 낮지만 상승 중
-            if not (0.5 <= flu_rt < p70) or flu_rt >= 5.0:
+            # 후발주 조건: 0.5% 이상 상승 중이나 테마 상위 30%보다는 낮고, 당일 5% 미만 상승인 종목
+            if not (0.5 <= flu_rt < p70_threshold) or flu_rt >= 5.0:
                 continue
 
-            await asyncio.sleep(_API_INTERVAL)   # Rate limit: ka10003 호출 전 대기
+            await asyncio.sleep(_API_INTERVAL)
             strength = await fetch_cntr_strength(token, stk_cd)
-            if strength < 120:
-                continue
 
-            results.append({
-                "stk_cd": stk_cd,
-                "strategy": "S6_THEME_LAGGARD",
-                "theme_name": theme.get("thema_nm"),
-                "theme_flu_rt": theme_flu_rt,
-                "stk_flu_rt": flu_rt,
-                "gap_pct": flu_rt,       # scorer/analyzer 가 기대하는 필드명
-                "cntr_strength": round(strength, 1),
-                "entry_type": "지정가_1호가",
-                "target_pct": min(theme_flu_rt * 0.6, 5.0),  # 테마 상승률의 60%, 최대 5%
-                "stop_pct": -2.0,
-            })
+            if strength >= 120:
+                results.append({
+                    "stk_cd": stk_cd,
+                    "strategy": "S6_THEME_LAGGARD",
+                    "theme_name": theme.get("thema_nm"),
+                    "theme_flu_rt": theme_flu_rt,
+                    "flu_rt": flu_rt,         # 현재 등락률
+                    "gap_pct": flu_rt,        # Scorer 호환용
+                    "cntr_strength": round(strength, 1),
+                    "entry_type": "지정가_1호가",
+                    "target_pct": min(theme_flu_rt * 0.6, 5.0),
+                    "stop_pct": -2.0,
+                })
 
+    # 체결강도가 가장 강한 후발주 순으로 정렬
     return sorted(results, key=lambda x: x["cntr_strength"], reverse=True)[:5]

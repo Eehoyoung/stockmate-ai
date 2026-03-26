@@ -142,7 +142,12 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
                 vol_surge = max(0.0, (vol_ratio_java - 1.0) * 100)  # 2배 → 100%
             score += 30 if vol_surge >= 300 else (20 if vol_surge >= 200 else (10 if vol_surge >= 100 else 0))
             score += 20 if 2 <= flu_rt <= 8 else (10 if 0 < flu_rt <= 15 else (-10 if flu_rt > 15 else 0))
-            score += 30 if strength > 130 else (20 if strength > 110 else (10 if strength > 100 else 0))
+            # 체결강도: signal 내 cntr_strength(ka10046 REST 조회값) 우선,
+            # 없으면 market_ctx strength(ws:strength Redis) 사용
+            # 52주 신고가 종목은 WS 미구독이라 market_ctx.strength=100인 경우가 많음
+            cntr_sig_s10 = _safe_float(signal.get("cntr_strength", 0))
+            effective_str_s10 = cntr_sig_s10 if cntr_sig_s10 > 0 else strength
+            score += 30 if effective_str_s10 > 130 else (20 if effective_str_s10 > 110 else (10 if effective_str_s10 > 100 else 0))
 
         case "S11_FRGN_CONT":
             # 외국인 연속 순매수: 연속일수 + 누적수량 + 체결강도

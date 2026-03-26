@@ -1,12 +1,6 @@
 """
 전술 5: 프로그램 순매수 + 외인 동반 상위
-타이밍: 10:00~14:00
-진입 조건 (AND):
-
-ka90003 프로그램 순매수 상위 50 내 포함 (금액 기준)
-ka90009 외국인+기관 매매상위에도 동시 포함
-ka10044 일별기관매매: 전일 기관 순매수 종목
-현재가 5일 이평선 상단 유지
+수정 사항: ka90003 URI 변경 및 ka10044/ka10001 필터 로직 추가
 """
 import asyncio
 import httpx
@@ -14,60 +8,67 @@ import logging
 import os
 
 logger = logging.getLogger(__name__)
-
-# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
-# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
 async def fetch_program_netbuy(token: str, market: str) -> dict:
-    """ka90003 프로그램순매수상위50"""
+    """ka90003 프로그램순매수상위50 (URI: rkinfo)"""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", # stkinfo -> rkinfo로 수정
             headers={"api-id": "ka90003", "authorization": f"Bearer {token}",
                      "Content-Type": "application/json;charset=UTF-8"},
             json={
-                "trde_upper_tp": "2",   # 순매수상위
-                "amt_qty_tp": "1",      # 금액
-                "mrkt_tp": market,
-                "stex_tp": "1"
+                "trde_upper_tp": "2", "amt_qty_tp": "1",
+                "mrkt_tp": market, "stex_tp": "1"
             }
         )
         resp.raise_for_status()
         items = resp.json().get("prm_netprps_upper_50", [])
         return {x["stk_cd"]: int(x.get("net_buy_amt", 0)) for x in items}
 
-
 async def fetch_frgn_inst_upper(token: str, market: str) -> set:
-    """ka90009 외국인기관매매상위"""
+    """ka90009 외국인기관매매상위 (URI: rkinfo)"""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
             headers={"api-id": "ka90009", "authorization": f"Bearer {token}",
                      "Content-Type": "application/json;charset=UTF-8"},
-            json={
-                "mrkt_tp": market,
-                "amt_qty_tp": "1",
-                "qry_dt_tp": "0",
-                "stex_tp": "1"
-            }
+            json={"mrkt_tp": market, "amt_qty_tp": "1", "qry_dt_tp": "0", "stex_tp": "1"}
         )
         resp.raise_for_status()
-        items = resp.json().get("for_inst_trde_upper", [])
-        return {x["stk_cd"] for x in items}
+        return {x["stk_cd"] for x in resp.json().get("for_inst_trde_upper", [])}
 
-VALID_MARKETS = {"001", "101", "000"}
-# NOTE: market="000" (전체)는 ka90003/ka90009 API에서 지원됩니다.
-# api-orchestrator의 StrategyService.java는 기본으로 "000"을 사용합니다.
-# 특정 시장만 조회하려면 "001" (KOSPI) 또는 "101" (KOSDAQ)을 사용하세요.
+async def check_extra_conditions(token: str, stk_cd: str) -> bool:
+    """ka10044 전일 기관 순매수 & ka10001 5일 이평선 상단 확인"""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # 1. 일별 기관 매매 (ka10044)
+            dly = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+                headers={"api-id": "ka10044", "authorization": f"Bearer {token}"},
+                json={"stk_cd": stk_cd}
+            )
+            # index 1이 전일 데이터 (0은 당일 진행중)
+            inst_data = dly.json().get("inst_frgn_trde_tm", [])
+            if len(inst_data) < 2 or int(inst_data[1].get("inst_net_buy_qty", 0)) <= 0:
+                return False
 
+            # 2. 주식기본정보 (ka10001) - 이평선 확인
+            info = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+                headers={"api-id": "ka10001", "authorization": f"Bearer {token}"},
+                json={"stk_cd": stk_cd}
+            )
+            item = info.json().get("stk_info", [{}])[0]
+            cur_prc = abs(float(item.get("cur_prc", 0)))
+            ma5 = float(item.get("moving_avg_5", 0))
+
+            return cur_prc >= ma5 if ma5 > 0 else False
+    except Exception:
+        return False
 
 async def scan_program_buy(token: str, market: str = "000") -> list:
-    # 유효하지 않은 market 파라미터 방어
-    if market not in VALID_MARKETS:
-        logger.warning("[S5] 지원되지 않는 market 파라미터: %s → '001' (KOSPI)로 대체", market)
-        market = "001"
-
     prog_map, frgn_set = await asyncio.gather(
         fetch_program_netbuy(token, market),
         fetch_frgn_inst_upper(token, market)
@@ -77,13 +78,15 @@ async def scan_program_buy(token: str, market: str = "000") -> list:
     results = []
 
     for stk_cd in overlap:
-        results.append({
-            "stk_cd": stk_cd,
-            "strategy": "S5_PROG_FRGN",
-            "net_buy_amt": prog_map[stk_cd],
-            "entry_type": "지정가_1호가",
-            "target_pct": 3.0,
-            "stop_pct": -2.0,
-        })
+        await asyncio.sleep(_API_INTERVAL) # 초당 호출 제한 방지
+        if await check_extra_conditions(token, stk_cd):
+            results.append({
+                "stk_cd": stk_cd,
+                "strategy": "S5_PROG_FRGN",
+                "net_buy_amt": prog_map[stk_cd],
+                "entry_type": "지정가_1호가",
+                "target_pct": 3.0,
+                "stop_pct": -2.0,
+            })
 
     return sorted(results, key=lambda x: x["net_buy_amt"], reverse=True)[:5]

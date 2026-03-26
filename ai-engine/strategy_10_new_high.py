@@ -16,11 +16,14 @@ import os
 
 import httpx
 
+from http_utils import fetch_cntr_strength
+
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
 # 52주 ≈ 250거래일
 NEW_HIGH_TERM = os.getenv("S10_NEW_HIGH_TERM", "250")
@@ -128,8 +131,9 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         # 종목명 (표시용)
         stk_nm = str(item.get("stk_nm", "")).strip()
 
-        # 체결강도 확인 (Redis ws:strength TTL 300s 우선, 없으면 ws:tick TTL 30s fallback)
-        cntr_str = 100.0
+        # 체결강도: ws:strength(TTL 300s) 우선 → ws:tick(TTL 30s) → ka10046 REST 최후 수단
+        # 52주 신고가 종목은 candidates 구독 외 종목일 수 있어 Redis 데이터 없는 경우가 많음
+        cntr_str: float | None = None
         if rdb:
             try:
                 strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 4)
@@ -138,9 +142,16 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
                 else:
                     tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
                     if tick:
-                        cntr_str = float(tick.get("cntr_str", 100))
+                        raw = tick.get("cntr_str", "")
+                        if raw:
+                            cntr_str = float(str(raw).replace("+", "").replace(",", ""))
             except Exception:
                 pass
+
+        # Redis에 없으면 ka10046 REST API로 직접 조회 (WS 미구독 종목 대응)
+        if cntr_str is None:
+            await asyncio.sleep(_API_INTERVAL)
+            cntr_str = await fetch_cntr_strength(token, stk_cd)
 
         score = flu_rt * 0.4 + min(sdnin_rt / 100, 5.0) * 10 + max(cntr_str - 100, 0) * 0.2
         results.append({

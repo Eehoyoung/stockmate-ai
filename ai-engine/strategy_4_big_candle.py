@@ -24,14 +24,33 @@ KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
 async def fetch_minute_chart(token: str, stk_cd: str, scope: int = 5) -> list:
     """ka10080 주식분봉차트 조회"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/chart",
-            headers={"api-id": "ka10080", "authorization": f"Bearer {token}",
-                     "Content-Type": "application/json;charset=UTF-8"},
-            json={"stk_cd": stk_cd, "tic_scope": str(scope), "upd_stkpc_tp": "1"}
-        )
-        return resp.json().get("stk_min_pole_chart_qry", [])
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/chart",
+                headers={
+                    'api-id': 'ka10080',
+                    'authorization': f'Bearer {token}',
+                    'Content-Type': 'application/json;charset=UTF-8'
+                },
+                json={
+                    'stk_cd': stk_cd.strip(),
+                    'tic_scope': str(scope),
+                    'upd_stkpc_tp': '1'
+                }
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Kiwoom application-level error (HTTP 200 이지만 status 필드에 오류 코드 포함)
+            if data.get("status") and int(str(data["status"])) >= 400:
+                logger.warning("[S4] ka10080 응답 오류 [%s]: status=%s msg=%s",
+                               stk_cd, data.get("status"), data.get("message", ""))
+                return []
+            return data.get("stk_min_pole_chart_qry", [])
+    except Exception as e:
+        logger.debug("[S4] ka10080 호출 실패 [%s]: %s", stk_cd, e)
+        return []
 
 async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     candles = await fetch_minute_chart(token, stk_cd, 5)
