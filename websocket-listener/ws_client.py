@@ -40,7 +40,8 @@ _MARKET_CLOSE_HOUR  = (15, 35)  # 15:35 – 장 완전 종료
 _WEEKDAYS           = {0, 1, 2, 3, 4}  # Mon=0 … Fri=4
 
 # 장 시간 외 재연결 허용 여부 (모의 테스트용)
-BYPASS_MARKET_HOURS = os.getenv("BYPASS_MARKET_HOURS", "false").lower() in ("1", "true", "yes")
+# BYPASS_MARKET_HOURS = os.getenv("BYPASS_MARKET_HOURS", "false").lower() in ("1", "true", "yes")
+BYPASS_MARKET_HOURS = "true"
 
 
 def _now_kst() -> datetime:
@@ -264,7 +265,7 @@ async def run_ws_loop(rdb):
       장 시간 외 연결 종료 시 _wait_for_market_open() 으로 개장까지 대기.
     """
     # 실전/모의 환경 분기
-    kiwoom_mode = os.getenv("KIWOOM_MODE", "mock").lower()
+    kiwoom_mode = os.getenv("KIWOOM_MODE", "real").lower()
     if kiwoom_mode == "real":
         ws_base_url = os.getenv("KIWOOM_WS_URL", "wss://api.kiwoom.com:10000")
     else:

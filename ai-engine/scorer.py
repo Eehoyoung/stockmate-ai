@@ -68,8 +68,8 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
     match strategy:
         case "S1_GAP_OPEN":
             gap = _safe_float(signal.get("gap_pct", 0))
-            # 갭 점수: 3~5% 최적, 5~8% 보통, 8~15% 약함, 15% 초과 페널티
-            score += 20 if 3 <= gap < 5 else (15 if gap < 8 else (10 if gap < 15 else -10))
+            # 갭 점수: 3~5% 최적, 5~8% 보통, 8~15% 약함, 15% 초과 페널티, 3% 미만 0점
+            score += 20 if 3 <= gap < 5 else (15 if 5 <= gap < 8 else (10 if 8 <= gap < 15 else (-10 if gap >= 15 else 0)))
             # 체결강도
             score += 30 if strength > 150 else (20 if strength > 130 else (10 if strength > 110 else 0))
             # 호가비율
@@ -119,7 +119,7 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
         case "S6_THEME_LAGGARD":
             gap = _safe_float(signal.get("gap_pct", 0))
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
-            score += 25 if 1 <= gap < 3 else (15 if gap < 5 else 0)
+            score += 25 if 1 <= gap < 3 else (15 if 3 <= gap < 5 else 0)
             # 체결강도 우선 적용 (신호 내 값 → 없으면 실시간 값)
             effective_strength = cntr_sig if cntr_sig > 0 else strength
             score += 30 if effective_strength > 150 else (20 if effective_strength > 120 else 0)
@@ -127,7 +127,7 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
 
         case "S7_AUCTION":
             gap = _safe_float(signal.get("gap_pct", 0))
-            score += 25 if 2 <= gap < 5 else (15 if gap < 8 else 0)
+            score += 25 if 2 <= gap < 5 else (15 if 5 <= gap < 8 else 0)
             score += 30 if bid_ratio > 3 else (25 if bid_ratio > 2 else (10 if bid_ratio > 1.5 else 0))
             vol_rank = int(signal.get("vol_rank", 999) or 999)
             score += 20 if vol_rank <= 10 else (15 if vol_rank <= 20 else (5 if vol_rank <= 30 else 0))
@@ -141,7 +141,7 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
                 vol_ratio_java = _safe_float(signal.get("vol_ratio", 0))
                 vol_surge = max(0.0, (vol_ratio_java - 1.0) * 100)  # 2배 → 100%
             score += 30 if vol_surge >= 300 else (20 if vol_surge >= 200 else (10 if vol_surge >= 100 else 0))
-            score += 20 if 2 <= flu_rt <= 8 else (10 if flu_rt <= 15 else -10)
+            score += 20 if 2 <= flu_rt <= 8 else (10 if 0 < flu_rt <= 15 else (-10 if flu_rt > 15 else 0))
             score += 30 if strength > 130 else (20 if strength > 110 else (10 if strength > 100 else 0))
 
         case "S11_FRGN_CONT":
@@ -158,9 +158,46 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # 종가강도: 등락률 + 체결강도(응답 포함) + 호가비율
             cntr_str_sig = _safe_float(signal.get("cntr_strength", 0))
             effective_str = cntr_str_sig if cntr_str_sig > 0 else strength
-            score += 30 if 4 <= flu_rt <= 10 else (15 if flu_rt <= 15 else -10)
+            score += 30 if 4 <= flu_rt <= 10 else (15 if 10 < flu_rt <= 15 else (-10 if flu_rt > 15 else 0))
             score += 35 if effective_str >= 130 else (25 if effective_str >= 110 else (10 if effective_str >= 100 else 0))
             score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
+
+        case "S8_GOLDEN_CROSS":
+            # 골든크로스 스윙: 5MA > 20MA 돌파 당일, 적절한 상승폭 + 체결강도 + 호가
+            # flu_rt: tick 실시간 우선, 없으면 signal 저장값
+            flu_rt_s8 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
+            cntr_sig = _safe_float(signal.get("cntr_strength", 0))
+            effective_str = cntr_sig if cntr_sig > 0 else strength
+            # 등락률: 1~5% 최적(돌파 초기), 5~10% 보통, 10% 초과 노이즈
+            score += 25 if 1 <= flu_rt_s8 <= 5 else (15 if 5 < flu_rt_s8 <= 10 else 0)
+            # 체결강도
+            score += 35 if effective_str > 130 else (25 if effective_str > 110 else (10 if effective_str > 100 else 0))
+            # 호가 매수 우위
+            score += 25 if bid_ratio > 1.5 else (15 if bid_ratio > 1.2 else 0)
+
+        case "S9_PULLBACK_SWING":
+            # 눌림목 반등 스윙: 정배열 내 5MA 근접 반등, 소폭 상승 + 체결강도
+            flu_rt_s9 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
+            cntr_sig = _safe_float(signal.get("cntr_strength", 0))
+            effective_str = cntr_sig if cntr_sig > 0 else strength
+            # 등락률: 0.5~3% 최적(눌림 반등 초기), 3~6% 보통, 이외 0점
+            score += 30 if 0.5 <= flu_rt_s9 <= 3 else (20 if 3 < flu_rt_s9 <= 6 else (10 if 6 < flu_rt_s9 <= 10 else 0))
+            # 체결강도
+            score += 35 if effective_str > 130 else (25 if effective_str > 110 else (10 if effective_str > 100 else 0))
+            # 호가
+            score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
+
+        case "S13_BOX_BREAKOUT":
+            # 박스권 돌파 스윙: 거래량 폭발 + 장대양봉 + 체결강도 ≥ 130
+            flu_rt_s13 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
+            cntr_sig = _safe_float(signal.get("cntr_strength", 0))
+            effective_str = cntr_sig if cntr_sig > 0 else strength
+            # 등락률: 3~8% 최적(박스 돌파), 8~15% 보통
+            score += 30 if 3 <= flu_rt_s13 <= 8 else (20 if 8 < flu_rt_s13 <= 15 else 0)
+            # 체결강도 (S13은 130% 이상 필터 후 진입 — 가중치 높게)
+            score += 35 if effective_str > 150 else (25 if effective_str > 130 else (10 if effective_str > 110 else 0))
+            # 호가 매수 우위
+            score += 25 if bid_ratio > 2 else (15 if bid_ratio > 1.5 else (5 if bid_ratio > 1.2 else 0))
 
     # 공통 페널티
     if flu_rt > 15:   # 이미 15% 이상 상승 → 과열

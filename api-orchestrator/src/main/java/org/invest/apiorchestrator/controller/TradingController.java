@@ -10,7 +10,6 @@ import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.service.OvernightScoringService;
 import org.invest.apiorchestrator.websocket.WebSocketSubscriptionManager;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -204,7 +203,7 @@ public class TradingController {
         List<Map<String, Object>> withTags = candidateService.getCandidatesWithTags(market);
         List<String> codes = withTags.stream()
                 .map(m -> (String) m.get("code"))
-                .collect(java.util.stream.Collectors.toList());
+                .toList();
         return ResponseEntity.ok(Map.of(
                 "market", market,
                 "count", codes.size(),
