@@ -153,6 +153,18 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             await asyncio.sleep(_API_INTERVAL)
             cntr_str = await fetch_cntr_strength(token, stk_cd)
 
+        # ── MA 이격 검사 (과도 이격 버블권 제외) ──────────────────
+        # ka10081 일봉으로 MA20 계산 후 25% 이상 이격된 종목은 진입 위험
+        try:
+            from ma_utils import get_ma_context as _get_ma
+            ma_ctx = await _get_ma(token, stk_cd)
+            if ma_ctx.valid and ma_ctx.is_overextended(threshold_pct=25.0):
+                logger.debug("[S10] %s MA20 과도 이격 (%.1f%%), skip",
+                             stk_cd, ma_ctx.pct_from_ma20())
+                continue
+        except Exception:
+            pass   # MA 조회 실패 시 패스 (신호 손실 방지 우선)
+
         score = flu_rt * 0.4 + min(sdnin_rt / 100, 5.0) * 10 + max(cntr_str - 100, 0) * 0.2
         results.append({
             "stk_cd": stk_cd,

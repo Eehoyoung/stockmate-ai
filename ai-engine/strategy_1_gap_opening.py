@@ -89,13 +89,13 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
 
         gap_pct = (exp_price - prev_close) / prev_close * 100
 
-        if gap_pct < 3.0:  # 갭 3% 미만 제외
+        if gap_pct < 2.5:  # 갭 3% → 2.5% (후보 유연화)
             continue
 
         await asyncio.sleep(_API_INTERVAL)   # Rate limit: 초당 5회 제한
         strength = await fetch_cntr_strength(token, stk_cd)
 
-        if strength < 130:  # 체결강도 130% 미만 제외
+        if strength < 120:  # 체결강도 130% → 120% (후보 유연화)
             continue
 
         score = gap_pct * 0.5 + (strength - 100) * 0.5

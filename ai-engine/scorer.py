@@ -168,17 +168,19 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
 
         case "S8_GOLDEN_CROSS":
-            # 골든크로스 스윙: 5MA > 20MA 돌파 당일, 적절한 상승폭 + 체결강도 + 호가
-            # flu_rt: tick 실시간 우선, 없으면 signal 저장값
+            # 골든크로스 스윙: MA5 > MA20 크로스 + 거래량 확인
             flu_rt_s8 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
             effective_str = cntr_sig if cntr_sig > 0 else strength
-            # 등락률: 1~5% 최적(돌파 초기), 5~10% 보통, 10% 초과 노이즈
+            vol_ratio_s8 = _safe_float(signal.get("vol_ratio", 0))
+            # 등락률: 1~5% 최적(크로스 초기), 5~10% 보통, 10% 초과 노이즈
             score += 25 if 1 <= flu_rt_s8 <= 5 else (15 if 5 < flu_rt_s8 <= 10 else 0)
+            # 거래량 배율: 크로스 당일 거래량 확인
+            score += 20 if vol_ratio_s8 >= 3.0 else (12 if vol_ratio_s8 >= 1.5 else (5 if vol_ratio_s8 >= 1.0 else 0))
             # 체결강도
-            score += 35 if effective_str > 130 else (25 if effective_str > 110 else (10 if effective_str > 100 else 0))
+            score += 30 if effective_str > 130 else (20 if effective_str > 110 else (10 if effective_str > 100 else 0))
             # 호가 매수 우위
-            score += 25 if bid_ratio > 1.5 else (15 if bid_ratio > 1.2 else 0)
+            score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
 
         case "S9_PULLBACK_SWING":
             # 눌림목 반등 스윙: 정배열 내 5MA 근접 반등, 소폭 상승 + 체결강도

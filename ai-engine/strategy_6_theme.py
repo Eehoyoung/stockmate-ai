@@ -88,14 +88,14 @@ async def scan_theme_laggard(token: str) -> list:
             stk_cd = stk.get("stk_cd")
             flu_rt = parse_rt(stk.get("flu_rt"))
 
-            # 후발주 조건: 0.5% 이상 상승 중이나 테마 상위 30%보다는 낮고, 당일 5% 미만 상승인 종목
-            if not (0.5 <= flu_rt < p70_threshold) or flu_rt >= 5.0:
+            # 후발주 조건: 0.3% 이상 상승 + 테마 상위 30% 미만 + 8% 미만 (유연화)
+            if not (0.3 <= flu_rt < p70_threshold) or flu_rt >= 8.0:
                 continue
 
             await asyncio.sleep(_API_INTERVAL)
             strength = await fetch_cntr_strength(token, stk_cd)
 
-            if strength >= 120:
+            if strength >= 110:   # 120 → 110 유연화
                 results.append({
                     "stk_cd": stk_cd,
                     "strategy": "S6_THEME_LAGGARD",

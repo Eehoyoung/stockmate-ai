@@ -236,6 +236,39 @@ async def _run_once(rdb):
                 logger.error("[Runner] S11 스캔 오류: %s", e)
         tasks.append(_run_strategy_with_semaphore("S11", _s11()))
 
+    # ── S8: 5일선 골든크로스 스윙 (10:00 ~ 14:30) ─────────────────
+    if datetime.time(10, 0) <= now <= datetime.time(14, 30):
+        async def _s8():
+            try:
+                from strategy_8_golden_cross import scan_golden_cross
+                signals = await scan_golden_cross(token, rdb=rdb)
+                await _push_signals(rdb, signals, "S8_GOLDEN_CROSS")
+            except Exception as e:
+                logger.error("[Runner] S8 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S8", _s8()))
+
+    # ── S9: 정배열 눌림목 스윙 (09:30 ~ 13:00) ────────────────────
+    if datetime.time(9, 30) <= now <= datetime.time(13, 0):
+        async def _s9():
+            try:
+                from strategy_9_pullback import scan_pullback_swing
+                signals = await scan_pullback_swing(token, rdb=rdb)
+                await _push_signals(rdb, signals, "S9_PULLBACK_SWING")
+            except Exception as e:
+                logger.error("[Runner] S9 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S9", _s9()))
+
+    # ── S13: 박스권 돌파 스윙 (09:30 ~ 14:00) ─────────────────────
+    if datetime.time(9, 30) <= now <= datetime.time(14, 0):
+        async def _s13():
+            try:
+                from strategy_13_box_breakout import scan_box_breakout
+                signals = await scan_box_breakout(token, rdb=rdb)
+                await _push_signals(rdb, signals, "S13_BOX_BREAKOUT")
+            except Exception as e:
+                logger.error("[Runner] S13 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S13", _s13()))
+
     # ── S12: 종가 강도 확인 매수 (14:30 ~ 14:50) ──────────────────
     if datetime.time(14, 30) <= now <= datetime.time(14, 50):
         async def _s12():

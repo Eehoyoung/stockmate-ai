@@ -79,15 +79,15 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     # 상승폭 (시가 대비 현재가)
     gain_pct = (c - o) / o * 100
 
-    if body_ratio < 0.7 or gain_pct < 3.0:
+    if body_ratio < 0.65 or gain_pct < 2.5:   # 0.7→0.65, 3.0%→2.5% 유연화
         return None
 
-    # 직전 봉 대비 거래량 5배
+    # 직전 봉 대비 거래량 (5배→3배 유연화, 이평선 필터로 보완)
     prev_vols = [int(x.get("trde_qty", 0)) for x in candles[1:6]]
     avg_prev_vol = mean(prev_vols) if prev_vols else 0
     vol_ratio = vol / avg_prev_vol if avg_prev_vol > 0 else 0
 
-    if vol_ratio < 5.0:
+    if vol_ratio < 3.0:    # 5.0 → 3.0 유연화
         return None
 
     # 20일 고가 돌파 여부
@@ -101,7 +101,7 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
         strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 2)
         avg_strength = mean([float(s) for s in strength_data]) if strength_data else 100
 
-    if avg_strength < 140:
+    if avg_strength < 120:   # 140 → 120 유연화 (거래량 폭발이 이미 강한 필터)
         return None
 
     return {

@@ -517,6 +517,19 @@ public class StrategyService {
             double volRatio = avgVol > 0 ? (double) todayVol / avgVol : 0;
             if (volRatio < 1.5) return Optional.empty();
 
+            // MA20 과도 이격 검사 – 25% 이상 이격은 버블권 진입 위험
+            if (candles.size() >= 21) {
+                double ma20 = candles.subList(0, 20).stream()
+                        .mapToDouble(c -> parseDoubleStr(c.getCurPrc()))
+                        .filter(p -> p > 0)
+                        .average().orElse(0);
+                if (ma20 > 0 && todayClose > ma20 * 1.25) {
+                    log.debug("[S10] {} MA20 과도 이격 {:.1f}%, skip", stkCd,
+                            (todayClose / ma20 - 1) * 100);
+                    return Optional.empty();
+                }
+            }
+
             double strength = redisService.getAvgCntrStrength(stkCd, 5);
             // 거래량 급증률 % 환산 (scorer.py vol_surge_rt 필드와 통일): 2.0x → 100%
             double volSurgePct = Math.max(0.0, (volRatio - 1.0) * 100.0);

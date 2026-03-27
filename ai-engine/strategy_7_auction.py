@@ -78,7 +78,7 @@ async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list
         total_ask = float(bid.get("total_sel_bid_req", 1) or 1)
         bid_ratio = total_bid / total_ask
 
-        if bid_ratio < 2.0:
+        if bid_ratio < 1.5:   # 2.0 → 1.5 유연화 (갭 자체가 수급 필터 역할)
             continue
 
         results.append({
