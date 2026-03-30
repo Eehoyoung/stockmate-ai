@@ -35,8 +35,15 @@ const bot = new Telegraf(BOT_TOKEN);
 // 허용되지 않은 사용자 차단
 bot.use((ctx, next) => {
     if (!commands.isAllowed(ctx)) {
-        console.warn(`[Bot] 미인가 접근 차단 – chatId=${ctx.chat?.id}`);
-        return ctx.reply('⛔ Access denied');
+        const chatId = ctx.chat?.id;
+        console.warn(`[Bot] 미인가 접근 차단 – chatId=${chatId}`);
+        return ctx.reply(
+            `⛔ Access denied\n\n` +
+            `접근 권한이 없습니다.\n` +
+            `관리자에게 아래 Chat ID를 전달하세요:\n\n` +
+            `🆔 <code>${chatId}</code>`,
+            { parse_mode: 'HTML' }
+        );
     }
     return next();
 });
