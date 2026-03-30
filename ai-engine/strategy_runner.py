@@ -146,8 +146,8 @@ async def _run_once(rdb):
         async def _s1():
             try:
                 from strategy_1_gap_opening import scan_gap_opening
-                kospi  = await rdb.lrange("candidates:001", 0, 199)
-                kosdaq = await rdb.lrange("candidates:101", 0, 199)
+                kospi  = await rdb.lrange("candidates:s1:001", 0, 99)
+                kosdaq = await rdb.lrange("candidates:s1:101", 0, 99)
                 candidates = list(dict.fromkeys(kospi + kosdaq))
                 if candidates:
                     signals = await scan_gap_opening(token, candidates, rdb=rdb)
@@ -230,6 +230,8 @@ async def _run_once(rdb):
             try:
                 from strategy_11_frgn_cont import scan_frgn_cont_swing
                 for market in ("001", "101"):
+                    # Java가 candidates:s11:{market} 을 채워두면 pool-read 가능
+                    # Java 미실행 시 scan_frgn_cont_swing 내부에서 ka10035 직접 호출
                     signals = await scan_frgn_cont_swing(token, market, rdb=rdb)
                     await _push_signals(rdb, signals, "S11_FRGN_CONT")
             except Exception as e:
@@ -268,6 +270,28 @@ async def _run_once(rdb):
             except Exception as e:
                 logger.error("[Runner] S13 스캔 오류: %s", e)
         tasks.append(_run_strategy_with_semaphore("S13", _s13()))
+
+    # ── S14: 과매도 오실레이터 수렴 반등 (09:30 ~ 14:00) ──────────
+    if datetime.time(9, 30) <= now <= datetime.time(14, 0):
+        async def _s14():
+            try:
+                from strategy_14_oversold_bounce import scan_oversold_bounce
+                signals = await scan_oversold_bounce(token, rdb=rdb)
+                await _push_signals(rdb, signals, "S14_OVERSOLD_BOUNCE")
+            except Exception as e:
+                logger.error("[Runner] S14 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S14", _s14()))
+
+    # ── S15: 다중지표 모멘텀 동조 스윙 (10:00 ~ 14:30) ────────────
+    if datetime.time(10, 0) <= now <= datetime.time(14, 30):
+        async def _s15():
+            try:
+                from strategy_15_momentum_align import scan_momentum_align
+                signals = await scan_momentum_align(token, rdb=rdb)
+                await _push_signals(rdb, signals, "S15_MOMENTUM_ALIGN")
+            except Exception as e:
+                logger.error("[Runner] S15 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S15", _s15()))
 
     # ── S12: 종가 강도 확인 매수 (14:30 ~ 14:50) ──────────────────
     if datetime.time(14, 30) <= now <= datetime.time(14, 50):

@@ -72,9 +72,8 @@ async def fetch_gap_candidates(token: str) -> list:
 
 
 async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
-    # ka10029 로 갭 후보 먼저 조회
-    gap_candidates = await fetch_gap_candidates(token)
-    effective = [c for c in candidates if c in gap_candidates] if gap_candidates else candidates
+    # candidates:s1:{market} 풀이 이미 ka10029 3~15% 갭 필터 적용됨 – 재호출 불필요
+    effective = candidates
     results = []
 
     for stk_cd in effective:
@@ -97,7 +96,6 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
 
         if strength < 120:  # 체결강도 130% → 120% (후보 유연화)
             continue
-
         score = gap_pct * 0.5 + (strength - 100) * 0.5
         results.append({
             "stk_cd": stk_cd,

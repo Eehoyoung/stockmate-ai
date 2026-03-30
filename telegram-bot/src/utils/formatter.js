@@ -6,14 +6,53 @@
  */
 
 const STRATEGY_EMOJI = {
-    S1_GAP_OPEN:       '🚀',
-    S2_VI_PULLBACK:    '🎯',
-    S3_INST_FRGN:      '🏦',
-    S4_BIG_CANDLE:     '📊',
-    S5_PROG_FRGN:      '💻',
-    S6_THEME_LAGGARD:  '🔥',
-    S7_AUCTION:        '⚡',
+    S1_GAP_OPEN:        '🚀',
+    S2_VI_PULLBACK:     '🎯',
+    S3_INST_FRGN:       '🏦',
+    S4_BIG_CANDLE:      '📊',
+    S5_PROG_FRGN:       '💻',
+    S6_THEME_LAGGARD:   '🔥',
+    S7_AUCTION:         '⚡',
+    S8_GOLDEN_CROSS:    '📈',
+    S9_PULLBACK_SWING:  '🔽',
+    S10_NEW_HIGH:       '🏔',
+    S11_FRGN_CONT:      '🌏',
+    S12_CLOSING:        '🌙',
+    S13_BOX_BREAKOUT:   '📦',
+    S14_OVERSOLD_BOUNCE:'🔄',
+    S15_MOMENTUM_ALIGN: '🔥',
 };
+
+const STRATEGY_DESC = {
+    S1_GAP_OPEN:        '갭 상승 개장 (전일 대비 갭 3~15%)',
+    S2_VI_PULLBACK:     'VI 발동 후 눌림목 반등',
+    S3_INST_FRGN:       '기관+외국인 동시 순매수',
+    S4_BIG_CANDLE:      '장대양봉 + 거래량 급증',
+    S5_PROG_FRGN:       '프로그램+외국인 동반 매수',
+    S6_THEME_LAGGARD:   '테마주 후발 소외주 갭 상승',
+    S7_AUCTION:         '동시호가 매수세 우위 + 갭',
+    S8_GOLDEN_CROSS:    'MA5×MA20 골든크로스 + 거래량 확인',
+    S9_PULLBACK_SWING:  '정배열 내 5MA 눌림목 반등',
+    S10_NEW_HIGH:       '52주 신고가 돌파 + 거래량 급증',
+    S11_FRGN_CONT:      '외국인 연속 3일 이상 순매수',
+    S12_CLOSING:        '장 마감 30분 종가강도 매집',
+    S13_BOX_BREAKOUT:   '박스권 상단 돌파 + 거래량 폭발',
+    S14_OVERSOLD_BOUNCE:'RSI 과매도 구간 반등 신호 (RSI < 35)',
+    S15_MOMENTUM_ALIGN: '다중 모멘텀 정렬 상승 (RSI+MA+거래량)',
+};
+
+/**
+ * HTML 특수문자 이스케이프 (Telegram HTML parse_mode 안전 출력용)
+ * @param {*} str
+ * @returns {string}
+ */
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
 
 const ACTION_LABEL = {
     ENTER:  '✅ 진입',
@@ -32,52 +71,170 @@ const CONFIDENCE_LABEL = {
  * @param {Object} item  ai_scored_queue 항목
  * @returns {string}
  */
+// 수수료+세금+슬리피지 합산 (왕복)
+const SLIP_FEE = { KOSPI: 0.0035, KOSDAQ: 0.0045 };
+
+function _slipFee(stkCd) {
+    return String(stkCd ?? '').startsWith('0') ? SLIP_FEE.KOSPI : SLIP_FEE.KOSDAQ;
+}
+
+/**
+ * 슬리피지 반영 실질 R:R 문자열 반환
+ * @returns {string|null}
+ */
+function _effectiveRR(stkCd, entry, tp1, sl) {
+    if (!entry || !tp1 || !sl || sl >= entry) return null;
+    const slip = _slipFee(stkCd);
+    const effTarget = (tp1 - entry) / entry - slip;
+    const effRisk   = (entry - sl)  / entry + slip;
+    if (effRisk <= 0) return null;
+    const rr = (effTarget / effRisk).toFixed(2);
+    const warn = Number(rr) < 1.0 ? ' ⚠️' : '';
+    return `실질R:R(슬리피지반영): <b>${rr}</b>${warn}`;
+}
+
+/**
+ * ai_score + confidence 기반 포지션 크기 제안
+ */
+function _positionSize(aiScore, confidence) {
+    const score = Number(aiScore ?? 0);
+    const conf  = confidence ?? 'LOW';
+    if (score >= 85 && conf === 'HIGH')   return '대 (full)';
+    if (score >= 75 && conf !== 'LOW')    return '중';
+    if (score >= 65)                      return '소 (half)';
+    return null;
+}
+
 function formatSignal(item) {
     const emoji    = STRATEGY_EMOJI[item.strategy] ?? '📌';
     const action   = ACTION_LABEL[item.action]     ?? item.action;
     const conf     = CONFIDENCE_LABEL[item.confidence] ?? item.confidence;
     const aiScore  = (item.ai_score ?? 0).toFixed(1);
     const ruleScore= (item.rule_score ?? 0).toFixed(1);
+    const stratDesc = STRATEGY_DESC[item.strategy];
 
     const lines = [
         `${emoji} <b>[${item.strategy}] ${item.stk_cd} ${item.stk_nm ?? ''}</b>`,
+    ];
+    if (stratDesc) lines.push(`<i>${stratDesc}</i>`);
+    lines.push(
         `${action}  |  신뢰도: ${conf}`,
         `AI 스코어: <b>${aiScore}</b>점  (규칙: ${ruleScore}점)`,
-        `진입방식: ${item.entry_type ?? '-'}`,
-    ];
+    );
 
-    const targetPct = item.adjusted_target_pct ?? item.target_pct;
-    const stopPct   = item.adjusted_stop_pct   ?? item.stop_pct;
-    if (targetPct != null || stopPct != null) {
-        lines.push(`목표: <b>+${targetPct ?? '-'}%</b>  손절: <b>${stopPct ?? '-'}%</b>`);
-    }
-
-    // 진입가 / 목표가 / 손절가 / 리스크리워드
+    // 진입가 표시
     const curPrc = Number(item.cur_prc ?? item.entry_price ?? 0);
     if (curPrc > 0) {
-        const targetPrc = Math.round(curPrc * 1.08);
-        const stopPrc   = Math.round(curPrc * 0.97);
-        lines.push(`진입가: <b>${curPrc.toLocaleString()}원</b>`);
-        lines.push(`목표가: <b>${targetPrc.toLocaleString()}원</b> (+8%)  손절가: <b>${stopPrc.toLocaleString()}원</b> (-3%)`);
-        lines.push(`리스크/리워드: 1:2.7`);
+        lines.push(`진입가: <b>${curPrc.toLocaleString()}원</b>  (${item.entry_type ?? '-'})`);
+    }
+
+    // ── Claude 확정 TP/SL (human_confirmed=true 일 때 우선 표시) ──
+    const claudeTp1 = item.claude_tp1 ? Number(item.claude_tp1) : null;
+    const claudeTp2 = item.claude_tp2 ? Number(item.claude_tp2) : null;
+    const claudeSl  = item.claude_sl  ? Number(item.claude_sl)  : null;
+
+    if (item.human_confirmed && (claudeTp1 || claudeTp2 || claudeSl)) {
+        lines.push('🤖 <b>Claude 최종 목표가</b>');
+        if (claudeTp1 && curPrc > 0) {
+            const pct = (((claudeTp1 - curPrc) / curPrc) * 100).toFixed(1);
+            lines.push(`  TP1: <b>${claudeTp1.toLocaleString()}원</b>  (+${pct}%)`);
+        }
+        if (claudeTp2 && curPrc > 0) {
+            const pct = (((claudeTp2 - curPrc) / curPrc) * 100).toFixed(1);
+            lines.push(`  TP2: <b>${claudeTp2.toLocaleString()}원</b>  (+${pct}%)`);
+        }
+        if (claudeSl && curPrc > 0) {
+            const pct = (((claudeSl - curPrc) / curPrc) * 100).toFixed(1);
+            lines.push(`  SL:  <b>${claudeSl.toLocaleString()}원</b>  (${pct}%)`);
+        }
+        // R/R
+        if (claudeTp1 && claudeSl && curPrc > 0 && claudeSl < curPrc) {
+            const rr = ((claudeTp1 - curPrc) / (curPrc - claudeSl)).toFixed(1);
+            lines.push(`  R/R: 1:${rr}`);
+            const effRR = _effectiveRR(item.stk_cd, curPrc, claudeTp1, claudeSl);
+            if (effRR) lines.push(`  ${effRR}`);
+        }
+    }
+
+    // ── 규칙 기반 TP/SL ──
+    const tp1 = item.tp1_price ? Number(item.tp1_price) : null;
+    const tp2 = item.tp2_price ? Number(item.tp2_price) : null;
+    const sl  = item.sl_price  ? Number(item.sl_price)  : null;
+
+    if (!item.human_confirmed) {
+        // 미확정: 규칙 기반을 주 표시
+        if (tp1 || tp2 || sl) {
+            lines.push('📐 <b>목표가 (규칙 기반)</b>');
+            if (tp1 && curPrc > 0) {
+                const pct = (((tp1 - curPrc) / curPrc) * 100).toFixed(1);
+                lines.push(`  TP1: <b>${tp1.toLocaleString()}원</b>  (+${pct}%)`);
+            }
+            if (tp2 && curPrc > 0) {
+                const pct = (((tp2 - curPrc) / curPrc) * 100).toFixed(1);
+                lines.push(`  TP2: <b>${tp2.toLocaleString()}원</b>  (+${pct}%)`);
+            }
+            if (sl && curPrc > 0) {
+                const pct = (((sl - curPrc) / curPrc) * 100).toFixed(1);
+                lines.push(`  SL:  <b>${sl.toLocaleString()}원</b>  (${pct}%)`);
+            }
+            if (tp1 && sl && curPrc > 0 && sl < curPrc) {
+                const rr = ((tp1 - curPrc) / (curPrc - sl)).toFixed(1);
+                lines.push(`  R/R: 1:${rr}`);
+                const effRR = _effectiveRR(item.stk_cd, curPrc, tp1, sl);
+                if (effRR) lines.push(`  ${effRR}`);
+            }
+        } else {
+            // 절대가 없으면 % 기반 폴백
+            const targetPct = item.adjusted_target_pct ?? item.target_pct;
+            const stopPct   = item.adjusted_stop_pct   ?? item.stop_pct;
+            if (targetPct != null || stopPct != null) {
+                lines.push(`목표: <b>+${targetPct ?? '-'}%</b>  손절: <b>${stopPct ?? '-'}%</b>`);
+            }
+        }
+    } else if (tp1 || tp2 || sl) {
+        // Claude 확정 후: 규칙 기반은 참고용
+        const ruleParts = [];
+        if (tp1) ruleParts.push(`TP1: ${tp1.toLocaleString()}원`);
+        if (tp2) ruleParts.push(`TP2: ${tp2.toLocaleString()}원`);
+        if (sl)  ruleParts.push(`SL: ${sl.toLocaleString()}원`);
+        if (ruleParts.length > 0) {
+            lines.push(`📐 규칙 기반(참고): ${ruleParts.join(' / ')}`);
+        }
     }
 
     // 전술별 지표
-    if (item.gap_pct      != null) lines.push(`갭/상승: ${item.gap_pct}%`);
-    if (item.cntr_strength!= null) lines.push(`체결강도: ${item.cntr_strength}%`);
-    if (item.bid_ratio    != null) lines.push(`호가비율(매수/매도): ${item.bid_ratio}`);
-    if (item.vol_ratio    != null) lines.push(`거래량비율: ${item.vol_ratio}x`);
-    if (item.pullback_pct != null) lines.push(`눌림: ${item.pullback_pct}%`);
+    const indLines = [];
+    if (item.gap_pct      != null) indLines.push(`갭: ${item.gap_pct}%`);
+    if (item.cntr_strength!= null) indLines.push(`체결강도: ${item.cntr_strength}%`);
+    if (item.bid_ratio    != null) indLines.push(`호가비율: ${item.bid_ratio}`);
+    if (item.vol_ratio    != null) indLines.push(`거래량: ${item.vol_ratio}x`);
+    if (item.pullback_pct != null) indLines.push(`눌림: ${item.pullback_pct}%`);
+    if (indLines.length > 0) lines.push(indLines.join('  |  '));
+
+    // 기술 지표 (RSI, ATR, 조건수, 보유목표일)
+    const techLines = [];
+    if (item.rsi      != null) techLines.push(`RSI: ${Number(item.rsi).toFixed(1)}`);
+    if (item.atr_pct  != null) techLines.push(`ATR: ${Number(item.atr_pct).toFixed(2)}%`);
+    if (item.cond_count != null && Number(item.cond_count) > 0) techLines.push(`조건충족: ${item.cond_count}개`);
+    if (item.holding_days != null) techLines.push(`보유목표: ${item.holding_days}일`);
+    if (techLines.length > 0) lines.push(techLines.join('  |  '));
+
     if (item.theme_name   != null) lines.push(`테마: ${item.theme_name}`);
     if (item.net_buy_amt  != null) {
         const amt = (Number(item.net_buy_amt) / 1e8).toFixed(1);
         lines.push(`순매수: ${amt}억`);
     }
 
+    // 포지션 크기 제안 (ENTER 신호만)
+    if (item.action === 'ENTER') {
+        const pos = _positionSize(item.ai_score, item.confidence);
+        if (pos) lines.push(`💰 권장 비중: <b>${pos}</b>`);
+    }
+
     // AI 분석 근거
     if (item.ai_reason) {
         lines.push('');
-        lines.push(`💬 <i>${item.ai_reason}</i>`);
+        lines.push(`💬 <i>${escapeHtml(item.ai_reason)}</i>`);
     }
 
     // 신호 시간
@@ -333,6 +490,7 @@ function formatUserSettings(filter, watchlist) {
 }
 
 module.exports = {
+    escapeHtml,
     formatSignal, formatForceClose, formatDailySummary,
     formatPerformanceSummary, formatNewsStatus, formatSectorAnalysis,
     formatSignalHistory, formatSystemHealth,

@@ -5,7 +5,7 @@ spring:
     password: ${POSTGRES_PASSWORD}
 
   jpa:
-    hibernate.ddl-auto: create
+    hibernate.ddl-auto: ${DDL_AUTO:update}
     show-sql: false
 
   data:

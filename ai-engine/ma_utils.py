@@ -108,14 +108,39 @@ def _safe_vol(raw) -> float:
 
 
 # ──────────────────────────────────────────────────────────────
-# ka10081 일봉 조회
+# ka10081 일봉 조회 (인메모리 TTL 캐시)
 # ──────────────────────────────────────────────────────────────
+
+import time as _time
+
+# 캐시: {stk_cd: (candles, expire_at)}
+# 일봉 데이터는 장 중 변하지 않으므로 1시간 캐시 적용
+_CANDLE_CACHE: dict[str, tuple[list[dict], float]] = {}
+_CANDLE_CACHE_TTL = int(os.getenv("MA_CACHE_TTL_SEC", "3600"))
+
+
+def _candle_cache_get(stk_cd: str) -> list[dict] | None:
+    entry = _CANDLE_CACHE.get(stk_cd)
+    if entry and _time.monotonic() < entry[1]:
+        return entry[0]
+    return None
+
+
+def _candle_cache_set(stk_cd: str, candles: list[dict]) -> None:
+    _CANDLE_CACHE[stk_cd] = (candles, _time.monotonic() + _CANDLE_CACHE_TTL)
+
 
 async def fetch_daily_candles(token: str, stk_cd: str) -> list[dict]:
     """
     ka10081 주식일봉차트 조회 – 최신순 반환 (index 0 = 오늘/가장 최근).
+    인메모리 TTL 캐시(기본 3600s) 적용으로 동일 종목 중복 API 호출 방지.
     오류·데이터 없음 시 빈 리스트 반환.
     """
+    cached = _candle_cache_get(stk_cd)
+    if cached is not None:
+        logger.debug("[ma] 캐시 히트 [%s]", stk_cd)
+        return cached
+
     base_dt = datetime.now().strftime("%Y%m%d")
     try:
         async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
@@ -133,7 +158,10 @@ async def fetch_daily_candles(token: str, stk_cd: str) -> list[dict]:
             if data.get("status") and int(str(data.get("status", 200))) >= 400:
                 logger.debug("[ma] ka10081 오류 [%s]: %s", stk_cd, data.get("message"))
                 return []
-            return data.get("stk_dt_pole_chart_qry", [])
+            candles = data.get("stk_dt_pole_chart_qry", [])
+            if candles:
+                _candle_cache_set(stk_cd, candles)
+            return candles
     except Exception as e:
         logger.debug("[ma] ka10081 실패 [%s]: %s", stk_cd, e)
         return []

@@ -331,4 +331,99 @@ public class KiwoomApiResponses {
         @JsonProperty("flu_rt")   private String fluRt;
         @JsonProperty("trde_qty") private String trdeQty;
     }
+
+    /* ───────────── 전일대비등락률상위 (ka10027) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class FluRtUpperResponse extends BaseResponse {
+        @JsonProperty("pred_pre_flu_rt_upper") private List<FluRtUpperItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class FluRtUpperItem {
+            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_nm")      private String stkNm;
+            @JsonProperty("cur_prc")     private String curPrc;
+            @JsonProperty("flu_rt")      private String fluRt;       // +XX.XX or -XX.XX
+            @JsonProperty("now_trde_qty")private String nowTrdeQty;
+            @JsonProperty("cntr_str")    private String cntrStr;     // 체결강도
+            @JsonProperty("sel_req")     private String selReq;
+            @JsonProperty("buy_req")     private String buyReq;
+        }
+    }
+
+    /* ───────────── 전일거래량상위 (ka10031) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class PrevVolumeUpperResponse extends BaseResponse {
+        @JsonProperty("pred_trde_qty_upper") private List<PrevVolumeUpperItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class PrevVolumeUpperItem {
+            @JsonProperty("stk_cd")  private String stkCd;
+            @JsonProperty("stk_nm")  private String stkNm;
+            @JsonProperty("cur_prc") private String curPrc;
+            @JsonProperty("trde_qty")private String trdeQty;  // 전일거래량
+        }
+    }
+
+    /* ───────────── 외인연속순매매상위 (ka10035) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class FrgnContNettrdUpperResponse extends BaseResponse {
+        @JsonProperty("for_cont_nettrde_upper") private List<FrgnContNettrdItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class FrgnContNettrdItem {
+            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_nm")      private String stkNm;
+            @JsonProperty("cur_prc")     private String curPrc;
+            @JsonProperty("dm1")         private String dm1;     // D-1 순매수량
+            @JsonProperty("dm2")         private String dm2;     // D-2 순매수량
+            @JsonProperty("dm3")         private String dm3;     // D-3 순매수량
+            @JsonProperty("tot")         private String tot;     // 합계
+            @JsonProperty("limit_exh_rt")private String limitExhRt;  // 한도소진율
+        }
+    }
+
+    /* ───────────── 거래대금상위 (ka10032) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class TrdePricaUpperResponse extends BaseResponse {
+        @JsonProperty("trde_prica_upper") private List<TrdePricaUpperItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class TrdePricaUpperItem {
+            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_nm")      private String stkNm;
+            @JsonProperty("cur_prc")     private String curPrc;
+            @JsonProperty("flu_rt")      private String fluRt;
+            @JsonProperty("now_trde_qty")private String nowTrdeQty;
+            @JsonProperty("trde_prica")  private String trdePrica;  // 거래대금(백만원)
+        }
+    }
+
+    /* ───────────── 신고저가 (ka10016) ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class NtlPricResponse extends BaseResponse {
+        @JsonProperty("ntl_pric") private List<NtlPricItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class NtlPricItem {
+            @JsonProperty("stk_cd")              private String stkCd;
+            @JsonProperty("stk_nm")              private String stkNm;
+            @JsonProperty("cur_prc")             private String curPrc;
+            @JsonProperty("flu_rt")              private String fluRt;
+            @JsonProperty("trde_qty")            private String trdeQty;
+            @JsonProperty("pred_trde_qty_pre_rt")private String predTrdeQtyPreRt;  // 전일거래량대비율
+            @JsonProperty("high_pric")           private String highPric;
+            @JsonProperty("low_pric")            private String lowPric;
+        }
+    }
+
+    /* ───────────── ka10087 시간외단일가 ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class OvtSigPricResponse extends BaseResponse {
+        /** 시간외단일가 현재가 (장전 예상가) */
+        @JsonProperty("ovt_sigpric_cur_prc")      private String ovtSigpricCurPrc;
+        /** 시간외단일가 등락률 (예: "+2.35", "-1.20") */
+        @JsonProperty("ovt_sigpric_flu_rt")        private String ovtSigpricFluRt;
+        /** 시간외단일가 누적거래량 */
+        @JsonProperty("ovt_sigpric_acc_trde_qty")  private String ovtSigpricAccTrdeQty;
+    }
 }

@@ -8,6 +8,12 @@
   3. 당일 양봉 (현재가 > 시가) + 등락률 > 0
   4. 당일 거래량 ≥ 전일 거래량 × 1.1 (반등 거래량 소폭 확인)
   5. MA20 대비 이격 ≤ 15% (추세 내 눌림, 과열 버블 제외)
+  6. RSI(14) ≤ 68 – 눌림 중 과매수 종목 제거 (hard gate)
+     탑트레이더 관점: RSI 높은 눌림은 "눌림"이 아니라 고점 노출
+
+보너스 점수:
+  · Stochastic %K > %D 상향 돌파 (반등 시작 확인)             +12점
+  · RSI 40~58 (눌림 후 회복 초입, 추가 상승 여력 충분)        +8점
 
 NOTE: ka10172 HTS 조건검색 의존도 제거 → ka10081 일봉 직접 계산
 """
@@ -17,6 +23,8 @@ import logging
 import os
 
 from ma_utils import fetch_daily_candles, detect_pullback_setup, _safe_price, _safe_vol
+from indicator_rsi import calc_rsi
+from indicator_stochastic import calc_stochastic
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -27,8 +35,9 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
     candidates: list[str] = []
     if rdb:
         try:
-            kospi  = await rdb.lrange("candidates:001", 0, 99)
-            kosdaq = await rdb.lrange("candidates:101", 0, 99)
+            # S9 전용 풀 (ka10027 소폭상승 0.3~5%)
+            kospi  = await rdb.lrange("candidates:s9:001", 0, 99)
+            kosdaq = await rdb.lrange("candidates:s9:101", 0, 99)
             candidates = list(dict.fromkeys(kospi + kosdaq))[:25]
         except Exception as e:
             logger.warning("[S9] Redis candidates 조회 실패: %s", e)
@@ -53,12 +62,22 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         if pct_ma20 > 15.0:
             continue
 
-        # ── 거래량 증가 확인 ─────────────────────────────────────
-        vols: list[float] = []
+        # ── 가격·거래량·OHLC 파싱 ────────────────────────────────
+        highs: list[float] = []
+        lows:  list[float] = []
+        closes_all: list[float] = []
+        vols:  list[float] = []
         for c in candles:
+            h = _safe_price(c.get("high_pric"))
+            l = _safe_price(c.get("low_pric"))
+            p = _safe_price(c.get("cur_prc"))
             v = _safe_vol(c.get("trde_qty"))
+            highs.append(h if h > 0 else 0.0)
+            lows.append(l if l > 0 else 0.0)
+            closes_all.append(p)
             vols.append(v)
 
+        # ── 거래량 증가 확인 ─────────────────────────────────────
         vol_today = vols[0] if vols else 0
         vol_yday  = vols[1] if len(vols) > 1 else 0
         if vol_yday > 0 and vol_today < vol_yday * 1.1:  # 기존 1.2 → 1.1 (유연화)
@@ -70,6 +89,23 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         t_open  = _safe_price(today.get("open_pric"))
         if t_open > 0 and t_close <= t_open:
             continue
+
+        # ── RSI 과매수 방지 (눌림인 척하는 고점 노출 종목 제거) ──
+        rsi_vals = calc_rsi(closes_all, 14)
+        rsi_now  = rsi_vals[0] if rsi_vals and rsi_vals[0] != 0.0 else None
+        if rsi_now and rsi_now > 68:  # RSI 높은 눌림 = 진짜 눌림 아님
+            continue
+
+        # ── Stochastic %K > %D 돌파 확인 (반등 개시 신호) ────────
+        stoch_gc = False
+        valid_h = [h for h in highs if h > 0]
+        valid_l = [l for l in lows  if l > 0]
+        if len(valid_h) >= 20 and len(valid_l) >= 20 and len(closes_all) >= 20:
+            slow_k, slow_d = calc_stochastic(highs, lows, closes_all,
+                                             k_period=14, d_period=3, slowing=3)
+            if (len(slow_k) > 1 and slow_k[0] != 0.0 and slow_d[0] != 0.0
+                    and slow_k[1] != 0.0 and slow_d[1] != 0.0):
+                stoch_gc = slow_k[0] > slow_d[0] and slow_k[1] <= slow_d[1]
 
         # ── 실시간 등락률·체결강도 ────────────────────────────────
         flu_rt   = 0.0
@@ -91,23 +127,27 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         score = (
             flu_rt * 0.5
             + max(cntr_str - 100, 0) * 0.2
-            + max(5.0 - abs(pct_ma5), 0) * 2     # MA5 근접할수록 가산
-            + (10 if -1.0 <= pct_ma5 <= 2.0 else 0)  # MA5 직상 최적 구간 보너스
+            + max(5.0 - abs(pct_ma5), 0) * 2                       # MA5 근접할수록 가산
+            + (10 if -1.0 <= pct_ma5 <= 2.0 else 0)                # MA5 직상 최적 구간 보너스
+            + (12 if stoch_gc else 0)                               # Stochastic 골든크로스 (반등 개시)
+            + (8 if rsi_now and 40 <= rsi_now <= 58 else 0)         # RSI 회복 초입 구간 (상승 여력)
         )
 
         results.append({
-            "stk_cd":       stk_cd,
-            "cur_prc":      round(t_close) if t_close > 0 else None,
-            "strategy":     "S9_PULLBACK_SWING",
-            "flu_rt":       round(flu_rt, 2),
+            "stk_cd":        stk_cd,
+            "cur_prc":       round(t_close) if t_close > 0 else None,
+            "strategy":      "S9_PULLBACK_SWING",
+            "flu_rt":        round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
             "pct_from_ma5":  round(pct_ma5, 2),
             "pct_from_ma20": round(pct_ma20, 2),
-            "score":        round(score, 2),
-            "entry_type":   "당일종가_또는_익일시가",
-            "holding_days": "3~5거래일",
-            "target_pct":   6.0,
-            "stop_pct":    -4.0,
+            "rsi":           round(rsi_now, 1) if rsi_now else None,
+            "stoch_gc":      stoch_gc,
+            "score":         round(score, 2),
+            "entry_type":    "당일종가_또는_익일시가",
+            "holding_days":  "3~5거래일",
+            "target_pct":    6.0,
+            "stop_pct":     -4.0,
         })
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

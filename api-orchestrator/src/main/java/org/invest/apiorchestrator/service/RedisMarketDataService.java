@@ -159,7 +159,9 @@ public class RedisMarketDataService {
     }
 
     /**
-     * 체결강도 최근 N개 평균
+     * 체결강도 최근 N개 평균.
+     * ws:strength 키가 없으면 100.0(중립) 반환.
+     * 실제 데이터 유무는 hasStrengthData() 로 구분하라.
      */
     public double getAvgCntrStrength(String stkCd, int count) {
         List<String> list = redis.opsForList().range(KEY_STRENGTH + stkCd, 0, count - 1);
@@ -170,6 +172,16 @@ public class RedisMarketDataService {
                     catch (Exception e) { return 100.0; }
                 })
                 .average().orElse(100.0);
+    }
+
+    /**
+     * ws:strength 데이터 존재 여부.
+     * 데이터가 없으면 getAvgCntrStrength()가 항상 100.0을 반환하므로,
+     * 임계값 필터를 적용하기 전에 이 메서드로 데이터 유무를 확인해야 한다.
+     */
+    public boolean hasStrengthData(String stkCd) {
+        List<String> list = redis.opsForList().range(KEY_STRENGTH + stkCd, 0, 0);
+        return list != null && !list.isEmpty();
     }
 
     /**

@@ -113,8 +113,27 @@ public class TradingSignal {
     }
 
     public enum StrategyType {
-        S1_GAP_OPEN, S2_VI_PULLBACK, S3_INST_FRGN,
-        S4_BIG_CANDLE, S5_PROG_FRGN, S6_THEME_LAGGARD, S7_AUCTION
-        , S8_VI_OPEN, S9_VI_CLOSE, S10_NEW_HIGH, S11_FRGN_CONT, S12_CLOSING
+        // ── 장전/시초가 ──────────────────────────
+        S1_GAP_OPEN,        // 갭상승 + 체결강도 시초가
+        S7_AUCTION,         // 동시호가 예상체결 갭 필터
+        // ── 단기 이벤트 ─────────────────────────
+        S2_VI_PULLBACK,     // VI 발동 후 눌림목 재진입
+        S4_BIG_CANDLE,      // 장대양봉 + 거래량 급증 추격
+        // ── 수급 기반 ────────────────────────────
+        S3_INST_FRGN,       // 기관+외인 동시 순매수 돌파
+        S5_PROG_FRGN,       // 프로그램 순매수 + 외인 동반
+        S11_FRGN_CONT,      // 외국인 연속 순매수 스윙 (5일+)
+        // ── 테마 ─────────────────────────────────
+        S6_THEME_LAGGARD,   // 테마 상위 + 후발주
+        // ── 스윙 / 기술적 ────────────────────────
+        S8_GOLDEN_CROSS,    // 5일선 골든크로스 스윙
+        S9_PULLBACK_SWING,  // 정배열 눌림목 지지 반등 스윙
+        S10_NEW_HIGH,       // 52주 신고가 돌파 스윙
+        S13_BOX_BREAKOUT,   // 거래량 폭발 박스권 돌파 스윙
+        // ── 다중지표 기반 (신규) ─────────────────
+        S14_OVERSOLD_BOUNCE, // 과매도 오실레이터 수렴 반등
+        S15_MOMENTUM_ALIGN,  // 다중지표 모멘텀 동조 스윙
+        // ── 종가 ─────────────────────────────────
+        S12_CLOSING         // 종가 강도 확인 매수 (익일 갭)
     }
 }

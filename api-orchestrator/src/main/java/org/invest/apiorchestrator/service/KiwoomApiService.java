@@ -154,6 +154,7 @@ public class KiwoomApiService {
 
     private static final String RKINFO_PATH  = "/api/dostk/rkinfo";
     private static final String STKINFO_PATH = "/api/dostk/stkinfo";
+    private static final String MRKCOND_PATH = "/api/dostk/mrkcond";
 
     /** ka10029 예상체결등락률상위 */
     public KiwoomApiResponses.ExpCntrFluRtUpperResponse fetchKa10029(
@@ -202,5 +203,42 @@ public class KiwoomApiService {
         return post("ka10081", "/api/dostk/chart",
                 StrategyRequests.DailyCandleRequest.builder().stkCd(stkCd).build(),
                 KiwoomApiResponses.DailyCandleResponse.class);
+    }
+
+    /** ka10027 전일대비등락률상위 (sort_tp: 1=상승률, 3=하락률) */
+    public KiwoomApiResponses.FluRtUpperResponse fetchKa10027(
+            StrategyRequests.FluRtUpperRequest req) {
+        return post("ka10027", RKINFO_PATH, req, KiwoomApiResponses.FluRtUpperResponse.class);
+    }
+
+    /** ka10031 전일거래량상위 */
+    public KiwoomApiResponses.PrevVolumeUpperResponse fetchKa10031(
+            StrategyRequests.PrevVolumeUpperRequest req) {
+        return post("ka10031", RKINFO_PATH, req, KiwoomApiResponses.PrevVolumeUpperResponse.class);
+    }
+
+    /** ka10035 외인연속순매매상위 (trde_tp=2 연속순매수) */
+    public KiwoomApiResponses.FrgnContNettrdUpperResponse fetchKa10035(
+            StrategyRequests.FrgnContNettrdRequest req) {
+        return post("ka10035", RKINFO_PATH, req, KiwoomApiResponses.FrgnContNettrdUpperResponse.class);
+    }
+
+    /** ka10032 거래대금상위 */
+    public KiwoomApiResponses.TrdePricaUpperResponse fetchKa10032(
+            StrategyRequests.TrdePricaUpperRequest req) {
+        return post("ka10032", RKINFO_PATH, req, KiwoomApiResponses.TrdePricaUpperResponse.class);
+    }
+
+    /** ka10016 신고저가요청 (ntl_tp=1 신고가, ntl_tp=2 신저가) */
+    public KiwoomApiResponses.NtlPricResponse fetchKa10016(
+            StrategyRequests.NtlPricRequest req) {
+        return post("ka10016", STKINFO_PATH, req, KiwoomApiResponses.NtlPricResponse.class);
+    }
+
+    /** ka10087 시간외단일가요청 – 장전 갭다운 경보용 */
+    public KiwoomApiResponses.OvtSigPricResponse fetchKa10087(String stkCd) {
+        return post("ka10087", MRKCOND_PATH,
+                StrategyRequests.OvtSigPricRequest.builder().stkCd(stkCd).build(),
+                KiwoomApiResponses.OvtSigPricResponse.class);
     }
 }

@@ -304,16 +304,21 @@ const filter = guard(async (ctx) => {
 
     // /filter s1 s4 → ["S1_GAP_OPEN", "S4_BIG_CANDLE"]
     const strategyMap = {
-        s1: 'S1_GAP_OPEN', s2: 'S2_VI_PULLBACK', s3: 'S3_INST_FRGN',
-        s4: 'S4_BIG_CANDLE', s5: 'S5_PROG_FRGN', s6: 'S6_THEME_LAGGARD', s7: 'S7_AUCTION',
-        s10: 'S10_NEW_HIGH', s12: 'S12_CLOSING',
+        s1:  'S1_GAP_OPEN',        s2:  'S2_VI_PULLBACK',
+        s3:  'S3_INST_FRGN',       s4:  'S4_BIG_CANDLE',
+        s5:  'S5_PROG_FRGN',       s6:  'S6_THEME_LAGGARD',
+        s7:  'S7_AUCTION',         s8:  'S8_GOLDEN_CROSS',
+        s9:  'S9_PULLBACK_SWING',  s10: 'S10_NEW_HIGH',
+        s11: 'S11_FRGN_CONT',      s12: 'S12_CLOSING',
+        s13: 'S13_BOX_BREAKOUT',   s14: 'S14_OVERSOLD_BOUNCE',
+        s15: 'S15_MOMENTUM_ALIGN',
     };
     const selected = args
         .map((a) => strategyMap[a.toLowerCase()])
         .filter(Boolean);
 
     if (selected.length === 0) {
-        return ctx.reply('❌ No valid strategy. e.g. /filter s1 s4');
+        return ctx.reply('❌ No valid strategy. e.g. /filter s1 s4 s8 s14');
     }
 
     await redis.set(filterKey, JSON.stringify(selected));
@@ -581,14 +586,14 @@ const help = guard(async (ctx) => {
         `/events – This week's economic calendar\n\n` +
         `<b>── Personal Settings ──</b>\n` +
         `/settings – My notification settings\n` +
-        `/filter [s1~s7|all] – Strategy filter\n` +
+        `/filter [s1~s15|all] – Strategy filter\n` +
         `/watchAdd {code} – Add to watchlist\n` +
         `/watchRemove {code} – Remove from watchlist\n\n` +
         `<b>── System Control ──</b>\n` +
         `/pause – Pause trading signals\n` +
         `/resume – Resume trading (CONTINUE)\n` +
         `/errors – System error status\n` +
-        `/strategy {s1~s7|s10|s12} – Run strategy manually\n` +
+        `/strategy {s1~s15} – Run strategy manually\n` +
         `/token – Refresh Kiwoom token\n` +
         `/wsStart / /wsStop – WebSocket control\n` +
         `/status – System health check\n` +
@@ -596,7 +601,9 @@ const help = guard(async (ctx) => {
         `<b>── Strategies ──</b>\n` +
         `s1: Gap open | s2: VI pullback | s3: Inst+Frgn\n` +
         `s4: Big candle | s5: Prog+Frgn | s6: Theme laggard\n` +
-        `s7: Auction | s10: 52w New High | s12: Closing strength\n` +
+        `s7: Auction | s8: Golden cross | s9: Pullback swing\n` +
+        `s10: 52w New High | s11: Frgn cont | s12: Closing\n` +
+        `s13: Box breakout | s14: Oversold bounce | s15: Momentum align\n` +
         `\n💡 /score works anytime (even outside trading hours)`,
         { parse_mode: 'HTML' }
     );

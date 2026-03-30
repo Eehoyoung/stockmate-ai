@@ -122,12 +122,17 @@ async def main():
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    enable_scanner   = os.getenv("ENABLE_STRATEGY_SCANNER", "false").lower() == "true"
+    enable_confirm   = os.getenv("ENABLE_CONFIRM_GATE",      "true").lower()  == "true"
+    enable_scanner   = os.getenv("ENABLE_STRATEGY_SCANNER", "true").lower()  == "true"  # S8/S9/S11/S13 Python 전용
     enable_news      = os.getenv("NEWS_ENABLED",            "true").lower()  == "true"
     enable_monitor   = os.getenv("ENABLE_MONITOR",          "true").lower()  == "true"
     enable_overnight = os.getenv("ENABLE_OVERNIGHT_WORKER", "true").lower()  == "true"
     health_port      = int(os.getenv("AI_HEALTH_PORT", "8082"))
     logger.info("[Engine] AI Engine ready – telegram_queue 폴링 시작")
+    if enable_confirm:
+        logger.info("[Engine] Human Confirm Gate 활성화 (ENABLE_CONFIRM_GATE=true)")
+    else:
+        logger.warning("[Engine] Human Confirm Gate 비활성화 – Claude 직접 호출 모드")
     if enable_scanner:
         logger.info("[Engine] 전술 스캐너 활성화 (ENABLE_STRATEGY_SCANNER=true)")
     if enable_news:
@@ -141,10 +146,11 @@ async def main():
 
     tasks = [
         asyncio.create_task(run_worker(rdb)),
-        asyncio.create_task(run_confirm_worker(rdb)),
         asyncio.create_task(stop_event.wait()),
         asyncio.create_task(_run_health_server(health_port, rdb)),
     ]
+    if enable_confirm:
+        tasks.append(asyncio.create_task(run_confirm_worker(rdb)))
     if enable_scanner:
         tasks.append(asyncio.create_task(run_strategy_scanner(rdb)))
     if enable_news:

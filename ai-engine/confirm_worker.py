@@ -54,6 +54,9 @@ async def process_confirmed(rdb) -> bool:
             "ai_reason":           result.get("reason", ""),
             "adjusted_target_pct": result.get("adjusted_target_pct"),
             "adjusted_stop_pct":   result.get("adjusted_stop_pct"),
+            "claude_tp1":          result.get("claude_tp1"),
+            "claude_tp2":          result.get("claude_tp2"),
+            "claude_sl":           result.get("claude_sl"),
             "human_confirmed":     True,
         }
         # market_ctx 는 큰 데이터이므로 발행 전 제거

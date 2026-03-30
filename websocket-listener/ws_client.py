@@ -40,8 +40,7 @@ _MARKET_CLOSE_HOUR  = (15, 35)  # 15:35 – 장 완전 종료
 _WEEKDAYS           = {0, 1, 2, 3, 4}  # Mon=0 … Fri=4
 
 # 장 시간 외 재연결 허용 여부 (모의 테스트용)
-# BYPASS_MARKET_HOURS = os.getenv("BYPASS_MARKET_HOURS", "false").lower() in ("1", "true", "yes")
-BYPASS_MARKET_HOURS = "true"
+BYPASS_MARKET_HOURS = os.getenv("BYPASS_MARKET_HOURS", "false").lower() in ("1", "true", "yes")
 
 
 def _now_kst() -> datetime:
@@ -275,6 +274,17 @@ async def run_ws_loop(rdb):
     if BYPASS_MARKET_HOURS:
         logger.warning(
             "[WS] ⚠️  BYPASS_MARKET_HOURS=true – 장 시간 외 연결 허용 (모의 테스트 모드)"
+        )
+
+    # GRP 충돌 방지 검사: JAVA_WS_ENABLED=true 이면 Python과 Java가 동일 GRP 사용 위험
+    java_ws_enabled = os.getenv("JAVA_WS_ENABLED", "false").lower() in ("1", "true", "yes")
+    if java_ws_enabled:
+        logger.error(
+            "[WS] ⛔ JAVA_WS_ENABLED=true 감지 – Java api-orchestrator WS 클라이언트가 "
+            "GRP 1~4 를 점유 중입니다. Python은 GRP 5~8 을 사용해야 합니다. "
+            "두 서비스가 동일 GRP 를 구독하면 Kiwoom 서버에서 킥킹이 발생합니다. "
+            "websocket-listener 의 GRP 번호를 5~8 로 수정하거나 "
+            "JAVA_WS_ENABLED=false 로 설정하세요."
         )
 
     reconnect_count = 0

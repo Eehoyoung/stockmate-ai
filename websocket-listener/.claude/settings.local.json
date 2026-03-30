@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls ai-engine/*.py)",
+      "Bash(ls websocket-listener/*.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ai-engine/engine.py''\\).read\\(\\)\\); print\\(''engine.py OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ai-engine/redis_reader.py''\\).read\\(\\)\\); print\\(''redis_reader.py OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ai-engine/ma_utils.py''\\).read\\(\\)\\); print\\(''ma_utils.py OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''websocket-listener/ws_client.py''\\).read\\(\\)\\); print\\(''ws_client.py OK''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(head -25 grep -n \"candidates\\\\|ka10\\\\|ka90\\\\|lrange\\\\|def scan\\\\|fetch\" C:UsersLeeHoYoungIdeaProjectststockmate-aiai-enginestrategy_11_frgn_cont.py)",
+      "Bash(find C:UsersLeeHoYoungIdeaProjectststockmate-aitelegram-bot -name *.js)",
+      "Read(//c/Users/LeeHoYoung/IdeaProjects/t/stockmate-ai/telegram-bot/**)",
+      "Bash(node tests/test_formatter.js)",
+      "Bash(node tests/test_signals_rate_limiter.js)"
+    ]
+  }
+}

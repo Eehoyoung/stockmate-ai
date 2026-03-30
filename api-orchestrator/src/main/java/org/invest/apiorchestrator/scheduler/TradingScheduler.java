@@ -248,7 +248,10 @@ public class TradingScheduler {
         }
         log.info("[S1] 갭상승 시초가 스캔 (news={})", newsControl);
         try {
-            List<String> candidates = candidateService.getAllCandidates();
+            List<String> candidates = java.util.stream.Stream.concat(
+                            candidateService.getS1Candidates("001").stream(),
+                            candidateService.getS1Candidates("101").stream())
+                    .distinct().collect(Collectors.toList());
             List<TradingSignalDto> signals = strategyService.scanGapOpening(candidates);
             int maxSignals = newsControlService.getMaxSignals(5);
             int cnt = signalService.processSignals(
@@ -429,11 +432,20 @@ public class TradingScheduler {
         }
         log.info("[S10] 52주 신고가 돌파 스캔 (news={})", newsControl);
         try {
-            // PriceSurge 사전 필터로 후보 축소 (rate limit 절약)
-            Set<String> priceSurge = priceSurgeService.fetchSurgeCandidates();
-            List<String> candidates = !priceSurge.isEmpty()
-                    ? new ArrayList<>(priceSurge).stream().limit(20).collect(Collectors.toList())
-                    : candidateService.getAllCandidates().stream().limit(30).collect(Collectors.toList());
+            // 52주 신고가 풀 (ka10016) 우선, 없으면 PriceSurge 폴백
+            List<String> nhKospi  = candidateService.getS10Candidates("001");
+            List<String> nhKosdaq = candidateService.getS10Candidates("101");
+            List<String> nhCombined = java.util.stream.Stream.concat(nhKospi.stream(), nhKosdaq.stream())
+                    .distinct().collect(java.util.stream.Collectors.toList());
+            List<String> candidates;
+            if (!nhCombined.isEmpty()) {
+                candidates = nhCombined.stream().limit(30).collect(java.util.stream.Collectors.toList());
+            } else {
+                Set<String> priceSurge = priceSurgeService.fetchSurgeCandidates();
+                candidates = !priceSurge.isEmpty()
+                        ? new ArrayList<>(priceSurge).stream().limit(20).collect(java.util.stream.Collectors.toList())
+                        : candidateService.getAllCandidates().stream().limit(30).collect(java.util.stream.Collectors.toList());
+            }
 
             int maxSignals = newsControlService.getMaxSignals(3);
             int cnt = 0;
@@ -447,6 +459,195 @@ public class TradingScheduler {
             if (cnt > 0) log.info("[S10] 52주 신고가 돌파 신호 발행: {}건 (max={})", cnt, maxSignals);
         } catch (Exception e) {
             log.error("[S10] 스케줄 오류: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 전술 8: 골든크로스 스윙 (10:00~14:30, 10분마다)
+    // ─────────────────────────────────────────────
+
+    /** 10:00~14:30 매 10분 - 전술 8 5일선 골든크로스 스윙 */
+    @Scheduled(cron = "0 0/10 10-14 * * MON-FRI")
+    public void scanGoldenCross() {
+        LocalTime now = LocalTime.now();
+        if (now.isBefore(LocalTime.of(10, 0)) || now.isAfter(LocalTime.of(14, 30))) return;
+
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S8] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S8] 골든크로스 스캔 (news={})", newsControl);
+        try {
+            List<String> candidates = java.util.stream.Stream.concat(
+                            candidateService.getS8Candidates("001").stream(),
+                            candidateService.getS8Candidates("101").stream())
+                    .distinct().limit(80).collect(java.util.stream.Collectors.toList());
+            int maxSignals = newsControlService.getMaxSignals(3);
+            List<TradingSignalDto> signals = strategyService.scanGoldenCross(candidates);
+            int cnt = signalService.processSignals(
+                    signals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
+            if (cnt > 0) log.info("[S8] 골든크로스 신호 발행: {}건", cnt);
+        } catch (Exception e) {
+            log.error("[S8] 스케줄 오류: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 전술 9: 정배열 눌림목 스윙 (09:30~13:00, 10분마다)
+    // ─────────────────────────────────────────────
+
+    /** 09:30~13:00 매 10분 - 전술 9 정배열 눌림목 스윙 */
+    @Scheduled(cron = "0 0/10 9-12 * * MON-FRI")
+    public void scanPullbackSwing() {
+        LocalTime now = LocalTime.now();
+        if (now.isBefore(LocalTime.of(9, 30)) || now.isAfter(LocalTime.of(13, 0))) return;
+
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S9] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S9] 정배열 눌림목 스캔 (news={})", newsControl);
+        try {
+            List<String> candidates = java.util.stream.Stream.concat(
+                            candidateService.getS9Candidates("001").stream(),
+                            candidateService.getS9Candidates("101").stream())
+                    .distinct().limit(80).collect(java.util.stream.Collectors.toList());
+            int maxSignals = newsControlService.getMaxSignals(3);
+            List<TradingSignalDto> signals = strategyService.scanPullbackSwing(candidates);
+            int cnt = signalService.processSignals(
+                    signals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
+            if (cnt > 0) log.info("[S9] 눌림목 신호 발행: {}건", cnt);
+        } catch (Exception e) {
+            log.error("[S9] 스케줄 오류: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 전술 11: 외국인 연속 순매수 스윙 (09:30~14:30, 15분마다)
+    // ─────────────────────────────────────────────
+
+    /** 09:30~14:30 매 15분 - 전술 11 외국인 연속 순매수 (5일+) 스윙 */
+    @Scheduled(cron = "0 0/15 9-14 * * MON-FRI")
+    public void scanFrgnCont() {
+        LocalTime now = LocalTime.now();
+        if (now.isBefore(LocalTime.of(9, 30)) || now.isAfter(LocalTime.of(14, 30))) return;
+
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S11] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        int maxSignals = newsControlService.getMaxSignals(3);
+        log.info("[S11] 외국인 연속 순매수 스캔 (news={}, max={})", newsControl, maxSignals);
+        try {
+            // S11 후보 풀 사전 갱신 – Python 스캐너가 candidates:s11:{market} 를 읽을 수 있도록
+            candidateService.getS11Candidates("001");
+            candidateService.getS11Candidates("101");
+            List<TradingSignalDto> kospiSignals  = strategyService.scanFrgnCont("001");
+            List<TradingSignalDto> kosdaqSignals = strategyService.scanFrgnCont("101");
+            int cnt = signalService.processSignals(
+                    kospiSignals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()))
+                    + signalService.processSignals(
+                    kosdaqSignals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
+            if (cnt > 0) log.info("[S11] 외국인 연속 신호 발행: {}건", cnt);
+        } catch (Exception e) {
+            log.error("[S11] 스케줄 오류: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 전술 13: 박스권 돌파 스윙 (09:30~14:00, 15분마다)
+    // ─────────────────────────────────────────────
+
+    /** 09:30~14:00 매 15분 - 전술 13 거래량 폭발 박스권 돌파 스윙 */
+    @Scheduled(cron = "0 0/15 9-13 * * MON-FRI")
+    public void scanBoxBreakout() {
+        LocalTime now = LocalTime.now();
+        if (now.isBefore(LocalTime.of(9, 30)) || now.isAfter(LocalTime.of(14, 0))) return;
+
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S13] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S13] 박스권 돌파 스캔 (news={})", newsControl);
+        try {
+            // 스윙+신고가 합산 풀 (S8∪S10, 별도 API 호출 없음)
+            List<String> candidates = java.util.stream.Stream.concat(
+                            candidateService.getS13Candidates("001").stream(),
+                            candidateService.getS13Candidates("101").stream())
+                    .distinct().limit(60).collect(java.util.stream.Collectors.toList());
+            int maxSignals = newsControlService.getMaxSignals(3);
+            List<TradingSignalDto> signals = strategyService.scanBoxBreakout(candidates);
+            int cnt = signalService.processSignals(
+                    signals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
+            if (cnt > 0) log.info("[S13] 박스권 돌파 신호 발행: {}건", cnt);
+        } catch (Exception e) {
+            log.error("[S13] 스케줄 오류: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 전술 14: 과매도 반등 (09:30~14:00, 15분마다)
+    // ─────────────────────────────────────────────
+
+    /** 09:35~14:00 매 15분 - 전술 14 과매도 오실레이터 수렴 반등 */
+    @Scheduled(cron = "0 5/15 9-13 * * MON-FRI")
+    public void scanOversoldBounce() {
+        LocalTime now = LocalTime.now();
+        if (now.isBefore(LocalTime.of(9, 30)) || now.isAfter(LocalTime.of(14, 0))) return;
+
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S14] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S14] 과매도 반등 스캔 (news={})", newsControl);
+        try {
+            List<String> candidates = java.util.stream.Stream.concat(
+                            candidateService.getS14Candidates("001").stream(),
+                            candidateService.getS14Candidates("101").stream())
+                    .distinct().limit(80).collect(java.util.stream.Collectors.toList());
+            int maxSignals = newsControlService.getMaxSignals(3);
+            List<TradingSignalDto> signals = strategyService.scanOversoldBounce(candidates);
+            int cnt = signalService.processSignals(
+                    signals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
+            if (cnt > 0) log.info("[S14] 과매도 반등 신호 발행: {}건", cnt);
+        } catch (Exception e) {
+            log.error("[S14] 스케줄 오류: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 전술 15: 모멘텀 동조 스윙 (10:00~14:30, 15분마다)
+    // ─────────────────────────────────────────────
+
+    /** 10:10~14:30 매 15분 - 전술 15 다중지표 모멘텀 동조 스윙 */
+    @Scheduled(cron = "0 10/15 10-14 * * MON-FRI")
+    public void scanMomentumAlign() {
+        LocalTime now = LocalTime.now();
+        if (now.isBefore(LocalTime.of(10, 0)) || now.isAfter(LocalTime.of(14, 30))) return;
+
+        TradingControl newsControl = newsControlService.getTradingControl();
+        if (newsControl == TradingControl.PAUSE) {
+            log.warn("[S15] 뉴스 기반 매매 중단 상태 – 스캔 건너뜀");
+            return;
+        }
+        log.info("[S15] 모멘텀 동조 스캔 (news={})", newsControl);
+        try {
+            List<String> candidates = java.util.stream.Stream.concat(
+                            candidateService.getS15Candidates("001").stream(),
+                            candidateService.getS15Candidates("101").stream())
+                    .distinct().limit(80).collect(java.util.stream.Collectors.toList());
+            int maxSignals = newsControlService.getMaxSignals(3);
+            List<TradingSignalDto> signals = strategyService.scanMomentumAlign(candidates);
+            int cnt = signalService.processSignals(
+                    signals.stream().limit(maxSignals).collect(java.util.stream.Collectors.toList()));
+            if (cnt > 0) log.info("[S15] 모멘텀 동조 신호 발행: {}건", cnt);
+        } catch (Exception e) {
+            log.error("[S15] 스케줄 오류: {}", e.getMessage());
         }
     }
 
@@ -467,7 +668,10 @@ public class TradingScheduler {
         }
         log.info("[S12] 종가강도 스캔 (news={})", newsControl);
         try {
-            List<String> candidates = candidateService.getAllCandidates();
+            List<String> candidates = java.util.stream.Stream.concat(
+                            candidateService.getS12Candidates("001").stream(),
+                            candidateService.getS12Candidates("101").stream())
+                    .distinct().collect(java.util.stream.Collectors.toList());
             int maxSignals = newsControlService.getMaxSignals(5);
             int cnt = 0;
             for (String stkCd : candidates) {
@@ -667,7 +871,7 @@ public class TradingScheduler {
                     .filter(s -> s.getSignalScore() != null)
                     .sorted((a, b) -> Double.compare(
                             b.getSignalScore() != null ? b.getSignalScore() : 0,
-                            a.getSignalScore() != null ? a.getSignalScore() : 0))
+                            a.getSignalScore()))
                     .limit(2)
                     .map(s -> String.format("  %s [%s] %.0f점", s.getStkNm() != null ? s.getStkNm() : s.getStkCd(), s.getStrategy(), s.getSignalScore()))
                     .toList();
@@ -740,7 +944,7 @@ public class TradingScheduler {
                 byStrategy.put(strategy, count);
                 if (row[2] instanceof Number) {
                     totalScore += ((Number) row[2]).doubleValue() * count;
-                    scoreCount += count;
+                    scoreCount += (int) count;
                 }
             }
             double avgScore = scoreCount > 0 ? totalScore / scoreCount : 0.0;

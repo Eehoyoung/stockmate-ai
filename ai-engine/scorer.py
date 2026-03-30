@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import time
-from datetime import date
+from datetime import date, datetime
 
 logger  = logging.getLogger(__name__)
 MIN_SCORE = float(os.getenv("AI_SCORE_THRESHOLD", "60.0"))
@@ -28,7 +28,9 @@ CLAUDE_THRESHOLDS = {
     "S12_CLOSING":      65,
     "S8_GOLDEN_CROSS":  65,
     "S9_PULLBACK_SWING": 60,
-    "S13_BOX_BREAKOUT": 65,
+    "S13_BOX_BREAKOUT":    65,
+    "S14_OVERSOLD_BOUNCE": 65,
+    "S15_MOMENTUM_ALIGN":  70,
 }
 
 MAX_CLAUDE_CALLS_PER_DAY = int(os.getenv("MAX_CLAUDE_CALLS_PER_DAY", "100"))
@@ -39,6 +41,33 @@ def _safe_float(v, default=0.0) -> float:
         return float(str(v).replace(",", "").replace("+", ""))
     except (TypeError, ValueError):
         return default
+
+
+def _time_bonus(strategy: str) -> float:
+    """
+    시간대별 전략 보너스 점수 (+0~5점).
+    장 시간 외에는 0 반환.
+    """
+    now = datetime.now()
+    h, m = now.hour, now.minute
+    minute_of_day = h * 60 + m
+
+    # 09:00~09:30: 갭 개장·경매 전략 최적 시간대
+    if 540 <= minute_of_day < 570:
+        if strategy in ("S1_GAP_OPEN", "S7_AUCTION"):
+            return 5.0
+
+    # 09:00~10:30: 크로스/돌파 전략 초반 모멘텀
+    if 540 <= minute_of_day < 630:
+        if strategy in ("S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S13_BOX_BREAKOUT"):
+            return 5.0
+
+    # 14:30~15:30: 종가강도 전략 최적 시간대
+    if 870 <= minute_of_day < 930:
+        if strategy == "S12_CLOSING":
+            return 5.0
+
+    return 0.0
 
 
 def rule_score(signal: dict, market_ctx: dict) -> float:
@@ -58,6 +87,10 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
     strength = market_ctx.get("strength", 100.0)
     tick     = market_ctx.get("tick", {})
     hoga     = market_ctx.get("hoga", {})
+
+    rsi      = _safe_float(signal.get("rsi", 0))
+    atr_pct  = _safe_float(signal.get("atr_pct", 0))
+    cond_cnt = int(signal.get("cond_count", 0) or 0)
 
     bid  = _safe_float(hoga.get("total_buy_bid_req"))
     ask  = _safe_float(hoga.get("total_sel_bid_req", "1"))
@@ -181,6 +214,9 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             score += 30 if effective_str > 130 else (20 if effective_str > 110 else (10 if effective_str > 100 else 0))
             # 호가 매수 우위
             score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
+            # RSI 확증: 크로스 후 RSI > 50 이면 모멘텀 신뢰도 상승
+            if rsi > 0:
+                score += 10 if rsi > 55 else (5 if rsi > 50 else 0)
 
         case "S9_PULLBACK_SWING":
             # 눌림목 반등 스윙: 정배열 내 5MA 근접 반등, 소폭 상승 + 체결강도
@@ -193,6 +229,9 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             score += 35 if effective_str > 130 else (25 if effective_str > 110 else (10 if effective_str > 100 else 0))
             # 호가
             score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
+            # RSI 눌림목 확증: 40~60 구간이 이상적 눌림
+            if rsi > 0:
+                score += 10 if 40 <= rsi <= 60 else (5 if 60 < rsi <= 70 else 0)
 
         case "S13_BOX_BREAKOUT":
             # 박스권 돌파 스윙: 거래량 폭발 + 장대양봉 + 체결강도 ≥ 130
@@ -205,6 +244,54 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             score += 35 if effective_str > 150 else (25 if effective_str > 130 else (10 if effective_str > 110 else 0))
             # 호가 매수 우위
             score += 25 if bid_ratio > 2 else (15 if bid_ratio > 1.5 else (5 if bid_ratio > 1.2 else 0))
+            # RSI 돌파 모멘텀 확증
+            if rsi > 0:
+                score += 10 if rsi > 60 else (5 if rsi > 50 else 0)
+
+        case "S14_OVERSOLD_BOUNCE":
+            # 과매도 반등: RSI < 35 + ATR 변동성 + 체결강도
+            cntr_sig = _safe_float(signal.get("cntr_strength", 0))
+            effective_str = cntr_sig if cntr_sig > 0 else strength
+            # RSI 과매도 구간 (핵심 조건, 최대 40점)
+            if rsi > 0:
+                score += 40 if rsi < 25 else (30 if rsi < 30 else (20 if rsi < 35 else (10 if rsi < 40 else 0)))
+            else:
+                score += 15  # RSI 없는 경우 기본 부여
+            # ATR% 변동성: 높을수록 반등 탄력 기대
+            score += 20 if atr_pct > 3 else (12 if atr_pct > 2 else (5 if atr_pct > 1 else 0))
+            # 체결강도 – 반등 초기 매수세 확인
+            score += 25 if effective_str > 120 else (15 if effective_str > 110 else (5 if effective_str > 100 else 0))
+            # 호가 매수 우위
+            score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
+
+        case "S15_MOMENTUM_ALIGN":
+            # 다중 모멘텀 정렬: RSI 상승 구간 + 거래량 증가 + 체결강도
+            cntr_sig = _safe_float(signal.get("cntr_strength", 0))
+            effective_str = cntr_sig if cntr_sig > 0 else strength
+            vol_ratio_s15 = _safe_float(signal.get("vol_ratio", 0))
+            flu_rt_s15 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
+            # RSI 모멘텀 정렬 구간 (최대 35점)
+            if rsi > 0:
+                score += 35 if 50 <= rsi <= 65 else (25 if 65 < rsi <= 75 else (10 if 45 <= rsi < 50 else 0))
+            else:
+                score += 10
+            # 거래량 확인 (최대 25점)
+            score += 25 if vol_ratio_s15 >= 3.0 else (18 if vol_ratio_s15 >= 2.0 else (10 if vol_ratio_s15 >= 1.5 else 0))
+            # 체결강도
+            score += 25 if effective_str > 130 else (18 if effective_str > 110 else (8 if effective_str > 100 else 0))
+            # 호가
+            score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
+            # 등락률: 1~5% 모멘텀 초기 진입 최적
+            score += 5 if 1 <= flu_rt_s15 <= 5 else (3 if 5 < flu_rt_s15 <= 8 else 0)
+
+    # 조건 충족 수 보너스 (다수 조건 충족 시 신뢰도 상승)
+    if cond_cnt >= 4:
+        score += 10
+    elif cond_cnt == 3:
+        score += 5
+
+    # 시간대 보너스
+    score += _time_bonus(strategy)
 
     # 공통 페널티
     if flu_rt > 15:   # 이미 15% 이상 상승 → 과열

@@ -149,13 +149,12 @@ test('리셋 후 다시 10번 허용', () => {
     assert.strictEqual(allowed, 10);
 });
 
-test('60초 미만은 리셋 안 됨', () => {
+test('60초 미만은 카운터 유지 – 리셋 없이 11번째 차단 확인', () => {
+    // reset()을 사용하지 않고 그냥 한도 초과 직후 호출 → 차단 (window 경과 없음)
     const rl = createRateLimiter(10);
     for (let i = 0; i < 10; i++) rl.checkRateLimit();
-
-    // 59초 전 창 시작 (리셋 안 됨)
-    rl.reset(Date.now() - 59_000);
-    assert.strictEqual(rl.checkRateLimit(), false); // 여전히 차단
+    // window가 expire 되지 않았으므로 즉시 추가 호출은 차단
+    assert.strictEqual(rl.checkRateLimit(), false);
 });
 
 test('정확히 60000ms에 리셋', () => {

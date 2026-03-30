@@ -81,7 +81,12 @@ async def push_human_confirm_queue(rdb, item: dict):
     """규칙점수 통과 신호를 인간 컨펌 대기 큐에 등록"""
     payload = json.dumps(item, ensure_ascii=False, default=str)
     await rdb.lpush(HUMAN_CONFIRM_QUEUE, payload)
-    sig_id = str(item.get("id") or item.get("stk_cd") or "unknown")
+    _id = item.get("id")
+    if _id:
+        sig_id = str(_id)
+    else:
+        # id 없을 때 stk_cd + strategy 복합 키로 충돌 방지
+        sig_id = f"{item.get('stk_cd', 'unk')}:{item.get('strategy', 'unk')}"
     await rdb.setex(f"{CONFIRM_PENDING_PFX}{sig_id}", CONFIRM_TIMEOUT_SEC, payload)
     logger.debug("[Redis] human_confirm_queue push [%s]", sig_id)
 

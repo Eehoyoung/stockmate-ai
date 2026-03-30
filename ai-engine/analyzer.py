@@ -17,8 +17,16 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-MAX_TOKENS      = 256   # 압축 프롬프트에 맞게 축소
+MAX_TOKENS      = 512   # TP/SL 절대가 출력을 위한 공간 확보
 CLAUDE_TIMEOUT  = 10    # seconds
+
+# 수수료+세금+슬리피지 합산 (왕복 기준, KOSPI 0.35%, KOSDAQ 0.45%)
+SLIP_FEE = {"KOSPI": 0.0035, "KOSDAQ": 0.0045}
+
+
+def _get_slip_fee(stk_cd: str) -> float:
+    """종목코드 첫 자리로 시장 구분 후 슬리피지 비율 반환 (KOSPI: 0, KOSDAQ: 기타)"""
+    return SLIP_FEE["KOSPI"] if str(stk_cd).startswith("0") else SLIP_FEE["KOSDAQ"]
 
 # Claude 클라이언트 싱글턴 (모듈 로드 시 생성, 매 호출 시 재생성 방지)
 _claude_client: anthropic.AsyncAnthropic | None = None
@@ -39,10 +47,49 @@ try:
 except Exception:
     _SYS_PROMPT = (
         "당신은 한국 주식 단기 매매 신호 분석 전문가입니다. "
-        "주어진 지표를 바탕으로 JSON 형식으로만 답하세요: "
+        "주어진 지표와 규칙 기반 TP/SL을 참고하여 최종 TP1/TP2/SL을 결정하고 "
+        "JSON 형식으로만 답하세요. "
+        "claude_tp1/tp2/sl은 절대 원화 가격(정수)으로 반환하세요. "
+        "진입 불가 판단 시 claude_tp1/tp2/sl은 null로 반환하세요: "
         '{"action":"ENTER|HOLD|CANCEL","ai_score":0~100,"confidence":"HIGH|MEDIUM|LOW",'
-        '"reason":"2문장 이내","adjusted_target_pct":null,"adjusted_stop_pct":null}'
+        '"reason":"2문장 이내","adjusted_target_pct":null,"adjusted_stop_pct":null,'
+        '"claude_tp1":null,"claude_tp2":null,"claude_sl":null}'
     )
+
+
+def _fmt_tpsl(signal: dict) -> str:
+    """규칙 기반 TP/SL 컨텍스트 + 실질 R:R(슬리피지 반영) 문자열 생성"""
+    entry = signal.get("cur_prc") or signal.get("entry_price") or 0
+    tp1   = signal.get("tp1_price")
+    tp2   = signal.get("tp2_price")
+    sl    = signal.get("sl_price")
+    if not any([tp1, tp2, sl]):
+        return ""
+    parts = []
+    if entry:
+        parts.append(f"진입가:{int(entry):,}원")
+    if tp1:
+        pct = f"(+{(tp1-entry)/entry*100:.1f}%)" if entry else ""
+        parts.append(f"규칙TP1:{int(tp1):,}원{pct}")
+    if tp2:
+        pct = f"(+{(tp2-entry)/entry*100:.1f}%)" if entry else ""
+        parts.append(f"규칙TP2:{int(tp2):,}원{pct}")
+    if sl:
+        pct = f"({(sl-entry)/entry*100:.1f}%)" if entry else ""
+        parts.append(f"규칙SL:{int(sl):,}원{pct}")
+
+    # 실질 R:R 계산 (슬리피지 반영)
+    if entry and tp1 and sl:
+        slip = _get_slip_fee(signal.get("stk_cd", ""))
+        raw_target = (tp1 - entry) / entry
+        raw_risk   = (entry - sl)  / entry
+        eff_target = raw_target - slip
+        eff_risk   = raw_risk   + slip
+        if eff_risk > 0:
+            eff_rr = eff_target / eff_risk
+            parts.append(f"실질R:R={eff_rr:.2f}({'⚠️' if eff_rr < 1.0 else 'OK'})")
+
+    return " | ".join(parts) + "\n" if parts else ""
 
 
 # 전략별 압축 프롬프트 생성기
@@ -63,13 +110,16 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
     except Exception:
         bid_ratio = 0
 
+    tpsl_ctx = _fmt_tpsl(signal)
+
     if strategy == "S1_GAP_OPEN":
         return (
             f"갭상승 매수 신호 평가:\n"
             f"종목: {stk_nm}({stk_cd}), 갭: {signal.get('gap_pct', 'N/A')}%, "
             f"호가비율: {bid_ratio}, 체결강도: {round(strength, 1)}, 등락: {flu_rt}%, "
             f"규칙점수: {rule_score}/100\n"
-            f"매수 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"매수 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S2_VI_PULLBACK":
         return (
@@ -77,7 +127,8 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"종목: {stk_nm}({stk_cd}), 눌림: {signal.get('pullback_pct', 'N/A')}%, "
             f"동적VI: {signal.get('is_dynamic', False)}, 체결강도: {round(strength, 1)}, "
             f"규칙점수: {rule_score}/100\n"
-            f"진입 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S3_INST_FRGN":
         amt = signal.get("net_buy_amt", 0)
@@ -87,7 +138,8 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"종목: {stk_nm}({stk_cd}), 순매수: {amt_str}, "
             f"연속일: {signal.get('continuous_days', 'N/A')}일, "
             f"거래량비율: {signal.get('vol_ratio', 'N/A')}x, 규칙점수: {rule_score}/100\n"
-            f"진입 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S4_BIG_CANDLE":
         return (
@@ -95,7 +147,8 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"종목: {stk_nm}({stk_cd}), 양봉비율: {signal.get('body_ratio', 'N/A')}, "
             f"거래량비율: {signal.get('vol_ratio', 'N/A')}배, "
             f"신고가: {signal.get('is_new_high', False)}, 규칙점수: {rule_score}/100\n"
-            f"추가 상승 가능성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"추가 상승 가능성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S5_PROG_FRGN":
         amt = signal.get("net_buy_amt", 0)
@@ -104,7 +157,8 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"프로그램+외인 신호 평가:\n"
             f"종목: {stk_nm}({stk_cd}), 순매수: {amt_str}, "
             f"체결강도: {round(strength, 1)}, 호가비율: {bid_ratio}, 규칙점수: {rule_score}/100\n"
-            f"진입 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S6_THEME_LAGGARD":
         return (
@@ -112,7 +166,8 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"종목: {stk_nm}({stk_cd}), 테마: {signal.get('theme_name', 'N/A')}, "
             f"등락: {signal.get('gap_pct', 'N/A')}%, 체결강도: {round(strength, 1)}, "
             f"호가비율: {bid_ratio}, 규칙점수: {rule_score}/100\n"
-            f"후발주 진입 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"후발주 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S7_AUCTION":
         return (
@@ -120,7 +175,26 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"종목: {stk_nm}({stk_cd}), 갭: {signal.get('gap_pct', 'N/A')}%, "
             f"호가비율: {bid_ratio}, 거래량순위: {signal.get('vol_rank', 'N/A')}, "
             f"규칙점수: {rule_score}/100\n"
-            f"시초가 매수 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"시초가 매수 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
+        )
+    elif strategy == "S8_GOLDEN_CROSS":
+        return (
+            f"골든크로스 스윙 신호 평가:\n"
+            f"종목: {stk_nm}({stk_cd}), MA5≥MA20 크로스, 등락: {flu_rt}%, "
+            f"RSI: {signal.get('rsi', 'N/A')}, 거래량비율: {signal.get('vol_ratio', 'N/A')}x, "
+            f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
+            f"{tpsl_ctx}"
+            f"스윙 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
+        )
+    elif strategy == "S9_PULLBACK_SWING":
+        return (
+            f"정배열 눌림목 스윙 신호 평가:\n"
+            f"종목: {stk_nm}({stk_cd}), MA5 근접 눌림 반등, 등락: {flu_rt}%, "
+            f"RSI: {signal.get('rsi', 'N/A')}, 거래량비율: {signal.get('vol_ratio', 'N/A')}x, "
+            f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
+            f"{tpsl_ctx}"
+            f"스윙 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S10_NEW_HIGH":
         return (
@@ -128,7 +202,8 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"종목: {stk_nm}({stk_cd}), 등락: {flu_rt}%, "
             f"거래량급증률: {signal.get('vol_surge_rt', 'N/A')}%, "
             f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
-            f"신고가 돌파 후 스윙 진입 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"신고가 돌파 후 스윙 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S11_FRGN_CONT":
         return (
@@ -136,7 +211,8 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"종목: {stk_nm}({stk_cd}), 등락: {flu_rt}%, "
             f"D-1순매수: {signal.get('dm1', 'N/A')}, D-2: {signal.get('dm2', 'N/A')}, D-3: {signal.get('dm3', 'N/A')}, "
             f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
-            f"외국인 수급 기반 스윙 진입 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"외국인 수급 기반 스윙 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     elif strategy == "S12_CLOSING":
         return (
@@ -144,14 +220,44 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
             f"종목: {stk_nm}({stk_cd}), 등락: {flu_rt}%, "
             f"체결강도: {signal.get('cntr_strength', round(strength, 1))}, "
             f"호가비율: {bid_ratio}, 규칙점수: {rule_score}/100\n"
-            f"종가 매수 진입 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"종가 매수 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
+        )
+    elif strategy == "S13_BOX_BREAKOUT":
+        return (
+            f"박스권 돌파 스윙 신호 평가:\n"
+            f"종목: {stk_nm}({stk_cd}), 거래량폭발 돌파, 등락: {flu_rt}%, "
+            f"거래량비율: {signal.get('vol_ratio', 'N/A')}x, "
+            f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
+            f"{tpsl_ctx}"
+            f"박스권 돌파 스윙 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
+        )
+    elif strategy == "S14_OVERSOLD_BOUNCE":
+        return (
+            f"과매도 반등 스윙 신호 평가:\n"
+            f"종목: {stk_nm}({stk_cd}), RSI: {signal.get('rsi', 'N/A')}(과매도), "
+            f"ATR%: {signal.get('atr_pct', 'N/A')}, 조건충족: {signal.get('cond_count', 'N/A')}/3, "
+            f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
+            f"{tpsl_ctx}"
+            f"과매도 반등 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
+        )
+    elif strategy == "S15_MOMENTUM_ALIGN":
+        return (
+            f"다중지표 모멘텀 동조 스윙 신호 평가:\n"
+            f"종목: {stk_nm}({stk_cd}), RSI: {signal.get('rsi', 'N/A')}, "
+            f"ATR%: {signal.get('atr_pct', 'N/A')}, 조건충족: {signal.get('cond_count', 'N/A')}/4, "
+            f"거래량비율: {signal.get('vol_ratio', 'N/A')}x, "
+            f"체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
+            f"{tpsl_ctx}"
+            f"모멘텀 동조 스윙 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
     else:
         return (
             f"매매 신호 평가:\n"
             f"종목: {stk_nm}({stk_cd}), 전략: {strategy}, "
             f"등락: {flu_rt}%, 체결강도: {round(strength, 1)}, 규칙점수: {rule_score}/100\n"
-            f"진입 적합성을 JSON으로 답하세요."
+            f"{tpsl_ctx}"
+            f"진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
         )
 
 

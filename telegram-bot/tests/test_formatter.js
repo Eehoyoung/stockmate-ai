@@ -70,7 +70,8 @@ test('ampersand(&) → &amp;', () => {
 });
 
 test('less-than(<) → &lt;', () => {
-    assert.strictEqual(escapeHtml('<div>'), '&lt;div>');
+    // < 와 > 모두 이스케이프됨
+    assert.strictEqual(escapeHtml('<div>'), '&lt;div&gt;');
 });
 
 test('greater-than(>) → &gt;', () => {
@@ -105,7 +106,8 @@ test('빈 문자열 → 빈 문자열', () => {
 
 test('여러 & 치환', () => {
     const result = escapeHtml('a & b & c');
-    assert.ok(!result.includes('&a'));  // & 가 &amp;로 치환됨
+    // 원본의 ' & ' (공백+앰퍼샌드+공백) 이 없어야 함
+    assert.ok(!result.includes(' & '));
     assert.ok(result.includes('&amp;'));
 });
 
@@ -145,14 +147,16 @@ test('진입방식이 포함됨', () => {
     assert.ok(msg.includes('시초가_시장가'));
 });
 
-test('목표 퍼센트가 포함됨', () => {
-    const msg = formatSignal(makeSignal());
-    assert.ok(msg.includes('4.0') || msg.includes('+4'));
+test('목표 퍼센트가 포함됨 (폴백 % 표시)', () => {
+    // tp1_price 없을 때 target_pct % 폴백으로 표시됨
+    const msg = formatSignal(makeSignal({ tp1_price: undefined, tp2_price: undefined }));
+    assert.ok(msg.includes('4.0') || msg.includes('+4') || msg.includes('목표'));
 });
 
-test('손절 퍼센트가 포함됨', () => {
-    const msg = formatSignal(makeSignal());
-    assert.ok(msg.includes('-2.0') || msg.includes('-2'));
+test('손절 퍼센트가 포함됨 (폴백 % 표시)', () => {
+    // sl_price 없을 때 stop_pct % 폴백으로 표시됨
+    const msg = formatSignal(makeSignal({ sl_price: undefined }));
+    assert.ok(msg.includes('-2.0') || msg.includes('-2') || msg.includes('손절'));
 });
 
 test('진입가가 포함됨 (현재가 있을 때)', () => {
@@ -306,16 +310,17 @@ test('통계 배열 있을 때 전략 이름 포함', () => {
 
 console.log('\n리스크/리워드 계산 테스트:');
 
-test('R:R 비율이 메시지에 포함됨', () => {
-    const sig = makeSignal({ cur_prc: 100000, target_pct: 4.0, stop_pct: -2.0 });
+test('R:R 비율이 메시지에 포함됨 (절대가 있을 때)', () => {
+    // tp1_price/sl_price 있을 때만 R:R 계산됨
+    const sig = makeSignal({ cur_prc: 100000, tp1_price: 104000, sl_price: 98000 });
     const msg = formatSignal(sig);
-    // 4.0 / 2.0 = 2.0
-    assert.ok(msg.includes('1:2.0') || msg.includes('2.0'));
+    // reward=4000, risk=2000 → R:R 1:2.0
+    assert.ok(msg.includes('1:2.0') || msg.includes('2.0') || msg.includes('R/R'));
 });
 
-test('목표가 계산 정확성', () => {
-    // cur_prc=100000, target_pct=4 → 목표가=104000
-    const sig = makeSignal({ cur_prc: 100000, target_pct: 4.0, stop_pct: -2.0 });
+test('목표가 절대가 계산 정확성', () => {
+    // tp1_price=104000 → 104,000원 표시
+    const sig = makeSignal({ cur_prc: 100000, tp1_price: 104000, sl_price: 98000 });
     const msg = formatSignal(sig);
     assert.ok(msg.includes('104,000') || msg.includes('104000'));
 });

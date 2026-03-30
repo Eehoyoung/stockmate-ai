@@ -178,10 +178,14 @@ public class OvernightScoringService {
             case S3_INST_FRGN, S5_PROG_FRGN -> 35;
             // 종가강도·외국인연속: 다음날 갭상승 기대
             case S12_CLOSING, S11_FRGN_CONT -> 30;
-            // 신고가 모멘텀: 돌파 후 추세 지속 가능 (신고가는 오버나잇 적합도 높음)
-            case S10_NEW_HIGH -> 30;
-            case S8_VI_OPEN   -> 60;
-            case S9_VI_CLOSE  -> 60;
+            // 신고가·박스돌파 모멘텀: 돌파 후 추세 지속
+            case S10_NEW_HIGH, S13_BOX_BREAKOUT -> 30;
+            // 스윙 전략: 다음날도 보유 적합
+            case S8_GOLDEN_CROSS, S9_PULLBACK_SWING -> 25;
+            // 다중지표 동조: 추세 지속 가능성 높음
+            case S15_MOMENTUM_ALIGN -> 25;
+            // 과매도 반등: 추세 불확실 – 중립
+            case S14_OVERSOLD_BOUNCE -> 15;
             // 장대양봉·테마후발: 중립 – 상황에 따라 다름
             case S4_BIG_CANDLE, S6_THEME_LAGGARD -> 15;
             // 갭오픈·VI눌림·동시호가: 단타 전략 – 오버나잇 부적합

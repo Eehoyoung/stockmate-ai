@@ -7,7 +7,7 @@
 
 const axios = require('axios');
 
-const BASE_URL = process.env.API_BASE_URL ?? 'http://localhost:8080';
+const BASE_URL = 'http://localhost:8080';
 
 const api = axios.create({
     baseURL: BASE_URL,
@@ -47,19 +47,13 @@ async function refreshToken() {
 
 /** 전술 수동 실행 */
 async function runStrategy(strategy, params = {}) {
-    const map = {
-        s1:  '/api/trading/strategy/s1/run',
-        s2:  '/api/trading/strategy/s2/run',
-        s3:  '/api/trading/strategy/s3/run',
-        s4:  '/api/trading/strategy/s4/run',
-        s5:  '/api/trading/strategy/s5/run',
-        s6:  '/api/trading/strategy/s6/run',
-        s7:  '/api/trading/strategy/s7/run',
-        s10: '/api/trading/strategy/s10/run',
-        s12: '/api/trading/strategy/s12/run',
-    };
-    const url = map[strategy.toLowerCase()];
-    if (!url) throw new Error(`알 수 없는 전술: ${strategy}. 사용 가능: s1~s7, s10, s12`);
+    const s = strategy.toLowerCase();
+    // s1~s15 모두 동일한 URL 패턴 사용
+    const valid = ['s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14','s15'];
+    if (!valid.includes(s)) {
+        throw new Error(`알 수 없는 전술: ${strategy}. 사용 가능: s1~s15`);
+    }
+    const url = `/api/trading/strategy/${s}/run`;
     const { data } = await api.post(url, null, { params });
     return data;
 }
@@ -85,12 +79,6 @@ async function getSignalPerformance() {
 /** Feature 1 – 성과 요약 */
 async function getPerformanceSummary() {
     const { data } = await api.get('/api/trading/signals/performance/summary');
-    return data;
-}
-
-/** Feature 2 – 오늘 경제 이벤트 */
-async function getCalendarToday() {
-    const { data } = await api.get('/api/trading/calendar/today');
     return data;
 }
 
@@ -135,7 +123,7 @@ module.exports = {
     getCandidates, refreshToken, runStrategy,
     startWs, stopWs,
     getSignalPerformance, getPerformanceSummary,
-    getCalendarToday, getSignalHistory, getStrategyAnalysis,
+    getSignalHistory, getStrategyAnalysis,
     getMonitorHealth, getCalendarWeek, setTradingControl,
     scoreStock,
 };

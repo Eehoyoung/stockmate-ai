@@ -37,6 +37,15 @@ public class TradingSignalDto {
     private Long netBuyAmt;
     private Double bodyRatio;      // S4 장대양봉 몸통 비율
     private Double volSurgeRt;     // S10: 거래량 급증률 % (scorer.py vol_surge_rt 필드용)
+    private Double rsi;            // S8/S9/S13/S14/S15: RSI 현재값
+    private Double atrPct;         // S14/S15: ATR % (변동성 측정)
+    private Integer condCount;     // S14/S15: 선택 조건 충족 개수
+    private String holdingDays;    // S8/S9/S13/S14/S15: 예상 보유기간
+
+    // ── 전략별 기술적 분석 기반 TP/SL 절대가 (Phase 1 규칙 기반) ──
+    private Double tp1Price;     // 1차 목표가 (기술적 저항 또는 %기반)
+    private Double tp2Price;     // 2차 목표가
+    private Double slPrice;      // 손절가 (기술적 지지 또는 %기반)
 
     private Map<String, Object> extra;
     private LocalDateTime signalTime;
@@ -97,6 +106,13 @@ public class TradingSignalDto {
         m.put("vol_rank",        volRank);
         m.put("market_type",     marketType);
         m.put("body_ratio",      bodyRatio);
+        m.put("rsi",             rsi);
+        m.put("atr_pct",         atrPct);
+        m.put("cond_count",      condCount);
+        m.put("holding_days",    holdingDays);
+        m.put("tp1_price",       tp1Price);
+        m.put("tp2_price",       tp2Price);
+        m.put("sl_price",        slPrice);
         m.put("signal_time",     signalTime != null ? signalTime.toString() : LocalDateTime.now().toString());
         m.put("cur_prc",         entryPrice);  // 진입가 = 현재가 (신호 발생 시점)
         m.put("message",         toTelegramMessage());
@@ -106,18 +122,21 @@ public class TradingSignalDto {
     /** TelegramQueue용 직렬화 메시지 (실제 가격 포함) */
     public String toTelegramMessage() {
         String emoji = switch (strategy) {
-            case S1_GAP_OPEN      -> "🚀";
-            case S2_VI_PULLBACK   -> "🎯";
-            case S3_INST_FRGN     -> "🏦";
-            case S4_BIG_CANDLE    -> "📊";
-            case S5_PROG_FRGN     -> "💻";
-            case S6_THEME_LAGGARD -> "🔥";
-            case S7_AUCTION       -> "⚡";
-            case S8_VI_OPEN -> "🚀";
-            case S9_VI_CLOSE -> "🚀";
-            case S10_NEW_HIGH -> "🚀";
-            case S11_FRGN_CONT -> "🚀";
-            case S12_CLOSING -> "🚀";
+            case S1_GAP_OPEN         -> "🚀";
+            case S2_VI_PULLBACK      -> "🎯";
+            case S3_INST_FRGN        -> "🏦";
+            case S4_BIG_CANDLE       -> "📊";
+            case S5_PROG_FRGN        -> "💻";
+            case S6_THEME_LAGGARD    -> "🔥";
+            case S7_AUCTION          -> "⚡";
+            case S8_GOLDEN_CROSS     -> "📈";
+            case S9_PULLBACK_SWING   -> "🔽";
+            case S10_NEW_HIGH        -> "🏔";
+            case S11_FRGN_CONT       -> "🌏";
+            case S12_CLOSING         -> "🌙";
+            case S13_BOX_BREAKOUT    -> "📦";
+            case S14_OVERSOLD_BOUNCE -> "🔄";
+            case S15_MOMENTUM_ALIGN  -> "⚡";
         };
 
         StringBuilder sb = new StringBuilder();
@@ -134,29 +153,30 @@ public class TradingSignalDto {
         if (entryType != null) sb.append(String.format("  (%s)", entryType));
         sb.append("\n");
 
-        // 1차 목표가
-        double t1 = calcTarget1Price();
-        if (t1 > 0 && targetPct != null) {
-            sb.append(String.format("🎯 1차 목표가: %,.0f원  (+%.1f%%)\n", t1, targetPct));
-        } else if (targetPct != null) {
-            sb.append(String.format("🎯 1차 목표가: +%.1f%%\n", targetPct));
-        }
+        // TP/SL – 기술적 절대가 우선, 없으면 % 기반 계산
+        double t1  = tp1Price != null && tp1Price > 0 ? tp1Price : calcTarget1Price();
+        double t2  = tp2Price != null && tp2Price > 0 ? tp2Price : calcTarget2Price();
+        double sl  = slPrice  != null && slPrice  > 0 ? slPrice  : calcStopPrice();
+        double ep  = entryPrice != null && entryPrice > 0 ? entryPrice : 0;
 
-        // 2차 목표가
-        double t2pct = resolvedTarget2Pct();
-        double t2 = calcTarget2Price();
+        sb.append("📐 목표가 (규칙 기반)\n");
+        if (t1 > 0) {
+            String t1PctStr = ep > 0 ? String.format(" (+%.1f%%)", (t1 - ep) / ep * 100) : "";
+            sb.append(String.format("  TP1: %,.0f원%s\n", t1, t1PctStr));
+        }
         if (t2 > 0) {
-            sb.append(String.format("🎯 2차 목표가: %,.0f원  (+%.1f%%)\n", t2, t2pct));
-        } else {
-            sb.append(String.format("🎯 2차 목표가: +%.1f%%\n", t2pct));
+            String t2PctStr = ep > 0 ? String.format(" (+%.1f%%)", (t2 - ep) / ep * 100) : "";
+            sb.append(String.format("  TP2: %,.0f원%s\n", t2, t2PctStr));
         }
-
-        // 손절가
-        double sp = calcStopPrice();
-        if (sp > 0 && stopPct != null) {
-            sb.append(String.format("🛑 손절가: %,.0f원  (%.1f%%)\n", sp, stopPct));
-        } else if (stopPct != null) {
-            sb.append(String.format("🛑 손절가: %.1f%%\n", stopPct));
+        if (sl > 0) {
+            String slPctStr = ep > 0 ? String.format(" (%.1f%%)", (sl - ep) / ep * 100) : "";
+            sb.append(String.format("  SL:  %,.0f원%s\n", sl, slPctStr));
+        }
+        // R/R 비율
+        if (ep > 0 && t1 > 0 && sl > 0 && sl < ep) {
+            double reward = t1 - ep;
+            double risk   = ep - sl;
+            if (risk > 0) sb.append(String.format("  R/R: 1:%.1f\n", reward / risk));
         }
 
         // 사유
@@ -168,6 +188,10 @@ public class TradingSignalDto {
         if (pullbackPct != null)  sb.append(String.format(" 눌림%.2f%%", pullbackPct));
         if (themeName != null)    sb.append(String.format(" 테마:%s", themeName));
         if (netBuyAmt != null)    sb.append(String.format(" 순매수%,d만원", netBuyAmt / 10000));
+        if (rsi != null)          sb.append(String.format(" RSI%.1f", rsi));
+        if (atrPct != null)       sb.append(String.format(" ATR%.2f%%", atrPct));
+        if (condCount != null)    sb.append(String.format(" 지표%d개", condCount));
+        if (holdingDays != null)  sb.append(String.format(" [%s]", holdingDays));
         sb.append("\n");
 
         if (signalScore != null)  sb.append(String.format("⭐ 스코어: %.1f\n", signalScore));

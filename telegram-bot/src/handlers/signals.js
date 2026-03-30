@@ -13,10 +13,36 @@
 
 const { popScoredQueue, getClient }                          = require('../services/redis');
 const { formatSignal, formatForceClose, formatDailyReportEnhanced } = require('../utils/formatter');
+const { getLogger }                                          = require('../utils/logger');
 
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 2000);
-const MIN_AI_SCORE     = Number(process.env.MIN_AI_SCORE     ?? 65);
-const HOLD_MIN_SCORE   = 80;  // HOLD 신호는 80점 이상만 알림
+const logger = getLogger('signals');
+
+const POLL_INTERVAL_MS    = Number(process.env.POLL_INTERVAL_MS    ?? 2000);
+const MIN_AI_SCORE        = Number(process.env.MIN_AI_SCORE        ?? 65);
+const HOLD_MIN_SCORE      = 80;   // HOLD 신호는 80점 이상만 알림
+const MAX_SIGNALS_PER_MIN = Number(process.env.MAX_SIGNALS_PER_MIN ?? 20);
+
+// ── Rate Limiter ──────────────────────────────────────────────
+let _signalCount    = 0;
+let _windowStart    = Date.now();
+
+/**
+ * 분당 최대 발송 건수 제한.
+ * MAX_SIGNALS_PER_MIN 초과 시 false 반환.
+ * @returns {boolean} true = 발송 허용
+ */
+function _checkRateLimit() {
+    const now = Date.now();
+    if (now - _windowStart >= 60_000) {
+        _signalCount = 0;
+        _windowStart = now;
+    }
+    if (_signalCount >= MAX_SIGNALS_PER_MIN) {
+        return false;
+    }
+    _signalCount++;
+    return true;
+}
 
 /**
  * 허용된 채팅 ID 목록 반환
@@ -232,10 +258,16 @@ async function processItem(bot, item) {
     // CANCEL 이거나 스코어 미달 → 무시
     if (action === 'CANCEL') return;
     if (action === 'ENTER' && ai_score < MIN_AI_SCORE) {
-        console.log(`[Signal] 스코어 미달 무시 [${item.stk_cd} ${item.strategy}] score=${ai_score}`);
+        logger.info('스코어 미달 무시', { stk_cd: item.stk_cd, strategy: item.strategy, score: ai_score });
         return;
     }
     if (action === 'HOLD' && ai_score < HOLD_MIN_SCORE) return;
+
+    // Rate Limit 체크
+    if (!_checkRateLimit()) {
+        logger.warn('Rate limit 초과 – 신호 드롭', { stk_cd: item.stk_cd, strategy: item.strategy, max_per_min: MAX_SIGNALS_PER_MIN });
+        return;
+    }
 
     const chatIds = getAllowedChatIds();
     if (chatIds.length === 0) {
@@ -268,9 +300,9 @@ async function processItem(bot, item) {
                 parse_mode:               'HTML',
                 disable_web_page_preview: true,
             });
-            console.log(`[Signal] 발송 완료 → chatId=${chatId} [${item.stk_cd} ${item.strategy}] action=${action} score=${ai_score}`);
+            logger.info('발송 완료', { chat_id: chatId, stk_cd: item.stk_cd, strategy: item.strategy, action, score: ai_score });
         } catch (e) {
-            console.error(`[Signal] 발송 실패 chatId=${chatId}:`, e.message);
+            logger.error('발송 실패', { chat_id: chatId, stk_cd: item.stk_cd }, e);
         }
     }
 }
@@ -280,7 +312,7 @@ async function processItem(bot, item) {
  * @param {import('telegraf').Telegraf} bot
  */
 async function startPolling(bot) {
-    console.log(`[Signal] ai_scored_queue 폴링 시작 (interval=${POLL_INTERVAL_MS}ms, minScore=${MIN_AI_SCORE})`);
+    logger.info('ai_scored_queue 폴링 시작', { interval_ms: POLL_INTERVAL_MS, min_score: MIN_AI_SCORE, max_per_min: MAX_SIGNALS_PER_MIN });
 
     let emptyCount = 0;
 
@@ -344,11 +376,39 @@ const CONFIRM_PENDING_TTL      = 1800; // seconds (30분)
  * @param {string[]} allowedChatIds
  */
 async function sendConfirmRequest(bot, allowedChatIds, item) {
-    const sigId    = String(item.id || item.stk_cd || 'unknown');
+    const sigId    = item.id ? String(item.id) : `${item.stk_cd || 'unk'}:${item.strategy || 'unk'}`;
     const stkCd    = item.stk_cd    || '-';
     const strategy = item.strategy  || '-';
     const rScore   = typeof item.rule_score === 'number' ? item.rule_score.toFixed(1) : item.rule_score || '-';
     const message  = item.message   || `[${strategy}] ${stkCd}`;
+
+    // 규칙 기반 TP/SL 표시 (있을 경우)
+    const curPrc  = Number(item.cur_prc ?? item.entry_price ?? 0);
+    const tp1     = item.tp1_price ? Number(item.tp1_price) : null;
+    const tp2     = item.tp2_price ? Number(item.tp2_price) : null;
+    const sl      = item.sl_price  ? Number(item.sl_price)  : null;
+
+    const tpslLines = [];
+    if (tp1 || tp2 || sl) {
+        tpslLines.push('');
+        tpslLines.push('📐 <b>규칙 기반 목표가</b>');
+        if (tp1 && curPrc > 0) {
+            const pct = (((tp1 - curPrc) / curPrc) * 100).toFixed(1);
+            tpslLines.push(`  TP1: <b>${tp1.toLocaleString()}원</b>  (+${pct}%)`);
+        }
+        if (tp2 && curPrc > 0) {
+            const pct = (((tp2 - curPrc) / curPrc) * 100).toFixed(1);
+            tpslLines.push(`  TP2: <b>${tp2.toLocaleString()}원</b>  (+${pct}%)`);
+        }
+        if (sl && curPrc > 0) {
+            const pct = (((sl - curPrc) / curPrc) * 100).toFixed(1);
+            tpslLines.push(`  SL:  <b>${sl.toLocaleString()}원</b>  (${pct}%)`);
+        }
+        if (tp1 && sl && curPrc > 0 && sl < curPrc) {
+            const rr = ((tp1 - curPrc) / (curPrc - sl)).toFixed(1);
+            tpslLines.push(`  R/R: 1:${rr}`);
+        }
+    }
 
     const text = [
         '🔔 <b>[매매 신호 컨펌 요청]</b>',
@@ -356,10 +416,13 @@ async function sendConfirmRequest(bot, allowedChatIds, item) {
         `종목: <b>${stkCd}</b>`,
         `전략: ${strategy}`,
         `규칙 스코어: <b>${rScore}점</b>`,
+        curPrc > 0 ? `진입가: ${curPrc.toLocaleString()}원` : null,
+        ...tpslLines,
+        '',
         `신호: ${message}`,
         '',
         'Claude AI 분석을 진행하시겠습니까?',
-    ].join('\n');
+    ].filter(l => l !== null).join('\n');
 
     // confirm_pending:{sigId} 에 페이로드 저장 (TTL 1800s)
     try {

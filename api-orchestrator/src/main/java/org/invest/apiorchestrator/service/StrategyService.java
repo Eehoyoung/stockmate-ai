@@ -42,9 +42,9 @@ public class StrategyService {
                 double gapPct = (expPrice - prevClose) / prevClose * 100;
                 if (gapPct < 3.0 || gapPct > 15.0) continue; // 3~15% 갭
 
-                // 체결강도 (Redis 최근 5개 평균)
+                // 체결강도 (Redis 최근 5개 평균) – 데이터 없으면 조건 생략(장 초반 대응)
                 double strength = redisService.getAvgCntrStrength(stkCd, 5);
-                if (strength < 130.0) continue;
+                if (redisService.hasStrengthData(stkCd) && strength < 130.0) continue;
 
                 // 호가잔량 비율
                 double bidRatio = 0;
@@ -67,9 +67,10 @@ public class StrategyService {
                         .cntrStrength(round(strength))
                         .bidRatio(round(bidRatio))
                         .entryType("시초가_시장가")
-                        .targetPct(4.0)
-                        .target2Pct(6.0)
-                        .stopPct(-2.0)
+                        .targetPct(4.0).target2Pct(6.0).stopPct(-2.0)
+                        .tp1Price(round(expPrice * 1.04))
+                        .tp2Price(round(expPrice * 1.06))
+                        .slPrice(round(expPrice * 0.98))
                         .build());
 
             } catch (Exception e) {
@@ -121,9 +122,10 @@ public class StrategyService {
                     .cntrStrength(round(strength))
                     .bidRatio(round(bidRatio))
                     .entryType("지정가_눌림목")
-                    .targetPct(3.0)
-                    .target2Pct(4.5)
-                    .stopPct(-2.0)
+                    .targetPct(3.0).target2Pct(4.5).stopPct(-2.0)
+                    .tp1Price(round(curPrice * 1.03))
+                    .tp2Price(round(curPrice * 1.045))
+                    .slPrice(round(curPrice * 0.98))
                     .build());
         } catch (Exception e) {
             log.warn("[S2] {} 처리 오류: {}", stkCd, e.getMessage());
@@ -237,9 +239,9 @@ public class StrategyService {
             double volRatio = avgPrevVol > 0 ? vol / avgPrevVol : 0;
             if (volRatio < 5.0) return Optional.empty();
 
-            // 체결강도
+            // 체결강도 – 데이터 있을 때만 필터(장 초반 미수신 대응), 임계값 120으로 완화
             double strength = redisService.getAvgCntrStrength(stkCd, 3);
-            if (strength < 140.0) return Optional.empty();
+            if (redisService.hasStrengthData(stkCd) && strength < 120.0) return Optional.empty();
 
             // 20일 고가 대비 신고가 여부 (96봉 = 8시간 5분봉)
             double max20d = candles.subList(1, Math.min(97, candles.size())).stream()
@@ -261,9 +263,10 @@ public class StrategyService {
                     .bodyRatio(round(bodyRatio))
                     .isNewHigh(isNewHigh)
                     .entryType("추격_시장가")
-                    .targetPct(4.0)
-                    .target2Pct(6.0)
-                    .stopPct(-2.5)
+                    .targetPct(4.0).target2Pct(6.0).stopPct(-2.5)
+                    .tp1Price(round(c * 1.04))
+                    .tp2Price(round(c * 1.06))
+                    .slPrice(l > 0 ? round(l * 0.99) : round(c * 0.975))  // 당일 저가 하방
                     .build());
         } catch (Exception e) {
             log.warn("[S4] {} 처리 오류: {}", stkCd, e.getMessage());
@@ -366,8 +369,9 @@ public class StrategyService {
                     // 후발주 조건: 상승 중이나 상위 30%는 아님
                     if (stkFluRt < 0.5 || stkFluRt >= p70 || stkFluRt >= 5.0) continue;
 
+                    // 테마 종목은 WS 구독 외 종목 포함 가능 → 데이터 있을 때만 필터
                     double strength = redisService.getAvgCntrStrength(stk.getStkCd(), 3);
-                    if (strength < 120.0) continue;
+                    if (redisService.hasStrengthData(stk.getStkCd()) && strength < 120.0) continue;
 
                     double score = strength * 0.3 + (themeFluRt - stkFluRt) * 2;
                     double target = Math.min(themeFluRt * 0.6, 5.0);
@@ -444,6 +448,7 @@ public class StrategyService {
                 double score = bidRatio * 10 + gapPct + (50 - rank) * 0.5;
 
                 double t1 = Math.min(gapPct * 0.8, 5.0);
+                double t2 = Math.min(t1 * 1.5, 8.0);
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
                         .stkNm(item.getStkNm())
@@ -455,9 +460,10 @@ public class StrategyService {
                         .volRank(rank)
                         .marketType(market)
                         .entryType("시초가_시장가")
-                        .targetPct(round(t1))
-                        .target2Pct(round(Math.min(t1 * 1.5, 8.0)))
-                        .stopPct(-2.0)
+                        .targetPct(round(t1)).target2Pct(round(t2)).stopPct(-2.0)
+                        .tp1Price(round(expPrice * (1 + t1 / 100)))
+                        .tp2Price(round(expPrice * (1 + t2 / 100)))
+                        .slPrice(round(expPrice * 0.98))
                         .build());
                 rank++;
             }
@@ -538,6 +544,11 @@ public class StrategyService {
                     + (strength > 100 ? (strength - 100) * 0.2 : 0)
                     + (todayHigh >= yearHigh ? 20 : 10);
 
+            // 기술적 TP/SL: 신고가 돌파 후 추세 지속 기준
+            // SL: 52주 고가(이전 저항 → 돌파 후 지지) 하방 1%
+            double slS10  = round(yearHigh * 0.99);
+            double tp1S10 = round(todayClose * 1.08);   // 8% 1차 목표
+            double tp2S10 = round(todayClose * 1.15);   // 15% 2차 목표
             return Optional.of(TradingSignalDto.builder()
                     .stkCd(stkCd)
                     .strategy(TradingSignal.StrategyType.S10_NEW_HIGH)
@@ -549,9 +560,11 @@ public class StrategyService {
                     .cntrStrength(round(strength))
                     .isNewHigh(true)
                     .entryType("당일종가_또는_익일시가")
-                    .targetPct(12.0)
-                    .target2Pct(18.0)
-                    .stopPct(-5.0)
+                    .targetPct(8.0).target2Pct(15.0)
+                    .stopPct(round((slS10 - todayClose) / todayClose * 100))
+                    .tp1Price(tp1S10)
+                    .tp2Price(tp2S10)
+                    .slPrice(slS10)
                     .build());
         } catch (Exception e) {
             log.warn("[S10] {} 처리 오류: {}", stkCd, e.getMessage());
@@ -603,14 +616,620 @@ public class StrategyService {
                     .cntrStrength(round(strength))
                     .bidRatio(round(bidRatio))
                     .entryType("종가_동시호가")
-                    .targetPct(5.0)
-                    .target2Pct(7.5)
-                    .stopPct(-3.0)
+                    .targetPct(5.0).target2Pct(7.5).stopPct(-3.0)
+                    .tp1Price(round(curPrc * 1.05))
+                    .tp2Price(round(curPrc * 1.075))
+                    .slPrice(round(curPrc * 0.97))
                     .build());
         } catch (Exception e) {
             log.warn("[S12] {} 처리 오류: {}", stkCd, e.getMessage());
             return Optional.empty();
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 전술 8: 5일선 골든크로스 스윙  (10:00~14:30)
+    // ─────────────────────────────────────────────────────────────
+    public List<TradingSignalDto> scanGoldenCross(List<String> candidates) {
+        log.info("[S8] 골든크로스 스캔 - 후보 {}개", candidates.size());
+        List<TradingSignalDto> results = new ArrayList<>();
+        for (String stkCd : candidates) {
+            try {
+                var resp = apiService.fetchKa10081(stkCd);
+                if (resp.getCandles() == null || resp.getCandles().size() < 26) continue;
+                var raw = resp.getCandles();
+                int n = raw.size();
+                double[] closes = new double[n];
+                double[] vols   = new double[n];
+                for (int i = 0; i < n; i++) {
+                    closes[i] = parseDoubleStr(raw.get(i).getCurPrc());
+                    vols[i]   = parseLongStr(raw.get(i).getTrdeQty());
+                }
+                if (closes[0] <= 0) continue;
+
+                double ma5  = maAvg(closes, 0, 5);
+                double ma20 = maAvg(closes, 0, 20);
+                double ma5p = maAvg(closes, 1, 5);
+                double ma20p= maAvg(closes, 1, 20);
+                // 골든크로스: 오늘 ma5 >= ma20 이고 어제 ma5 < ma20
+                if (!(ma5 >= ma20 && ma5p < ma20p)) continue;
+                // 정배열 확인: 종가 > MA5 > MA20
+                if (closes[0] < ma5) continue;
+
+                // 등락률 필터 (당일 양봉 + 과열 아님)
+                double fluRt = closes[1] > 0 ? (closes[0] - closes[1]) / closes[1] * 100 : 0;
+                if (fluRt <= 0 || fluRt > 12.0) continue;
+
+                // RSI 미과열
+                double[] rsiArr = calcRsi(closes, 14);
+                double rsiNow = rsiArr.length > 0 ? rsiArr[0] : 0;
+                if (rsiNow > 75) continue; // 과열 후 골든크로스는 후발
+
+                // 거래량 비율
+                double volMa20 = maAvg(vols, 1, 20);
+                double volRatio = volMa20 > 0 ? vols[0] / volMa20 : 1.0;
+                if (volRatio < 1.2) continue;
+
+                // MACD 모멘텀 확인
+                double[][] macd = calcMacd(closes, 12, 26, 9);
+                boolean macdAccel = macd[2].length > 1 && macd[2][0] > 0 && macd[2][0] > macd[2][1];
+
+                // 체결강도
+                double cntrStr = redisService.getAvgCntrStrength(stkCd, 5);
+
+                double score = fluRt * 1.5 + volRatio * 5
+                        + (rsiNow >= 45 && rsiNow <= 65 ? 12 : 0)
+                        + (macdAccel ? 10 : 0)
+                        + Math.max(cntrStr - 100, 0) * 0.2;
+
+                // 기술적 TP/SL 계산
+                // SL: MA20 × 0.98 (정배열 지지선 하방 2%)
+                double slPriceS8 = ma20 > 0 ? round(ma20 * 0.98) : round(closes[0] * 0.95);
+                double stopPct = ma20 > 0 ? Math.max((slPriceS8 - closes[0]) / closes[0] * 100, -7.0) : -5.0;
+                // TP1: 최근 10거래일 고가 (단기 저항선) - 크로스 이전 고가 기준
+                double recentHigh10 = closes[0];
+                for (int i = 1; i <= 10 && i < n; i++) recentHigh10 = Math.max(recentHigh10, parseDoubleStr(raw.get(i).getHighPric()));
+                double tp1S8 = round(Math.max(recentHigh10, closes[0] * 1.05));
+                // TP2: TP1 기준 추가 5% (2파 목표)
+                double tp2S8 = round(tp1S8 * 1.05);
+
+                results.add(TradingSignalDto.builder()
+                        .stkCd(stkCd)
+                        .strategy(TradingSignal.StrategyType.S8_GOLDEN_CROSS)
+                        .signalScore(round(score))
+                        .entryPrice(closes[0])
+                        .gapPct(round(fluRt))
+                        .volRatio(round(volRatio))
+                        .cntrStrength(round(cntrStr))
+                        .rsi(rsiNow > 0 ? round(rsiNow) : null)
+                        .entryType("당일종가_또는_익일시가")
+                        .holdingDays("5~10거래일")
+                        .targetPct(round((tp1S8 - closes[0]) / closes[0] * 100))
+                        .target2Pct(round((tp2S8 - closes[0]) / closes[0] * 100))
+                        .stopPct(round(stopPct))
+                        .tp1Price(tp1S8)
+                        .tp2Price(tp2S8)
+                        .slPrice(slPriceS8)
+                        .build());
+            } catch (Exception e) {
+                log.debug("[S8] {} 오류: {}", stkCd, e.getMessage());
+            }
+        }
+        return results.stream()
+                .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
+                .limit(5).collect(Collectors.toList());
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 전술 9: 정배열 눌림목 지지 반등 스윙  (09:30~13:00)
+    // ─────────────────────────────────────────────────────────────
+    public List<TradingSignalDto> scanPullbackSwing(List<String> candidates) {
+        log.info("[S9] 정배열 눌림목 스캔 - 후보 {}개", candidates.size());
+        List<TradingSignalDto> results = new ArrayList<>();
+        for (String stkCd : candidates) {
+            try {
+                var resp = apiService.fetchKa10081(stkCd);
+                if (resp.getCandles() == null || resp.getCandles().size() < 21) continue;
+                var raw = resp.getCandles();
+                int n = raw.size();
+                double[] highs  = new double[n];
+                double[] lows   = new double[n];
+                double[] closes = new double[n];
+                double[] vols   = new double[n];
+                for (int i = 0; i < n; i++) {
+                    double c = parseDoubleStr(raw.get(i).getCurPrc());
+                    highs[i]  = parseDoubleStr(raw.get(i).getHighPric());
+                    lows[i]   = parseDoubleStr(raw.get(i).getLowPric());
+                    closes[i] = c;
+                    vols[i]   = parseLongStr(raw.get(i).getTrdeQty());
+                    if (highs[i] <= 0) highs[i] = c;
+                    if (lows[i] <= 0)  lows[i]  = c;
+                }
+                if (closes[0] <= 0) continue;
+
+                double ma5  = maAvg(closes, 0, 5);
+                double ma20 = maAvg(closes, 0, 20);
+                // 정배열: 종가 > MA5 > MA20
+                if (!(closes[0] > ma5 && ma5 > ma20)) continue;
+
+                // 눌림목: 최근 3일 중 1일이라도 ma5에 접촉 (±1% 이내)
+                boolean hasPullback = false;
+                for (int i = 0; i < 3 && i < n; i++) {
+                    if (lows[i] <= ma5 * 1.01 && closes[i] >= ma5 * 0.99) {
+                        hasPullback = true; break;
+                    }
+                }
+                if (!hasPullback) continue;
+
+                double fluRt = closes[1] > 0 ? (closes[0] - closes[1]) / closes[1] * 100 : 0;
+                if (fluRt <= 0 || fluRt > 8.0) continue;
+
+                double[] rsiArr = calcRsi(closes, 14);
+                double rsiNow = rsiArr.length > 0 ? rsiArr[0] : 0;
+                if (rsiNow > 68) continue; // RSI 과열 눌림목 제외
+
+                // Stochastic 하단 골든크로스 확인
+                double[][] stoch = calcSlowStoch(highs, lows, closes, 14, 3, 3);
+                boolean stochGc = stoch[0].length > 1 && stoch[1].length > 1
+                        && stoch[0][0] > stoch[1][0]
+                        && stoch[0][1] <= stoch[1][1]
+                        && stoch[0][1] < 25.0;
+
+                double volMa20 = maAvg(vols, 1, 20);
+                double volRatio = volMa20 > 0 ? vols[0] / volMa20 : 1.0;
+                double cntrStr = redisService.getAvgCntrStrength(stkCd, 5);
+
+                double score = fluRt * 2 + volRatio * 4
+                        + (stochGc ? 12 : 0)
+                        + (rsiNow >= 40 && rsiNow <= 58 ? 8 : 0)
+                        + Math.max(cntrStr - 100, 0) * 0.2;
+
+                // 기술적 TP/SL
+                // SL: MA20 × 0.97 (정배열 지지 하방 3%)
+                double slPriceS9 = ma20 > 0 ? round(ma20 * 0.97) : round(closes[0] * 0.95);
+                double stopPct = ma20 > 0 ? Math.max((slPriceS9 - closes[0]) / closes[0] * 100, -7.0) : -5.0;
+                // TP1: 최근 10일 고가 (눌림 이전 고점)
+                double recentHigh10S9 = closes[0];
+                for (int i = 1; i <= 10 && i < n; i++) recentHigh10S9 = Math.max(recentHigh10S9, highs[i]);
+                double tp1S9 = round(Math.max(recentHigh10S9, closes[0] * 1.05));
+                // TP2: 최근 20일 고가 (중기 저항선)
+                double recentHigh20S9 = tp1S9;
+                for (int i = 1; i <= 20 && i < n; i++) recentHigh20S9 = Math.max(recentHigh20S9, highs[i]);
+                double tp2S9 = round(Math.max(recentHigh20S9, tp1S9 * 1.03));
+
+                results.add(TradingSignalDto.builder()
+                        .stkCd(stkCd)
+                        .strategy(TradingSignal.StrategyType.S9_PULLBACK_SWING)
+                        .signalScore(round(score))
+                        .entryPrice(closes[0])
+                        .gapPct(round(fluRt))
+                        .volRatio(round(volRatio))
+                        .cntrStrength(round(cntrStr))
+                        .rsi(rsiNow > 0 ? round(rsiNow) : null)
+                        .entryType("당일종가_또는_익일시가")
+                        .holdingDays("5~8거래일")
+                        .targetPct(round((tp1S9 - closes[0]) / closes[0] * 100))
+                        .target2Pct(round((tp2S9 - closes[0]) / closes[0] * 100))
+                        .stopPct(round(stopPct))
+                        .tp1Price(tp1S9)
+                        .tp2Price(tp2S9)
+                        .slPrice(slPriceS9)
+                        .build());
+            } catch (Exception e) {
+                log.debug("[S9] {} 오류: {}", stkCd, e.getMessage());
+            }
+        }
+        return results.stream()
+                .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
+                .limit(5).collect(Collectors.toList());
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 전술 11: 외국인 연속 순매수 스윙 (5일+)  (09:30~14:30)
+    // ─────────────────────────────────────────────────────────────
+    public List<TradingSignalDto> scanFrgnCont(String market) {
+        log.info("[S11] 외국인 연속 순매수 스캔 [{}]", market);
+        try {
+            var contResp = apiService.fetchKa10035(
+                    StrategyRequests.FrgnContNettrdRequest.builder()
+                            .mrktTp(market)
+                            .trdeTp("2")      // 연속순매수
+                            .baseDtTp("0")    // 당일기준
+                            .build());
+            if (contResp == null || contResp.getItems() == null) return Collections.emptyList();
+
+            List<TradingSignalDto> results = new ArrayList<>();
+            for (var item : contResp.getItems()) {
+                String stkCd = item.getStkCd();
+                // dm1/dm2/dm3 모두 양수여야 연속 매수 (음수면 순매도)
+                double dm1 = parseDoubleSign(item.getDm1());
+                double dm2 = parseDoubleSign(item.getDm2());
+                double dm3 = parseDoubleSign(item.getDm3());
+                if (dm1 <= 0 || dm2 <= 0 || dm3 <= 0) continue;
+
+                double tot = parseDoubleSign(item.getTot());
+                // 외인 한도소진율 보너스 (높을수록 외인 수급 강함)
+                double limitExhRt = parseDouble(item.getLimitExhRt());
+
+                double volRatio = calcVolRatio(stkCd);
+                double cntrStr  = redisService.getAvgCntrStrength(stkCd, 5);
+
+                // 3일 연속 매수 확인 + 총 순매수 비중 + 한도소진율 보너스
+                double score = 15.0                              // 3일 연속 기본
+                        + Math.min(tot / 100_000.0, 20.0)       // 총 순매수 비중 (최대 20점)
+                        + limitExhRt * 0.5                       // 한도소진율 (최대 ~25점)
+                        + volRatio * 3.0
+                        + Math.max(cntrStr - 100, 0) * 0.2;
+
+                results.add(TradingSignalDto.builder()
+                        .stkCd(stkCd)
+                        .stkNm(item.getStkNm())
+                        .strategy(TradingSignal.StrategyType.S11_FRGN_CONT)
+                        .signalScore(round(score))
+                        .continuousDays(3)
+                        .volRatio(round(volRatio))
+                        .cntrStrength(round(cntrStr))
+                        .marketType(market)
+                        .entryType("지정가_1호가")
+                        .holdingDays("5~10거래일")
+                        .targetPct(8.0).target2Pct(12.0)
+                        .stopPct(-5.0)
+                        .build());
+            }
+            return results.stream()
+                    .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
+                    .limit(5).collect(Collectors.toList());
+        } catch (Exception e) {
+            log.error("[S11] 스캔 오류: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 전술 13: 거래량 폭발 박스권 돌파 스윙  (09:30~14:00)
+    // ─────────────────────────────────────────────────────────────
+    public List<TradingSignalDto> scanBoxBreakout(List<String> candidates) {
+        log.info("[S13] 박스권 돌파 스캔 - 후보 {}개", candidates.size());
+        List<TradingSignalDto> results = new ArrayList<>();
+        for (String stkCd : candidates) {
+            try {
+                var resp = apiService.fetchKa10081(stkCd);
+                if (resp.getCandles() == null || resp.getCandles().size() < 22) continue;
+                var raw = resp.getCandles();
+                int n = raw.size();
+                double[] highs  = new double[n];
+                double[] lows   = new double[n];
+                double[] closes = new double[n];
+                double[] vols   = new double[n];
+                for (int i = 0; i < n; i++) {
+                    double c = parseDoubleStr(raw.get(i).getCurPrc());
+                    highs[i]  = parseDoubleStr(raw.get(i).getHighPric());
+                    lows[i]   = parseDoubleStr(raw.get(i).getLowPric());
+                    closes[i] = c;
+                    vols[i]   = parseLongStr(raw.get(i).getTrdeQty());
+                    if (highs[i] <= 0) highs[i] = c;
+                    if (lows[i]  <= 0) lows[i]  = c;
+                }
+                if (closes[0] <= 0) continue;
+
+                // 박스권 상단 = 최근 5~20일 고가 (전일까지)
+                double boxHigh = 0;
+                for (int i = 1; i <= 20 && i < n; i++) boxHigh = Math.max(boxHigh, highs[i]);
+                if (boxHigh <= 0) continue;
+
+                // 돌파: 오늘 종가 > 박스 상단
+                if (closes[0] <= boxHigh * 1.002) continue;
+
+                double fluRt = closes[1] > 0 ? (closes[0] - closes[1]) / closes[1] * 100 : 0;
+                if (fluRt < 1.0 || fluRt > 15.0) continue;
+
+                double volMa20 = maAvg(vols, 1, 20);
+                double volRatio = volMa20 > 0 ? vols[0] / volMa20 : 1.0;
+                if (volRatio < 2.0) continue; // 박스 돌파는 거래량 폭발 필수
+
+                // 볼린저 밴드 너비 (스퀴즈 확인)
+                double bandwidth = calcBollingerBandwidth(closes, 20);
+                boolean squeeze = bandwidth > 0 && bandwidth < 6.0;
+
+                // MFI 확인
+                double mfi = calcMfiLatest(highs, lows, closes, vols, 14);
+                boolean mfiConfirmed = mfi > 55;
+
+                double cntrStr = redisService.getAvgCntrStrength(stkCd, 5);
+
+                double score = fluRt * 2 + volRatio * 3
+                        + (squeeze ? 15 : 0)
+                        + (mfiConfirmed ? 10 : 0)
+                        + Math.max(cntrStr - 100, 0) * 0.2;
+
+                // 기술적 TP/SL: 박스 높이 기반 타겟
+                // 박스 하단 = 최근 20일 저가 평균 근사 (5일 최저)
+                double boxLow = lows[1];
+                for (int i = 2; i <= 10 && i < n; i++) boxLow = Math.min(boxLow, lows[i]);
+                double boxHeight = Math.max(boxHigh - boxLow, closes[0] * 0.03); // 최소 3%
+                double tp1S13 = round(closes[0] + boxHeight);         // TP1: 진입가 + 박스높이
+                double tp2S13 = round(closes[0] + boxHeight * 2.0);   // TP2: 진입가 + 박스높이 × 2
+                double slS13  = round(boxHigh * 0.99);                // SL: 박스 상단(돌파 전) 직하
+                double stopPctS13 = round((slS13 - closes[0]) / closes[0] * 100);
+
+                results.add(TradingSignalDto.builder()
+                        .stkCd(stkCd)
+                        .strategy(TradingSignal.StrategyType.S13_BOX_BREAKOUT)
+                        .signalScore(round(score))
+                        .entryPrice(closes[0])
+                        .gapPct(round(fluRt))
+                        .volRatio(round(volRatio))
+                        .cntrStrength(round(cntrStr))
+                        .entryType("당일종가_또는_익일시가")
+                        .holdingDays("3~7거래일")
+                        .targetPct(round((tp1S13 - closes[0]) / closes[0] * 100))
+                        .target2Pct(round((tp2S13 - closes[0]) / closes[0] * 100))
+                        .stopPct(stopPctS13)
+                        .tp1Price(tp1S13)
+                        .tp2Price(tp2S13)
+                        .slPrice(slS13)
+                        .build());
+            } catch (Exception e) {
+                log.debug("[S13] {} 오류: {}", stkCd, e.getMessage());
+            }
+        }
+        return results.stream()
+                .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
+                .limit(5).collect(Collectors.toList());
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 전술 14: 과매도 오실레이터 수렴 반등  (09:30~14:00)
+    // ─────────────────────────────────────────────────────────────
+    public List<TradingSignalDto> scanOversoldBounce(List<String> candidates) {
+        log.info("[S14] 과매도 반등 스캔 - 후보 {}개", candidates.size());
+        List<TradingSignalDto> results = new ArrayList<>();
+        for (String stkCd : candidates) {
+            try {
+                var resp = apiService.fetchKa10081(stkCd);
+                if (resp.getCandles() == null || resp.getCandles().size() < 30) continue;
+                var raw = resp.getCandles();
+                int n = raw.size();
+                double[] highs  = new double[n];
+                double[] lows   = new double[n];
+                double[] closes = new double[n];
+                double[] vols   = new double[n];
+                for (int i = 0; i < n; i++) {
+                    double c = parseDoubleStr(raw.get(i).getCurPrc());
+                    highs[i]  = parseDoubleStr(raw.get(i).getHighPric());
+                    lows[i]   = parseDoubleStr(raw.get(i).getLowPric());
+                    closes[i] = c;
+                    vols[i]   = parseLongStr(raw.get(i).getTrdeQty());
+                    if (highs[i] <= 0) highs[i] = c;
+                    if (lows[i]  <= 0) lows[i]  = c;
+                }
+                if (closes[0] <= 0) continue;
+
+                // 필수 1: RSI 과매도 (20~38)
+                double[] rsiArr = calcRsi(closes, 14);
+                double rsiNow  = rsiArr.length > 0 ? rsiArr[0] : 0;
+                double rsiPrev = rsiArr.length > 1 ? rsiArr[1] : 0;
+                if (rsiNow <= 0 || rsiNow > 38 || rsiNow < 20) continue;
+
+                // 필수 2: MA60 추세 생존 (88% 이상)
+                if (n >= 60) {
+                    double ma60 = maAvg(closes, 0, 60);
+                    if (closes[0] < ma60 * 0.88) continue;
+                }
+
+                // 필수 3: ATR% ≤ 4.0%
+                double[] atrArr = calcAtr(highs, lows, closes, 14);
+                double atrNow = atrArr.length > 0 ? atrArr[0] : 0;
+                if (atrNow <= 0) continue;
+                double atrPct = atrNow / closes[0] * 100;
+                if (atrPct > 4.0) continue;
+
+                // 필수 4: 당일 낙폭과대 제외
+                double fluRt = closes[1] > 0 ? (closes[0] - closes[1]) / closes[1] * 100 : 0;
+                if (fluRt < -5.0) continue;
+
+                // 선택 A: Stochastic 하단 골든크로스
+                boolean condStoch = false;
+                double[][] stoch = calcSlowStoch(highs, lows, closes, 14, 3, 3);
+                if (stoch[0].length > 1 && stoch[1].length > 1) {
+                    condStoch = stoch[0][0] > stoch[1][0]
+                            && stoch[0][1] <= stoch[1][1]
+                            && stoch[0][1] < 25.0;
+                }
+
+                // 선택 B: Williams %R 탈출 (−80 상향 돌파)
+                boolean condWr = false;
+                double[] wrArr = calcWilliamsR(highs, lows, closes, 14);
+                if (wrArr.length > 1) {
+                    condWr = wrArr[1] < -80.0 && wrArr[0] > wrArr[1];
+                }
+
+                // 선택 C: MFI 자금 유입
+                boolean condMfi = false;
+                double mfiNow = calcMfiLatest(highs, lows, closes, vols, 14);
+                double mfiPrev = calcMfiAt(highs, lows, closes, vols, 14, 1);
+                if (mfiNow > 0) {
+                    condMfi = mfiNow < 30.0 && (mfiNow > mfiPrev || mfiNow > 25.0);
+                }
+
+                int condCount = (condStoch ? 1 : 0) + (condWr ? 1 : 0) + (condMfi ? 1 : 0);
+                if (condCount < 2) continue;
+
+                double volMa20 = maAvg(vols, 1, 20);
+                double volRatio = volMa20 > 0 ? vols[0] / volMa20 : 1.0;
+                double cntrStr  = redisService.getAvgCntrStrength(stkCd, 5);
+
+                double score = (38 - rsiNow) * 0.5
+                        + condCount * 10
+                        + (rsiPrev > 0 && rsiNow > rsiPrev ? 10 : 0)
+                        + (condCount == 3 ? 15 : 0)
+                        + (volRatio >= 1.5 ? 8 : 0)
+                        + (cntrStr >= 105 ? 8 : 0)
+                        + Math.max(cntrStr - 100, 0) * 0.1;
+
+                // 기술적 TP/SL (ATR 기반)
+                // SL: ATR × 2 하방 (과매도 반등이 실패할 경우 저가 하회)
+                double slPriceS14   = round(closes[0] - atrNow * 2.0);
+                // TP1: ATR × 3.5 상방 (단기 반등 목표)
+                double tp1PriceS14  = round(closes[0] + atrNow * 3.5);
+                // TP2: MA20 가격 (중기 저항 = 반등 목표 상단)
+                double ma20forS14   = n >= 20 ? maAvg(closes, 0, 20) : 0;
+                double tp2PriceS14  = ma20forS14 > tp1PriceS14
+                        ? round(ma20forS14)
+                        : round(closes[0] + atrNow * 5.0);  // MA20이 TP1 아래이면 ATR×5
+                double stopPct_   = round((slPriceS14  - closes[0]) / closes[0] * 100);
+                double targetPct_ = round((tp1PriceS14 - closes[0]) / closes[0] * 100);
+
+                results.add(TradingSignalDto.builder()
+                        .stkCd(stkCd)
+                        .strategy(TradingSignal.StrategyType.S14_OVERSOLD_BOUNCE)
+                        .signalScore(round(score))
+                        .entryPrice(closes[0])
+                        .gapPct(round(fluRt))
+                        .cntrStrength(round(cntrStr))
+                        .volRatio(round(volRatio))
+                        .rsi(round(rsiNow))
+                        .atrPct(round(atrPct))
+                        .condCount(condCount)
+                        .entryType("당일종가_또는_익일시가")
+                        .holdingDays("3~5거래일")
+                        .targetPct(targetPct_)
+                        .target2Pct(round((tp2PriceS14 - closes[0]) / closes[0] * 100))
+                        .stopPct(stopPct_)
+                        .tp1Price(tp1PriceS14)
+                        .tp2Price(tp2PriceS14)
+                        .slPrice(slPriceS14)
+                        .build());
+            } catch (Exception e) {
+                log.debug("[S14] {} 오류: {}", stkCd, e.getMessage());
+            }
+        }
+        return results.stream()
+                .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
+                .limit(5).collect(Collectors.toList());
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 전술 15: 다중지표 모멘텀 동조 스윙  (10:00~14:30)
+    // ─────────────────────────────────────────────────────────────
+    public List<TradingSignalDto> scanMomentumAlign(List<String> candidates) {
+        log.info("[S15] 모멘텀 동조 스캔 - 후보 {}개", candidates.size());
+        List<TradingSignalDto> results = new ArrayList<>();
+        for (String stkCd : candidates) {
+            try {
+                var resp = apiService.fetchKa10081(stkCd);
+                if (resp.getCandles() == null || resp.getCandles().size() < 35) continue;
+                var raw = resp.getCandles();
+                int n = raw.size();
+                double[] highs  = new double[n];
+                double[] lows   = new double[n];
+                double[] closes = new double[n];
+                double[] vols   = new double[n];
+                for (int i = 0; i < n; i++) {
+                    double c = parseDoubleStr(raw.get(i).getCurPrc());
+                    highs[i]  = parseDoubleStr(raw.get(i).getHighPric());
+                    lows[i]   = parseDoubleStr(raw.get(i).getLowPric());
+                    closes[i] = c;
+                    vols[i]   = parseLongStr(raw.get(i).getTrdeQty());
+                    if (highs[i] <= 0) highs[i] = c;
+                    if (lows[i]  <= 0) lows[i]  = c;
+                }
+                if (closes[0] <= 0) continue;
+
+                // 필수 1: 현재가 ≥ MA20
+                double ma20 = maAvg(closes, 0, 20);
+                if (closes[0] < ma20) continue;
+
+                // 필수 2: 등락률 0~12% (양봉 + 미과열)
+                double fluRt = closes[1] > 0 ? (closes[0] - closes[1]) / closes[1] * 100 : 0;
+                if (fluRt <= 0 || fluRt > 12.0) continue;
+
+                // 필수 3: RSI < 72
+                double[] rsiArr = calcRsi(closes, 14);
+                double rsiNow  = rsiArr.length > 0 ? rsiArr[0] : 0;
+                double rsiPrev = rsiArr.length > 1 ? rsiArr[1] : 0;
+                if (rsiNow > 72) continue;
+
+                // 선택 A: MACD 모멘텀
+                double[][] macd = calcMacd(closes, 12, 26, 9);
+                boolean macdGcToday = macd[0].length > 1 && macd[1].length > 1
+                        && macd[0][0] > macd[1][0] && macd[0][1] <= macd[1][1];
+                boolean histExpand = macd[2].length > 2
+                        && macd[2][0] > 0 && macd[2][0] > macd[2][1] && macd[2][1] > macd[2][2];
+                boolean condMacd = macdGcToday || (macd[0].length > 0 && macd[0][0] > 0 && histExpand);
+
+                // 선택 B: RSI 48~68
+                boolean condRsi = rsiNow >= 48 && rsiNow <= 68;
+
+                // 선택 C: 볼린저 %B 0.45~0.82
+                boolean condBoll = false;
+                double pctB = calcBollingerPctB(closes, 20);
+                if (pctB >= 0) condBoll = pctB >= 0.45 && pctB <= 0.82;
+
+                // 선택 D: 거래량 ≥ 20일 평균 × 1.3
+                double volMa20 = maAvg(vols, 1, 20);
+                double volRatio = volMa20 > 0 ? vols[0] / volMa20 : 1.0;
+                boolean condVol = volRatio >= 1.3;
+
+                int condCount = (condMacd ? 1 : 0) + (condRsi ? 1 : 0)
+                        + (condBoll ? 1 : 0) + (condVol ? 1 : 0);
+                if (condCount < 3) continue;
+
+                // ATR
+                double[] atrArr = calcAtr(highs, lows, closes, 14);
+                double atrNow = atrArr.length > 0 ? atrArr[0] : 0;
+                double atrPct = atrNow > 0 ? atrNow / closes[0] * 100 : 0;
+                boolean atrOk = atrPct >= 1.0 && atrPct <= 3.0;
+
+                double cntrStr = redisService.getAvgCntrStrength(stkCd, 5);
+
+                double score = fluRt * 0.6
+                        + Math.max(cntrStr - 100, 0) * 0.2
+                        + condCount * 8
+                        + (condCount == 4 ? 20 : 0)
+                        + (atrOk ? 8 : 0)
+                        + (cntrStr >= 105 ? 8 : 0)
+                        + (rsiPrev > 0 && rsiNow > rsiPrev ? 5 : 0);
+
+                // 기술적 TP/SL
+                // SL: ATR × 2 하방
+                double slPriceS15  = atrNow > 0 ? round(closes[0] - atrNow * 2.0) : round(closes[0] * 0.95);
+                double stopPct_    = round((slPriceS15 - closes[0]) / closes[0] * 100);
+                // TP1: 볼린저 상단 (모멘텀 1차 저항)
+                double bbu         = calcBollingerUpper(closes, 20);
+                double tp1PriceS15 = bbu > closes[0] ? round(bbu) : round(closes[0] * 1.08);
+                // TP2: 볼린저 상단 + ATR × 0.5 (돌파 후 추가 모멘텀)
+                double tp2PriceS15 = atrNow > 0
+                        ? round(tp1PriceS15 + atrNow * 0.5)
+                        : round(closes[0] * 1.15);
+
+                results.add(TradingSignalDto.builder()
+                        .stkCd(stkCd)
+                        .strategy(TradingSignal.StrategyType.S15_MOMENTUM_ALIGN)
+                        .signalScore(round(score))
+                        .entryPrice(closes[0])
+                        .gapPct(round(fluRt))
+                        .volRatio(round(volRatio))
+                        .cntrStrength(round(cntrStr))
+                        .rsi(rsiNow > 0 ? round(rsiNow) : null)
+                        .atrPct(atrPct > 0 ? round(atrPct) : null)
+                        .condCount(condCount)
+                        .entryType("당일종가_또는_익일시가")
+                        .holdingDays("5~10거래일")
+                        .targetPct(round((tp1PriceS15 - closes[0]) / closes[0] * 100))
+                        .target2Pct(round((tp2PriceS15 - closes[0]) / closes[0] * 100))
+                        .stopPct(stopPct_)
+                        .tp1Price(tp1PriceS15)
+                        .tp2Price(tp2PriceS15)
+                        .slPrice(slPriceS15)
+                        .build());
+            } catch (Exception e) {
+                log.debug("[S15] {} 오류: {}", stkCd, e.getMessage());
+            }
+        }
+        return results.stream()
+                .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
+                .limit(5).collect(Collectors.toList());
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -635,6 +1254,12 @@ public class StrategyService {
         try { return v == null ? 0 : Double.parseDouble(v.replace(",","").replace("+","")); }
         catch (Exception e) { return 0; }
     }
+    /** +/- 부호 보존 파싱 (순매수/매도 구분용) */
+    private double parseDoubleSign(String v) {
+        try { return v == null ? 0 : Double.parseDouble(v.replace(",","")); }
+        catch (Exception e) { return 0; }
+    }
+    private double parseDouble(String v) { return parseDoubleStr(v); }
     private long parseLong(String v) {
         try { return v == null ? 0 : Long.parseLong(v.replace(",","").replace("+","")); }
         catch (Exception e) { return 0; }
@@ -645,4 +1270,251 @@ public class StrategyService {
         catch (Exception e) { return 999; }
     }
     private double round(double v) { return Math.round(v * 100.0) / 100.0; }
+
+    // ─────────────────────────────────────────────────────────────
+    // 기술지표 헬퍼 (순수 정적 수학 – 외부 라이브러리 불필요)
+    // 모든 배열: [0]=최신, [n-1]=가장 과거 (newest-first)
+    // ─────────────────────────────────────────────────────────────
+
+    /** MA 평균: closes[offset..offset+period-1] */
+    private static double maAvg(double[] arr, int offset, int period) {
+        if (arr.length < offset + period) return 0;
+        double s = 0; for (int i = offset; i < offset + period; i++) s += arr[i];
+        return s / period;
+    }
+
+    /** Wilder's Smoothed RSI – newest-first output */
+    private static double[] calcRsi(double[] closes, int period) {
+        int n = closes.length;
+        if (n < period + 2) return new double[0];
+        // Reverse to oldest-first for processing
+        double[] c = new double[n];
+        for (int i = 0; i < n; i++) c[i] = closes[n - 1 - i];
+        // Initial SMA avg gain/loss
+        double ag = 0, al = 0;
+        for (int i = 1; i <= period; i++) {
+            double d = c[i] - c[i - 1];
+            if (d > 0) ag += d; else al -= d;
+        }
+        ag /= period; al /= period;
+        int rn = n - period;
+        double[] r = new double[rn]; // oldest-first
+        r[0] = al == 0 ? 100 : 100 - 100.0 / (1 + ag / al);
+        for (int i = 1; i < rn; i++) {
+            double d = c[period + i] - c[period + i - 1];
+            ag = (ag * (period - 1) + Math.max(d, 0)) / period;
+            al = (al * (period - 1) + Math.max(-d, 0)) / period;
+            r[i] = al == 0 ? 100 : 100 - 100.0 / (1 + ag / al);
+        }
+        // Reverse to newest-first
+        double[] out = new double[rn];
+        for (int i = 0; i < rn; i++) out[i] = r[rn - 1 - i];
+        return out;
+    }
+
+    /** EMA list – oldest-first, length = closes.length - period + 1 */
+    private static double[] calcEmaOf(double[] closesNF, int period) {
+        int n = closesNF.length;
+        if (n < period) return new double[0];
+        double[] c = new double[n];
+        for (int i = 0; i < n; i++) c[i] = closesNF[n - 1 - i]; // oldest-first
+        double alpha = 2.0 / (period + 1);
+        double sma = 0;
+        for (int i = 0; i < period; i++) sma += c[i];
+        sma /= period;
+        int len = n - period + 1;
+        double[] ema = new double[len];
+        ema[0] = sma;
+        for (int i = 1; i < len; i++)
+            ema[i] = c[period - 1 + i] * alpha + ema[i - 1] * (1 - alpha);
+        return ema; // oldest-first
+    }
+
+    /**
+     * MACD (12/26/9) – returns [macdLine, signalLine, histogram] each newest-first.
+     * All three arrays have the same length = n - slow - signal + 2.
+     */
+    private static double[][] calcMacd(double[] closes, int fast, int slow, int signal) {
+        double[] fastOf = calcEmaOf(closes, fast);  // oldest-first, len = n-fast+1
+        double[] slowOf = calcEmaOf(closes, slow);  // oldest-first, len = n-slow+1
+        int macdLen = slowOf.length;
+        if (macdLen == 0) return new double[][]{new double[0], new double[0], new double[0]};
+        int offset = fastOf.length - macdLen; // = slow - fast
+        double[] macdOf = new double[macdLen];
+        for (int i = 0; i < macdLen; i++) macdOf[i] = fastOf[i + offset] - slowOf[i];
+
+        if (macdLen < signal) return new double[][]{new double[0], new double[0], new double[0]};
+        double alpha = 2.0 / (signal + 1);
+        double sma = 0;
+        for (int i = 0; i < signal; i++) sma += macdOf[i];
+        sma /= signal;
+        int sigLen = macdLen - signal + 1;
+        double[] sigOf = new double[sigLen];
+        sigOf[0] = sma;
+        for (int i = 1; i < sigLen; i++)
+            sigOf[i] = macdOf[signal - 1 + i] * alpha + sigOf[i - 1] * (1 - alpha);
+
+        double[] histOf = new double[sigLen];
+        int mo = macdLen - sigLen;
+        for (int i = 0; i < sigLen; i++) histOf[i] = macdOf[i + mo] - sigOf[i];
+
+        // Reverse all to newest-first
+        double[] mNF = new double[sigLen], sNF = new double[sigLen], hNF = new double[sigLen];
+        for (int i = 0; i < sigLen; i++) {
+            mNF[i] = macdOf[mo + sigLen - 1 - i];
+            sNF[i] = sigOf[sigLen - 1 - i];
+            hNF[i] = histOf[sigLen - 1 - i];
+        }
+        return new double[][]{mNF, sNF, hNF};
+    }
+
+    /** Bollinger Bands bandwidth % at index 0 (newest). Returns -1 if not enough data. */
+    private static double calcBollingerBandwidth(double[] closes, int period) {
+        if (closes.length < period) return -1;
+        double mean = maAvg(closes, 0, period);
+        double variance = 0;
+        for (int i = 0; i < period; i++) variance += Math.pow(closes[i] - mean, 2);
+        double std = Math.sqrt(variance / period);
+        return mean > 0 ? (std * 4 / mean) * 100 : -1; // (upper-lower)/middle * 100
+    }
+
+    /** Bollinger Upper Band at index 0 (newest). Returns 0 if not enough data. */
+    private static double calcBollingerUpper(double[] closes, int period) {
+        if (closes.length < period) return 0;
+        double mean = maAvg(closes, 0, period);
+        double variance = 0;
+        for (int i = 0; i < period; i++) variance += Math.pow(closes[i] - mean, 2);
+        double std = Math.sqrt(variance / period);
+        return mean + 2 * std;
+    }
+
+    /** Bollinger %B at index 0 (newest). Returns -1 if not enough data. */
+    private static double calcBollingerPctB(double[] closes, int period) {
+        if (closes.length < period) return -1;
+        double mean = maAvg(closes, 0, period);
+        double variance = 0;
+        for (int i = 0; i < period; i++) variance += Math.pow(closes[i] - mean, 2);
+        double std = Math.sqrt(variance / period);
+        double upper = mean + 2 * std;
+        double lower = mean - 2 * std;
+        return upper > lower ? (closes[0] - lower) / (upper - lower) : -1;
+    }
+
+    /** Wilder's ATR – newest-first output */
+    private static double[] calcAtr(double[] highs, double[] lows, double[] closes, int period) {
+        int n = Math.min(highs.length, Math.min(lows.length, closes.length));
+        if (n < period + 1) return new double[0];
+        // TR oldest-first (reverse)
+        double[] trOf = new double[n - 1];
+        for (int i = 0; i < n - 1; i++) {
+            int ni = n - 1 - i; // oldest-first index maps to closes[ni] (newer) and closes[ni+1] (older, but wait)
+            // In newest-first array: closes[ni] is older than closes[ni-1]
+            // So in oldest-first pass: index i in trOf corresponds to closes[n-1-i] → closes[n-2-i]
+            double h = highs[n - 1 - i];
+            double l = lows[n - 1 - i];
+            double pc = closes[n - i]; // previous close in oldest-first = closes[n-1-i+1] in NF?
+            // Oldest-first index i: price at time i = closes[n-1-i]; prev close at time i-1 = closes[n-i]
+            // But i=0 means oldest, so prev close doesn't exist at i=0
+            // Actually let's just do TR for i>=1 in oldest-first
+            if (i == 0) { trOf[0] = h - l; continue; }
+            double prevC = closes[n - 1 - (i - 1)]; // closes at time i-1 in oldest-first
+            trOf[i] = Math.max(h - l, Math.max(Math.abs(h - prevC), Math.abs(l - prevC)));
+        }
+        // Wilder smooth
+        double atr0 = 0;
+        for (int i = 0; i < period; i++) atr0 += trOf[i];
+        atr0 /= period;
+        int rLen = n - period;
+        double[] atrOf = new double[rLen];
+        atrOf[0] = atr0;
+        for (int i = 1; i < rLen; i++)
+            atrOf[i] = (atrOf[i - 1] * (period - 1) + trOf[period - 1 + i]) / period;
+        // Reverse to newest-first
+        double[] out = new double[rLen];
+        for (int i = 0; i < rLen; i++) out[i] = atrOf[rLen - 1 - i];
+        return out;
+    }
+
+    /** Slow Stochastic – returns [slowK, slowD] each newest-first */
+    private static double[][] calcSlowStoch(double[] highs, double[] lows, double[] closes,
+                                            int kPeriod, int dPeriod, int slowing) {
+        int n = Math.min(highs.length, Math.min(lows.length, closes.length));
+        if (n < kPeriod + slowing + dPeriod) return new double[][]{new double[0], new double[0]};
+        // Raw %K oldest-first
+        int rawLen = n - kPeriod + 1;
+        double[] rawK = new double[rawLen];
+        for (int i = 0; i < rawLen; i++) {
+            int ni = n - 1 - i; // newest index in NF for this oldest-first slot
+            // Collect kPeriod values starting at position n-1-i backward
+            double hh = 0, ll = Double.MAX_VALUE;
+            for (int j = 0; j < kPeriod; j++) {
+                int idx = ni - j; // going back in NF (older)
+                if (idx < 0) break;
+                hh = Math.max(hh, highs[idx]);
+                ll = Math.min(ll, lows[idx]);
+            }
+            rawK[i] = (hh > ll) ? (closes[ni] - ll) / (hh - ll) * 100 : 50;
+        }
+        // Slow %K = SMA(rawK, slowing)
+        int sLen = rawLen - slowing + 1;
+        if (sLen <= 0) return new double[][]{new double[0], new double[0]};
+        double[] slowKOf = new double[sLen];
+        for (int i = 0; i < sLen; i++) {
+            double s = 0; for (int j = 0; j < slowing; j++) s += rawK[i + j];
+            slowKOf[i] = s / slowing;
+        }
+        // Slow %D = SMA(slowK, dPeriod)
+        int dLen = sLen - dPeriod + 1;
+        if (dLen <= 0) return new double[][]{new double[0], new double[0]};
+        double[] slowDOf = new double[dLen];
+        for (int i = 0; i < dLen; i++) {
+            double s = 0; for (int j = 0; j < dPeriod; j++) s += slowKOf[i + j];
+            slowDOf[i] = s / dPeriod;
+        }
+        // Align and reverse to newest-first
+        int outLen = dLen;
+        int kOff = sLen - outLen;
+        double[] kNF = new double[outLen], dNF = new double[outLen];
+        for (int i = 0; i < outLen; i++) {
+            kNF[i] = slowKOf[kOff + outLen - 1 - i];
+            dNF[i] = slowDOf[outLen - 1 - i];
+        }
+        return new double[][]{kNF, dNF};
+    }
+
+    /** Williams %R – newest-first, range 0 to -100 */
+    private static double[] calcWilliamsR(double[] highs, double[] lows, double[] closes, int period) {
+        int n = Math.min(highs.length, Math.min(lows.length, closes.length));
+        if (n < period) return new double[0];
+        int outLen = n - period + 1;
+        double[] out = new double[outLen]; // newest-first
+        for (int i = 0; i < outLen; i++) {
+            double hh = 0, ll = Double.MAX_VALUE;
+            for (int j = 0; j < period; j++) {
+                hh = Math.max(hh, highs[i + j]);
+                ll = Math.min(ll, lows[i + j]);
+            }
+            out[i] = hh > ll ? (hh - closes[i]) / (hh - ll) * -100 : -50;
+        }
+        return out;
+    }
+
+    /** MFI at index 0 (latest period window). Returns 0 if not enough data. */
+    private static double calcMfiLatest(double[] highs, double[] lows, double[] closes, double[] vols, int period) {
+        return calcMfiAt(highs, lows, closes, vols, period, 0);
+    }
+
+    /** MFI at offset (0=latest). Returns 0 if not enough data. */
+    private static double calcMfiAt(double[] highs, double[] lows, double[] closes, double[] vols, int period, int offset) {
+        int n = Math.min(highs.length, Math.min(lows.length, Math.min(closes.length, vols.length)));
+        if (n < offset + period + 1) return 0;
+        double posFlow = 0, negFlow = 0;
+        for (int i = offset; i < offset + period; i++) {
+            double tp  = (highs[i] + lows[i] + closes[i]) / 3.0;
+            double tpp = (highs[i + 1] + lows[i + 1] + closes[i + 1]) / 3.0;
+            double mf  = tp * vols[i];
+            if (tp > tpp) posFlow += mf; else negFlow += mf;
+        }
+        return negFlow == 0 ? 100 : 100 - 100.0 / (1 + posFlow / negFlow);
+    }
 }
