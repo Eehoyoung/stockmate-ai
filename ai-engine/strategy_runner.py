@@ -173,8 +173,8 @@ async def _run_once(rdb):
         async def _s4():
             try:
                 from strategy_4_big_candle import check_big_candle
-                kospi  = await rdb.lrange("candidates:001", 0, 99)
-                kosdaq = await rdb.lrange("candidates:101", 0, 99)
+                kospi  = await rdb.lrange("candidates:s12:001", 0, 99)
+                kosdaq = await rdb.lrange("candidates:s12:101", 0, 99)
                 candidates = list(dict.fromkeys(kospi + kosdaq))[:30]  # 상위 30개만
                 s4_signals = []
                 for stk_cd in candidates:

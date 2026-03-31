@@ -13,6 +13,8 @@ import os
 import logging
 from datetime import datetime
 
+from http_utils import validate_kiwoom_response
+
 # 키움 REST API 초당 약 5회 제한 → 루프 내 0.25s 대기
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
@@ -56,7 +58,10 @@ async def fetch_gap_candidates(token: str) -> list:
                 json={"mrkt_tp": "000", "sort_tp": "1", "trde_qty_cnd": "10",
                       "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "1"},
             )
-            items = resp.json().get("exp_cntr_flu_rt_upper", [])
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10029", logger):
+                return []
+            items = data.get("exp_cntr_flu_rt_upper", [])
             result = []
             for item in items:
                 try:

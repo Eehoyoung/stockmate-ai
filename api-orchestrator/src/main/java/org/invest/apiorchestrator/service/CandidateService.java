@@ -212,7 +212,7 @@ public class CandidateService {
     // 전략별 전용 후보 풀  candidates:s{N}:{market}
     // ─────────────────────────────────────────────────────────────
 
-    private static final Duration POOL_TTL    = Duration.ofMinutes(5);
+    private static final Duration POOL_TTL    = Duration.ofMinutes(20);  // 스윙 풀 – Java 스캔 주기(5분) × 4배 여유
 
     /**
      * S7 동시호가 후보 풀 (ka10029, 캐시 3분).
@@ -257,7 +257,7 @@ public class CandidateService {
     }
 
     /**
-     * S8 골든크로스 스윙 후보 풀 (ka10027 상승률, 캐시 5분).
+     * S8 골든크로스 스윙 후보 풀 (ka10027 상승률, 캐시 20분).
      * 등락률 0.5~8% 소폭 상승 필터.
      * key: candidates:s8:{market}
      */
@@ -299,7 +299,7 @@ public class CandidateService {
     }
 
     /**
-     * S9 정배열 눌림목 스윙 후보 풀 (ka10027 상승률 0.3~5%, 캐시 5분).
+     * S9 정배열 눌림목 스윙 후보 풀 (ka10027 상승률 0.3~5%, 캐시 20분).
      * key: candidates:s9:{market}
      */
     public List<String> getS9Candidates(String market) {
@@ -340,7 +340,7 @@ public class CandidateService {
     }
 
     /**
-     * S10 52주 신고가 돌파 스윙 후보 풀 (ka10016, 캐시 5분).
+     * S10 52주 신고가 돌파 스윙 후보 풀 (ka10016, 캐시 20분).
      * key: candidates:s10:{market}
      */
     public List<String> getS10Candidates(String market) {
@@ -482,7 +482,7 @@ public class CandidateService {
     }
 
     /**
-     * S14 과매도 반등 스윙 후보 풀 (ka10027 하락률 3~10%, 캐시 5분).
+     * S14 과매도 반등 스윙 후보 풀 (ka10027 하락률 3~10%, 캐시 20분).
      * key: candidates:s14:{market}
      */
     public List<String> getS14Candidates(String market) {
@@ -523,7 +523,7 @@ public class CandidateService {
     }
 
     /**
-     * S15 모멘텀 동조 스윙 후보 풀 (S8 풀 재활용, 캐시 5분).
+     * S15 모멘텀 동조 스윙 후보 풀 (S8 풀 재활용, 캐시 20분).
      * S8과 동일한 소스(ka10027 0.5~8%) 사용, 별도 TTL로 독립 관리.
      * key: candidates:s15:{market}
      */

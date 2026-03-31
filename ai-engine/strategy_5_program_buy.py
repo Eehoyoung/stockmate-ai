@@ -7,25 +7,35 @@ import httpx
 import logging
 import os
 
+from http_utils import validate_kiwoom_response
+
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
+# ka90003 mrkt_tp 매핑: 내부 시장코드 → Kiwoom P-코드
+_KA90003_MRKT = {"001": "P00101", "101": "P10102", "000": "P00101"}
+
 async def fetch_program_netbuy(token: str, market: str) -> dict:
-    """ka90003 프로그램순매수상위50 (URI: rkinfo)"""
+    """ka90003 프로그램순매수상위50 (URI: /api/dostk/stkinfo)"""
+    kiwoom_mrkt = _KA90003_MRKT.get(market, "P00101")
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", # stkinfo -> rkinfo로 수정
+            f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
             headers={"api-id": "ka90003", "authorization": f"Bearer {token}",
                      "Content-Type": "application/json;charset=UTF-8"},
             json={
                 "trde_upper_tp": "2", "amt_qty_tp": "1",
-                "mrkt_tp": market, "stex_tp": "1"
+                "mrkt_tp": kiwoom_mrkt, "stex_tp": "1"
             }
         )
         resp.raise_for_status()
-        items = resp.json().get("prm_netprps_upper_50", [])
-        return {x["stk_cd"]: int(x.get("net_buy_amt", 0)) for x in items}
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka90003", logger):
+            return {}
+        items = data.get("prm_netprps_upper_50", [])
+        return {x["stk_cd"]: int(str(x.get("prm_netprps_amt", "0")).replace("+", "").replace(",", "") or 0)
+                for x in items if x.get("stk_cd")}
 
 async def fetch_frgn_inst_upper(token: str, market: str) -> set:
     """ka90009 외국인기관매매상위 (URI: rkinfo)"""
@@ -37,7 +47,13 @@ async def fetch_frgn_inst_upper(token: str, market: str) -> set:
             json={"mrkt_tp": market, "amt_qty_tp": "1", "qry_dt_tp": "0", "stex_tp": "1"}
         )
         resp.raise_for_status()
-        return {x["stk_cd"] for x in resp.json().get("for_inst_trde_upper", [])}
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka90009", logger):
+            return set()
+        # 응답키: frgnr_orgn_trde_upper, 외인 순매수 종목코드 필드: for_netprps_stk_cd
+        return {x["for_netprps_stk_cd"]
+                for x in data.get("frgnr_orgn_trde_upper", [])
+                if x.get("for_netprps_stk_cd")}
 
 async def check_extra_conditions(token: str, stk_cd: str) -> bool:
     """ka10044 전일 기관 순매수 & ka10001 5일 이평선 상단 확인"""

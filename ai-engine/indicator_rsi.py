@@ -21,6 +21,8 @@ from typing import Optional
 
 import httpx
 
+from http_utils import validate_kiwoom_response
+
 from ma_utils import fetch_daily_candles, _safe_price, _safe_vol
 
 logger = logging.getLogger(__name__)
@@ -177,6 +179,8 @@ async def fetch_minute_candles(
             )
             resp.raise_for_status()
             data = resp.json()
+            if not validate_kiwoom_response(data, "ka10080", logger):
+                return []
             candles = data.get("stk_min_pole_chart_qry", [])
             if candles:
                 _MIN_CANDLE_CACHE[key] = (

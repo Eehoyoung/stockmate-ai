@@ -14,6 +14,8 @@ import httpx
 import logging
 import os
 
+from http_utils import validate_kiwoom_response
+
 logger = logging.getLogger(__name__)
 
 # 키움 REST API 초당 약 5회 제한 → 루프 내 0.25s 대기
@@ -41,7 +43,10 @@ async def fetch_intraday_investor(token: str, market: str = "000") -> list:
             }
         )
         resp.raise_for_status()
-        return resp.json().get("opmr_invsr_trde", [])
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10063", logger):
+            return []
+        return data.get("opmr_invsr_trde", [])
 
 
 CONTINUOUS_DAYS_QUERY = int(os.getenv("S3_CONTINUOUS_DAYS", "3"))  # API 조회 연속일
@@ -64,7 +69,10 @@ async def fetch_continuous_netbuy(token: str, market: str) -> dict:
             }
         )
         resp.raise_for_status()
-        items = resp.json().get("orgn_for_cont_trde", [])
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10131", logger):
+            return {}
+        items = data.get("orgn_for_cont_trde", [])
         # stk_cd → continuous_days 매핑. API 응답에 cont_dt 필드가 있으면 사용,
         # 없으면 쿼리에 사용한 연속일(CONTINUOUS_DAYS_QUERY)로 폴백
         result = {}
@@ -98,10 +106,15 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
         )
         prev.raise_for_status()
 
+    today_data = today.json()
+    prev_data = prev.json()
+    if not validate_kiwoom_response(today_data, "ka10055", logger) \
+            or not validate_kiwoom_response(prev_data, "ka10055", logger):
+        return 1.0
     today_qty = sum(int(x.get("cntr_qty", 0))
-                    for x in today.json().get("tdy_pred_cntr_qty", []))
+                    for x in today_data.get("tdy_pred_cntr_qty", []))
     prev_qty = sum(int(x.get("cntr_qty", 0))
-                   for x in prev.json().get("tdy_pred_cntr_qty", []))
+                   for x in prev_data.get("tdy_pred_cntr_qty", []))
 
     return today_qty / prev_qty if prev_qty > 0 else 0
 

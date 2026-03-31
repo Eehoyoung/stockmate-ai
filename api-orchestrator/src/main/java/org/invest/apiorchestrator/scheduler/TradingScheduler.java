@@ -96,26 +96,10 @@ public class TradingScheduler {
         log.info("[S7] 동시호가 스캔 실행 (사전 필터링 적용, news={}){}",
                 newsControl, newsControl == TradingControl.CAUTIOUS ? " [신중모드]" : "");
         try {
-            // 사전 필터 1: ka10029 갭 2~10% 종목
+            // 사전 필터 1: candidates:s7:{market} 풀 (ka10029 2~10% 캐시) 재사용
             Set<String> gapSet = new java.util.HashSet<>();
-            for (String mrkt : new String[]{"001", "101"}) {
-                KiwoomApiResponses.ExpCntrFluRtUpperResponse gapResp =
-                        kiwoomApiService.fetchKa10029(
-                                StrategyRequests.ExpCntrFluRtUpperRequest.builder()
-                                        .mrktTp(mrkt).sortTp("1").trdeQtyCnd("10")
-                                        .stkCnd("1").crdCnd("0").pricCnd("8").stexTp("1").build());
-                if (gapResp != null && gapResp.getItems() != null) {
-                    gapResp.getItems().stream()
-                            .filter(item -> {
-                                try {
-                                    double f = Double.parseDouble(item.getFluRt().replace("+","").replace(",",""));
-                                    return f >= 2.0 && f <= 10.0;
-                                } catch (Exception ex) { return false; }
-                            })
-                            .map(KiwoomApiResponses.ExpCntrFluRtUpperResponse.ExpCntrFluRtItem::getStkCd)
-                            .forEach(gapSet::add);
-                }
-            }
+            gapSet.addAll(candidateService.getS7Candidates("001"));
+            gapSet.addAll(candidateService.getS7Candidates("101"));
 
             // 사전 필터 2: ka10030 거래대금 10억(1000) 이상 종목
             Set<String> volSet = new java.util.HashSet<>();
@@ -176,6 +160,39 @@ public class TradingScheduler {
             subscriptionManager.setupMarketHoursSubscription();
         } catch (Exception e) {
             log.error("정규장 구독 전환 실패: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 전략별 후보 풀 능동 사전 적재 (09:05~14:30, 15분마다)
+    // ─────────────────────────────────────────────
+
+    /**
+     * 09:05 ~ 14:30 매 15분 – S8~S15 스윙 후보 풀을 능동적으로 갱신.
+     * Python strategy_runner 가 언제 실행되더라도 candidates:s*:{market} 풀이
+     * Redis 에 존재하도록 보장.  S1/S7 은 자체 스캔 메서드에서 갱신되므로 제외.
+     */
+    @Scheduled(cron = "0 5/15 9-14 * * MON-FRI")
+    public void preloadCandidatePools() {
+        LocalTime now = LocalTime.now();
+        if (now.isAfter(LocalTime.of(14, 30))) return;
+        log.debug("[Pool] 후보 풀 사전 적재 시작");
+        try {
+            PRELOAD_POOL.submit(() -> {
+                for (String mkt : new String[]{"001", "101"}) {
+                    try { candidateService.getS8Candidates(mkt); }  catch (Exception e) { log.warn("[Pool] S8 {} 오류: {}", mkt, e.getMessage()); }
+                    try { candidateService.getS9Candidates(mkt); }  catch (Exception e) { log.warn("[Pool] S9 {} 오류: {}", mkt, e.getMessage()); }
+                    try { candidateService.getS10Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S10 {} 오류: {}", mkt, e.getMessage()); }
+                    try { candidateService.getS11Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S11 {} 오류: {}", mkt, e.getMessage()); }
+                    try { candidateService.getS12Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S12 {} 오류: {}", mkt, e.getMessage()); }
+                    try { candidateService.getS13Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S13 {} 오류: {}", mkt, e.getMessage()); }
+                    try { candidateService.getS14Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S14 {} 오류: {}", mkt, e.getMessage()); }
+                    try { candidateService.getS15Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S15 {} 오류: {}", mkt, e.getMessage()); }
+                }
+                log.info("[Pool] 후보 풀 사전 적재 완료");
+            });
+        } catch (Exception e) {
+            log.error("[Pool] 사전 적재 오류: {}", e.getMessage());
         }
     }
 
@@ -334,13 +351,17 @@ public class TradingScheduler {
             // surgeSet 이 비어있으면 전체 후보 기반으로 진행 (필터 API 실패 대비)
             List<String> candidates;
             if (surgeSet.isEmpty()) {
-                candidates = candidateService.getAllCandidates().stream()
-                        .limit(100).collect(Collectors.toList());
+                candidates = java.util.stream.Stream.concat(
+                                candidateService.getS12Candidates("001").stream(),
+                                candidateService.getS12Candidates("101").stream())
+                        .distinct().limit(100).collect(Collectors.toList());
             } else {
-                candidates = candidateService.getAllCandidates().stream()
+                candidates = java.util.stream.Stream.concat(
+                                candidateService.getS12Candidates("001").stream(),
+                                candidateService.getS12Candidates("101").stream())
+                        .distinct()
                         .filter(surgeSet::contains)
-                        .limit(30)
-                        .collect(Collectors.toList());
+                        .limit(30).collect(Collectors.toList());
             }
 
             int maxSignals = newsControlService.getMaxSignals(5);
@@ -444,7 +465,10 @@ public class TradingScheduler {
                 Set<String> priceSurge = priceSurgeService.fetchSurgeCandidates();
                 candidates = !priceSurge.isEmpty()
                         ? new ArrayList<>(priceSurge).stream().limit(20).collect(java.util.stream.Collectors.toList())
-                        : candidateService.getAllCandidates().stream().limit(30).collect(java.util.stream.Collectors.toList());
+                        : java.util.stream.Stream.concat(
+                              candidateService.getS8Candidates("001").stream(),
+                              candidateService.getS8Candidates("101").stream())
+                          .distinct().limit(30).collect(java.util.stream.Collectors.toList());
             }
 
             int maxSignals = newsControlService.getMaxSignals(3);

@@ -65,7 +65,10 @@ public class TradingController {
     @PostMapping("/strategy/s1/run")
     public ResponseEntity<Map<String, Object>> runS1(
             @RequestParam(defaultValue = "000") String market) {
-        List<String> candidates = candidateService.getCandidates(market);
+        List<String> candidates = java.util.stream.Stream.concat(
+                        candidateService.getS1Candidates("001").stream(),
+                        candidateService.getS1Candidates("101").stream())
+                .distinct().limit(50).collect(java.util.stream.Collectors.toList());
         List<TradingSignalDto> signals = strategyService.scanGapOpening(candidates);
         int cnt = signalService.processSignals(signals);
         return ResponseEntity.ok(Map.of("strategy", "S1_GAP_OPEN",
@@ -95,8 +98,10 @@ public class TradingController {
     @PostMapping("/strategy/s4/run")
     public ResponseEntity<Map<String, Object>> runS4(
             @RequestParam(defaultValue = "000") String market) {
-        List<String> candidates = candidateService.getCandidates(market).stream()
-                .limit(30).toList();
+        List<String> candidates = java.util.stream.Stream.concat(
+                        candidateService.getS12Candidates("001").stream(),
+                        candidateService.getS12Candidates("101").stream())
+                .distinct().limit(30).collect(java.util.stream.Collectors.toList());
         int cnt = 0;
         for (String stkCd : candidates) {
             var sigOpt = strategyService.checkBigCandle(stkCd);
@@ -140,8 +145,15 @@ public class TradingController {
     /** 전술 10 수동 실행 (52주 신고가 돌파) */
     @PostMapping("/strategy/s10/run")
     public ResponseEntity<Map<String, Object>> runS10() {
-        List<String> candidates = candidateService.getAllCandidates().stream()
-                .limit(30).toList();
+        List<String> s10pool = java.util.stream.Stream.concat(
+                        candidateService.getS10Candidates("001").stream(),
+                        candidateService.getS10Candidates("101").stream())
+                .distinct().collect(java.util.stream.Collectors.toList());
+        List<String> candidates = !s10pool.isEmpty() ? s10pool.stream().limit(30).collect(java.util.stream.Collectors.toList())
+                : java.util.stream.Stream.concat(
+                        candidateService.getS8Candidates("001").stream(),
+                        candidateService.getS8Candidates("101").stream())
+                  .distinct().limit(30).collect(java.util.stream.Collectors.toList());
         int cnt = 0;
         for (String stkCd : candidates) {
             var sigOpt = strategyService.checkNewHigh(stkCd);
@@ -156,7 +168,10 @@ public class TradingController {
     /** 전술 12 수동 실행 (종가 강도 매수) */
     @PostMapping("/strategy/s12/run")
     public ResponseEntity<Map<String, Object>> runS12() {
-        List<String> candidates = candidateService.getAllCandidates();
+        List<String> candidates = java.util.stream.Stream.concat(
+                        candidateService.getS12Candidates("001").stream(),
+                        candidateService.getS12Candidates("101").stream())
+                .distinct().collect(java.util.stream.Collectors.toList());
         int cnt = 0;
         for (String stkCd : candidates) {
             var sigOpt = strategyService.checkClosingStrength(stkCd);
@@ -359,6 +374,22 @@ public class TradingController {
     // ──────────────────────────────────────────────────────────────
     // Feature 5 – 시스템 모니터링
     // ──────────────────────────────────────────────────────────────
+
+    /** 후보 풀 모니터링 – 전략별 candidates:s{N}:{market} 키 크기 반환 */
+    @GetMapping("/candidates/pool-status")
+    public ResponseEntity<Map<String, Object>> getCandidatePoolStatus() {
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        String[] strategies = {"s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","s12","s13","s14","s15"};
+        String[] markets    = {"001","101"};
+        for (String s : strategies) {
+            for (String m : markets) {
+                String key = "candidates:" + s + ":" + m;
+                Long size  = redis.opsForList().size(key);
+                result.put(s + "_" + m, size != null ? size : 0L);
+            }
+        }
+        return ResponseEntity.ok(result);
+    }
 
     /** 시스템 종합 헬스 정보 */
     @GetMapping("/monitor/health")

@@ -176,6 +176,9 @@ public class StrategyService {
                 long netBuyAmt = parseLong(item.getNetBuyAmt());
                 double score = netBuyAmt / 1_000_000.0 + volRatio * 5;
 
+                var tickS3 = redisService.getTickData(stkCd);
+                double curPriceS3 = tickS3.isPresent() ? parseDouble(tickS3.get(), "cur_prc") : 0.0;
+
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
                         .stkNm(item.getStkNm())
@@ -189,6 +192,9 @@ public class StrategyService {
                         .targetPct(3.5)
                         .target2Pct(5.0)
                         .stopPct(-2.0)
+                        .tp1Price(curPriceS3 > 0 ? round(curPriceS3 * 1.06) : null)
+                        .tp2Price(curPriceS3 > 0 ? round(curPriceS3 * 1.10) : null)
+                        .slPrice(curPriceS3 > 0 ? round(curPriceS3 * 0.97) : null)
                         .build());
             }
             return results.stream()
@@ -305,6 +311,9 @@ public class StrategyService {
                 long netBuyAmt = parseLong(item.getNetBuyAmt());
                 double score = netBuyAmt / 1_000_000.0;
 
+                var tickS5 = redisService.getTickData(stkCd);
+                double curPriceS5 = tickS5.isPresent() ? parseDouble(tickS5.get(), "cur_prc") : 0.0;
+
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
                         .stkNm(item.getStkNm())
@@ -316,6 +325,9 @@ public class StrategyService {
                         .targetPct(3.0)
                         .target2Pct(4.5)
                         .stopPct(-2.0)
+                        .tp1Price(curPriceS5 > 0 ? round(curPriceS5 * 1.05) : null)
+                        .tp2Price(curPriceS5 > 0 ? round(curPriceS5 * 1.08) : null)
+                        .slPrice(curPriceS5 > 0 ? round(curPriceS5 * 0.97) : null)
                         .build());
             }
             return results.stream()
@@ -376,6 +388,11 @@ public class StrategyService {
                     double score = strength * 0.3 + (themeFluRt - stkFluRt) * 2;
                     double target = Math.min(themeFluRt * 0.6, 5.0);
 
+                    var tickS6 = redisService.getTickData(stk.getStkCd());
+                    double curPriceS6 = tickS6.isPresent() ? parseDouble(tickS6.get(), "cur_prc") : 0.0;
+                    double t1Pct = Math.min(themeFluRt * 0.5, 6.0);
+                    double t2Pct = Math.min(themeFluRt * 0.7, 9.0);
+
                     results.add(TradingSignalDto.builder()
                             .stkCd(stk.getStkCd())
                             .stkNm(stk.getStkNm())
@@ -388,6 +405,9 @@ public class StrategyService {
                             .targetPct(round(target))
                             .target2Pct(round(target * 1.5))
                             .stopPct(-2.0)
+                            .tp1Price(curPriceS6 > 0 ? round(curPriceS6 * (1.0 + t1Pct / 100.0)) : null)
+                            .tp2Price(curPriceS6 > 0 ? round(curPriceS6 * (1.0 + t2Pct / 100.0)) : null)
+                            .slPrice(curPriceS6 > 0 ? round(curPriceS6 * 0.97) : null)
                             .build());
                 }
             }
@@ -861,6 +881,9 @@ public class StrategyService {
                         + volRatio * 3.0
                         + Math.max(cntrStr - 100, 0) * 0.2;
 
+                var tickS11 = redisService.getTickData(stkCd);
+                double curPriceS11 = tickS11.isPresent() ? parseDouble(tickS11.get(), "cur_prc") : 0.0;
+
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
                         .stkNm(item.getStkNm())
@@ -874,6 +897,9 @@ public class StrategyService {
                         .holdingDays("5~10거래일")
                         .targetPct(8.0).target2Pct(12.0)
                         .stopPct(-5.0)
+                        .tp1Price(curPriceS11 > 0 ? round(curPriceS11 * 1.08) : null)
+                        .tp2Price(curPriceS11 > 0 ? round(curPriceS11 * 1.14) : null)
+                        .slPrice(curPriceS11 > 0 ? round(curPriceS11 * 0.95) : null)
                         .build());
             }
             return results.stream()

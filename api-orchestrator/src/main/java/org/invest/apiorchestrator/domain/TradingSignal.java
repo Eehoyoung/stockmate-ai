@@ -47,6 +47,15 @@ public class TradingSignal {
     @Column(name = "stop_price")
     private Double stopPrice;
 
+    @Column(name = "tp1_price")
+    private Double tp1Price;
+
+    @Column(name = "tp2_price")
+    private Double tp2Price;
+
+    @Column(name = "sl_price")
+    private Double slPrice;
+
     @Column(name = "target_pct")
     private Double targetPct;
 

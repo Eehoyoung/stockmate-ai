@@ -88,7 +88,8 @@ public class KiwoomApiService {
         return spec.bodyValue(body)
                 .retrieve()
                 .onStatus(HttpStatusCode::is4xxClientError, response -> on4xx(apiId, response))
-                .bodyToMono(respType);
+                .bodyToMono(respType)
+                .flatMap(resp -> validateKiwoomResponse(apiId, resp));
     }
 
     private <T> Mono<T> buildPostWithContMono(String apiId, String endpoint,
@@ -99,7 +100,45 @@ public class KiwoomApiService {
         return spec.bodyValue(body)
                 .retrieve()
                 .onStatus(HttpStatusCode::is4xxClientError, response -> on4xx(apiId, response))
-                .bodyToMono(respType);
+                .bodyToMono(respType)
+                .flatMap(resp -> validateKiwoomResponse(apiId, resp));
+    }
+
+    /**
+     * HTTP 200이지만 에러 바디인 경우를 감지한다.
+     * <ul>
+     *   <li>returnCode == null  → Spring Boot 에러 바디 (HTTP 200 wrapping server error) → 재시도 허용</li>
+     *   <li>returnCode == "1700" → Rate Limit → 재시도 허용</li>
+     *   <li>returnCode == "8005" → 토큰 만료 → 갱신 후 재시도 허용</li>
+     *   <li>그 외 non-"0" returnCode → 즉시 실패 (KiwoomApiException)</li>
+     * </ul>
+     */
+    @SuppressWarnings("unchecked")
+    private <T> Mono<T> validateKiwoomResponse(String apiId, T resp) {
+        if (!(resp instanceof KiwoomApiResponses.BaseResponse base)) {
+            return Mono.justOrEmpty(resp);
+        }
+        if (base.isSuccess()) {
+            return Mono.just(resp);
+        }
+        String code = base.getReturnCode();
+        String msg  = base.getReturnMsg() != null ? base.getReturnMsg() : "서버 오류";
+        if (code == null) {
+            // return_code 필드 자체가 없음 → Spring Boot 에러 바디 (HTTP 200 wrapping error)
+            log.warn("Kiwoom 서버 오류 바디 수신 [{}] – returnCode=null (HTTP 200 wrapping error)", apiId);
+            return Mono.error(new IllegalStateException("Kiwoom server error (HTTP 200 wrapping). Retry."));
+        }
+        if ("1700".equals(code)) {
+            log.warn("1700 Rate Limit [{}] – 응답 바디 감지", apiId);
+            return Mono.error(new IllegalStateException("1700 Rate limit. Retry request."));
+        }
+        if ("8005".equals(code)) {
+            log.warn("8005 토큰 만료 [{}] – 응답 바디 감지, 토큰 갱신", apiId);
+            tokenService.refreshToken();
+            return Mono.error(new IllegalStateException("8005 Token expired. Retry request."));
+        }
+        log.warn("Kiwoom API 오류 [{}] code={} msg={}", apiId, code, msg);
+        return Mono.error(new KiwoomApiException("API 오류 [" + apiId + "] " + msg));
     }
 
     // 공통 POST 스펙 생성 (인증/공통 헤더 포함, Rate Limiter 적용)
@@ -152,9 +191,9 @@ public class KiwoomApiService {
     // 편의 메서드 – 신규 API
     // ─────────────────────────────────────────────────────────────
 
-    private static final String RKINFO_PATH  = "/api/dostk/rkinfo";
-    private static final String STKINFO_PATH = "/api/dostk/stkinfo";
-    private static final String MRKCOND_PATH = "/api/dostk/mrkcond";
+    private static final String RKINFO_PATH  = "https://api.kiwoom.com/api/dostk/rkinfo";
+    private static final String STKINFO_PATH = "https://api.kiwoom.com/api/dostk/stkinfo";
+    private static final String MRKCOND_PATH = "https://api.kiwoom.com/api/dostk/mrkcond";
 
     /** ka10029 예상체결등락률상위 */
     public KiwoomApiResponses.ExpCntrFluRtUpperResponse fetchKa10029(

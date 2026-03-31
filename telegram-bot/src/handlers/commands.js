@@ -20,6 +20,9 @@
 
 const { getTickData, getClient } = require('../services/redis');
 const kiwoom          = require('../services/kiwoom');
+const { getLogger }   = require('../utils/logger');
+
+const logger = getLogger('commands');
 const {
     formatDailySummary,
     formatPerformanceSummary,
@@ -49,7 +52,7 @@ function guard(handler) {
         try {
             await handler(ctx);
         } catch (e) {
-            console.error('[Command] 오류:', e.message);
+            logger.error('명령 처리 오류', { cmd: ctx.message?.text }, e);
             await ctx.reply(`❌ 오류: ${e.message}`);
         }
     };
@@ -75,7 +78,7 @@ async function getClaudeUsage() {
             tokens: Number(tokensRaw ?? 0),
         };
     } catch (e) {
-        console.warn('[Commands] Claude 사용량 조회 실패:', e.message);
+        logger.warn('Claude 사용량 조회 실패', { error: e.message });
         return { calls: 0, tokens: 0 };
     }
 }
@@ -145,9 +148,13 @@ const performance = guard(async (ctx) => {
 const candidates = guard(async (ctx) => {
     const args   = ctx.message.text.split(' ');
     const market = args[1] ?? '000';
-    const result = await kiwoom.getCandidates(market);
+    const [result, poolStatus] = await Promise.allSettled([
+        kiwoom.getCandidates(market),
+        kiwoom.getCandidatePoolStatus(),
+    ]);
+    const data = result.status === 'fulfilled' ? result.value : { candidates: [], codes: [], count: 0 };
 
-    const withTags = (result.candidates ?? []).slice(0, 20);
+    const withTags = (data.candidates ?? []).slice(0, 20);
     const marketLabel = market === '001' ? '코스피' : market === '101' ? '코스닥' : '전체';
 
     let lines;
@@ -159,19 +166,38 @@ const candidates = guard(async (ctx) => {
             return `• <b>${code}</b>${tags}`;
         });
     } else {
-        lines = (result.codes ?? []).slice(0, 20).map(code => `• <b>${code}</b>`);
+        lines = (data.codes ?? []).slice(0, 20).map(code => `• <b>${code}</b>`);
     }
 
-    const total = result.count ?? 0;
+    const total = data.count ?? 0;
     const tagNote = withTags.some(c => c.strategies && c.strategies.length > 0)
         ? '\n<i>괄호 안: 오늘 해당 종목에 신호를 발생시킨 전략</i>'
         : '\n<i>아직 전략 신호 없음 (장 중 전략 실행 후 표시됩니다)</i>';
+
+    // 전략별 풀 크기 테이블
+    let poolLines = '';
+    if (poolStatus.status === 'fulfilled' && poolStatus.value) {
+        const ps = poolStatus.value;
+        const strategies = ['s1','s7','s8','s9','s10','s11','s12','s13','s14','s15'];
+        const rows = strategies.map(s => {
+            const k = market === '101' ? `${s}_101` : (market === '001' ? `${s}_001` : null);
+            if (k && ps[k] != null) return `  ${s.toUpperCase()}: ${ps[k]}건`;
+            // 전체 시장일 때 001+101 합산
+            const k001 = `${s}_001`, k101 = `${s}_101`;
+            const total = (ps[k001] ?? 0) + (ps[k101] ?? 0);
+            return `  ${s.toUpperCase()}: ${total}건`;
+        }).filter(Boolean);
+        if (rows.length > 0) {
+            poolLines = '\n\n📊 <b>전략별 풀 크기</b>\n' + rows.join('\n');
+        }
+    }
 
     await ctx.reply(
         `📋 <b>후보 종목 [${marketLabel}] – 총 ${total}개</b>\n\n` +
         lines.join('\n') +
         (total > 20 ? `\n… 외 ${total - 20}개` : '') +
-        tagNote,
+        tagNote +
+        poolLines,
         { parse_mode: 'HTML' }
     );
 });

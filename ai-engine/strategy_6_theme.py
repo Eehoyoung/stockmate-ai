@@ -14,7 +14,7 @@ import httpx
 import logging
 import os
 
-from http_utils import fetch_cntr_strength
+from http_utils import fetch_cntr_strength, validate_kiwoom_response
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,10 @@ async def fetch_theme_groups(token: str) -> list:
             }
         )
         resp.raise_for_status()
-        return resp.json().get("thme_grp", [])[:5]  # 상위 5 테마
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka90001", logger):
+            return []
+        return data.get("thme_grp", [])[:5]  # 상위 5 테마
 
 
 async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
@@ -54,7 +57,10 @@ async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
             json={"date_tp": "1", "thema_grp_cd": thema_grp_cd, "stex_tp": "1"}
         )
         resp.raise_for_status()
-        return resp.json().get("thme_comp_stk", [])
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka90002", logger):
+            return []
+        return data.get("thme_comp_stk", [])
 
 
 

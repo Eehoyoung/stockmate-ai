@@ -118,6 +118,12 @@ async function setTradingControl(mode) {
     return data;
 }
 
+/** 전략별 후보 풀 크기 조회 */
+async function getCandidatePoolStatus() {
+    const { data } = await api.get('/api/candidates/pool-status');
+    return data;
+}
+
 module.exports = {
     health, getTodaySignals, getTodayStats,
     getCandidates, refreshToken, runStrategy,
@@ -125,5 +131,5 @@ module.exports = {
     getSignalPerformance, getPerformanceSummary,
     getSignalHistory, getStrategyAnalysis,
     getMonitorHealth, getCalendarWeek, setTradingControl,
-    scoreStock,
+    scoreStock, getCandidatePoolStatus,
 };

@@ -22,6 +22,8 @@ import os
 
 import httpx
 
+from http_utils import validate_kiwoom_response
+
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
 
@@ -59,13 +61,26 @@ async def fetch_frgn_cont_buy(token: str, market: str = "000") -> list[dict]:
             },
         )
         resp.raise_for_status()
-        # 응답 배열키: for_cont_nettrde_upper
-        return resp.json().get("for_cont_nettrde_upper", [])
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10035", logger):
+            return []
+        return data.get("for_cont_nettrde_upper", [])
 
 
 async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> list:
     """외국인 연속 순매수 스윙 전략 스캔"""
-    raw_items = await fetch_frgn_cont_buy(token, market)
+    # Java candidates:s11:{market} 풀 우선 사용 (Java 미실행 시 ka10035 폴백)
+    pool: list[str] = []
+    if rdb:
+        try:
+            pool = await rdb.lrange(f"candidates:s11:{market}", 0, 99)
+        except Exception:
+            pass
+
+    if pool:
+        raw_items = [{"stk_cd": c} for c in pool]
+    else:
+        raw_items = await fetch_frgn_cont_buy(token, market)
 
     results = []
     for item in raw_items:

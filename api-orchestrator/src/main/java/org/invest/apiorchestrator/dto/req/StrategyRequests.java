@@ -68,6 +68,7 @@ public class StrategyRequests {
         @JsonProperty("invsr") private String invsr = "6";         // 외국인
         @JsonProperty("frgn_all") private String frgnAll = "1";
         @JsonProperty("smtm_netprps_tp") private String smtmNetprpsTp = "1";
+        @JsonProperty("stex_tp") private String stexTp = "1";     // KRX
     }
 
     /** ka10065 장중투자자별매매상위 */
@@ -233,6 +234,7 @@ public class StrategyRequests {
         @JsonProperty("updown_incls")   private String updownIncls  = "0";    // 상하한 미포함
         @JsonProperty("pric_cnd")       private String pricCnd      = "8";    // 1천원 이상
         @JsonProperty("trde_prica_cnd") private String trdePricaCnd = "0";
+        @JsonProperty("stex_tp")        private String stexTp       = "1";    // KRX
     }
 
     /** ka10031 전일거래량상위 – qry_tp: 1:전일거래량 2:전일거래대금 */
@@ -251,7 +253,7 @@ public class StrategyRequests {
     public static class FrgnContNettrdRequest extends KiwoomApiRequest {
         @JsonProperty("mrkt_tp")    private String mrktTp    = "000";
         @JsonProperty("trde_tp")    private String trdeTp    = "2";   // 2:연속순매수
-        @JsonProperty("base_dt_tp") private String baseDtTp  = "0";   // 0:당일기준
+        @JsonProperty("base_dt_tp") private String baseDtTp  = "1";   // 1:전일기준 (strategy_11 스펙 일치)
     }
 
     /** ka10032 거래대금상위 */

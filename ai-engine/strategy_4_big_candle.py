@@ -15,6 +15,8 @@ import logging
 
 import httpx
 
+from http_utils import validate_kiwoom_response
+
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
 # rdb (redis.asyncio.Redis) 는 strategy_runner.py 에서 전달받습니다.
@@ -41,11 +43,7 @@ async def fetch_minute_chart(token: str, stk_cd: str, scope: int = 5) -> list:
             )
             resp.raise_for_status()
             data = resp.json()
-
-            # Kiwoom application-level error (HTTP 200 이지만 status 필드에 오류 코드 포함)
-            if data.get("status") and int(str(data["status"])) >= 400:
-                logger.warning("[S4] ka10080 응답 오류 [%s]: status=%s msg=%s",
-                               stk_cd, data.get("status"), data.get("message", ""))
+            if not validate_kiwoom_response(data, "ka10080", logger):
                 return []
             return data.get("stk_min_pole_chart_qry", [])
     except Exception as e:

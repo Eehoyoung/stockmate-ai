@@ -24,6 +24,8 @@ import os
 
 import httpx
 
+from http_utils import validate_kiwoom_response
+
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
 
@@ -60,8 +62,10 @@ async def fetch_top_gainers(token: str, market: str = "000") -> list[dict]:
             },
         )
         resp.raise_for_status()
-        # 응답 배열키: pred_pre_flu_rt_upper
-        return resp.json().get("pred_pre_flu_rt_upper", [])
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10027", logger):
+            return []
+        return data.get("pred_pre_flu_rt_upper", [])
 
 
 async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
@@ -84,7 +88,10 @@ async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
             },
         )
         resp.raise_for_status()
-        items = resp.json().get("opmr_invsr_trde", [])
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10063", logger):
+            return set()
+        items = data.get("opmr_invsr_trde", [])
         result = set()
         for item in items:
             stk_cd = item.get("stk_cd")

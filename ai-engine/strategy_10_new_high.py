@@ -16,7 +16,7 @@ import os
 
 import httpx
 
-from http_utils import fetch_cntr_strength
+from http_utils import fetch_cntr_strength, validate_kiwoom_response
 
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
 # 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
@@ -55,8 +55,11 @@ async def fetch_new_high_stocks(token: str, market: str = "000") -> list[dict]:
             },
         )
         resp.raise_for_status()
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10082", logger):
+            return []
         # 응답 배열키: ntl_pric
-        return resp.json().get("ntl_pric", [])
+        return data.get("ntl_pric", [])
 
 
 async def fetch_volume_surge_set(token: str, market: str = "000") -> dict[str, float]:
@@ -80,7 +83,10 @@ async def fetch_volume_surge_set(token: str, market: str = "000") -> dict[str, f
             },
         )
         resp.raise_for_status()
-        items = resp.json().get("trde_qty_sdnin", [])
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10023", logger):
+            return {}
+        items = data.get("trde_qty_sdnin", [])
         result = {}
         for item in items:
             stk_cd = item.get("stk_cd")

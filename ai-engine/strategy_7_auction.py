@@ -13,6 +13,8 @@ import os
 import logging
 import httpx
 
+from http_utils import validate_kiwoom_response
+
 logger = logging.getLogger(__name__)
 
 # NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
@@ -31,7 +33,10 @@ async def fetch_gap_rank(token: str, market: str) -> list:
                 json={"mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "10",
                       "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "1"},
             )
-            items = resp.json().get("exp_cntr_flu_rt_upper", [])
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10029", logger):
+                return {}
+            items = data.get("exp_cntr_flu_rt_upper", [])
             result = {}
             for i, item in enumerate(items[:50]):
                 try:

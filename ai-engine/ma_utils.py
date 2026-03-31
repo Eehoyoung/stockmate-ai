@@ -16,6 +16,8 @@ from typing import Optional
 
 import httpx
 
+from http_utils import validate_kiwoom_response
+
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 _DEFAULT_TIMEOUT = 10.0
@@ -155,8 +157,7 @@ async def fetch_daily_candles(token: str, stk_cd: str) -> list[dict]:
             )
             resp.raise_for_status()
             data = resp.json()
-            if data.get("status") and int(str(data.get("status", 200))) >= 400:
-                logger.debug("[ma] ka10081 오류 [%s]: %s", stk_cd, data.get("message"))
+            if not validate_kiwoom_response(data, "ka10081", logger):
                 return []
             candles = data.get("stk_dt_pole_chart_qry", [])
             if candles:
