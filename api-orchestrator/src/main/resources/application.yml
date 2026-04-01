@@ -6,7 +6,7 @@ spring:
 
   jpa:
 #    hibernate.ddl-auto: ${DDL_AUTO:update}
-    hibernate.ddl-auto: create
+    hibernate.ddl-auto: update
     show-sql: false
 
   data:
