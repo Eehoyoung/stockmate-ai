@@ -49,6 +49,7 @@ from indicator_bollinger import calc_bollinger
 from indicator_atr import calc_atr
 from indicator_stochastic import calc_stochastic
 from indicator_volume import calc_vwap, get_vwap_minute
+from http_utils import fetch_cntr_strength, fetch_stk_nm
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -109,15 +110,25 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
 
         # ── 실시간 등락률·체결강도 ───────────────────────────────
         flu_rt   = 0.0
-        cntr_str = 100.0
+        cntr_str: float | None = None
         if rdb:
             try:
                 tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
                 if tick:
-                    flu_rt   = float(str(tick.get("flu_rt",   "0")).replace("+", "").replace(",", ""))
-                    cntr_str = float(str(tick.get("cntr_str", "100")).replace("+", "").replace(",", ""))
+                    flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", "").replace(",", ""))
+                strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 4)
+                if strength_data:
+                    cntr_str = sum(float(s) for s in strength_data) / len(strength_data)
+                elif tick:
+                    raw = tick.get("cntr_str", "")
+                    if raw:
+                        cntr_str = float(str(raw).replace("+", "").replace(",", ""))
             except Exception:
                 pass
+
+        if cntr_str is None:
+            await asyncio.sleep(_API_INTERVAL)
+            cntr_str = await fetch_cntr_strength(token, stk_cd)
 
         # ── 필수 2: 양봉 + 과열 미달 ─────────────────────────────
         if flu_rt <= 0 or flu_rt > 12.0:
@@ -236,8 +247,10 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         else:
             stop_pct = -5.0
 
+        stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
             "stk_cd":        stk_cd,
+            "stk_nm":        stk_nm,
             "cur_prc":       round(cur_prc),
             "strategy":      "S15_MOMENTUM_ALIGN",
             "flu_rt":        round(flu_rt, 2),

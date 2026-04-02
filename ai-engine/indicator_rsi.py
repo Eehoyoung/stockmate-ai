@@ -174,7 +174,6 @@ async def fetch_minute_candles(
                     "stk_cd": stk_cd.strip(),
                     "tic_scope": tic_scope,
                     "upd_stkpc_tp": "1",
-                    "base_dt": base_dt,
                 },
             )
             resp.raise_for_status()

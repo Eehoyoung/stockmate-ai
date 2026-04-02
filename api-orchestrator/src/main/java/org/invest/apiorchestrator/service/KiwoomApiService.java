@@ -13,6 +13,8 @@ import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 
 @Slf4j
 @Service
@@ -191,9 +193,9 @@ public class KiwoomApiService {
     // 편의 메서드 – 신규 API
     // ─────────────────────────────────────────────────────────────
 
-    private static final String RKINFO_PATH  = "https://api.kiwoom.com/api/dostk/rkinfo";
-    private static final String STKINFO_PATH = "https://api.kiwoom.com/api/dostk/stkinfo";
-    private static final String MRKCOND_PATH = "https://api.kiwoom.com/api/dostk/mrkcond";
+    private static final String MRKCOND_PATH = "/api/dostk/mrkcond";
+    private static final String RKINFO_PATH  = "/api/dostk/rkinfo";
+    private static final String STKINFO_PATH = "/api/dostk/stkinfo";
 
     /** ka10029 예상체결등락률상위 */
     public KiwoomApiResponses.ExpCntrFluRtUpperResponse fetchKa10029(
@@ -240,7 +242,7 @@ public class KiwoomApiService {
     /** ka10081 주식일봉차트 (52주 신고가 확인용) */
     public KiwoomApiResponses.DailyCandleResponse fetchKa10081(String stkCd) {
         return post("ka10081", "/api/dostk/chart",
-                StrategyRequests.DailyCandleRequest.builder().stkCd(stkCd).build(),
+                StrategyRequests.DailyCandleRequest.builder().stkCd(stkCd).baseDt(LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))).build(),
                 KiwoomApiResponses.DailyCandleResponse.class);
     }
 

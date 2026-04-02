@@ -29,6 +29,7 @@ from strategy_runner import run_strategy_scanner
 from news_scheduler import run_news_scheduler
 from monitor_worker import run_monitor
 from overnight_worker import run_overnight_worker
+from vi_watch_worker import run_vi_watch_worker
 
 load_dotenv()
 
@@ -127,6 +128,7 @@ async def main():
     enable_news      = os.getenv("NEWS_ENABLED",            "true").lower()  == "true"
     enable_monitor   = os.getenv("ENABLE_MONITOR",          "true").lower()  == "true"
     enable_overnight = os.getenv("ENABLE_OVERNIGHT_WORKER", "true").lower()  == "true"
+    enable_vi_watch  = os.getenv("ENABLE_VI_WATCH_WORKER",  "true").lower()  == "true"  # S2 VI 눌림목 감시
     health_port      = int(os.getenv("AI_HEALTH_PORT", "8082"))
     logger.info("[Engine] AI Engine ready – telegram_queue 폴링 시작")
     if enable_confirm:
@@ -143,6 +145,8 @@ async def main():
                     os.getenv("MONITOR_INTERVAL_SEC", "60"))
     if enable_overnight:
         logger.info("[Engine] 오버나잇 평가 워커 활성화 (ENABLE_OVERNIGHT_WORKER=true)")
+    if enable_vi_watch:
+        logger.info("[Engine] VI 눌림목 감시 워커 활성화 (ENABLE_VI_WATCH_WORKER=true)")
 
     tasks = [
         asyncio.create_task(run_worker(rdb)),
@@ -159,6 +163,8 @@ async def main():
         tasks.append(asyncio.create_task(run_monitor(rdb)))
     if enable_overnight:
         tasks.append(asyncio.create_task(run_overnight_worker(rdb)))
+    if enable_vi_watch:
+        tasks.append(asyncio.create_task(run_vi_watch_worker(rdb)))
 
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for t in pending:

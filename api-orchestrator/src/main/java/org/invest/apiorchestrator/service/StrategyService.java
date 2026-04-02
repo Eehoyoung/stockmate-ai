@@ -9,6 +9,8 @@ import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -30,13 +32,20 @@ public class StrategyService {
 
         for (String stkCd : candidates) {
             try {
-                // Redis 예상체결 데이터
+                // Redis 예상체결 데이터 (장 개시 후 만료 시 tick 데이터로 fallback)
+                double prevClose, expPrice;
                 var expOpt = redisService.getExpectedData(stkCd);
-                if (expOpt.isEmpty()) continue;
-                Map<Object, Object> exp = expOpt.get();
-
-                double prevClose = parseDouble(exp, "pred_pre_pric");
-                double expPrice  = parseDouble(exp, "exp_cntr_pric");
+                if (expOpt.isPresent()) {
+                    Map<Object, Object> exp = expOpt.get();
+                    prevClose = parseDouble(exp, "pred_pre_pric");
+                    expPrice  = parseDouble(exp, "exp_cntr_pric");
+                } else {
+                    var tickFb = redisService.getTickData(stkCd);
+                    if (tickFb.isEmpty()) continue;
+                    Map<Object, Object> tick = tickFb.get();
+                    prevClose = parseDouble(tick, "pred_pre");
+                    expPrice  = parseDouble(tick, "cur_prc");
+                }
                 if (prevClose <= 0 || expPrice <= 0) continue;
 
                 double gapPct = (expPrice - prevClose) / prevClose * 100;
@@ -213,7 +222,7 @@ public class StrategyService {
         try {
             var resp = apiService.post(
                     "ka10080", "/api/dostk/chart",
-                    StrategyRequests.MinuteCandleRequest.builder().stkCd(stkCd).ticScope("5").build(),
+                    StrategyRequests.MinuteCandleRequest.builder().stkCd(stkCd).ticScope("5").baseDt(LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))).build(),
                     KiwoomApiResponses.MinuteCandleResponse.class);
 
             if (resp.getCandles() == null || resp.getCandles().size() < 10)

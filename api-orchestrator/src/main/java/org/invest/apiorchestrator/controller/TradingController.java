@@ -8,7 +8,6 @@ import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.service.OvernightScoringService;
-import org.invest.apiorchestrator.websocket.WebSocketSubscriptionManager;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -29,7 +28,6 @@ public class TradingController {
     private final SignalService signalService;
     private final CandidateService candidateService;
     private final TokenService tokenService;
-    private final WebSocketSubscriptionManager subscriptionManager;
     private final EconomicCalendarService calendarService;
     private final NewsControlService newsControlService;
     private final RedisMarketDataService redisMarketDataService;
@@ -183,32 +181,28 @@ public class TradingController {
         return ResponseEntity.ok(Map.of("strategy", "S12_CLOSING", "published", cnt));
     }
 
-    /** WebSocket 수동 연결/구독 */
+    /** WebSocket 상태 조회 (Python websocket-listener 단독 운영) */
     @PostMapping("/ws/connect")
     public ResponseEntity<Map<String, String>> connectWs() {
-        subscriptionManager.setupMarketHoursSubscription();
-        return ResponseEntity.ok(Map.of("status", "ok", "msg", "WebSocket 연결 및 구독 완료"));
+        return ResponseEntity.ok(Map.of("status", "ok", "msg", "Python websocket-listener 단독 운영 중"));
     }
 
     /** WebSocket 구독 시작 (telegram-bot /ws시작 연동) */
     @PostMapping("/ws/start")
     public ResponseEntity<Map<String, String>> startWs() {
-        subscriptionManager.setupMarketHoursSubscription();
-        return ResponseEntity.ok(Map.of("status", "ok", "msg", "WebSocket 구독 시작 완료"));
+        return ResponseEntity.ok(Map.of("status", "ok", "msg", "Python websocket-listener 단독 운영 중"));
     }
 
     /** WebSocket 구독 해제 */
     @PostMapping("/ws/disconnect")
     public ResponseEntity<Map<String, String>> disconnectWs() {
-        subscriptionManager.teardownSubscriptions();
-        return ResponseEntity.ok(Map.of("status", "ok", "msg", "구독 해제 완료"));
+        return ResponseEntity.ok(Map.of("status", "ok", "msg", "Python websocket-listener 단독 운영 중"));
     }
 
     /** WebSocket 구독 종료 (telegram-bot /ws종료 연동) */
     @PostMapping("/ws/stop")
     public ResponseEntity<Map<String, String>> stopWs() {
-        subscriptionManager.teardownSubscriptions();
-        return ResponseEntity.ok(Map.of("status", "ok", "msg", "WebSocket 구독 종료 완료"));
+        return ResponseEntity.ok(Map.of("status", "ok", "msg", "Python websocket-listener 단독 운영 중"));
     }
 
     /** 후보 종목 조회 (전략 태그 포함) */

@@ -19,13 +19,13 @@ API 실제 스펙 (docs/api_new/ka10035.md 기준):
 
 import logging
 import os
-
+import asyncio
 import httpx
 
-from http_utils import validate_kiwoom_response
+from http_utils import validate_kiwoom_response, fetch_stk_nm
 
-# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
-# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
+# NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
+# Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
@@ -39,112 +39,122 @@ def _parse_qty(val: str) -> int:
         return 0
 
 
-async def fetch_frgn_cont_buy(token: str, market: str = "000") -> list[dict]:
-    """ka10035 외인연속순매매상위요청 – 연속 순매수 상위 종목
-    응답 배열키: for_cont_nettrde_upper
-    파라미터: trde_tp=2(순매수), base_dt_tp=1(전일기준)
-    응답 필드: dm1(D-1 수량), dm2(D-2 수량), dm3(D-3 수량), tot(누적합계)
-    """
+async def fetch_frgn_cont_buy(token: str, market: str = "000", max_pages: int = 2) -> list[dict]:
+    """ka10035 외인연속순매매상위요청 – 연속조회 지원 버전"""
+    all_items = []
+    cont_yn = "N"
+    next_key = ""
+
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-            headers={
+        for _ in range(max_pages):
+            headers = {
                 "api-id": "ka10035",
                 "authorization": f"Bearer {token}",
                 "Content-Type": "application/json;charset=UTF-8",
-            },
-            json={
+                "cont-yn": cont_yn,
+                "next-key": next_key
+            }
+
+            body = {
                 "mrkt_tp": market,
-                "trde_tp": "2",       # 2: 연속순매수 (1: 연속순매도)
+                "trde_tp": "2",       # 2: 연속순매수
                 "base_dt_tp": "1",    # 1: 전일기준
                 "stex_tp": "1",       # KRX
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not validate_kiwoom_response(data, "ka10035", logger):
-            return []
-        return data.get("for_cont_nettrde_upper", [])
+            }
+
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                    headers=headers,
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                if not validate_kiwoom_response(data, "ka10035", logger):
+                    break
+
+                items = data.get("for_cont_nettrde_upper", [])
+                if not items:
+                    break
+
+                all_items.extend(items)
+
+                # 헤더에서 다음 페이지 정보 추출
+                cont_yn = resp.headers.get("cont-yn", "N")
+                next_key = resp.headers.get("next-key", "")
+
+                if cont_yn != "Y" or not next_key:
+                    break
+
+                # API 호출 부하 조절
+                await asyncio.sleep(0.2)
+
+            except Exception as e:
+                logger.error(f"[S11] ka10035 호출 오류: {e}")
+                break
+
+    return all_items
 
 
 async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> list:
-    """외국인 연속 순매수 스윙 전략 스캔"""
-    # Java candidates:s11:{market} 풀 우선 사용 (Java 미실행 시 ka10035 폴백)
-    pool: list[str] = []
-    if rdb:
-        try:
-            pool = await rdb.lrange(f"candidates:s11:{market}", 0, 99)
-        except Exception:
-            pass
+    """외국인 연속 순매수 스윙 전략 스캔 (연속조회 데이터 기반)"""
 
-    if pool:
-        raw_items = [{"stk_cd": c} for c in pool]
-    else:
-        raw_items = await fetch_frgn_cont_buy(token, market)
+    # 1. 원천 데이터 확보 (연속조회 적용)
+    raw_items = await fetch_frgn_cont_buy(token, market, max_pages=2)
+    if not raw_items:
+        return []
 
     results = []
     for item in raw_items:
         stk_cd = item.get("stk_cd")
-        if not stk_cd:
-            continue
+        if not stk_cd: continue
 
-        # D-1, D-2, D-3 각 일별 순매수 수량 확인 — 모두 양수여야 3일 연속 매수
+        # 2. 순매수 연속성 검증 (D-1, D-2, D-3)
         dm1 = _parse_qty(item.get("dm1", "0"))
         dm2 = _parse_qty(item.get("dm2", "0"))
         dm3 = _parse_qty(item.get("dm3", "0"))
-
-        if not (dm1 > 0 and dm2 > 0 and dm3 > 0):
-            continue
-
-        # 누적 합계 (tot): 외국인 매집 강도 스코어링에 활용
         tot = _parse_qty(item.get("tot", "0"))
-        if tot <= 0:
+
+        # 필터: 3일 연속 매수세 확인
+        if dm1 <= 0 or dm2 <= 0 or dm3 <= 0 or tot <= 0:
             continue
 
-        # 등락률·현재가·체결강도는 응답에 없으므로 Redis에서 조회
+        # 3. 실시간 시장 상황 결합 (Redis)
         flu_rt = 0.0
-        cur_prc = 0.0
         cntr_str = 100.0
         if rdb:
-            try:
-                tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
-                flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", "").replace(",", ""))
-                # 현재가 (부호 제거 후 절대값)
-                raw_prc = tick.get("cur_prc", "")
-                cur_prc = abs(float(raw_prc.replace(",", "").replace("+", "") or "0")) if raw_prc else 0.0
-                # 체결강도: ws:strength(TTL 300s) 우선, 없으면 ws:tick(TTL 30s) fallback
-                strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 4)
-                if strength_data:
-                    cntr_str = sum(float(s) for s in strength_data) / len(strength_data)
-                elif tick:
-                    cntr_str = float(tick.get("cntr_str", 100))
-            except Exception:
-                pass
+            tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+            if tick:
+                flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", ""))
+                cntr_str = float(str(tick.get("cntr_str", "100")).replace(",", ""))
 
-        # 당일 하락 또는 과열 제외
-        if flu_rt <= 0 or flu_rt > 10.0:
+        # 4. 진입 조건 필터링
+        # - 당일 마이너스(-)이거나 10% 이상 과열된 종목 제외
+        if not (0.0 < flu_rt <= 10.0):
             continue
-
+        # - 체결강도가 100% 미만(매도우위)인 종목 제외
         if cntr_str < 100.0:
             continue
 
-        # 스코어: 누적 수량 비중 + 최근일(D-1) 매수 강도 + 등락률
-        score = (tot / 1_000_000) * 5 + (dm1 / 1_000_000) * 3 + flu_rt * 0.5
+        # 5. 스코어링 (누적 매집량 + 최근 매수 강도 + 시장 탄력)
+        # 100만 주 단위를 기준으로 가중치 부여
+        score = (tot / 1_000_000) * 5 + (dm1 / 1_000_000) * 3 + (flu_rt * 0.5)
+
+        stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
             "stk_cd": stk_cd,
-            "cur_prc": round(cur_prc) if cur_prc > 0 else None,
-            "strategy": "S11_FRGN_CONT",
+            "stk_nm": stk_nm,
+            "strategy": "외국인 연속 수급주",
+            "score": round(score, 2),
             "dm1": dm1,
-            "dm2": dm2,
-            "dm3": dm3,
             "tot": tot,
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
-            "score": round(score, 2),
-            "entry_type": "당일종가_또는_익일시가",
-            "holding_days": "5~7거래일",
+            "entry_type": "현재가_종가",
             "target_pct": 8.0,
-            "stop_pct": -4.0,
+            "stop_pct": -4.0
         })
 
+    # 점수 높은 순으로 상위 5개 반환
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

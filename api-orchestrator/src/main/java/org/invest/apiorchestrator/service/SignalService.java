@@ -118,7 +118,7 @@ public class SignalService {
         int maxPerStrategy = properties.getTrading().getMaxSignalsPerStrategy();
         int count = 0;
         for (TradingSignalDto dto : signals.stream()
-                .limit(maxPerStrategy).collect(Collectors.toList())) {
+                .limit(maxPerStrategy).toList()) {
             if (processSignal(dto)) count++;
         }
         return count;

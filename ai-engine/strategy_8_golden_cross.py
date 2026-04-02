@@ -24,120 +24,119 @@ import os
 from ma_utils import fetch_daily_candles, detect_golden_cross, _calc_ma, _safe_price, _safe_vol
 from indicator_rsi import calc_rsi
 from indicator_macd import calc_macd
+from http_utils import fetch_cntr_strength, fetch_stk_nm
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
-
 async def scan_golden_cross(token: str, rdb=None) -> list:
-    """5일선 골든크로스 스윙 전략 스캔 (Redis candidates 기반)"""
+    """
+    [전술 8] 5일선 골든크로스 스윙 스캔
+    - ka10081 일봉 데이터를 직접 계산하여 기술적 지표 산출
+    """
     candidates: list[str] = []
     if rdb:
         try:
-            # S8 전용 풀 (ka10027 소폭상승 0.5~8%)
+            # S8 후보 풀 (Orchestrator가 미리 적재한 candidates:s8)
             kospi  = await rdb.lrange("candidates:s8:001", 0, 99)
             kosdaq = await rdb.lrange("candidates:s8:101", 0, 99)
-            candidates = list(dict.fromkeys(kospi + kosdaq))[:25]
+            candidates = list(dict.fromkeys(kospi + kosdaq))[:30]
         except Exception as e:
-            logger.warning("[S8] Redis candidates 조회 실패: %s", e)
+            logger.warning("[S8] Redis 후보 조회 실패: %s", e)
 
     if not candidates:
-        logger.debug("[S8] 후보 없음")
         return []
 
     results = []
     for stk_cd in candidates:
         await asyncio.sleep(_API_INTERVAL)
+
+        # 1. 일봉 데이터 조회 (ka10081)
         candles = await fetch_daily_candles(token, stk_cd)
-        if len(candles) < 22:
+        if len(candles) < 60: # MA60 계산을 위해 최소 60봉 필요
             continue
 
-        # ── 골든크로스 감지 ──────────────────────────────────────
-        crossed_today, near_cross, gap_pct = detect_golden_cross(candles)
-        if not (crossed_today or near_cross):
+        # 2. 골든크로스 및 이격도 확인 (MA5/MA20)
+        # detect_golden_cross: (오늘크로스, 5%이내근접, 이격률)
+        is_today_cross, is_near_cross, gap_pct = detect_golden_cross(candles)
+
+        # 조건 1 & 5: 크로스 발생 또는 3일 이내 근접(이격 5% 이내)
+        if not (is_today_cross or is_near_cross):
             continue
 
-        # ── 가격·거래량 파싱 ─────────────────────────────────────
-        closes: list[float] = []
-        vols:   list[float] = []
-        for c in candles:
-            p = _safe_price(c.get("cur_prc"))
-            v = _safe_vol(c.get("trde_qty"))
-            if p > 0:
-                closes.append(p)
-                vols.append(v)
+        # 3. 가격 및 거래량 리스트 추출
+        closes = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
+        vols   = [_safe_vol(c.get("trde_qty")) for c in candles]
 
-        if len(closes) < 22 or closes[0] == 0:
+        if len(closes) < 60: continue
+
+        cur_prc = closes[0]
+        vol_today = vols[0]
+        vol_ma20 = sum(vols[1:21]) / 20 # 전일까지의 20일 평균 거래량
+
+        # 조건 2: MA60 지지권 확인 ($Price \ge MA_{60} \times 0.95$)
+        ma60 = sum(closes[:60]) / 60
+        if cur_prc < ma60 * 0.95:
             continue
 
-        cur_prc  = closes[0]
-        ma20     = sum(closes[:20]) / 20
-        vol_ma20 = _calc_ma(vols, 20)
-        vol_today = vols[0] if vols else 0
+        # 조건 3: 거래량 확인 (당일 거래량 ≥ MA20 거래량 × 1.3)
+        if vol_ma20 > 0 and vol_today < vol_ma20 * 1.3:
+            continue
 
-        # ── MA60 지지선 확인 ─────────────────────────────────────
-        if len(closes) >= 60:
-            ma60 = sum(closes[:60]) / 60
-            if cur_prc < ma60 * 0.95:   # MA60 -5% 이하 → 하락 추세
-                continue
-
-        # ── 거래량 확인 ──────────────────────────────────────────
-        if vol_ma20 and vol_ma20 > 0:
-            if vol_today < vol_ma20 * 1.3:  # 기존 1.5 → 1.3 (유연화)
-                continue
-
-        # ── RSI 계산 (과열 후행 신호 제거) ───────────────────────
+        # 4. 보조지표 계산 (RSI, MACD)
         rsi_vals = calc_rsi(closes, 14)
-        rsi_now  = rsi_vals[0] if rsi_vals and rsi_vals[0] != 0.0 else None
-        if rsi_now and rsi_now > 75:   # 이미 과매수 → 골든크로스가 후행 신호
+        rsi_now  = rsi_vals[0] if rsi_vals else 0
+
+        # 조건 6: RSI(14) 하드 게이트 (과열된 골든크로스 제거)
+        if rsi_now > 75:
             continue
 
-        # ── MACD histogram 방향 확인 (모멘텀 가속 여부) ──────────
+        # MACD 히스토그램 가속 확인
         _, _, histogram = calc_macd(closes)
-        hist_now  = histogram[0] if histogram and histogram[0] != 0.0 else 0.0
-        hist_prev = histogram[1] if len(histogram) > 1 and histogram[1] != 0.0 else 0.0
-        macd_hist_expanding = hist_now > 0 and hist_now > hist_prev
+        hist_now  = histogram[0] if len(histogram) > 0 else 0
+        hist_prev = histogram[1] if len(histogram) > 1 else 0
+        is_macd_accel = (hist_now > 0) and (hist_now > hist_prev)
 
-        # ── 실시간 등락률 확인 (Redis 틱) ────────────────────────
+        # 5. 실시간 데이터 결합 (Redis Tick)
         flu_rt = 0.0
         cntr_str = 100.0
         if rdb:
-            try:
-                tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
-                if tick:
-                    flu_rt   = float(str(tick.get("flu_rt",   "0")).replace("+", "").replace(",", ""))
-                    cntr_str = float(str(tick.get("cntr_str", "100")).replace("+", "").replace(",", ""))
-            except Exception:
-                pass
+            tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+            if tick:
+                flu_rt = clean_num(tick.get("flu_rt", 0))
+                cntr_str = clean_num(tick.get("cntr_str", 100))
 
-        if flu_rt > 15.0 or flu_rt < 0:
+        # 조건 4: 당일 등락률 필터 (0~15%)
+        if not (0.0 <= flu_rt <= 15.0):
             continue
 
-        vol_ratio = vol_today / vol_ma20 if (vol_ma20 and vol_ma20 > 0) else 1.0
-
+        # 6. 점수 산정 (보너스 포함)
         score = (
-            (15 if crossed_today else 5)                              # 크로스오버 당일 보너스
-            + flu_rt * 0.4
-            + min(vol_ratio, 5.0) * 4
-            + max(cntr_str - 100, 0) * 0.1
-            + (12 if rsi_now and 45 <= rsi_now <= 65 else 0)         # RSI 황금구간 (모멘텀 시작, 미과열)
-            + (10 if macd_hist_expanding else 0)                      # MACD 히스토그램 가속
+                (20 if is_today_cross else 10)           # 당일 크로스 가점
+                + (12 if 45 <= rsi_now <= 65 else 0)    # RSI 황금구간 보너스
+                + (10 if is_macd_accel else 0)          # MACD 가속 보너스
+                + (vol_today / vol_ma20 * 5)            # 거래량 가중치
+                + (cntr_str * 0.05)                     # 체결강도 가중치
         )
 
+        stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
-            "stk_cd":           stk_cd,
-            "cur_prc":          round(cur_prc),
-            "strategy":         "S8_GOLDEN_CROSS",
-            "flu_rt":           round(flu_rt, 2),
-            "cntr_strength":    round(cntr_str, 1),
-            "vol_ratio":        round(vol_ratio, 2),
-            "rsi":              round(rsi_now, 1) if rsi_now else None,
-            "macd_accel":       macd_hist_expanding,
-            "score":            round(score, 2),
-            "entry_type":       "당일종가_또는_익일시가",
-            "holding_days":     "3~7거래일",
-            "target_pct":       8.0,
-            "stop_pct":        -4.0,
+            "stk_cd": stk_cd,
+            "stk_nm": stk_nm,
+            "strategy": "기술적 스윙 추천",
+            "score": round(score, 2),
+            "rsi": round(rsi_now, 1),
+            "gap_pct": round(gap_pct, 2),
+            "flu_rt": flu_rt,
+            "entry_type": "현재가_종가",
+            "target_pct": 10.0,
+            "stop_pct": -5.0
         })
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+
+def clean_num(val):
+    try:
+        return float(str(val).replace("+", "").replace("-", "").replace(",", ""))
+    except:
+        return 0.0

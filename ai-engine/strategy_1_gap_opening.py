@@ -1,27 +1,14 @@
-"""전술 1: 갭상승 + 체결강도 시초가 매수
-타이밍: 8:30 ~ 9:05
-진입 조건 (AND):
-
-전일 종가 대비 예상 시초가 갭상승률 ≥ 3% (0H 예상체결)
-체결강도 ≥ 130% 확인 (ka10046)
-갭상승 당일 전일 거래량 대비 호가잔량 매수 우위 ≥ 1.5배 (0D)
-전일 일봉 하락폭 ≤ 3% (갭메우기 제거) OR 신고가 돌파 종목 우선"""
-
 import asyncio
 import httpx
 import os
 import logging
 from datetime import datetime
 
-from http_utils import validate_kiwoom_response
+from http_utils import validate_kiwoom_response, fetch_cntr_strength, fetch_stk_nm
 
-# 키움 REST API 초당 약 5회 제한 → 루프 내 0.25s 대기
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
-
 logger = logging.getLogger(__name__)
 
-# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
-# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 
@@ -33,51 +20,65 @@ async def get_expected_execution(rdb, stk_cd: str) -> dict:
         return {}
 
 
-async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
-    """ka10046 체결강도추이시간별 → 최근 5분 평균 체결강도"""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
-            headers={"api-id": "ka10046", "authorization": f"Bearer {token}",
-                     "Content-Type": "application/json;charset=UTF-8"},
-            json={"stk_cd": stk_cd}
-        )
-        data = resp.json()
-        strengths = [float(x.get("cntr_str", 100))
-                     for x in data.get("cntr_str_tm", [])[:5]]
-        return sum(strengths) / len(strengths) if strengths else 100.0
-
 async def fetch_gap_candidates(token: str) -> list:
-    """ka10029 예상체결등락률상위 호출 → 갭 3~15% 후보 반환"""
+    """ka10029 예상체결등락률상위 호출 → 갭 3~15% 후보 반환 (연속조회 적용)"""
+    result = []
+    next_key = ""
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers={"api-id": "ka10029", "authorization": f"Bearer {token}",
-                         "Content-Type": "application/json;charset=UTF-8"},
-                json={"mrkt_tp": "000", "sort_tp": "1", "trde_qty_cnd": "10",
-                      "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "1"},
-            )
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10029", logger):
-                return []
-            items = data.get("exp_cntr_flu_rt_upper", [])
-            result = []
-            for item in items:
-                try:
-                    flu_rt = float(str(item.get("flu_rt", "0")).replace("+", "").replace(",", ""))
-                    if 3.0 <= flu_rt <= 15.0:
-                        result.append(item.get("stk_cd"))
-                except Exception:
-                    pass
-            return result
+            while True:
+                headers = {
+                    "api-id": "ka10029",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8"
+                }
+                if next_key:
+                    headers["cont-yn"] = "Y"
+                    headers["next-key"] = next_key
+
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                    headers=headers,
+                    json={
+                        "mrkt_tp": "000",
+                        "sort_tp": "1",         # 상승률
+                        "trde_qty_cnd": "10",   # 만주이상
+                        "stk_cnd": "1",         # 관리종목제외
+                        "crd_cnd": "0",
+                        "pric_cnd": "8",        # 1천원이상
+                        "stex_tp": "1"          # krx
+                    },
+                )
+                data = resp.json()
+                if not validate_kiwoom_response(data, "ka10029", logger):
+                    break
+
+                items = data.get("exp_cntr_flu_rt_upper", [])
+                for item in items:
+                    try:
+                        # 부호(+,-) 제거 후 float 변환
+                        flu_rt = float(item.get("flu_rt", "0").replace("+", "").replace(",", ""))
+                        if 3.0 <= flu_rt <= 15.0:
+                            result.append(item.get("stk_cd"))
+                    except ValueError:
+                        continue
+
+                # 연속조회 처리
+                cont_yn = resp.headers.get("cont-yn", "N")
+                next_key = resp.headers.get("next-key", "").strip()
+
+                if cont_yn != "Y" or not next_key:
+                    break
+
+        return list(set(result)) # 중복 방지
     except Exception as e:
         logger.warning("[S1] ka10029 호출 실패: %s", e)
         return []
 
 
 async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
-    # candidates:s1:{market} 풀이 이미 ka10029 3~15% 갭 필터 적용됨 – 재호출 불필요
+    """예상체결가 및 체결강도 기반 최종 시초가 진입 후보 스캔"""
     effective = candidates
     results = []
 
@@ -86,26 +87,37 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
         if not exp:
             continue
 
-        prev_close = float(exp.get("pred_pre_pric", 0))
-        exp_price = float(exp.get("exp_cntr_pric", 0))
-        if prev_close <= 0 or exp_price <= 0:
+        try:
+            # 1. 예상 체결가 파싱 (Java가 파싱한 영문키 or Kiwoom Raw FID '10' 대응)
+            raw_exp_price = exp.get("exp_cntr_pric") or exp.get("10", "0")
+            exp_price = abs(int(str(raw_exp_price).replace("+", "").replace("-", "").replace(",", "")))
+
+            # 2. 예상 등락률 파싱 (영문키 or Raw FID '12' 대응)
+            raw_gap_pct = exp.get("flu_rt") or exp.get("12", "0")
+            gap_pct = float(str(raw_gap_pct).replace("+", "").replace(",", ""))
+        except ValueError:
             continue
 
-        gap_pct = (exp_price - prev_close) / prev_close * 100
-
-        if gap_pct < 2.5:  # 갭 3% → 2.5% (후보 유연화)
+        if exp_price <= 0 or gap_pct < 2.5:  # 갭 3% → 2.5% (후보 유연화)
             continue
 
-        await asyncio.sleep(_API_INTERVAL)   # Rate limit: 초당 5회 제한
+        # API 호출 제한 속도 조절
+        await asyncio.sleep(_API_INTERVAL)
         strength = await fetch_cntr_strength(token, stk_cd)
 
-        if strength < 120:  # 체결강도 130% → 120% (후보 유연화)
+        if strength < 120.0:  # 체결강도 130% → 120% (후보 유연화)
             continue
-        score = gap_pct * 0.5 + (strength - 100) * 0.5
+
+        stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+
+        # 스코어링 로직 (갭상승률과 체결강도 가중치 반영)
+        score = (gap_pct * 0.5) + ((strength - 100) * 0.5)
+
         results.append({
             "stk_cd": stk_cd,
-            "cur_prc": round(exp_price),   # 예상체결가 = 시초가 진입가
-            "strategy": "S1_GAP_OPEN",
+            "stk_nm": stk_nm,
+            "cur_prc": exp_price,   # 예상체결가 = 시초가 진입가
+            "strategy": "시초가 매매",
             "gap_pct": round(gap_pct, 2),
             "cntr_strength": round(strength, 1),
             "score": round(score, 2),
@@ -114,4 +126,5 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
             "stop_pct": -2.0,
         })
 
+    # 스코어 기준 내림차순 정렬 후 상위 5개 반환
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

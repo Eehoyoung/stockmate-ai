@@ -24,10 +24,10 @@ import os
 
 import httpx
 
-from http_utils import validate_kiwoom_response
+from http_utils import validate_kiwoom_response, fetch_stk_nm
 
-# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
-# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
+# NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
+# Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
@@ -36,36 +36,36 @@ MIN_FLU_RT = float(os.getenv("S12_MIN_FLU_RT", "4.0"))       # 최소 등락률 
 MIN_CNTR_STR = float(os.getenv("S12_MIN_CNTR_STR", "110.0"))  # 최소 체결강도
 
 
-async def fetch_top_gainers(token: str, market: str = "000") -> list[dict]:
-    """ka10027 전일대비등락률상위요청 – 상승률 상위 종목
-    응답 배열키: pred_pre_flu_rt_upper
-    응답 필드: stk_cd, flu_rt("+29.86" 형식), cntr_str, now_trde_qty
-    """
+async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: int = 2) -> list[dict]:
+    """ka10027 전일대비등락률상위 - 연속조회 지원"""
+    all_gainers = []
+    cont_yn, next_key = "N", ""
+
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-            headers={
-                "api-id": "ka10027",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            },
-            json={
-                "mrkt_tp": market,
-                "sort_tp": "1",          # 1: 상승률순
-                "trde_qty_cnd": "0010",  # 만주 이상
-                "stk_cnd": "1",          # 관리종목 제외
-                "crd_cnd": "0",          # 전체 조회
-                "updown_incls": "0",     # 상하한 미포함
-                "pric_cnd": "8",         # 1천원 이상
-                "trde_prica_cnd": "10",  # 거래대금 1억원 이상
-                "stex_tp": "1",          # KRX
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not validate_kiwoom_response(data, "ka10027", logger):
-            return []
-        return data.get("pred_pre_flu_rt_upper", [])
+        for _ in range(max_pages):
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                headers={
+                    "api-id": "ka10027", "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                    "cont-yn": cont_yn, "next-key": next_key
+                },
+                json={
+                    "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "0010",
+                    "stk_cnd": "1", "crd_cnd": "0", "updown_incls": "0",
+                    "pric_cnd": "8", "trde_prica_cnd": "10", "stex_tp": "1"
+                }
+            )
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10027", logger): break
+
+            all_gainers.extend(data.get("pred_pre_flu_rt_upper", []))
+            cont_yn = resp.headers.get("cont-yn", "N")
+            next_key = resp.headers.get("next-key", "")
+            if cont_yn != "Y" or not next_key: break
+            await asyncio.sleep(0.2)
+
+    return all_gainers
 
 
 async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
@@ -107,59 +107,43 @@ async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
 
 
 async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
-    """종가 강도 확인 매수 (종가매매) 스캔 – 14:30 이후 실행 권장"""
-    gainers, inst_set = await asyncio.gather(
-        fetch_top_gainers(token, market),
-        fetch_inst_netbuy_set(token, market),
-    )
+    """S12: 종가 강도 + 기관 수급 교차 필터"""
+    # 1. 기관 순매수 세트와 등락률 상위 리스트 병렬 호출
+    gainers_task = fetch_top_gainers_paged(token, market)
+    inst_set_task = fetch_inst_netbuy_set(token, market) # 기존 코드 활용
+    gainers, inst_set = await asyncio.gather(gainers_task, inst_set_task)
 
     results = []
     for item in gainers:
         stk_cd = item.get("stk_cd")
-        if not stk_cd:
+        if not stk_cd or stk_cd not in inst_set: continue
+
+        # 수치 파싱
+        flu_rt = float(str(item.get("flu_rt", "0")).replace("+", ""))
+        cntr_str = float(item.get("cntr_str", "0"))
+
+        # 조건 검증: 4% <= 등락률 <= 15% AND 체결강도 >= 110%
+        if not (4.0 <= flu_rt <= 15.0) or cntr_str < 110.0:
             continue
 
-        # flu_rt: "+29.86" 형식
-        try:
-            flu_rt = float(str(item.get("flu_rt", "0")).replace("+", "").replace(",", ""))
-        except (TypeError, ValueError):
-            continue
+        # 점수 산정: 등락률의 탄력과 체결강도의 밀도를 조합
+        # $Score = (Flu\_Rate \times 0.5) + ((Cntr\_Str - 100) \times 0.3)$
+        score = (flu_rt * 0.5) + (max(cntr_str - 100, 0) * 0.3)
 
-        # 등락률 4% ~ 15% 범위
-        if not (MIN_FLU_RT <= flu_rt <= 15.0):
-            continue
+        cur_prc = abs(float(str(item.get("cur_prc", "0")).replace(",", "")))
+        stk_nm = item.get("stk_nm", "").strip() or await fetch_stk_nm(rdb, token, stk_cd)
 
-        # 체결강도: ka10027 응답에 cntr_str 직접 포함 — Redis 조회 불필요
-        try:
-            cntr_str = float(item.get("cntr_str", "0"))
-        except (TypeError, ValueError):
-            cntr_str = 0.0
-
-        if cntr_str < MIN_CNTR_STR:
-            continue
-
-        # 기관 순매수 교차 필터
-        if stk_cd not in inst_set:
-            continue
-
-        # 현재가 파싱 (ka10027 응답 cur_prc, 부호 제거 후 절대값)
-        try:
-            cur_prc = abs(float(str(item.get("cur_prc", "0")).replace(",", "").replace("+", "") or "0"))
-        except (TypeError, ValueError):
-            cur_prc = 0.0
-
-        score = flu_rt * 0.5 + (cntr_str - 100) * 0.3
         results.append({
             "stk_cd": stk_cd,
-            "cur_prc": round(cur_prc) if cur_prc > 0 else None,
-            "strategy": "S12_CLOSING",
+            "stk_nm": stk_nm,
+            "cur_prc": int(cur_prc),
+            "strategy": "종가_기관수급_강세",
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
             "score": round(score, 2),
-            "entry_type": "종가_동시호가",
-            "holding_days": "2~5거래일",
+            "entry_type": "15:20_장마감_전_진입",
             "target_pct": 5.0,
-            "stop_pct": -3.0,
+            "stop_pct": -3.0
         })
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

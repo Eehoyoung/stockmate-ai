@@ -162,7 +162,7 @@ async def _run_once(rdb):
             try:
                 from strategy_3_inst_foreign import scan_inst_foreign
                 for market in ("001", "101"):
-                    signals = await scan_inst_foreign(token, market)
+                    signals = await scan_inst_foreign(token, market, rdb=rdb)
                     await _push_signals(rdb, signals, "S3_INST_FRGN")
             except Exception as e:
                 logger.error("[Runner] S3 스캔 오류: %s", e)
@@ -195,7 +195,7 @@ async def _run_once(rdb):
             try:
                 from strategy_5_program_buy import scan_program_buy
                 for market in ("001", "101"):
-                    signals = await scan_program_buy(token, market)
+                    signals = await scan_program_buy(token, market, rdb=rdb)
                     await _push_signals(rdb, signals, "S5_PROG_FRGN")
             except Exception as e:
                 logger.error("[Runner] S5 스캔 오류: %s", e)
@@ -206,7 +206,7 @@ async def _run_once(rdb):
         async def _s6():
             try:
                 from strategy_6_theme import scan_theme_laggard
-                signals = await scan_theme_laggard(token)
+                signals = await scan_theme_laggard(token, rdb=rdb)
                 await _push_signals(rdb, signals, "S6_THEME_LAGGARD")
             except Exception as e:
                 logger.error("[Runner] S6 스캔 오류: %s", e)

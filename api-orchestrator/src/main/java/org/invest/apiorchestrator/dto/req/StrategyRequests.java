@@ -69,7 +69,7 @@ public class StrategyRequests {
         @Builder.Default @JsonProperty("invsr") private String invsr = "6";         // 외국인
         @Builder.Default @JsonProperty("frgn_all") private String frgnAll = "1";
         @Builder.Default @JsonProperty("smtm_netprps_tp") private String smtmNetprpsTp = "1";
-        // stexTp 는 KiwoomApiRequest 부모에서 @Builder.Default "1"(KRX) 로 관리
+
     }
 
     /** ka10065 장중투자자별매매상위 */

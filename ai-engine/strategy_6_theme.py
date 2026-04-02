@@ -13,107 +13,133 @@ import asyncio
 import httpx
 import logging
 import os
-
-from http_utils import fetch_cntr_strength, validate_kiwoom_response
+from http_utils import fetch_cntr_strength, validate_kiwoom_response, fetch_stk_nm
 
 logger = logging.getLogger(__name__)
 
-# 키움 REST API 초당 약 5회 제한 → 루프 내 0.25s 대기
+# API 호출 제한 속도 (초당 5회 기준)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
-# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
-# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
-
+def clean_num(val) -> float:
+    """부호 및 콤마 제거 유틸리티"""
+    if not val: return 0.0
+    return float(str(val).replace("+", "").replace("-", "").replace(",", ""))
 
 async def fetch_theme_groups(token: str) -> list:
-    """ka90001 테마그룹별 상위 수익률"""
+    """ka90001 테마그룹별 상위 수익률 (연속조회 포함)"""
+    results = []
+    next_key = ""
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/thme",
-            headers={"api-id": "ka90001", "authorization": f"Bearer {token}",
-                     "Content-Type": "application/json;charset=UTF-8"},
-            json={
-                "qry_tp": "1",          # 테마검색
-                "date_tp": "1",         # 1일
-                "flu_pl_amt_tp": "1",   # 상위기간수익률
-                "stex_tp": "1"
-            }
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not validate_kiwoom_response(data, "ka90001", logger):
-            return []
-        return data.get("thme_grp", [])[:5]  # 상위 5 테마
+        while True:
+            headers = {"api-id": "ka90001", "authorization": f"Bearer {token}", "Content-Type": "application/json;charset=UTF-8"}
+            if next_key:
+                headers.update({"cont-yn": "Y", "next-key": next_key})
 
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/thme",
+                headers=headers,
+                json={
+                    "qry_tp": "1",          # 1: 테마검색
+                    "date_tp": "1",         # 1일 (당일 테마)
+                    "flu_pl_amt_tp": "3",   # 3: 상위등락률 (당일 강한 테마 우선)
+                    "stex_tp": "1"          # KRX 고정
+                }
+            )
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka90001", logger): break
+
+            results.extend(data.get("thema_grp", []))
+
+            next_key = resp.headers.get("next-key", "").strip()
+            if resp.headers.get("cont-yn") != "Y" or not next_key or len(results) >= 20:
+                break
+    return results[:10]  # 상위 10개 테마만 분석 대상으로 삼음
 
 async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
-    """ka90002 테마구성종목"""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/thme",
-            headers={"api-id": "ka90002", "authorization": f"Bearer {token}",
-                     "Content-Type": "application/json;charset=UTF-8"},
-            json={"date_tp": "1", "thema_grp_cd": thema_grp_cd, "stex_tp": "1"}
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not validate_kiwoom_response(data, "ka90002", logger):
-            return []
-        return data.get("thme_comp_stk", [])
-
-
-
-"""
-전술 6: 테마 상위 + 후발주 매수
-수정 사항: 데이터 정제 로직 보강 및 API 호출 안정화
-"""
-async def scan_theme_laggard(token: str) -> list:
-    themes = await fetch_theme_groups(token)
+    """ka90002 테마구성종목 (연속조회 포함)"""
     results = []
+    next_key = ""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while True:
+            headers = {"api-id": "ka90002", "authorization": f"Bearer {token}", "Content-Type": "application/json;charset=UTF-8"}
+            if next_key:
+                headers.update({"cont-yn": "Y", "next-key": next_key})
+
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/thme",
+                headers=headers,
+                json={
+                    "date_tp": "1",
+                    "thema_grp_cd": thema_grp_cd,
+                    "stex_tp": "1" # KRX 고정
+                }
+            )
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka90002", logger): break
+
+            results.extend(data.get("thema_comp_stk", []))
+
+            next_key = resp.headers.get("next-key", "").strip()
+            if resp.headers.get("cont-yn") != "Y" or not next_key:
+                break
+    return results
+
+async def scan_theme_laggard(token: str, rdb=None) -> list:
+    """전술 6: 테마 상위 그룹 내 후발주 매수 스캔"""
+    themes = await fetch_theme_groups(token)
+    final_candidates = {} # 중복 종목 방지를 위해 dict 사용 (stk_cd: data)
 
     for theme in themes:
         thema_grp_cd = theme.get("thema_grp_cd")
-        # 부호 제거 및 float 변환 유틸
-        def parse_rt(val): return float(str(val).replace("+", "").replace(",", "")) if val else 0.0
+        theme_nm = theme.get("thema_nm")
+        theme_flu_rt = clean_num(theme.get("flu_rt"))
 
-        theme_flu_rt = parse_rt(theme.get("flu_rt"))
-        if theme_flu_rt < 2.0:
-            continue
+        # 테마 자체가 최소 2% 이상은 올라야 에너지가 있다고 판단
+        if theme_flu_rt < 2.0: continue
 
         await asyncio.sleep(_API_INTERVAL)
         stocks = await fetch_theme_stocks(token, thema_grp_cd)
-        if not stocks: continue
+        if len(stocks) < 3: continue # 구성 종목이 너무 적으면 신뢰도 낮음
 
-        # 테마 내 등락률 분포 계산
-        flu_rates = sorted([parse_rt(s.get("flu_rt")) for s in stocks])
-        # 상위 30% 커트라인 (선도주 제외 기준)
-        p70_threshold = flu_rates[int(len(flu_rates) * 0.7)]
+        # 1. 테마 내 등락률 분포 분석 (상위 30% 선도주 기준선 계산)
+        flu_rates = sorted([clean_num(s.get("flu_rt")) for s in stocks])
+        # 임계값: $$Threshold_{70\%} = sorted\_flu\_rates[\lfloor N \times 0.7 \rfloor]$$
+        p70_idx = int(len(flu_rates) * 0.7)
+        p70_threshold = flu_rates[p70_idx]
 
         for stk in stocks:
             stk_cd = stk.get("stk_cd")
-            flu_rt = parse_rt(stk.get("flu_rt"))
+            flu_rt = clean_num(stk.get("flu_rt"))
 
-            # 후발주 조건: 0.3% 이상 상승 + 테마 상위 30% 미만 + 8% 미만 (유연화)
-            if not (0.3 <= flu_rt < p70_threshold) or flu_rt >= 8.0:
+            # [조건 필터링]
+            # - 테마 내 상위 30% 미만 (후발주)
+            # - 당일 상승폭 0.5% ~ 7% (너무 낮으면 소외, 너무 높으면 이미 선도주화)
+            if not (0.5 <= flu_rt < p70_threshold) or flu_rt >= 7.0:
                 continue
+
+            # 이미 다른 테마에서 선정된 종목이라면 패스
+            if stk_cd in final_candidates: continue
 
             await asyncio.sleep(_API_INTERVAL)
             strength = await fetch_cntr_strength(token, stk_cd)
 
-            if strength >= 110:   # 120 → 110 유연화
-                results.append({
+            # 체결강도 115% 이상으로 수급 유입 확인
+            if strength >= 115:
+                stk_nm = stk.get("stk_nm", "").strip() or await fetch_stk_nm(rdb, token, stk_cd)
+                final_candidates[stk_cd] = {
                     "stk_cd": stk_cd,
-                    "strategy": "S6_THEME_LAGGARD",
-                    "theme_name": theme.get("thema_nm"),
+                    "stk_nm": stk_nm,
+                    "strategy": "테마 후발주 매매",
+                    "theme_name": theme_nm,
                     "theme_flu_rt": theme_flu_rt,
-                    "flu_rt": flu_rt,         # 현재 등락률
-                    "gap_pct": flu_rt,        # Scorer 호환용
+                    "flu_rt": flu_rt,
                     "cntr_strength": round(strength, 1),
                     "entry_type": "지정가_1호가",
-                    "target_pct": min(theme_flu_rt * 0.6, 5.0),
+                    "target_pct": 3.5, # 후발주는 대장주 상승폭의 절반 정도를 목표로 함
                     "stop_pct": -2.0,
-                })
+                }
 
-    # 체결강도가 가장 강한 후발주 순으로 정렬
-    return sorted(results, key=lambda x: x["cntr_strength"], reverse=True)[:5]
+    # 체결강도 순으로 정렬하여 상위 5개 반환
+    sorted_results = sorted(final_candidates.values(), key=lambda x: x["cntr_strength"], reverse=True)
+    return sorted_results[:5]

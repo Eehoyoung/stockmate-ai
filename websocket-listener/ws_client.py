@@ -126,30 +126,68 @@ async def _get_candidates(rdb, market: str = "001") -> list[str]:
     return items or []
 
 
-async def _subscribe_all(ws, rdb):
-    """장 구분에 따른 전체 구독 설정.
+def _get_market_phase() -> str:
+    """현재 KST 시각 기준 장 구분 반환.
+    - pre_market : 07:30 ~ 09:00  (예상체결·호가잔량·VI)
+    - market     : 09:00 ~ 15:20  (체결·호가잔량·VI)
+    - closed     : 그 외
+    """
+    now = _now_kst()
+    if now.weekday() not in _WEEKDAYS:
+        return "closed"
+    t = dtime(now.hour, now.minute, now.second)
+    if dtime(7, 30) <= t < dtime(9, 0):
+        return "pre_market"
+    if dtime(9, 0) <= t < dtime(15, 20):
+        return "market"
+    return "closed"
 
-    GRP 번호는 키움 서버 내 논리 그룹 식별자이며,
-    Python이 단독으로 WS 연결을 담당하므로 GRP 1-4 를 사용.
-    (Java websocket-listener 비활성화 시 충돌 없음)
+
+async def _send_unreg(ws, grp_no: str, ttype: str):
+    """단일 그룹/타입 구독 해제 전송"""
+    payload = {"trnm": "UNREG", "grp_no": grp_no, "data": [{"type": [ttype]}]}
+    await ws.send(json.dumps(payload))
+
+
+async def _subscribe_by_phase(ws, rdb, phase: str):
+    """장 구분(phase)에 따라 적절한 그룹을 구독/해제한다.
+
+    GRP 1: 0B 체결      – 후보 전체 (최대 200) [정규장]
+    GRP 2: 0H 예상체결  – 상위 100             [장전]
+    GRP 3: 1h VI발동해제 – 전종목              [장전+정규장]
+    GRP 4: 0D 호가잔량  – 상위 100             [장전+정규장]
     """
     kospi  = await _get_candidates(rdb, "001")
     kosdaq = await _get_candidates(rdb, "101")
     all_cands = list(dict.fromkeys(kospi + kosdaq))[:200]
     top100 = all_cands[:100]
 
-    groups = [
-        ("1", "0B", all_cands),    # 체결 – 전체 후보
-        ("2", "0H", top100),       # 예상체결 – 상위 100
-        ("3", "1h", [""]),         # VI – 전종목
-        ("4", "0D", top100),       # 호가잔량 – 상위 100
-    ]
+    if phase == "pre_market":
+        groups = [
+            ("2", "0H", top100),  # 예상체결 – 장전 핵심
+            ("4", "0D", top100),  # 호가잔량
+            ("3", "1h", [""]),    # VI 전종목
+        ]
+    elif phase == "market":
+        groups = [
+            ("1", "0B", all_cands),  # 체결 – 전체 후보
+            ("4", "0D", top100),     # 호가잔량
+            ("3", "1h", [""]),       # VI 전종목
+        ]
+    else:  # closed
+        for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("3", "1h"), ("4", "0D")]:
+            try:
+                await _send_unreg(ws, grp_no, ttype)
+                await asyncio.sleep(0.1)
+            except Exception:
+                pass
+        logger.info("[WS] 장 종료 – 전체 구독 해제 완료")
+        return
 
+    # 키움 WS 프로토콜: item 배열에 종목코드 목록, type 배열에 실시간 항목을 담아 전송
     for grp_no, ttype, items in groups:
         if not items:
             continue
-        # 100개 단위 배치 구독
-        # 키움 WS 프로토콜: item 배열에 종목코드 목록, type 배열에 실시간 항목을 담아 전송
         for i in range(0, len(items), 100):
             batch = items[i:i + 100]
             payload = {
@@ -161,6 +199,47 @@ async def _subscribe_all(ws, rdb):
             await ws.send(json.dumps(payload))
             logger.info("[WS] 구독 grp=%s type=%s %d개", grp_no, ttype, len(batch))
             await asyncio.sleep(0.3)
+
+    # 정규장 전환 시 예상체결(0H) 구독 해제 (장전에 등록된 GRP2)
+    if phase == "market":
+        try:
+            await _send_unreg(ws, "2", "0H")
+            logger.info("[WS] 정규장 전환 – 예상체결(0H) 구독 해제")
+        except Exception:
+            pass
+
+    logger.info("[WS] 구독 설정 완료 (phase=%s, 후보=%d개)", phase, len(all_cands))
+
+
+async def _phase_watcher(ws, rdb):
+    """30초마다 장 구분 변화를 감지하여 구독을 전환하고,
+    5분(30s × 10)마다 후보 종목 구독을 갱신한다.
+    Java WebSocketSubscriptionManager.refreshCandidateSubscription() 에 해당.
+    """
+    current_phase = _get_market_phase()
+    refresh_counter = 0
+    REFRESH_EVERY = 10  # 30s × 10 = 5분
+
+    while True:
+        try:
+            await asyncio.sleep(30)
+            new_phase = _get_market_phase()
+            refresh_counter += 1
+
+            if new_phase != current_phase:
+                logger.info("[WS] 장 구분 전환 %s → %s", current_phase, new_phase)
+                await _subscribe_by_phase(ws, rdb, new_phase)
+                current_phase = new_phase
+                refresh_counter = 0
+            elif refresh_counter >= REFRESH_EVERY and current_phase != "closed":
+                logger.info("[WS] 후보 갱신 구독 재전송 (phase=%s)", current_phase)
+                await _subscribe_by_phase(ws, rdb, current_phase)
+                refresh_counter = 0
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[WS] phase_watcher 오류: %s", e)
 
 
 async def _handle_message(msg_str: str, ws, rdb):
@@ -354,24 +433,28 @@ async def run_ws_loop(rdb):
                 # 구독(REG) 도중 서버가 PING을 보내도 즉시 PONG 응답 가능
                 message_task = asyncio.create_task(_run_message_loop(ws, rdb))
 
-                await _subscribe_all(ws, rdb)
+                # BYPASS 모드: 장 시간 무관 → 전체 구독(market phase로 처리)
+                initial_phase = "market" if BYPASS_MARKET_HOURS else _get_market_phase()
+                await _subscribe_by_phase(ws, rdb, initial_phase)
 
                 # 초기 구독 후보를 subscribed_set 에 등록 (watchlist poller 가 중복 UNREG 방지)
                 kospi  = await _get_candidates(rdb, "001")
                 kosdaq = await _get_candidates(rdb, "101")
                 subscribed_set: set = set(dict.fromkeys(kospi + kosdaq))
 
-                # 동적 구독 watchlist 폴러 + heartbeat 시작
+                # 동적 구독 watchlist 폴러 + heartbeat + 장 구분 전환 감시 시작
                 # 키움 공식 가이드: PING 은 서버→클라이언트 방향만 정의됨.
                 # 수신한 PING 은 _handle_message 에서 그대로 에코, 클라이언트 주도 PING 은 없음.
                 watchlist_task = asyncio.create_task(_watchlist_poller(ws, rdb, subscribed_set))
                 heartbeat_task = asyncio.create_task(_heartbeat_writer(rdb))
+                phase_task     = asyncio.create_task(_phase_watcher(ws, rdb))
 
                 try:
                     await message_task  # 서버가 연결을 닫을 때까지 대기
                 finally:
                     watchlist_task.cancel()
                     heartbeat_task.cancel()
+                    phase_task.cancel()
                     message_task.cancel()
                     set_ws_connected(False)
 

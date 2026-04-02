@@ -9,7 +9,7 @@ import os
 import httpx
 
 logger = logging.getLogger(__name__)
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _DEFAULT_TIMEOUT = 10.0
 
 
@@ -34,6 +34,52 @@ def validate_kiwoom_response(data: dict, api_id: str, log=None) -> bool:
     return True
 
 
+async def fetch_stk_nm(rdb, token: str, stk_cd: str) -> str:
+    """
+    종목명 조회. Redis 캐시(stk_nm:{stk_cd}, TTL 1일) 우선.
+    캐시 미스 시 ka10001 주식기본정보로 조회 후 캐시 저장.
+    rdb=None 이면 항상 REST API 직접 호출.
+    """
+    if rdb:
+        try:
+            cached = await rdb.get(f"stk_nm:{stk_cd}")
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+    try:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+                headers={
+                    "api-id": "ka10001",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={
+                    "stk_cd": stk_cd
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10001", logger):
+                return ""
+            items = data.get("stk_info", [])
+            stk_nm = str(items[0].get("stk_nm", "")).strip() if items else ""
+    except Exception as e:
+        logger.debug("[http_utils] fetch_stk_nm [%s] 실패: %s", stk_cd, e)
+        return ""
+
+    if rdb and stk_nm:
+        try:
+            await rdb.set(f"stk_nm:{stk_cd}", stk_nm, ex=86400)
+        except Exception:
+            pass
+
+    return stk_nm
+
+
 async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
     """
     체결강도 조회 (ka10046 체결강도추이시간별요청).
@@ -48,7 +94,7 @@ async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
                     "authorization": f"Bearer {token}",
                     "Content-Type": "application/json;charset=UTF-8",
                 },
-                json={"stk_cd": stk_cd},
+                json={"stk_cd": stk_cd, "stex_tp": "1"},
             )
             resp.raise_for_status()
             data = resp.json()

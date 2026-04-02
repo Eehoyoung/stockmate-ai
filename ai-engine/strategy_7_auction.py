@@ -9,92 +9,159 @@ ka10033 거래량 순위: 예상거래량 상위 50위 이내
 전일 봉 패턴: 장대양봉 OR 상한가 근접 (3% 이내)
 시가총액 ≥ 500억 (소형주 변동성 제거)
 """
-import os
-import logging
+import asyncio
 import httpx
-
-from http_utils import validate_kiwoom_response
+import logging
+import os
+from http_utils import validate_kiwoom_response, fetch_stk_nm
 
 logger = logging.getLogger(__name__)
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
-# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
-# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+def clean_num(val) -> float:
+    if not val: return 0.0
+    return float(str(val).replace("+", "").replace("-", "").replace(",", ""))
 
+async def fetch_gap_rank(token: str, market: str) -> dict:
+    """ka10029 예상체결등락률상위 - 연속조회로 전체 후보 수집"""
+    result = {}
+    next_key = ""
 
-async def fetch_gap_rank(token: str, market: str) -> list:
-    """ka10029 예상체결등락률상위 – 갭 2~10% 후보"""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while True:
+            headers = {
+                "api-id": "ka10029",
+                "authorization": f"Bearer {token}",
+                "Content-Type": "application/json;charset=UTF-8"
+            }
+            if next_key:
+                headers.update({"cont-yn": "Y", "next-key": next_key})
+
             resp = await client.post(
                 f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers={"api-id": "ka10029", "authorization": f"Bearer {token}",
-                         "Content-Type": "application/json;charset=UTF-8"},
-                json={"mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "10",
-                      "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "1"},
+                headers=headers,
+                json={
+                    "mrkt_tp": market,
+                    "sort_tp": "1",      # 1: 등락률 상위
+                    "trde_qty_cnd": "0", # 전체
+                    "stk_cnd": "1",      # 1: 관리종목 제외
+                    "crd_cnd": "0",
+                    "pric_cnd": "0",
+                    "stex_tp": "1"       # KRX 고정
+                },
             )
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10029", logger):
-                return {}
-            items = data.get("exp_cntr_flu_rt_upper", [])
-            result = {}
-            for i, item in enumerate(items[:50]):
-                try:
-                    flu_rt = float(str(item.get("flu_rt", "0")).replace("+", "").replace(",", ""))
-                    if 2.0 <= flu_rt <= 10.0:
-                        result[item.get("stk_cd")] = i + 1
-                except Exception:
-                    pass
-            return result
-    except Exception as e:
-        logger.warning("[S7] ka10029 호출 실패: %s", e)
-        return {}
+                break
 
+            items = data.get("exp_cntr_flu_rt_upper", [])
+            for i, item in enumerate(items):
+                stk_cd = item.get("stk_cd")
+                flu_rt = clean_num(item.get("flu_rt"))
+                # 갭 2% ~ 10% 사이 종목만 1차 필터링
+                if 2.0 <= flu_rt <= 10.0:
+                    # 순위(rank)는 전체 조회 결과에서의 순서로 기록
+                    result[stk_cd] = {"rank": len(result) + 1, "gap_rt": flu_rt}
+
+            # 헤더에서 연속조회 여부 확인
+            cont_yn = resp.headers.get("cont-yn", "N")
+            next_key = resp.headers.get("next-key", "").strip()
+
+            # 너무 많은 데이터를 가져오지 않도록 최대 200개 내외에서 끊거나 조건부 종료
+            if cont_yn != "Y" or not next_key or len(result) >= 150:
+                break
+
+    return result
+
+async def fetch_credit_filter(token: str, market: str = "000") -> set:
+    """ka10033 신용비율상위 - 연속조회로 고위험 신용 종목 전체 추출"""
+    high_credit_set = set()
+    next_key = ""
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while True:
+            headers = {
+                "api-id": "ka10033",
+                "authorization": f"Bearer {token}",
+                "Content-Type": "application/json;charset=UTF-8"
+            }
+            if next_key:
+                headers.update({"cont-yn": "Y", "next-key": next_key})
+
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                headers=headers,
+                json={
+                    "mrkt_tp": market,
+                    "trde_qty_tp": "0",
+                    "stk_cnd": "1",
+                    "updown_incls": "1",
+                    "crd_cnd": "0",
+                    "stex_tp": "1" # KRX 고정
+                }
+            )
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10033", logger):
+                break
+
+            items = data.get("crd_rt_upper", [])
+            for x in items:
+                # 신용비율 8% 이상인 종목은 리스크 관리 차원에서 수집
+                if clean_num(x.get("crd_rt")) >= 8.0:
+                    high_credit_set.add(x.get("stk_cd"))
+
+            cont_yn = resp.headers.get("cont-yn", "N")
+            next_key = resp.headers.get("next-key", "").strip()
+
+            if cont_yn != "Y" or not next_key:
+                break
+
+    return high_credit_set
 
 async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list:
-    """장전 동시호가 종목 선별 (ka10029 기반, 비동기 Redis)"""
-    vol_set = await fetch_gap_rank(token, market)
+    """전술 7: 동시호가 최종 스캔 함수"""
+    # 1. 갭 후보군 및 신용 리스크 종목 병렬 수집 (연속조회 포함)
+    gap_candidates, high_credit_stocks = await asyncio.gather(
+        fetch_gap_rank(token, market),
+        fetch_credit_filter(token, market)
+    )
 
     results = []
 
-    for stk_cd, rank in vol_set.items():
-        # Redis에서 WebSocket 데이터 조회 (비동기)
+    for stk_cd, info in gap_candidates.items():
+        if stk_cd in high_credit_stocks: continue
+
+        # 2. Redis에서 실시간 호가잔량(0D) 데이터 확인
         try:
-            exp = await rdb.hgetall(f"ws:expected:{stk_cd}") if rdb else {}
-            bid = await rdb.hgetall(f"ws:hoga:{stk_cd}") if rdb else {}
-        except Exception:
-            exp, bid = {}, {}
+            hoga_data = await rdb.hgetall(f"ws:hoga:{stk_cd}") if rdb else {}
+        except:
+            hoga_data = {}
 
-        if not exp or not bid:
-            continue
+        if not hoga_data: continue
 
-        prev_close = float(exp.get("pred_pre_pric", 0))
-        exp_price = float(exp.get("exp_cntr_pric", 0))
+        # 0D 필드 활용: 125(매수총잔량), 121(매도총잔량), 201(예상체결등락율)
+        total_bid = clean_num(hoga_data.get("125", 0))
+        total_ask = clean_num(hoga_data.get("121", 1))
 
-        if prev_close <= 0 or exp_price <= 0:
-            continue
-
-        gap_pct = (exp_price - prev_close) / prev_close * 100
-
-        if not (2.0 <= gap_pct <= 10.0):
-            continue
-
-        total_bid = float(bid.get("total_buy_bid_req", 0) or 0)
-        total_ask = float(bid.get("total_sel_bid_req", 1) or 1)
+        # 호가잔량 비율 계산:
+        # $$Bid\ Ratio = \frac{Total\ Bid\ Quantity}{Total\ Ask\ Quantity}$$
         bid_ratio = total_bid / total_ask
+        live_gap_pct = clean_num(hoga_data.get("201", info['gap_rt']))
 
-        if bid_ratio < 1.5:   # 2.0 → 1.5 유연화 (갭 자체가 수급 필터 역할)
-            continue
+        # 최종 진입 조건: 갭 2~10% 유지 & 매수잔량이 매도잔량의 2배 이상
+        if (2.0 <= live_gap_pct <= 10.0) and (bid_ratio >= 2.0):
+            stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+            results.append({
+                "stk_cd": stk_cd,
+                "stk_nm": stk_nm,
+                "strategy": "S7_AUCTION",
+                "gap_pct": round(live_gap_pct, 2),
+                "bid_ratio": round(bid_ratio, 2),
+                "vol_rank": info['rank'],
+                "entry_type": "시초가_시장가",
+                "target_pct": 4.5,
+                "stop_pct": -2.0,
+            })
 
-        results.append({
-            "stk_cd": stk_cd,
-            "strategy": "S7_AUCTION",
-            "gap_pct": round(gap_pct, 2),
-            "bid_ratio": round(bid_ratio, 2),
-            "vol_rank": rank,
-            "entry_type": "시초가_시장가",
-            "target_pct": min(gap_pct * 0.8, 5.0),
-            "stop_pct": -2.0,
-        })
-
-    return sorted(results, key=lambda x: (-x["bid_ratio"], x["vol_rank"]))[:5]
+    # 잔량 비율이 높은 순(수급 강도)으로 정렬
+    return sorted(results, key=lambda x: x["bid_ratio"], reverse=True)[:5]

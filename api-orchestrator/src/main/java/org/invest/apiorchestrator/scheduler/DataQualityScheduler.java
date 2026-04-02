@@ -5,7 +5,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.service.CandidateService;
 import org.invest.apiorchestrator.service.RedisMarketDataService;
-import org.invest.apiorchestrator.websocket.WebSocketSubscriptionManager;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -39,7 +38,6 @@ public class DataQualityScheduler {
 
     private final CandidateService candidateService;
     private final RedisMarketDataService redisService;
-    private final WebSocketSubscriptionManager subscriptionManager;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
 
@@ -86,9 +84,10 @@ public class DataQualityScheduler {
     }
 
     private void checkWebSocketHealth(List<String> alerts) {
-        // WS 자체가 끊긴 상태면 tick 데이터 없는 게 당연 – 알림 스팸 방지
-        if (!redisService.isWsConnected()) {
-            log.debug("[DataQuality] WS 미연결 상태 – tick 체크 스킵");
+        // Python websocket-listener heartbeat 체크 (ws:py_heartbeat TTL 90s)
+        Map<Object, Object> pyHeartbeat = redis.opsForHash().entries("ws:py_heartbeat");
+        if (pyHeartbeat.isEmpty()) {
+            log.debug("[DataQuality] Python WS heartbeat 없음 – tick 체크 스킵");
             return;
         }
 
@@ -102,17 +101,13 @@ public class DataQualityScheduler {
         double missingRatio = (double) missing / candidates.size() * 100.0;
 
         if (missingRatio >= WS_MISSING_RATIO_THRESHOLD) {
-            log.warn("[DataQuality] tick 데이터 누락 {}/{} ({}%) → WS 재연결 시도",
+            log.warn("[DataQuality] tick 데이터 누락 {}/{} ({}%)",
                     missing, candidates.size(), String.format("%.1f", missingRatio));
 
-            // 거래 시간 외에는 재연결 시도 안 함
             if (!org.invest.apiorchestrator.util.MarketTimeUtil.isTradingActive()) {
-                log.info("[DataQuality] 거래 시간 외 → WS 재연결 건너뜀");
+                log.info("[DataQuality] 거래 시간 외 → 경고 생략");
                 return;
             }
-
-            // 재연결
-            subscriptionManager.setupMarketHoursSubscription();
 
             // 재연결 횟수 카운트
             Long reconnectCount = redis.opsForValue().increment(KEY_WS_RECONNECT_COUNT);
@@ -128,7 +123,7 @@ public class DataQualityScheduler {
             }
             lastWsAlertMs.set(now);
 
-            alerts.add(String.format("📡 WebSocket 데이터 이상 (누락 %.0f%%) – 재연결 완료", missingRatio));
+            alerts.add(String.format("📡 WebSocket tick 데이터 이상 (누락 %.0f%%) – Python websocket-listener 확인 필요", missingRatio));
         }
     }
 

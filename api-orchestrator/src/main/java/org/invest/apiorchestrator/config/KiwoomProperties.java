@@ -12,34 +12,18 @@ import org.springframework.stereotype.Component;
 public class KiwoomProperties {
 
     /** 실전/모의 환경 구분: real | mock */
-    private String mode = "mock";
+    private String mode = "real";
 
     private Api api = new Api();
-    private Websocket websocket = new Websocket();
     private Trading trading = new Trading();
 
     @Getter
     @Setter
     public static class Api {
         private String baseUrl;
-        private String wsUrl;
         private String appKey;
         private String appSecret;
         private int tokenTtlMinutes = 1420;
-    }
-
-    @Getter
-    @Setter
-    public static class Websocket {
-        private long reconnectDelayMs = 3000;
-        private int maxReconnectAttempts = 10;
-        private int pingIntervalSeconds = 30;
-        /**
-         * false 로 설정 시 Java WS 클라이언트 비활성화.
-         * Python websocket-listener 와 동일 토큰으로 동시 연결하면
-         * Kiwoom 이 선행 연결을 강제 종료하므로, 두 서비스 중 하나만 true 로 설정할 것.
-         */
-        private boolean enabled = true;
     }
 
     @Getter

@@ -14,10 +14,10 @@ import logging
 
 import httpx
 
-from http_utils import fetch_cntr_strength
+from http_utils import fetch_cntr_strength, fetch_stk_nm
 
-# NOTE: Python 전술 스캐너 경로 (ENABLE_STRATEGY_SCANNER=true 시 활성화).
-# 메인 전술 실행은 api-orchestrator/StrategyService.java에서 이루어집니다.
+# NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
+# Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
 # rdb (redis.asyncio.Redis) 는 strategy_runner.py 에서 전달받습니다.
 
 logger = logging.getLogger(__name__)
@@ -73,33 +73,47 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     if not rdb:
         return None
 
-    # 현재가 조회 (Redis 실시간 체결 캐시, 비동기)
+    # 1. 현재가 및 호가 데이터 조회 (가장 저렴한 작업)
     cur = await rdb.hgetall(f"ws:tick:{stk_cd}")
     if not cur:
         return None
 
     cur_price = float(cur.get("cur_prc", 0))
-    pullback_pct = (cur_price - vi_price) / vi_price * 100
+    if cur_price == 0: return None
 
-    # 눌림 범위 체크: -1% ~ -3%
+    # [조건 1] 눌림 범위 체크: -1% ~ -3% (가장 먼저 탈락시킴)
+    pullback_pct = (cur_price - vi_price) / vi_price * 100
     if not (-3.0 <= pullback_pct <= -1.0):
         return None
 
+    # [조건 2] 호가잔량 매수/매도 비율 체크 (Redis 데이터 활용)
+    bid_qty = float(cur.get("total_buy_bid_req", 0))
+    ask_qty = float(cur.get("total_sel_bid_req", 0))
+    bid_ratio = bid_qty / ask_qty if ask_qty > 0 else 0
+    if bid_ratio < 1.3:
+        return None
+
+    # [조건 3] 거래량 조건 체크 (VI 발동 시점에 이미 체크되었어야 함)
+    # handle_vi_event에서 저장한 vi_volume_ratio가 있다면 확인
+    vi_data = await rdb.hgetall(f"vi:{stk_cd}")
+    vol_ratio = float(vi_data.get("vol_ratio", 0))
+    if vol_ratio < 3.0:
+        # 만약 발동 시점에 체크를 못했다면 여기서 pass 하거나
+        # 추가 로직 필요 (단, 실시간성 위해 발동 시 체크 권장)
+        pass
+
+        # [조건 4] 체결강도 체크 (가장 무거운 작업 - 외부 API 호출)
+    # 위 조건들을 모두 통과한 종목에 대해서만 API를 호출하여 쿼터 절약
     strength = await fetch_cntr_strength(token, stk_cd)
     if strength < 110:
         return None
 
-    bid_qty = float(cur.get("total_buy_bid_req", 1) or 1)
-    ask_qty = float(cur.get("total_sel_bid_req", 1) or 1)
-    bid_ratio = bid_qty / ask_qty if ask_qty > 0 else 0
-
-    if bid_ratio < 1.3:
-        return None
-
+    stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
     return {
         "stk_cd": stk_cd,
-        "cur_prc": round(cur_price),   # 눌림 진입 기준가
-        "strategy": "S2_VI_PULLBACK",
+        "stk_nm": stk_nm,
+        "cur_prc": round(cur_price),
+        "strategy": "추격매수",
         "vi_price": vi_price,
         "pullback_pct": round(pullback_pct, 2),
         "cntr_strength": round(strength, 1),

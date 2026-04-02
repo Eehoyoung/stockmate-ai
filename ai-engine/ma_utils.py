@@ -21,6 +21,7 @@ from http_utils import validate_kiwoom_response
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 _DEFAULT_TIMEOUT = 10.0
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -132,40 +133,75 @@ def _candle_cache_set(stk_cd: str, candles: list[dict]) -> None:
     _CANDLE_CACHE[stk_cd] = (candles, _time.monotonic() + _CANDLE_CACHE_TTL)
 
 
-async def fetch_daily_candles(token: str, stk_cd: str) -> list[dict]:
+async def fetch_daily_candles(token: str, stk_cd: str, target_count: int = 120) -> list[dict]:
     """
-    ka10081 주식일봉차트 조회 – 최신순 반환 (index 0 = 오늘/가장 최근).
-    인메모리 TTL 캐시(기본 3600s) 적용으로 동일 종목 중복 API 호출 방지.
-    오류·데이터 없음 시 빈 리스트 반환.
+    ka10081 주식일봉차트 조회 - 연속조회 지원
+    :param stk_cd:
+    :param token:
+    :param target_count: 최소로 확보하고자 하는 봉 수 (기본 120봉)
     """
     cached = _candle_cache_get(stk_cd)
-    if cached is not None:
-        logger.debug("[ma] 캐시 히트 [%s]", stk_cd)
+    if cached is not None and len(cached) >= target_count:
         return cached
 
+    all_candles = []
+    cont_yn = "N"
+    next_key = ""
     base_dt = datetime.now().strftime("%Y%m%d")
-    try:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/chart",
-                headers={
-                    "api-id": "ka10081",
-                    "authorization": f"Bearer {token}",
-                    "Content-Type": "application/json;charset=UTF-8",
-                },
-                json={"stk_cd": stk_cd.strip(), "base_dt": base_dt, "upd_stkpc_tp": "1"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10081", logger):
-                return []
-            candles = data.get("stk_dt_pole_chart_qry", [])
-            if candles:
-                _candle_cache_set(stk_cd, candles)
-            return candles
-    except Exception as e:
-        logger.debug("[ma] ka10081 실패 [%s]: %s", stk_cd, e)
-        return []
+
+    async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+        while len(all_candles) < target_count:
+            headers = {
+                "api-id": "ka10081",
+                "authorization": f"Bearer {token}",
+                "Content-Type": "application/json;charset=UTF-8",
+                "cont-yn": cont_yn,
+                "next-key": next_key
+            }
+
+            body = {
+                "stk_cd": stk_cd.strip(),
+                "base_dt": base_dt,
+                "upd_stkpc_tp": "1"
+            }
+
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/chart",
+                    headers=headers,
+                    json=body
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                if not validate_kiwoom_response(data, "ka10081", logger):
+                    break
+
+                candles = data.get("stk_dt_pole_chart_qry", [])
+                if not candles:
+                    break
+
+                all_candles.extend(candles)
+
+                # 응답 헤더에서 연속조회 정보 추출
+                cont_yn = resp.headers.get("cont-yn", "N")
+                next_key = resp.headers.get("next-key", "")
+
+                if cont_yn != "Y" or not next_key:
+                    break
+
+                # API 호출 간격 준수 (연속조회 시에도 과부하 방지)
+                import asyncio
+                await asyncio.sleep(_API_INTERVAL)
+
+            except Exception as e:
+                logger.error(f"[ma] ka10081 연속조회 중 오류 [%s]: %s", stk_cd, e)
+                break
+
+    if all_candles:
+        _candle_cache_set(stk_cd, all_candles)
+
+    return all_candles
 
 
 # ──────────────────────────────────────────────────────────────
@@ -208,35 +244,34 @@ async def get_ma_context(token: str, stk_cd: str) -> MAContext:
 # 패턴 감지 헬퍼 (candles 직접 수신 – API 재호출 없음)
 # ──────────────────────────────────────────────────────────────
 
-def detect_golden_cross(candles: list[dict]) -> tuple[bool, bool, float]:
+def detect_golden_cross(candles: list[dict], lookback_days: int = 3) -> tuple[bool, bool, float]:
     """
-    골든크로스 감지 (일봉 기반).
-
-    반환: (crossed_today, near_cross, gap_pct)
-    - crossed_today : 오늘 MA5 > MA20 크로스오버 첫 발생 여부
-    - near_cross    : MA5 > MA20 이며 이격 ≤ 5% (최근 크로스 유효 범위)
-    - gap_pct       : MA5/MA20 이격률 (%)
+    최근 n일 이내에 골든크로스가 발생했는지 확인
     """
-    closes: list[float] = []
-    for c in candles:
-        p = _safe_price(c.get("cur_prc"))
-        if p > 0:
-            closes.append(p)
+    closes = [_safe_price(c.get("cur_prc")) for c in candles]
+    if len(closes) < 25: return False, False, 0.0
 
-    if len(closes) < 22:
-        return False, False, 0.0
+    # 1. 오늘 기준 이격률 계산
+    ma5_now = sum(closes[:5]) / 5
+    ma20_now = sum(closes[:20]) / 20
+    gap_pct = (ma5_now / ma20_now - 1) * 100 if ma20_now > 0 else 0.0
 
-    ma5_t   = sum(closes[:5])  / 5
-    ma5_y   = sum(closes[1:6]) / 5
-    ma20_t  = sum(closes[:20]) / 20
-    ma20_y  = sum(closes[1:21]) / 20
+    # 2. 오늘 발생 여부
+    is_today = (sum(closes[0:5])/5 > sum(closes[0:20])/20) and \
+               (sum(closes[1:6])/5 <= sum(closes[1:21])/20)
 
-    gap_pct = (ma5_t / ma20_t - 1) * 100 if ma20_t > 0 else 0.0
+    # 3. 최근 n일 내 발생 여부
+    is_recent = False
+    for i in range(lookback_days):
+        m5_t = sum(closes[i:i+5]) / 5
+        m20_t = sum(closes[i:i+20]) / 20
+        m5_y = sum(closes[i+1:i+6]) / 5
+        m20_y = sum(closes[i+1:i+21]) / 20
+        if m5_t > m20_t and m5_y <= m20_y:
+            is_recent = True
+            break
 
-    crossed_today = (ma5_t > ma20_t) and (ma5_y <= ma20_y)
-    near_cross    = (ma5_t > ma20_t) and (gap_pct <= 5.0)
-
-    return crossed_today, near_cross, gap_pct
+    return is_today, (is_recent and gap_pct <= 5.0), gap_pct
 
 
 def detect_pullback_setup(candles: list[dict]) -> tuple[bool, float, float]:
