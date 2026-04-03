@@ -23,7 +23,7 @@ _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 
 async def fetch_intraday_investor(token: str, market_type: str = "000") -> list:
@@ -211,11 +211,10 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
 
         return total_qty
 
-    # 당일(1)과 전일(2) 볼륨 수집을 비동기로 동시 실행 (속도 대폭 향상)
-    today_qty, prev_qty = await asyncio.gather(
-        get_total_volume("1"),
-        get_total_volume("2")
-    )
+    # 순차 실행 — 동시 호출 시 /api/dostk/stkinfo 429 과부하 발생
+    today_qty = await get_total_volume("1")
+    await asyncio.sleep(_API_INTERVAL)
+    prev_qty = await get_total_volume("2")
 
     # 전일 동시간 거래량이 0인 경우 ZeroDivisionError 방지
     return today_qty / prev_qty if prev_qty > 0 else 0.0
@@ -226,7 +225,7 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
     cont_map = await fetch_continuous_netbuy(token, market)
 
     results = []
-    for item in smtm_list[:30]:
+    for item in smtm_list[:10]:  # 429 방지: ka10055×2 호출 상한 10종목
         stk_cd = item.get("stk_cd")
         if stk_cd not in cont_map:
             continue

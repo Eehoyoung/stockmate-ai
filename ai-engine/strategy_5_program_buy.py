@@ -162,11 +162,12 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
         fetch_frgn_inst_upper(token, market)
     )
 
-    # 2. 프로그램 순매수 & 외인 순매수 교집합 추출
-    overlap = set(prog_map.keys()) & frgn_set
+    # 2. 프로그램 순매수 & 외인 순매수 교집합 추출 (순매수 금액 상위 15종목으로 제한)
+    overlap_raw = set(prog_map.keys()) & frgn_set
+    overlap = sorted(overlap_raw, key=lambda c: prog_map.get(c, 0), reverse=True)[:15]
     results = []
 
-    # 3. 교집합 종목들에 대해 정밀 필터 적용
+    # 3. 교집합 종목들에 대해 정밀 필터 적용 (ka10044+ka10080 × 15 = 30 calls max)
     for stk_cd in overlap:
         await asyncio.sleep(_API_INTERVAL) # 과부하 방지
         if await check_extra_conditions(token, stk_cd, market):
