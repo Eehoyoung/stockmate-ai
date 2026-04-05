@@ -132,16 +132,24 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         if vol_ratio >= 1.5: score += 8
         if cntr_str >= 105: score += 8
 
+        stop_price  = round(cur_prc - atr_now * 2.0)
+        target_price = round(cur_prc + atr_now * 3.5)
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": await fetch_stk_nm(rdb, token, stk_cd),
-            "cur_prc": cur_prc,
-            "strategy": "발바닥 프로젝트",
+            "cur_prc": round(cur_prc),
+            "strategy": "S14_OVERSOLD_BOUNCE",
             "score": round(score, 2),
             "rsi": round(rsi_now, 1),
-            "cond_count": f"{cond_count}/3",
-            "stop_price": round(cur_prc - atr_now * 2.0),
-            "target_price": round(cur_prc + atr_now * 3.5),
+            "cond_count": cond_count,
+            "cntr_strength": round(cntr_str, 1),
+            "vol_ratio": round(vol_ratio, 2),
+            "atr_pct": round(atr_pct, 2),
+            "flu_rt": round(flu_rt, 2),
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "stop_pct": round((stop_price - cur_prc) / cur_prc * 100, 2),
+            "target_pct": round((target_price - cur_prc) / cur_prc * 100, 2),
             "entry_type": "당일종가_또는_익일시가",
             "holding_days": "3~5거래일"
         })

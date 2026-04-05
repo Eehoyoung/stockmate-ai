@@ -28,7 +28,7 @@ from http_utils import validate_kiwoom_response, fetch_stk_nm
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
 
 logger = logging.getLogger(__name__)
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 
 def _parse_qty(val: str) -> int:
@@ -98,12 +98,30 @@ async def fetch_frgn_cont_buy(token: str, market: str = "000", max_pages: int = 
 
 
 async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> list:
-    """외국인 연속 순매수 스윙 전략 스캔 (연속조회 데이터 기반)"""
+    """외국인 연속 순매수 스윙 전략 스캔 (Redis 풀 우선 → fallback 직접 조회)"""
 
-    # 1. 원천 데이터 확보 (연속조회 적용)
+    # 1. candidates:s11:{market} 풀 우선 확인
+    pool_codes: list = []
+    if rdb:
+        try:
+            pool_codes = await rdb.lrange(f"candidates:s11:{market}", 0, -1)
+            if pool_codes:
+                logger.debug("[S11] candidates:s11:%s 풀 사용 (%d개)", market, len(pool_codes))
+        except Exception as e:
+            logger.debug("[S11] 풀 조회 실패: %s", e)
+
+    # 2. 원천 데이터 확보 (연속조회 적용)
     raw_items = await fetch_frgn_cont_buy(token, market, max_pages=2)
     if not raw_items:
         return []
+
+    # 풀이 있으면 풀 종목만 필터
+    if pool_codes:
+        pool_set = set(pool_codes)
+        raw_items = [it for it in raw_items if it.get("stk_cd") in pool_set]
+        logger.debug("[S11] 풀 필터 후 %d개", len(raw_items))
+    else:
+        logger.debug("[S11] 풀 없음 – ka10035 전수 조회")
 
     results = []
     for item in raw_items:
@@ -140,19 +158,24 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         # 5. 스코어링 (누적 매집량 + 최근 매수 강도 + 시장 탄력)
         # 100만 주 단위를 기준으로 가중치 부여
         score = (tot / 1_000_000) * 5 + (dm1 / 1_000_000) * 3 + (flu_rt * 0.5)
+        cur_prc = abs(float(str(item.get("cur_prc", "0")).replace("+", "").replace(",", "")))
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
-            "strategy": "외국인 연속 수급주",
+            "strategy": "S11_FRGN_CONT",  # scorer.py case 키와 일치
             "score": round(score, 2),
+            "cur_prc": cur_prc,
             "dm1": dm1,
+            "dm2": dm2,   # scorer.py cont_days 계산에 필요
+            "dm3": dm3,   # scorer.py cont_days 계산에 필요
             "tot": tot,
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
             "entry_type": "현재가_종가",
             "target_pct": 8.0,
+            "target2_pct": 12.0,
             "stop_pct": -4.0
         })
 

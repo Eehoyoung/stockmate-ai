@@ -18,9 +18,10 @@ _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 # 부호 및 콤마 제거 유틸리티
 def clean_val(val) -> float:
     if not val: return 0.0
-    return float(str(val).replace("+", "").replace("-", "").replace(",", ""))
+    # '+' 부호만 제거, '-'는 음수 부호이므로 보존
+    return float(str(val).replace("+", "").replace(",", ""))
 
-async def fetch_program_netbuy(token: str, market: str) -> dict:
+async def fetch_progra_netbuy(token: str, market: str) -> dict:
     """ka90003 프로그램순매수상위50 조회 (연속조회 포함)"""
     market_map = {"KOSPI": "P00101", "KOSDAQ": "P10102", "001": "P00101", "101": "P10102", "000": "P00101"}
     kiwoom_mrkt = market_map.get(market.upper(), "P00101")
@@ -59,7 +60,18 @@ async def fetch_program_netbuy(token: str, market: str) -> dict:
             for x in items:
                 stk_cd = x.get("stk_cd")
                 if stk_cd:
-                    result[stk_cd] = int(clean_val(x.get("prm_netprps_amt", 0)))
+                    try:
+                        cur_prc = abs(int(float(
+                            str(x.get("cur_prc", "0")).replace("+", "").replace(",", "").replace("-", "") or "0"
+                        )))
+                    except (TypeError, ValueError):
+                        cur_prc = 0
+                    result[stk_cd] = {
+                        "net_buy_amt": int(clean_val(x.get("prm_netprps_amt", 0))),
+                        "stk_nm": str(x.get("stk_nm", "")).strip(),
+                        "cur_prc": cur_prc,
+                        "flu_rt": clean_val(x.get("flu_rt", "0")),
+                    }
 
             cont_yn = resp.headers.get("cont-yn", "N")
             next_key = resp.headers.get("next-key", "").strip()
@@ -156,6 +168,16 @@ async def check_extra_conditions(token: str, stk_cd: str, market: str = "001") -
 
 async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
     """전술 5 메인 스캔 함수"""
+    # 0. candidates:s5:{market} 풀 우선 확인
+    pool_codes: list = []
+    if rdb:
+        try:
+            pool_codes = await rdb.lrange(f"candidates:s5:{market}", 0, -1)
+            if pool_codes:
+                logger.debug("[S5] candidates:s5:%s 풀 사용 (%d개)", market, len(pool_codes))
+        except Exception as e:
+            logger.debug("[S5] 풀 조회 실패: %s", e)
+
     # 1. 기초 데이터 동시 수집
     prog_map, frgn_set = await asyncio.gather(
         fetch_program_netbuy(token, market),
@@ -164,21 +186,33 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
 
     # 2. 프로그램 순매수 & 외인 순매수 교집합 추출 (순매수 금액 상위 15종목으로 제한)
     overlap_raw = set(prog_map.keys()) & frgn_set
-    overlap = sorted(overlap_raw, key=lambda c: prog_map.get(c, 0), reverse=True)[:15]
+    # 풀이 있으면 풀 종목으로 추가 필터
+    if pool_codes:
+        pool_set = set(pool_codes)
+        overlap_raw = overlap_raw & pool_set
+        logger.debug("[S5] 풀 필터 후 교집합 %d개", len(overlap_raw))
+    else:
+        logger.debug("[S5] 풀 없음 – ka90003 전수 조회")
+    overlap = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:15]
     results = []
 
     # 3. 교집합 종목들에 대해 정밀 필터 적용 (ka10044+ka10080 × 15 = 30 calls max)
     for stk_cd in overlap:
         await asyncio.sleep(_API_INTERVAL) # 과부하 방지
         if await check_extra_conditions(token, stk_cd, market):
-            stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+            info = prog_map[stk_cd]
+            # ka90003 응답에서 직접 수집한 stk_nm/cur_prc 우선 사용
+            stk_nm = info.get("stk_nm") or await fetch_stk_nm(rdb, token, stk_cd)
             results.append({
                 "stk_cd": stk_cd,
                 "stk_nm": stk_nm,
-                "strategy": "프로그램_기관_수급",
-                "net_buy_amt": prog_map[stk_cd],
+                "cur_prc": info.get("cur_prc", 0),
+                "strategy": "S5_PROG_FRGN",  # scorer.py case 키와 일치
+                "net_buy_amt": info["net_buy_amt"],
+                "flu_rt": info.get("flu_rt", 0.0),
                 "entry_type": "지정가_1호가",
                 "target_pct": 3.0,
+                "target2_pct": 4.5,
                 "stop_pct": -2.0,
             })
 

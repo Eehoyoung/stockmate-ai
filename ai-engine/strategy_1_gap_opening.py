@@ -117,7 +117,7 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
             "cur_prc": exp_price,   # 예상체결가 = 시초가 진입가
-            "strategy": "시초가 매매",
+            "strategy": "S1_GAP_OPEN",
             "gap_pct": round(gap_pct, 2),
             "cntr_strength": round(strength, 1),
             "score": round(score, 2),

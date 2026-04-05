@@ -126,6 +126,12 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
             except Exception:
                 pass
 
+        # S15는 스윙 전략 — WS 미구독 시 flu_rt=0 → 일봉 시가 대비 등락률로 폴백
+        if flu_rt == 0:
+            t_open = _safe_price(candles[0].get("open_pric"))
+            if t_open > 0:
+                flu_rt = (cur_prc - t_open) / t_open * 100
+
         if cntr_str is None:
             await asyncio.sleep(_API_INTERVAL)
             cntr_str = await fetch_cntr_strength(token, stk_cd)

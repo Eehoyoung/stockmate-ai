@@ -1,118 +1,133 @@
-# ka10029 – 예상체결등락률상위요청
-
-> **용도**: 장전 동시호가 구간에서 갭상승 후보 전체 시장 스캔  
-> S1(갭상승 시초가) · S7(동시호가) 후보 종목 일괄 탐색
-
-**URL**: `POST https://api.kiwoom.com/api/dostk/rkinfo`  
-**모의**: `POST https://mockapi.kiwoom.com/api/dostk/rkinfo`  
-**Header**: `api-id: ka10029`  
-**활성 시간**: **08:00~09:00** (장전 동시호가 구간에서 의미 있는 데이터)
-
----
-
-## Request Body
-
-| 필드 | 타입 | 필수 | 설명 |
-|------|------|------|------|
-| `mrkt_tp` | String(3) | Y | `000`전체 `001`코스피 `101`코스닥 |
-| `sort_tp` | String(1) | Y | **`1`상승률 `2`상승폭 `3`보합 `4`하락률 `5`하락폭 `6`체결량 `7`상한 `8`하한** |
-| `trde_qty_cnd` | String(5) | Y | `0`전체 `1`천주이상 `3`3천주 `5`5천주 `10`만주이상 `50`5만주이상 `100`10만주이상 |
-| `stk_cnd` | String(2) | Y | `0`전체 `1`관리종목제외 `3`우선주제외 `4`관리+우선주제외 `5`증100제외 `11`정리매매제외 `14`ETF제외 `15`스팩제외 `16`ETF+ETN제외 |
-| `crd_cnd` | String(1) | Y | `0`전체 `9`신용융자전체 |
-| `pric_cnd` | String(2) | Y | `0`전체 `1`1천원미만 `2`1천원~2천원 `3`2천원~5천원 `4`5천원~1만원 `5`1만원이상 `8`1천원이상 `10`1만원미만 |
-| `stex_tp` | String(1) | Y | `1`KRX `2`NXT `3`통합 |
-
----
-
-## Response Body – `exp_cntr_flu_rt_upper` (LIST)
-
-| 필드 | 설명 | 활용 |
-|------|------|------|
-| `stk_cd` | 종목코드 | |
-| `stk_nm` | 종목명 | |
-| **`exp_cntr_pric`** | **예상체결가** | **갭 계산 분자** |
-| **`base_pric`** | **기준가(전일종가)** | **갭 계산 분모** |
-| **`flu_rt`** | **예상 등락률(%)** | **갭% 직접 확인 가능** |
-| `pred_pre` | 전일대비 | |
-| `exp_cntr_qty` | 예상체결량 | |
-| `sel_req` | 매도잔량 | |
-| `sel_bid` | 매도호가 | |
-| `buy_bid` | 매수호가 | |
-| `buy_req` | 매수잔량 | |
-
----
-
-## 호출 예시
-
-```json
-// 상승률 상위, 만주 이상, 관리종목+ETF 제외, 1천원 이상
+키움 REST API
+API 정보
+메뉴 위치 국내주식 > 순위정보 > 예상체결등락률상위요청(ka10029)
+API 명 예상체결등락률상위요청
+API ID ka10029
+기본정보
+Method POST
+운영 도메인 https://api.kiwoom.com
+모의투자 도메인 https://mockapi.kiwoom.com(KRX만 지원가능)
+URL /api/dostk/rkinfo
+Format JSON
+Content-Type application/json;charset=UTF-8
+개요
+Request
+구분 Element 한글명 Type Require
+d
+Length Description
+Header api-id TR명 String Y 10
+Header authorization 접근토큰 String Y 1000 토큰 지정시 토큰타입("Bearer") 붙혀서 호출
+예) Bearer Egicyx...
+Header cont-yn 연속조회여부 String N 1
+응답 Header의 연속조회여부값이 Y일 경우 다음데이터
+요청시 응답 Header의 cont-yn값 세팅
+Header next-key 연속조회키 String N 50 응답 Header의 연속조회여부값이 Y일 경우 다음데이터
+요청시 응답 Header의 next-key값 세팅
+Body mrkt_tp 시장구분 String Y 3 000:전체, 001:코스피, 101:코스닥
+Body sort_tp 정렬구분 String Y 1
+1:상승률, 2:상승폭, 3:보합, 4:하락률, 5:하락폭, 6:체결량,
+7:상한, 8:하한
+Body trde_qty_cnd 거래량조건 String Y 5
+0:전체조회, 1;천주이상, 3:3천주, 5:5천주, 10:만주이상,
+50:5만주이상, 100:10만주이상
+Body stk_cnd 종목조건 String Y 2
+0:전체조회, 1:관리종목제외, 3:우선주제외,
+4:관리종목,우선주제외, 5:증100제외, 6:증100만보기,
+7:증40만보기, 8:증30만보기, 9:증20만보기,
+11:정리매매종목제외, 12:증50만보기, 13:증60만보기,
+14:ETF제외, 15:스팩제외, 16:ETF+ETN제외
+Body crd_cnd 신용조건 String Y 1
+0:전체조회, 1:신용융자A군, 2:신용융자B군, 3:신용융자C군,
+4:신용융자D군, 5:신용한도초과제외, 7:신용융자E군,
+8:신용대주, 9:신용융자전체
+Body pric_cnd 가격조건 String Y 2
+0:전체조회, 1:1천원미만, 2:1천원~2천원, 3:2천원~5천원,
+4:5천원~1만원, 5:1만원이상, 8:1천원이상, 10:1만원미만
+Body stex_tp 거래소구분 String Y 1 1:KRX, 2:NXT 3.통합
+Response
+구분 Element 한글명 Type Require
+d
+Length Description
+Header api-id TR명 String Y 10
+Header cont-yn 연속조회여부 String N 1 다음 데이터가 있을시 Y값 전달
+Header next-key 연속조회키 String N 50 다음 데이터가 있을시 다음 키값 전달
+Body exp_cntr_flu_rt_uppe 예상체결등락률상위 LIST N
+93 / 528
+Response
+구분 Element 한글명 Type Require
+d
+Length Description
+r
+Body - stk_cd 종목코드 String N 20
+Body - stk_nm 종목명 String N 40
+Body - exp_cntr_pric 예상체결가 String N 20
+Body - base_pric 기준가 String N 20
+Body - pred_pre_sig 전일대비기호 String N 20
+Body - pred_pre 전일대비 String N 20
+Body - flu_rt 등락률 String N 20
+Body - exp_cntr_qty 예상체결량 String N 20
+Body - sel_req 매도잔량 String N 20
+Body - sel_bid 매도호가 String N 20
+Body - buy_bid 매수호가 String N 20
+Body - buy_req 매수잔량 String N 20
+Request Example
 {
-  "mrkt_tp": "000",
-  "sort_tp": "1",
-  "trde_qty_cnd": "10",
-  "stk_cnd": "1",
-  "crd_cnd": "0",
-  "pric_cnd": "8",
-  "stex_tp": "1"
+"mrkt_tp": "000",
+"sort_tp": "1",
+"trde_qty_cnd": "0",
+"stk_cnd": "0",
+"crd_cnd": "0",
+"pric_cnd": "0",
+"stex_tp": "3"
 }
-
-// Response
+Response Example
 {
-  "exp_cntr_flu_rt_upper": [
-    {
-      "stk_cd": "005930",
-      "stk_nm": "삼성전자",
-      "exp_cntr_pric": "+48100",
-      "base_pric": "37000",
-      "pred_pre_sig": "1",
-      "pred_pre": "+11100",
-      "flu_rt": "+30.00",
-      "exp_cntr_qty": "1",
-      "sel_req": "0",
-      "buy_bid": "0",
-      "buy_req": "0"
-    }
-  ],
-  "return_code": 0
+"exp_cntr_flu_rt_upper": [
+{
+"stk_cd": "005930",
+"stk_nm": "삼성전자",
+"exp_cntr_pric": "+48100",
+"base_pric": "37000",
+"pred_pre_sig": "1",
+"pred_pre": "+11100",
+"flu_rt": "+30.00",
+"exp_cntr_qty": "1",
+"sel_req": "0",
+"sel_bid": "0",
+"buy_bid": "0",
+"buy_req": "0"
+},
+{
+"stk_cd": "005930",
+"stk_nm": "삼성전자",
+"exp_cntr_pric": "+40000",
+"base_pric": "34135",
+"pred_pre_sig": "2",
+"pred_pre": "+5865",
+"flu_rt": "+17.18",
+"exp_cntr_qty": "1",
+"sel_req": "1",
+"sel_bid": "+40000",
+"buy_bid": "+35370",
+"buy_req": "1"
+},
+{
+"stk_cd": "005930",
+"stk_nm": "삼성전자",
+"exp_cntr_pric": "+37750",
+"base_pric": "36550",
+94 / 528
+Response Example
+"pred_pre_sig": "2",
+"pred_pre": "+1200",
+"flu_rt": "+3.28",
+"exp_cntr_qty": "2",
+"sel_req": "0",
+"sel_bid": "0",
+"buy_bid": "+37850",
+"buy_req": "3"
 }
-```
-
----
-
-## S1/S7 전술 활용 패턴
-
-```java
-// S1: 갭상승 3~15% 종목 일괄 필터 (WebSocket 0H 개별 조회 대신 사용 가능)
-List<TradingSignalDto> s1Candidates = resp.getItems().stream()
-    .filter(item -> {
-        double fluRt = parseDouble(item.getFluRt());
-        return fluRt >= 3.0 && fluRt <= 15.0;
-    })
-    .map(item -> TradingSignalDto.builder()
-        .stkCd(item.getStkCd())
-        .stkNm(item.getStkNm())
-        .gapPct(parseDouble(item.getFluRt()))
-        .build())
-    .collect(Collectors.toList());
-
-// S7: 갭 2~10% 필터 후 Redis 0D 호가비율 개별 확인
-```
-
----
-
-## 0H WebSocket vs ka10029 비교
-
-| 구분 | 0H WebSocket | ka10029 REST |
-|------|-------------|-------------|
-| 방식 | 종목별 실시간 push | 전체 시장 순위 일괄 조회 |
-| 속도 | 빠름 | 느림 (REST 호출) |
-| 활용 | 구독 종목 실시간 모니터링 | 장전 갭 후보 전수 탐색 |
-| 추천 | 구독 종목 확정 후 | **구독 전 후보 선별 시** |
-
----
-
-## 주의
-
-- 장중에는 예상체결 값이 의미 없으므로 **08:00~09:00** 에만 호출
-- `flu_rt` 값에 `+` 기호 포함 → `NumberParseUtil.toDouble()` 사용
-- `base_pric` = 전일 기준가 (권리락 반영 조정가)
+],
+"return_code": 0,
+"return_msg": "정상적으로 처리되었습니다"
+}

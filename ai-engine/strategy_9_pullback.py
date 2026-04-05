@@ -48,6 +48,7 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
             logger.warning("[S9] Redis 후보 조회 실패: %s", e)
 
     if not candidates:
+        logger.warning("[S9] candidates:s9:001/101 풀 없음 – candidates_builder 기동 확인 필요")
         return []
 
     results = []
@@ -99,6 +100,8 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         stoch_gc = (stoch_k[0] > stoch_d[0]) and (stoch_k[1] <= stoch_d[1]) if len(stoch_k) > 1 else False
 
         # 5. 실시간 체결 데이터 (Redis Tick)
+        # S9는 스윙 전략 — WS 미구독 종목은 tick = {} → flu_rt = 0
+        # 일봉(candles[0])의 당일 등락 여부로 양봉 조건(조건 3)을 대체 적용
         flu_rt = 0.0
         cntr_str = 100.0
         if rdb:
@@ -107,7 +110,9 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
                 flu_rt = float(str(tick.get("flu_rt", 0)).replace("+", ""))
                 cntr_str = float(str(tick.get("cntr_str", 100)).replace(",", ""))
 
-        if flu_rt <= 0: continue # 당일 마이너스 종목 제외
+        # WS 미구독(flu_rt=0)이면 일봉 양봉 조건(t_close > t_open)으로 대체
+        # WS 구독 종목은 기존대로 마이너스 등락률 시 제외
+        if flu_rt < 0: continue  # 명시적 하락 확인 시 제외 (0은 미구독으로 허용)
 
         # 6. 최종 점수 산정
         score = (
@@ -120,14 +125,19 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+        vol_ma20 = sum(vols[1:21]) / 20 if len(vols) >= 21 else 0
+        vol_ratio = round(vols[0] / vol_ma20, 2) if vol_ma20 > 0 else 0.0
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
-            "strategy": "정배열 눌림목",
+            "strategy": "S9_PULLBACK_SWING",
             "score": round(score, 2),
             "pct_ma5": round(pct_ma5, 2),
             "rsi": round(rsi_now, 1),
             "stoch_gc": stoch_gc,
+            "cntr_strength": round(cntr_str, 1),
+            "vol_ratio": vol_ratio,
+            "flu_rt": round(flu_rt, 2),
             "entry_type": "현재가_종가_분할매수",
             "target_pct": 6.0,
             "stop_pct": -4.0

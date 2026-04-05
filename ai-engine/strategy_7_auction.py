@@ -20,7 +20,8 @@ KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 def clean_num(val) -> float:
     if not val: return 0.0
-    return float(str(val).replace("+", "").replace("-", "").replace(",", ""))
+    # '+' 부호만 제거, '-'는 음수 부호이므로 보존
+    return float(str(val).replace("+", "").replace(",", ""))
 
 async def fetch_gap_rank(token: str, market: str) -> dict:
     """ka10029 예상체결등락률상위 - 연속조회로 전체 후보 수집"""
@@ -120,11 +121,25 @@ async def fetch_credit_filter(token: str, market: str = "000") -> set:
 
 async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list:
     """전술 7: 동시호가 최종 스캔 함수"""
-    # 1. 갭 후보군 및 신용 리스크 종목 병렬 수집 (연속조회 포함)
-    gap_candidates, high_credit_stocks = await asyncio.gather(
-        fetch_gap_rank(token, market),
-        fetch_credit_filter(token, market)
-    )
+    # 1. candidates:s7:{market} 풀 우선 사용
+    gap_candidates: dict = {}
+    if rdb:
+        try:
+            pool = await rdb.lrange(f"candidates:s7:{market}", 0, -1)
+            if pool:
+                for i, stk_cd in enumerate(pool):
+                    gap_candidates[stk_cd] = {"rank": i + 1, "gap_rt": 5.0}
+                logger.debug("[S7] candidates:s7:%s 풀 사용 (%d개)", market, len(pool))
+        except Exception as e:
+            logger.debug("[S7] 풀 조회 실패, fallback: %s", e)
+
+    # 풀 없으면 ka10029 직접 조회 (fallback)
+    if not gap_candidates:
+        logger.debug("[S7] 풀 없음 – ka10029 직접 조회 (fallback)")
+        gap_candidates = await fetch_gap_rank(token, market)
+
+    # 신용 리스크 종목 수집
+    high_credit_stocks = await fetch_credit_filter(token, market)
 
     results = []
 

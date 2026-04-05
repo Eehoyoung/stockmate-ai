@@ -1,13 +1,14 @@
 """
 ai-engine/strategy_runner.py
 ──────────────────────────────────────────────────────────────
-StockMate AI – Python 전술 스캐너 (보완적 실행자)
+StockMate AI – Python 전술 스캐너 (메인 실행자)
 
 역할
-  Java api-orchestrator 가 메인 전술 스캔을 담당하지만,
-  이 모듈은 Python 전술 파일(strategy_1~7.py)을 직접 실행하여
-  telegram_queue 에 신호를 발행하는 보완 경로를 제공한다.
-  신호 감지 시 TelegramNotifier 를 통해 즉시 매수 알림을 발송한다.
+  이 모듈은 Python 전술 파일(strategy_1~15.py)을 직접 실행하여
+  telegram_queue 에 신호를 발행한다.
+  신호는 반드시 telegram_queue → queue_worker → scorer → confirm_worker
+  → ai_scored_queue → telegram-bot 경로를 통해 발송된다.
+  (scorer MIN_SCORE 필터 및 Claude AI 2차 평가 포함)
 
 활성화
   환경변수: ENABLE_STRATEGY_SCANNER=true
@@ -27,8 +28,6 @@ import os
 # 키움 REST API 초당 약 5회 제한 → 루프 내 공통 대기 시간
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
-from telegram_notifier import TelegramNotifier
-
 logger = logging.getLogger(__name__)
 
 REDIS_TOKEN_KEY   = "kiwoom:token"
@@ -39,8 +38,12 @@ QUEUE_TTL_SECONDS = 43200  # 12시간
 MAX_CONCURRENT_STRATEGIES = int(os.getenv("MAX_CONCURRENT_STRATEGIES", "3"))
 _semaphore: asyncio.Semaphore | None = None
 
-# 모듈 수준 TelegramNotifier 싱글턴 (이벤트 루프 불필요, 환경변수만 읽음)
-_notifier: TelegramNotifier | None = None
+# 스윙 전략은 하루 1회 dedup (86400s), 단기 전략은 1시간(3600s)
+_SWING_STRATEGIES = {
+    "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S10_NEW_HIGH",
+    "S11_FRGN_CONT", "S12_CLOSING", "S13_BOX_BREAKOUT",
+    "S14_OVERSOLD_BOUNCE", "S15_MOMENTUM_ALIGN",
+}
 
 
 def _get_semaphore() -> asyncio.Semaphore:
@@ -49,14 +52,6 @@ def _get_semaphore() -> asyncio.Semaphore:
     if _semaphore is None:
         _semaphore = asyncio.Semaphore(MAX_CONCURRENT_STRATEGIES)
     return _semaphore
-
-
-def _get_notifier() -> TelegramNotifier:
-    """TelegramNotifier 싱글턴 반환"""
-    global _notifier
-    if _notifier is None:
-        _notifier = TelegramNotifier()
-    return _notifier
 
 
 async def _run_strategy_with_semaphore(name: str, coro):
@@ -77,28 +72,43 @@ async def _load_token(rdb) -> str | None:
 
 
 async def _push_signals(rdb, signals: list, strategy_name: str):
-    """신호 목록을 telegram_queue 에 LPUSH 하고 Telegram 알림 즉시 발송.
+    """신호 목록을 telegram_queue 에 LPUSH.
 
-    Redis dedup 키(scanner:dedup:{strategy}:{stk_cd}, TTL 1h)로 동일 종목을
-    1시간 내 중복 발송하지 않는다. Java api-orchestrator 의 signal:{stk_cd}:{strategy}
-    키와 동일한 논리를 Python 스캐너 경로에 적용하여 이중 발송을 방지한다.
+    모든 신호는 telegram_queue → queue_worker → scorer → confirm_worker
+    → ai_scored_queue → telegram-bot 경로를 통해 발송된다.
+    (scorer MIN_SCORE 필터 및 Claude AI 2차 평가 적용)
+
+    dedup 키(scanner:dedup:{strategy}:{stk_cd}) TTL:
+      스윙 전략(S8~S15): 86400s (하루 1회)
+      단기 전략(S1~S7):  3600s  (1시간 1회)
     """
-    notifier = _get_notifier()
     for sig in signals:
         stk_cd = sig.get("stk_cd", "")
 
-        # ── 중복 방지 (1시간 TTL) ─────────────────────────────────
+        # ── 중복 방지 ──────────────────────────────────────────────
+        dedup_ttl = 86400 if strategy_name in _SWING_STRATEGIES else 3600
         dedup_key = f"scanner:dedup:{strategy_name}:{stk_cd}"
         try:
-            # SET … NX EX: 키가 없을 때만 세팅 → 성공(True)이면 신규, 실패(None/False)면 중복
-            is_new = await rdb.set(dedup_key, "1", nx=True, ex=3600)
+            is_new = await rdb.set(dedup_key, "1", nx=True, ex=dedup_ttl)
         except Exception as dedup_err:
             logger.debug("[Runner] dedup 확인 실패 (통과): %s", dedup_err)
-            is_new = True  # Redis 오류 시 보수적으로 통과
+            is_new = True
         if not is_new:
-            logger.debug("[Runner] 중복 무시 [%s %s] (dedup TTL 1h)", strategy_name, stk_cd)
+            logger.debug("[Runner] 중복 무시 [%s %s] (dedup TTL %ds)",
+                         strategy_name, stk_cd, dedup_ttl)
             continue
-        # ─────────────────────────────────────────────────────────
+        # ──────────────────────────────────────────────────────────
+
+        # ── 종목명 보완 (stk_nm 없으면 Redis 캐시/API 조회) ────────
+        if not sig.get("stk_nm"):
+            try:
+                from http_utils import fetch_stk_nm
+                token = await rdb.get(REDIS_TOKEN_KEY)
+                if token:
+                    sig["stk_nm"] = await fetch_stk_nm(rdb, token, stk_cd)
+            except Exception as nm_err:
+                logger.debug("[Runner] stk_nm 조회 실패 [%s]: %s", stk_cd, nm_err)
+        # ──────────────────────────────────────────────────────────
 
         try:
             payload = json.dumps(sig, ensure_ascii=False, default=str)
@@ -108,13 +118,6 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
                         strategy_name, sig.get("stk_cd"), sig.get("score", "N/A"))
         except Exception as e:
             logger.error("[Runner] 신호 발행 실패 [%s]: %s", strategy_name, e)
-
-        # Telegram 직접 알림 – 실패해도 루프를 중단하지 않는다
-        try:
-            await notifier.send_buy_signal(sig)
-        except Exception as e:
-            logger.error("[Runner] Telegram 알림 실패 [%s] stk=%s: %s",
-                         strategy_name, sig.get("stk_cd"), e)
 
 
 async def _run_once(rdb):
@@ -173,8 +176,8 @@ async def _run_once(rdb):
         async def _s4():
             try:
                 from strategy_4_big_candle import check_big_candle
-                kospi  = await rdb.lrange("candidates:s12:001", 0, 99)
-                kosdaq = await rdb.lrange("candidates:s12:101", 0, 99)
+                kospi  = await rdb.lrange("candidates:s4:001", 0, 99)
+                kosdaq = await rdb.lrange("candidates:s4:101", 0, 99)
                 candidates = list(dict.fromkeys(kospi + kosdaq))[:30]  # 상위 30개만
                 s4_signals = []
                 for stk_cd in candidates:
@@ -314,12 +317,8 @@ async def _run_once(rdb):
 
 async def run_strategy_scanner(rdb):
     """전술 스캐너 루프 – SCAN_INTERVAL_SEC 마다 전 전술 실행"""
-    logger.info("[Runner] 전술 스캐너 시작 (interval=%.0fs)", SCAN_INTERVAL_SEC)
-    notifier = _get_notifier()
-    if notifier.enabled:
-        logger.info("[Runner] Telegram 직접 알림 활성화 (dry_run=%s)", notifier.dry_run)
-    else:
-        logger.warning("[Runner] Telegram 직접 알림 비활성화 – 환경변수 확인 필요")
+    logger.info("[Runner] 전술 스캐너 시작 (interval=%.0fs, swing_dedup=86400s, intraday_dedup=3600s)",
+                SCAN_INTERVAL_SEC)
     while True:
         try:
             await _run_once(rdb)

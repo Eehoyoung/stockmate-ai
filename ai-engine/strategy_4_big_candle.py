@@ -113,13 +113,16 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
 
     # 모든 조건 통과 시 종목명 가져오기 및 결과 반환
     stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+
     return {
         "stk_cd": stk_cd,
         "stk_nm": stk_nm,
         "cur_prc": round(c),
-        "strategy": "장대양봉 추격",
+        "strategy": "S4_BIG_CANDLE",
         "gain_pct": round(gain_pct, 2),
         "vol_ratio": round(vol_ratio, 1),
+        "body_ratio": round(body_ratio, 2),
+        "is_new_high": is_breakout,
         "cntr_strength": round(avg_strength, 1),
         "entry_type": "추격_시장가",
         "target_pct": 4.0,

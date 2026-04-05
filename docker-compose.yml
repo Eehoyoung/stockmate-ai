@@ -1,11 +1,19 @@
 services:
+
+  # ── 인프라 ────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     ports: ['6379:6379']
     env_file: .env
     command: redis-server --requirepass cv93523827
-    volumes: [redis-data:/data]
+    volumes:
+      - redis-data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "cv93523827", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:16-alpine
@@ -15,8 +23,105 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes: [pg-data:/var/lib/postgresql/data]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 애플리케이션 ──────────────────────────────────────────
+  api-orchestrator:
+    build:
+      context: ./api-orchestrator
+      dockerfile: Dockerfile
+    ports: ['8080:8080']
+    env_file: ./api-orchestrator/.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - ./api-orchestrator/logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  websocket-listener:
+    build:
+      context: ./websocket-listener
+      dockerfile: Dockerfile
+    ports: ['8081:8081']
+    env_file: ./websocket-listener/.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./websocket-listener/logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  ai-engine:
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    env_file: ./ai-engine/.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      LOG_LEVEL: DEBUG
+    volumes:
+      - ./ai-engine/logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    env_file: ./telegram-bot/.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NODE_OPTIONS: --dns-result-order=ipv4first
+    extra_hosts:
+      - "api.telegram.org:149.154.166.110"
+    volumes:
+      - ./telegram-bot/logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   redis-data:

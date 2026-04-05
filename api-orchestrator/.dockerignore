@@ -1,0 +1,6 @@
+.env
+build/
+logs/
+.gradle/
+*.iml
+src/test/

@@ -25,13 +25,21 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 STRATEGY_DISPLAY: dict[str, tuple[str, str]] = {
-    "S1_GAP_OPEN":      ("🚀 갭상승 시초가",  "갭+체결강도+호가비율 조건 충족"),
-    "S2_VI_PULLBACK":   ("🎯 VI 눌림목",      "VI 발동 후 눌림 구간 재진입"),
-    "S3_INST_FRGN":     ("🏦 외인+기관 동반", "외인·기관 3일 연속 순매수"),
-    "S4_BIG_CANDLE":    ("📊 장대양봉 추격",  "장대양봉+거래량 급증 돌파"),
-    "S5_PROG_FRGN":     ("💻 프로그램+외인",  "프로그램 순매수+외인 동반"),
-    "S6_THEME_LAGGARD": ("🔥 테마 후발주",    "테마 상위+후발주 체결강도 충족"),
-    "S7_AUCTION":       ("⚡ 동시호가",        "갭+호가비율 조건 충족"),
+    "S1_GAP_OPEN":          ("🚀 갭상승 시초가",      "갭+체결강도+호가비율 조건 충족"),
+    "S2_VI_PULLBACK":       ("🎯 VI 눌림목",          "VI 발동 후 눌림 구간 재진입"),
+    "S3_INST_FRGN":         ("🏦 외인+기관 동반",     "외인·기관 3일 연속 순매수"),
+    "S4_BIG_CANDLE":        ("📊 장대양봉 추격",      "장대양봉+거래량 급증 돌파"),
+    "S5_PROG_FRGN":         ("💻 프로그램+외인",      "프로그램 순매수+외인 동반"),
+    "S6_THEME_LAGGARD":     ("🔥 테마 후발주",        "테마 상위+후발주 체결강도 충족"),
+    "S7_AUCTION":           ("⚡ 동시호가",            "갭+호가비율 조건 충족"),
+    "S8_GOLDEN_CROSS":      ("📈 골든크로스 스윙",    "5일선 골든크로스+거래량 확인"),
+    "S9_PULLBACK_SWING":    ("🔄 눌림목 반등 스윙",   "정배열 5MA 근접 눌림 반등"),
+    "S10_NEW_HIGH":         ("🏆 52주 신고가 돌파",   "신고가+거래량 급증"),
+    "S11_FRGN_CONT":        ("🌏 외인 연속 수급",     "외국인 3일+ 연속 순매수"),
+    "S12_CLOSING":          ("🔔 종가 기관수급 강세",  "종가 등락률+체결강도 확인"),
+    "S13_BOX_BREAKOUT":     ("📦 박스권 돌파 스윙",   "박스권 상단 거래량 돌파"),
+    "S14_OVERSOLD_BOUNCE":  ("↩️ 과매도 반등",        "RSI 과매도+ATR 수렴"),
+    "S15_MOMENTUM_ALIGN":   ("⚡ 모멘텀 정렬 스윙",   "다중 지표 동조+거래량 확인"),
 }
 
 

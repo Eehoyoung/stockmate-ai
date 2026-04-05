@@ -80,6 +80,77 @@ async def fetch_stk_nm(rdb, token: str, stk_cd: str) -> str:
     return stk_nm
 
 
+async def fetch_hoga(token: str, stk_cd: str, rdb=None) -> float | None:
+    """
+    매수/매도 호가 총잔량 비율(bid_ratio) 조회.
+
+    우선순위:
+      1. Redis ws:hoga:{stk_cd} — WS 0D 구독 종목 (total_buy_bid_req / total_sel_bid_req)
+      2. ka10004 주식호가요청 REST — WS 미구독 스윙 종목 (tot_buy_req / tot_sel_req)
+
+    반환: bid_ratio (float, ≥ 0) | None (조회 실패 또는 데이터 없음)
+    캐시 TTL: REST 조회 결과를 Redis hoga:{stk_cd}:rest 에 30초 캐싱.
+    """
+    def _sf(v) -> float:
+        try:
+            return float(str(v).replace(",", "").replace("+", ""))
+        except (TypeError, ValueError):
+            return 0.0
+
+    # 1. WS Redis 캐시 우선
+    if rdb:
+        try:
+            ws_hoga = await rdb.hgetall(f"ws:hoga:{stk_cd}")
+            if ws_hoga:
+                bid = _sf(ws_hoga.get("total_buy_bid_req", 0))
+                ask = _sf(ws_hoga.get("total_sel_bid_req", 0))
+                return bid / ask if ask > 0 else None
+        except Exception:
+            pass
+
+        # REST 결과 단기 캐시 확인 (30초)
+        try:
+            cached = await rdb.get(f"hoga:{stk_cd}:rest")
+            if cached is not None:
+                return float(cached) if cached != "None" else None
+        except Exception:
+            pass
+
+    # 2. ka10004 REST 조회
+    try:
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
+                headers={
+                    "api-id": "ka10004",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={"stk_cd": stk_cd},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10004", logger):
+                return None
+
+        tot_buy = _sf(data.get("tot_buy_req", 0))
+        tot_sel = _sf(data.get("tot_sel_req", 0))
+        ratio = (tot_buy / tot_sel) if tot_sel > 0 else None
+
+        # 30초 캐싱
+        if rdb:
+            try:
+                await rdb.set(f"hoga:{stk_cd}:rest", str(ratio), ex=30)
+            except Exception:
+                pass
+
+        return ratio
+
+    except Exception as e:
+        logger.debug("[http_utils] fetch_hoga [%s] 실패: %s", stk_cd, e)
+        return None
+
+
 async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
     """
     체결강도 조회 (ka10046 체결강도추이시간별요청).

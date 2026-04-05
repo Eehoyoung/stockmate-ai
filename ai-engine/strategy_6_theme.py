@@ -22,9 +22,9 @@ _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 def clean_num(val) -> float:
-    """부호 및 콤마 제거 유틸리티"""
+    """부호(+) 및 콤마 제거 유틸리티. '-'는 음수 등락률에 사용되므로 보존."""
     if not val: return 0.0
-    return float(str(val).replace("+", "").replace("-", "").replace(",", ""))
+    return float(str(val).replace("+", "").replace(",", ""))
 
 async def fetch_theme_groups(token: str) -> list:
     """ka90001 테마그룹별 상위 수익률 (연속조회 포함)"""
@@ -86,9 +86,20 @@ async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
     return results
 
 async def scan_theme_laggard(token: str, rdb=None) -> list:
-    """전술 6: 테마 상위 그룹 내 후발주 매수 스캔"""
+    """전술 6: 테마 상위 그룹 내 후발주 매수 스캔 (Redis 풀 우선 → fallback 직접 조회)"""
+    # 0. candidates:s6:001 풀 우선 확인 (S6는 시장 무관 동일 풀)
+    pool_codes: list = []
+    if rdb:
+        try:
+            pool_codes = await rdb.lrange("candidates:s6:001", 0, -1)
+            if pool_codes:
+                logger.debug("[S6] candidates:s6:001 풀 사용 (%d개)", len(pool_codes))
+        except Exception as e:
+            logger.debug("[S6] 풀 조회 실패: %s", e)
+
     themes = await fetch_theme_groups(token)
     final_candidates = {} # 중복 종목 방지를 위해 dict 사용 (stk_cd: data)
+    pool_set = set(pool_codes) if pool_codes else None
 
     for theme in themes:
         thema_grp_cd = theme.get("thema_grp_cd")
@@ -121,16 +132,21 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
             # 이미 다른 테마에서 선정된 종목이라면 패스
             if stk_cd in final_candidates: continue
 
+            # 풀이 있으면 풀 종목만 정밀 검증
+            if pool_set and stk_cd not in pool_set:
+                continue
+
             await asyncio.sleep(_API_INTERVAL)
             strength = await fetch_cntr_strength(token, stk_cd)
-
+            cur_prc = abs(float(str(stk.get("cur_prc", "0")).replace("+", "").replace(",", "")))
             # 체결강도 115% 이상으로 수급 유입 확인
             if strength >= 115:
                 stk_nm = stk.get("stk_nm", "").strip() or await fetch_stk_nm(rdb, token, stk_cd)
                 final_candidates[stk_cd] = {
                     "stk_cd": stk_cd,
                     "stk_nm": stk_nm,
-                    "strategy": "테마 후발주 매매",
+                    "cur_prc": cur_prc,
+                    "strategy": "S6_THEME_LAGGARD",  # scorer.py case 키와 일치
                     "theme_name": theme_nm,
                     "theme_flu_rt": theme_flu_rt,
                     "flu_rt": flu_rt,

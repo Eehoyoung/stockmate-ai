@@ -14,7 +14,7 @@ import asyncio
 import logging
 import os
 import httpx
-from http_utils import fetch_cntr_strength, validate_kiwoom_response
+from http_utils import fetch_cntr_strength, fetch_hoga, validate_kiwoom_response
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
@@ -112,12 +112,47 @@ async def fetch_volume_surge_map_all(token: str, market: str = "000") -> dict[st
     return result_map
 
 async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list:
-    """52주 신고가 돌파 스윙 전략 메인 스캐너"""
-    # 1. 두 API 데이터를 전체 페이지로 수집 (동시 실행)
-    new_high_items, vol_surge_map = await asyncio.gather(
-        fetch_new_high_stocks_all(token, market),
-        fetch_volume_surge_map_all(token, market),
-    )
+    """52주 신고가 돌파 스윙 전략 메인 스캐너 (Redis 풀 우선 → fallback 직접 조회)"""
+
+    # 1. candidates:s10:{market} 풀 확인 (market="000"이면 001+101 모두 조회)
+    pool_codes: list = []
+    if rdb:
+        try:
+            markets_to_check = ["001", "101"] if market == "000" else [market]
+            for mkt in markets_to_check:
+                codes = await rdb.lrange(f"candidates:s10:{mkt}", 0, -1)
+                pool_codes.extend(codes)
+            pool_codes = list(dict.fromkeys(pool_codes))  # 중복 제거
+            if pool_codes:
+                logger.debug("[S10] candidates:s10:* 풀 사용 (%d개)", len(pool_codes))
+        except Exception as e:
+            logger.debug("[S10] 풀 조회 실패: %s", e)
+
+    # 2. 원천 데이터 확보
+    if pool_codes:
+        # 풀 기반 경로: ka10016 생략, ws:tick에서 flu_rt 보완
+        vol_surge_map = await fetch_volume_surge_map_all(token, market)
+        new_high_items = [
+            {"stk_cd": cd, "flu_rt": "0", "cur_prc": "0", "stk_nm": ""}
+            for cd in pool_codes
+        ]
+        if rdb:
+            for item in new_high_items:
+                try:
+                    tick = await rdb.hgetall(f"ws:tick:{item['stk_cd']}")
+                    if tick:
+                        item["flu_rt"]  = tick.get("flu_rt", "0")
+                        item["cur_prc"] = tick.get("cur_prc", "0")
+                        item["stk_nm"]  = tick.get("stk_nm", "")
+                except Exception:
+                    pass
+    else:
+        # fallback: ka10016+ka10023 전수 조회
+        logger.debug("[S10] 풀 없음 – ka10016+ka10023 전수 조회")
+        new_high_items, vol_surge_map = await asyncio.gather(
+            fetch_new_high_stocks_all(token, market),
+            fetch_volume_surge_map_all(token, market),
+        )
 
     results = []
     for item in new_high_items:
@@ -139,15 +174,12 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         if sdnin_rt < 100.0:
             continue
 
-        # [수급 보완] 체결강도 확인
-        cntr_str = None
-        if rdb:
-            # Redis 우선 조회 (생략 가능하지만 성능상 유리)
-            pass
+        # [수급 보완] 체결강도 + 호가 비율 조회 (ka10046, ka10004)
+        await asyncio.sleep(_API_INTERVAL)
+        cntr_str = await fetch_cntr_strength(token, stk_cd)
 
-        if cntr_str is None:
-            await asyncio.sleep(_API_INTERVAL)
-            cntr_str = await fetch_cntr_strength(token, stk_cd)
+        await asyncio.sleep(_API_INTERVAL)
+        bid_ratio = await fetch_hoga(token, stk_cd, rdb)
 
         # [리스크 필터] MA20 이격도 검사
         try:
@@ -164,10 +196,11 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             "stk_cd": stk_cd,
             "stk_nm": str(item.get("stk_nm", "")).strip(),
             "cur_prc": round(cur_prc),
-            "strategy": "신고가 돌파 스윙",
+            "strategy": "S10_NEW_HIGH",
             "flu_rt": round(flu_rt, 2),
             "vol_surge_rt": round(sdnin_rt, 1),
             "cntr_strength": round(cntr_str, 1),
+            "bid_ratio": round(bid_ratio, 3) if bid_ratio is not None else None,
             "score": round(score, 2),
             "target_pct": 12.0,
             "stop_pct": -5.0,

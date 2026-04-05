@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(where python:*)",
+      "Bash(where python3:*)",
+      "Bash(xargs grep:*)",
+      "Bash(\"C:/Users/LeeHoYoung/IdeaProjects/t/stockmate-ai/websocket-listener/.venv/Scripts/python.exe\" --version)",
+      "Bash(C:/Users/LeeHoYoung/IdeaProjects/t/stockmate-ai/websocket-listener/venv/Scripts/python.exe:*)"
     ]
   }
 }

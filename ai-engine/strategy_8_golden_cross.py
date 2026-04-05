@@ -45,6 +45,7 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
             logger.warning("[S8] Redis 후보 조회 실패: %s", e)
 
     if not candidates:
+        logger.warning("[S8] candidates:s8:001/101 풀 없음 – candidates_builder 기동 확인 필요")
         return []
 
     results = []
@@ -120,14 +121,20 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+        vol_ratio = round(vol_today / vol_ma20, 2) if vol_ma20 > 0 else 0.0
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
-            "strategy": "기술적 스윙 추천",
+            "cur_prc": round(cur_prc),
+            "strategy": "S8_GOLDEN_CROSS",
             "score": round(score, 2),
             "rsi": round(rsi_now, 1),
             "gap_pct": round(gap_pct, 2),
             "flu_rt": flu_rt,
+            "cntr_strength": round(cntr_str, 1),
+            "vol_ratio": vol_ratio,
+            "is_today_cross": is_today_cross,
+            "is_macd_accel": is_macd_accel,
             "entry_type": "현재가_종가",
             "target_pct": 10.0,
             "stop_pct": -5.0
@@ -137,6 +144,7 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
 
 def clean_num(val):
     try:
-        return float(str(val).replace("+", "").replace("-", "").replace(",", ""))
+        # '+' 부호만 제거, '-'는 음수 부호이므로 보존
+        return float(str(val).replace("+", "").replace(",", ""))
     except:
         return 0.0

@@ -16,6 +16,7 @@ MIN_SCORE = float(os.getenv("AI_SCORE_THRESHOLD", "60.0"))
 
 # 전략별 Claude 호출 임계값
 CLAUDE_THRESHOLDS = {
+    # 데이 트레이딩 전략 — 현행 유지
     "S1_GAP_OPEN":      70,
     "S2_VI_PULLBACK":   65,
     "S3_INST_FRGN":     60,
@@ -23,14 +24,15 @@ CLAUDE_THRESHOLDS = {
     "S5_PROG_FRGN":     65,
     "S6_THEME_LAGGARD": 60,
     "S7_AUCTION":       70,
-    "S10_NEW_HIGH":     65,
-    "S11_FRGN_CONT":    60,
-    "S12_CLOSING":      65,
-    "S8_GOLDEN_CROSS":  65,
-    "S9_PULLBACK_SWING": 60,
-    "S13_BOX_BREAKOUT":    65,
-    "S14_OVERSOLD_BOUNCE": 65,
-    "S15_MOMENTUM_ALIGN":  70,
+    # 스윙 전략 — signal 필드 보완 + bid_ratio 중립화 후 재조정
+    "S8_GOLDEN_CROSS":     60,   # 65 → 60
+    "S9_PULLBACK_SWING":   55,   # 60 → 55
+    "S10_NEW_HIGH":        58,   # 65 → 58
+    "S11_FRGN_CONT":       58,   # 60 → 58
+    "S12_CLOSING":         60,   # 65 → 60
+    "S13_BOX_BREAKOUT":    62,   # 65 → 62
+    "S14_OVERSOLD_BOUNCE": 58,   # 65 → 58
+    "S15_MOMENTUM_ALIGN":  65,   # 70 → 65
 }
 
 MAX_CLAUDE_CALLS_PER_DAY = int(os.getenv("MAX_CLAUDE_CALLS_PER_DAY", "100"))
@@ -60,6 +62,16 @@ def _time_bonus(strategy: str) -> float:
     # 09:00~10:30: 크로스/돌파 전략 초반 모멘텀
     if 540 <= minute_of_day < 630:
         if strategy in ("S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S13_BOX_BREAKOUT"):
+            return 5.0
+
+    # 09:30~11:30: 테마 모멘텀 집중 시간대 (테마 후발주는 장 초반 에너지가 강함)
+    if 570 <= minute_of_day < 690:
+        if strategy == "S6_THEME_LAGGARD":
+            return 5.0
+
+    # 10:00~13:00: 52주 신고가·외인 연속 스윙 신호 포착 최적 시간대
+    if 600 <= minute_of_day < 780:
+        if strategy in ("S10_NEW_HIGH", "S11_FRGN_CONT"):
             return 5.0
 
     # 14:30~15:30: 종가강도 전략 최적 시간대
@@ -92,9 +104,11 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
     atr_pct  = _safe_float(signal.get("atr_pct", 0))
     cond_cnt = int(signal.get("cond_count", 0) or 0)
 
-    bid  = _safe_float(hoga.get("total_buy_bid_req"))
-    ask  = _safe_float(hoga.get("total_sel_bid_req", "1"))
-    bid_ratio = bid / ask if ask > 0 else 0.0
+    # bid_ratio: hoga dict가 비어있으면 WS 데이터 없음 → None (0점 아닌 스킵)
+    _hoga_available = bool(hoga)
+    bid  = _safe_float(hoga.get("total_buy_bid_req", 0))
+    ask  = _safe_float(hoga.get("total_sel_bid_req", 1))
+    bid_ratio = (bid / ask) if (_hoga_available and ask > 0) else None
 
     flu_rt = _safe_float(tick.get("flu_rt"))
 
@@ -106,7 +120,8 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # 체결강도
             score += 30 if strength > 150 else (20 if strength > 130 else (10 if strength > 110 else 0))
             # 호가비율
-            score += 25 if bid_ratio > 2 else (20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.3 else 0))
+            if bid_ratio is not None:
+                score += 25 if bid_ratio > 2 else (20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.3 else 0))
             # 캔들 체결강도 보너스 (신호에 포함된 경우)
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
             if cntr_sig > 0:
@@ -118,15 +133,24 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # is_dynamic: Java는 Boolean(true/false), Python 전술은 int(1/0) 으로도 전달될 수 있음
             is_dynamic = bool(signal.get("is_dynamic", False))
             score += 15 if is_dynamic else 0
-            score += 20 if strength > 120 else (10 if strength > 110 else 0)
-            score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.3 else 0)
+            # 체결강도: signal.cntr_strength(REST ka10046) 우선, 없으면 WS strength
+            cntr_sig_s2 = _safe_float(signal.get("cntr_strength", 0))
+            effective_str_s2 = cntr_sig_s2 if cntr_sig_s2 > 0 else strength
+            score += 20 if effective_str_s2 > 120 else (10 if effective_str_s2 > 110 else 0)
+            # 호가: WS hoga 미구독 시 signal.bid_ratio(ws:tick 기반) 폴백
+            s2_bid = bid_ratio if bid_ratio is not None else (
+                _safe_float(signal.get("bid_ratio", -1), -1) if signal.get("bid_ratio") is not None else None
+            )
+            if s2_bid is not None and s2_bid >= 0:
+                score += 20 if s2_bid > 1.5 else (10 if s2_bid > 1.3 else 0)
 
         case "S3_INST_FRGN":
             net_amt   = _safe_float(signal.get("net_buy_amt", 0))
             cont_days = int(signal.get("continuous_days", 0) or 0)
             vol_ratio = _safe_float(signal.get("vol_ratio", 0))
-            # 순매수 금액 (최대 25점)
-            score += min(25, net_amt / 1_000_000 * 0.5)
+            # 순매수수량(주) 기반 점수 (최대 25점): 5M주 이상 → 25점
+            # ka10063 netprps_qty 단위(주) 기준 → /100_000 스케일
+            score += min(25, net_amt / 100_000 * 0.5)
             # 연속 순매수 일수
             score += 30 if cont_days >= 5 else (20 if cont_days >= 3 else (10 if cont_days >= 1 else 0))
             # 거래량 비율
@@ -147,21 +171,30 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # 실시간 체결강도
             score += 25 if strength > 130 else (20 if strength > 120 else (10 if strength > 100 else 0))
             # 호가 매수 우위
-            score += 20 if bid_ratio > 2 else (15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0))
+            if bid_ratio is not None:
+                score += 20 if bid_ratio > 2 else (15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0))
 
         case "S6_THEME_LAGGARD":
-            gap = _safe_float(signal.get("gap_pct", 0))
+            # signal 필드명: flu_rt (gap_pct 아님 — S6는 후발주 등락률 기준)
+            flu_rt_s6 = _safe_float(signal.get("flu_rt", 0))
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
-            score += 25 if 1 <= gap < 3 else (15 if 3 <= gap < 5 else 0)
+            score += 25 if 1 <= flu_rt_s6 < 3 else (15 if 3 <= flu_rt_s6 < 5 else 0)
             # 체결강도 우선 적용 (신호 내 값 → 없으면 실시간 값)
             effective_strength = cntr_sig if cntr_sig > 0 else strength
             score += 30 if effective_strength > 150 else (20 if effective_strength > 120 else 0)
-            score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
+            if bid_ratio is not None:
+                score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
 
         case "S7_AUCTION":
             gap = _safe_float(signal.get("gap_pct", 0))
             score += 25 if 2 <= gap < 5 else (15 if 5 <= gap < 8 else 0)
-            score += 30 if bid_ratio > 3 else (25 if bid_ratio > 2 else (10 if bid_ratio > 1.5 else 0))
+            # WS hoga는 FID 코드(125/121) 기반으로 저장될 수 있어 named field 미매칭 가능
+            # → signal.bid_ratio(ws:hoga 0D 직접 계산값) 폴백 적용
+            s7_bid = bid_ratio if bid_ratio is not None else (
+                _safe_float(signal.get("bid_ratio", -1), -1) if signal.get("bid_ratio") is not None else None
+            )
+            if s7_bid is not None and s7_bid >= 0:
+                score += 30 if s7_bid > 3 else (25 if s7_bid > 2 else (10 if s7_bid > 1.5 else 0))
             vol_rank = int(signal.get("vol_rank", 999) or 999)
             score += 20 if vol_rank <= 10 else (15 if vol_rank <= 20 else (5 if vol_rank <= 30 else 0))
 
@@ -174,13 +207,28 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
                 vol_ratio_java = _safe_float(signal.get("vol_ratio", 0))
                 vol_surge = max(0.0, (vol_ratio_java - 1.0) * 100)  # 2배 → 100%
             score += 30 if vol_surge >= 300 else (20 if vol_surge >= 200 else (10 if vol_surge >= 100 else 0))
-            score += 20 if 2 <= flu_rt <= 8 else (10 if 0 < flu_rt <= 15 else (-10 if flu_rt > 15 else 0))
+            # S10은 WS 미구독 스윙 종목 → flu_rt(WS tick) = 0 가능 → signal.flu_rt 폴백
+            flu_rt_s10 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
+            score += 20 if 2 <= flu_rt_s10 <= 8 else (10 if 0 < flu_rt_s10 <= 15 else (-10 if flu_rt_s10 > 15 else 0))
+            # 52주 신고가 돌파 기본 보너스 (강력한 조건 통과 자체를 인정)
+            score += 8
             # 체결강도: signal 내 cntr_strength(ka10046 REST 조회값) 우선,
             # 없으면 market_ctx strength(ws:strength Redis) 사용
             # 52주 신고가 종목은 WS 미구독이라 market_ctx.strength=100인 경우가 많음
             cntr_sig_s10 = _safe_float(signal.get("cntr_strength", 0))
             effective_str_s10 = cntr_sig_s10 if cntr_sig_s10 > 0 else strength
-            score += 30 if effective_str_s10 > 130 else (20 if effective_str_s10 > 110 else (10 if effective_str_s10 > 100 else 0))
+            # gradient 구조로 개선 (기존 100% 미만 절벽 → 70~100% 구간 부분 점수)
+            score += (30 if effective_str_s10 > 130
+                      else 20 if effective_str_s10 > 110
+                      else 12 if effective_str_s10 > 90
+                      else 6  if effective_str_s10 > 70
+                      else 0)
+            # bid_ratio: REST ka10004로 조회한 경우 signal에 포함될 수 있음
+            sig_bid = signal.get("bid_ratio")
+            if sig_bid is not None:
+                sig_bid_f = _safe_float(sig_bid, -1.0)
+                if sig_bid_f >= 0:
+                    score += 10 if sig_bid_f > 1.5 else (5 if sig_bid_f > 1.2 else 0)
 
         case "S11_FRGN_CONT":
             # 외국인 연속 순매수: 연속일수 + 누적수량 + 체결강도
@@ -189,16 +237,33 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             dm3 = _safe_float(signal.get("dm3", 0))
             cont_days = sum(1 for d in (dm1, dm2, dm3) if d > 0)
             score += 30 if cont_days >= 3 else (20 if cont_days >= 2 else 0)
-            score += 20 if flu_rt > 0 else (-10 if flu_rt < -3 else 0)
-            score += 30 if strength > 120 else (20 if strength > 100 else 0)
+            # S11은 WS 미구독 스윙 종목 → flu_rt(WS tick) = 0 가능 → signal.flu_rt 폴백
+            flu_rt_s11 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
+            score += 20 if flu_rt_s11 > 0 else (-10 if flu_rt_s11 < -3 else 0)
+            # signal.cntr_strength 우선 (REST ka10046 조회값), 없으면 WS strength
+            cntr_sig_s11 = _safe_float(signal.get("cntr_strength", 0))
+            effective_str_s11 = cntr_sig_s11 if cntr_sig_s11 > 0 else strength
+            score += 30 if effective_str_s11 > 120 else (20 if effective_str_s11 > 100 else 0)
 
         case "S12_CLOSING":
             # 종가강도: 등락률 + 체결강도(응답 포함) + 호가비율
             cntr_str_sig = _safe_float(signal.get("cntr_strength", 0))
             effective_str = cntr_str_sig if cntr_str_sig > 0 else strength
-            score += 30 if 4 <= flu_rt <= 10 else (15 if 10 < flu_rt <= 15 else (-10 if flu_rt > 15 else 0))
+            # S12는 당일 스캔 종목이지만 WS 미구독 가능 → signal.flu_rt 폴백
+            flu_rt_s12 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
+            score += 30 if 4 <= flu_rt_s12 <= 10 else (15 if 10 < flu_rt_s12 <= 15 else (-10 if flu_rt_s12 > 15 else 0))
             score += 35 if effective_str >= 130 else (25 if effective_str >= 110 else (10 if effective_str >= 100 else 0))
-            score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
+            # buy_req/sel_req → local_bid_ratio (WS hoga 없는 경우 대체)
+            buy_req = _safe_float(signal.get("buy_req", 0))
+            sel_req = _safe_float(signal.get("sel_req", 0))
+            if sel_req > 0 and buy_req > 0:
+                local_bid_ratio = buy_req / sel_req
+            elif bid_ratio is not None:
+                local_bid_ratio = bid_ratio
+            else:
+                local_bid_ratio = None
+            if local_bid_ratio is not None:
+                score += 20 if local_bid_ratio > 1.5 else (10 if local_bid_ratio > 1.2 else 0)
 
         case "S8_GOLDEN_CROSS":
             # 골든크로스 스윙: MA5 > MA20 크로스 + 거래량 확인
@@ -213,10 +278,17 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # 체결강도
             score += 30 if effective_str > 130 else (20 if effective_str > 110 else (10 if effective_str > 100 else 0))
             # 호가 매수 우위
-            score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
+            if bid_ratio is not None:
+                score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
             # RSI 확증: 크로스 후 RSI > 50 이면 모멘텀 신뢰도 상승
             if rsi > 0:
                 score += 10 if rsi > 55 else (5 if rsi > 50 else 0)
+            # 당일 크로스 가점 (signal에 포함)
+            if bool(signal.get("is_today_cross", False)):
+                score += 10
+            # MACD 히스토그램 가속 보너스
+            if bool(signal.get("is_macd_accel", False)):
+                score += 8
 
         case "S9_PULLBACK_SWING":
             # 눌림목 반등 스윙: 정배열 내 5MA 근접 반등, 소폭 상승 + 체결강도
@@ -228,10 +300,18 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # 체결강도
             score += 35 if effective_str > 130 else (25 if effective_str > 110 else (10 if effective_str > 100 else 0))
             # 호가
-            score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
+            if bid_ratio is not None:
+                score += 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
             # RSI 눌림목 확증: 40~60 구간이 이상적 눌림
             if rsi > 0:
                 score += 10 if 40 <= rsi <= 60 else (5 if 60 < rsi <= 70 else 0)
+            # MA5 근접도: -1~2% 구간이 이상적 반등 타점
+            pct_ma5 = _safe_float(signal.get("pct_ma5", 999))
+            if pct_ma5 != 999:
+                score += 15 if -1.0 <= pct_ma5 <= 2.0 else (8 if abs(pct_ma5) <= 4.0 else 0)
+            # Stochastic 골든크로스
+            if bool(signal.get("stoch_gc", False)):
+                score += 10
 
         case "S13_BOX_BREAKOUT":
             # 박스권 돌파 스윙: 거래량 폭발 + 장대양봉 + 체결강도 ≥ 130
@@ -243,10 +323,17 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # 체결강도 (S13은 130% 이상 필터 후 진입 — 가중치 높게)
             score += 35 if effective_str > 150 else (25 if effective_str > 130 else (10 if effective_str > 110 else 0))
             # 호가 매수 우위
-            score += 25 if bid_ratio > 2 else (15 if bid_ratio > 1.5 else (5 if bid_ratio > 1.2 else 0))
+            if bid_ratio is not None:
+                score += 25 if bid_ratio > 2 else (15 if bid_ratio > 1.5 else (5 if bid_ratio > 1.2 else 0))
             # RSI 돌파 모멘텀 확증
             if rsi > 0:
                 score += 10 if rsi > 60 else (5 if rsi > 50 else 0)
+            # 볼린저 스퀴즈 보너스 (signal에 포함)
+            if bool(signal.get("bollinger_squeeze", False)):
+                score += 10
+            # MFI 자금 유입 확인
+            if bool(signal.get("mfi_confirmed", False)):
+                score += 8
 
         case "S14_OVERSOLD_BOUNCE":
             # 과매도 반등: RSI < 35 + ATR 변동성 + 체결강도
@@ -262,7 +349,8 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # 체결강도 – 반등 초기 매수세 확인
             score += 25 if effective_str > 120 else (15 if effective_str > 110 else (5 if effective_str > 100 else 0))
             # 호가 매수 우위
-            score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
+            if bid_ratio is not None:
+                score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
 
         case "S15_MOMENTUM_ALIGN":
             # 다중 모멘텀 정렬: RSI 상승 구간 + 거래량 증가 + 체결강도
@@ -280,7 +368,8 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
             # 체결강도
             score += 25 if effective_str > 130 else (18 if effective_str > 110 else (8 if effective_str > 100 else 0))
             # 호가
-            score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
+            if bid_ratio is not None:
+                score += 15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0)
             # 등락률: 1~5% 모멘텀 초기 진입 최적
             score += 5 if 1 <= flu_rt_s15 <= 5 else (3 if 5 < flu_rt_s15 <= 8 else 0)
 
@@ -294,11 +383,13 @@ def rule_score(signal: dict, market_ctx: dict) -> float:
     score += _time_bonus(strategy)
 
     # 공통 페널티
-    if flu_rt > 15:   # 이미 15% 이상 상승 → 과열
+    # flu_rt(WS tick)는 WS 미구독 스윙 종목에서 0일 수 있음 → signal.flu_rt 폴백
+    flu_rt_for_penalty = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
+    if flu_rt_for_penalty > 15:   # 이미 15% 이상 상승 → 과열
         score -= 20
-    elif flu_rt > 10:  # 10~15% 구간 – 주의
+    elif flu_rt_for_penalty > 10:  # 10~15% 구간 – 주의
         score -= 10
-    if flu_rt < -5:   # 하락 중
+    if flu_rt_for_penalty < -5:   # 하락 중
         score -= 15
 
     score = round(max(0.0, min(100.0, score)), 1)

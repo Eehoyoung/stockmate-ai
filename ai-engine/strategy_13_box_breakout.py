@@ -21,14 +21,13 @@ NOTE: ka10172 HTS 조건검색 의존도 제거 → ka10081 일봉 직접 계산
 import asyncio
 import logging
 import os
-import statistics
-from datetime import datetime
 
+from http_utils import fetch_stk_nm
+from indicator_bollinger import calc_bollinger
+from indicator_rsi import calc_rsi
+from indicator_volume import calc_mfi
 # 기존 유틸리티 모듈 임포트
 from ma_utils import fetch_daily_candles, detect_box_breakout, _safe_price, _safe_vol, _calc_ma
-from indicator_bollinger import calc_bollinger
-from indicator_volume import calc_mfi
-from http_utils import fetch_stk_nm
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +115,11 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
         if mfi_vals and mfi_vals[0] > 55.0:
             mfi_confirmed = True
 
-        # 6. 실시간 데이터 결합 (Redis Tick)
+        # 6. RSI 계산
+        rsi_vals = calc_rsi(closes, 14)
+        rsi_now = rsi_vals[0] if rsi_vals else 0.0
+
+        # 7. 실시간 데이터 결합 (Redis Tick)
         flu_rt = 0.0
         cntr_str = 100.0
         if rdb:
@@ -129,7 +132,7 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
         if not (0 < flu_rt <= 20.0) or cntr_str < MIN_CNTR_STR:
             continue
 
-        # 7. 스코어링 시스템 (S13 특화)
+        # 8. 스코어링 시스템 (S13 특화)
         # 기본 점수: 등락률 + 체결강도 가중치
         score = (flu_rt * 0.5) + (max(cntr_str - 100, 0) * 0.3)
 
@@ -152,11 +155,12 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
             "cur_prc": round(cur_prc),
-            "strategy": "돌파매매",
+            "strategy": "S13_BOX_BREAKOUT",
             "score": round(score, 2),
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
             "vol_ratio": round(vol_ratio, 2),
+            "rsi": round(rsi_now, 1),
             "is_monster_vol": is_monster_vol,
             "bollinger_squeeze": bollinger_squeeze,
             "mfi_confirmed": mfi_confirmed,

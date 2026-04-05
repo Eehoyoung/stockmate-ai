@@ -220,7 +220,26 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
     return today_qty / prev_qty if prev_qty > 0 else 0.0
 
 async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
+    # 1. candidates:s3:{market} 풀 우선 확인
+    pool_codes: list = []
+    if rdb:
+        try:
+            pool_codes = await rdb.lrange(f"candidates:s3:{market}", 0, -1)
+            if pool_codes:
+                logger.debug("[S3] candidates:s3:%s 풀 사용 (%d개)", market, len(pool_codes))
+        except Exception as e:
+            logger.debug("[S3] 풀 조회 실패: %s", e)
+
     smtm_list = await fetch_intraday_investor(token, market)
+
+    # 풀이 있으면 풀 종목만 필터
+    if pool_codes:
+        pool_set = set(pool_codes)
+        smtm_list = [it for it in smtm_list if it.get("stk_cd") in pool_set]
+        logger.debug("[S3] 풀 필터 후 %d개", len(smtm_list))
+    else:
+        logger.debug("[S3] 풀 없음 – ka10063 전수 조회")
+
     # cont_map: stk_cd → actual continuous_days (API 응답에서 추출, 없으면 쿼리 기본값)
     cont_map = await fetch_continuous_netbuy(token, market)
 
@@ -235,15 +254,33 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
         if vol_ratio < 1.5:
             continue
 
-        net_buy_amt = float(item.get("net_buy_amt", 0))
-        # API 응답에서 실제 연속일 사용 (하드코딩 3 제거)
+        # ka10063 실제 응답 필드: netprps_qty(순매수수량), netprps_amt(순매수금액)
+        # 이전 코드의 net_buy_amt 필드는 API에 존재하지 않아 항상 0 반환 → 버그 수정
+        try:
+            raw_qty = str(item.get("netprps_qty", "0")).replace("+", "").replace(",", "")
+            net_buy_qty = int(raw_qty) if raw_qty.lstrip("-").isdigit() else 0
+        except (TypeError, ValueError):
+            net_buy_qty = 0
+
+        # cur_prc, flu_rt: ka10063 응답에 포함 (부호 처리)
+        try:
+            cur_prc = abs(int(str(item.get("cur_prc", "0")).replace("+", "").replace(",", "").replace("-", "") or "0"))
+        except (TypeError, ValueError):
+            cur_prc = 0
+        try:
+            flu_rt = float(str(item.get("flu_rt", "0")).replace("+", "").replace(",", ""))
+        except (TypeError, ValueError):
+            flu_rt = 0.0
+
         continuous_days = cont_map.get(stk_cd, 1)
         stk_nm = str(item.get("stk_nm", "")).strip() or await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
-            "strategy": "슈급 집중!",
-            "net_buy_amt": net_buy_amt,
+            "cur_prc": cur_prc,
+            "strategy": "S3_INST_FRGN",  # scorer.py case 키와 일치
+            "net_buy_amt": net_buy_qty,   # 순매수수량(주) — scorer가 /100_000 기준으로 스케일
+            "flu_rt": round(flu_rt, 2),
             "vol_ratio": round(vol_ratio, 2),
             "continuous_days": continuous_days,
             "entry_type": "지정가_1호가",

@@ -133,13 +133,21 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
         cur_prc = abs(float(str(item.get("cur_prc", "0")).replace(",", "")))
         stk_nm = item.get("stk_nm", "").strip() or await fetch_stk_nm(rdb, token, stk_cd)
 
+        try:
+            buy_req = float(str(item.get("buy_req", "0")).replace(",", "").replace("+", "") or "0")
+            sel_req = float(str(item.get("sel_req", "1")).replace(",", "").replace("+", "") or "1")
+        except (TypeError, ValueError):
+            buy_req, sel_req = 0.0, 1.0
+
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
             "cur_prc": int(cur_prc),
-            "strategy": "종가_기관수급_강세",
+            "strategy": "S12_CLOSING",
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
+            "buy_req": buy_req,
+            "sel_req": sel_req,
             "score": round(score, 2),
             "entry_type": "15:20_장마감_전_진입",
             "target_pct": 5.0,
