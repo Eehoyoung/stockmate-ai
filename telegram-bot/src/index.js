@@ -60,6 +60,7 @@ bot.command('analysis',     commands.strategyAnalysis);
 bot.command('history',      commands.signalHistory);
 bot.command('quote',        commands.quote);
 bot.command('score',        commands.scoreStock);
+bot.command('claude',       commands.claudeAnalyze);
 bot.command('candidates',   commands.candidates);
 bot.command('report',       commands.report);
 
@@ -186,7 +187,9 @@ async function main() {
     console.log('  StockMate AI – Telegram Bot 시작');
     console.log('='.repeat(50));
 
-    await bot.launch();
+    // bot.launch()는 bot.stop() 호출 시에만 resolve되는 Promise를 반환한다.
+    // await하면 그 아래 코드(startPolling 등)가 절대 실행되지 않으므로 await 없이 호출.
+    bot.launch();
     console.log('[Bot] 봇 시작 완료');
 
     startPolling(bot);

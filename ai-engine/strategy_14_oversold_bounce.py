@@ -48,6 +48,7 @@ from indicator_atr import calc_atr, calc_williams_r
 from indicator_stochastic import calc_stochastic
 from indicator_volume import calc_mfi
 from http_utils import fetch_cntr_strength, fetch_stk_nm
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +133,12 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         if vol_ratio >= 1.5: score += 8
         if cntr_str >= 105: score += 8
 
-        stop_price  = round(cur_prc - atr_now * 2.0)
-        target_price = round(cur_prc + atr_now * 3.5)
+        # 동적 TP/SL — swing_low/MA20/MA60 기반 구조적 손절 (tp_sl_engine)
+        ma20_val = sum(closes[:20]) / 20 if len(closes) >= 20 else None
+        tp_sl = calc_tp_sl(
+            "S14_OVERSOLD_BOUNCE", cur_prc, highs, lows, closes,
+            stk_cd=stk_cd, atr=atr_now, ma20=ma20_val, ma60=ma60,
+        )
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": await fetch_stk_nm(rdb, token, stk_cd),
@@ -146,12 +151,9 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
             "vol_ratio": round(vol_ratio, 2),
             "atr_pct": round(atr_pct, 2),
             "flu_rt": round(flu_rt, 2),
-            "stop_price": stop_price,
-            "target_price": target_price,
-            "stop_pct": round((stop_price - cur_prc) / cur_prc * 100, 2),
-            "target_pct": round((target_price - cur_prc) / cur_prc * 100, 2),
             "entry_type": "당일종가_또는_익일시가",
-            "holding_days": "3~5거래일"
+            "holding_days": "3~5거래일",
+            **tp_sl.to_signal_fields(),
         })
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

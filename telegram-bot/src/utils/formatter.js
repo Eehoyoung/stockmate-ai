@@ -114,7 +114,7 @@ function formatSignal(item) {
     const stratDesc = STRATEGY_DESC[item.strategy];
 
     const lines = [
-        `${emoji} <b>[${item.strategy}] ${item.stk_cd} ${item.stk_nm ?? ''}</b>`,
+        `${emoji} <b>[${item.strategy}] ${item.stk_cd} ${item.stk_nm || ''}</b>`,
     ];
     if (stratDesc) lines.push(`<i>${stratDesc}</i>`);
     lines.push(
@@ -164,7 +164,13 @@ function formatSignal(item) {
     if (!item.human_confirmed) {
         // 미확정: 규칙 기반을 주 표시
         if (tp1 || tp2 || sl) {
-            lines.push('📐 <b>목표가 (규칙 기반)</b>');
+            // skip_entry 경고 (R:R < 1.3 시 tp_sl_engine이 설정)
+            if (item.skip_entry) {
+                const rrStr = item.rr_ratio != null ? ` (R:R ${Number(item.rr_ratio).toFixed(2)})` : '';
+                lines.push(`⚠️ <b>R:R 미달${rrStr} — 진입 재검토 필요</b>`);
+            }
+            const tpHeader = item.skip_entry ? '📐 <b>목표가 (규칙 기반 — R:R 미달)</b>' : '📐 <b>목표가 (규칙 기반)</b>';
+            lines.push(tpHeader);
             if (tp1 && curPrc > 0) {
                 const pct = (((tp1 - curPrc) / curPrc) * 100).toFixed(1);
                 lines.push(`  TP1: <b>${tp1.toLocaleString()}원</b>  (+${pct}%)`);
@@ -177,11 +183,23 @@ function formatSignal(item) {
                 const pct = (((sl - curPrc) / curPrc) * 100).toFixed(1);
                 lines.push(`  SL:  <b>${sl.toLocaleString()}원</b>  (${pct}%)`);
             }
-            if (tp1 && sl && curPrc > 0 && sl < curPrc) {
+            // R:R — tp_sl_engine 계산값 우선, 없으면 직접 계산
+            if (item.rr_ratio != null) {
+                const rrVal = Number(item.rr_ratio);
+                const rrFlag = rrVal < 1.0 ? ' ❌' : (rrVal < 1.3 ? ' ⚠️' : ' ✅');
+                lines.push(`  실질R:R: <b>${rrVal.toFixed(2)}</b>${rrFlag}`);
+            } else if (tp1 && sl && curPrc > 0 && sl < curPrc) {
                 const rr = ((tp1 - curPrc) / (curPrc - sl)).toFixed(1);
                 lines.push(`  R/R: 1:${rr}`);
                 const effRR = _effectiveRR(item.stk_cd, curPrc, tp1, sl);
                 if (effRR) lines.push(`  ${effRR}`);
+            }
+            // 근거 방법론 표시 (sl_method / tp_method)
+            if (item.sl_method || item.tp_method) {
+                const methodParts = [];
+                if (item.tp_method) methodParts.push(`TP근거: ${item.tp_method}`);
+                if (item.sl_method) methodParts.push(`SL근거: ${item.sl_method}`);
+                lines.push(`  <i>${methodParts.join('  |  ')}</i>`);
             }
         } else {
             // 절대가 없으면 % 기반 폴백
@@ -489,10 +507,63 @@ function formatUserSettings(filter, watchlist) {
     return lines.join('\n');
 }
 
+/**
+ * /score {종목코드} — 15전략 심사 결과 포맷
+ *
+ * @param {Object} scoreData  ai-engine /score/{stk_cd} 응답
+ *   { stk_cd, stk_nm, no_match, matched_count, results, skipped, data }
+ * @returns {string[]}  텔레그램 메시지 배열 (전략별 1개 + 요약 헤더 1개)
+ */
+function formatStockScore(scoreData) {
+    const { stk_cd, stk_nm, no_match, matched_count, results, skipped, data } = scoreData;
+    const stkLabel = stk_nm ? `${stk_nm}(${stk_cd})` : stk_cd;
+
+    // ── 공통 헤더 (참고 지표) ────────────────────────────────────
+    const d         = data || {};
+    const curPrc    = Number(d.cur_prc  ?? 0);
+    const fluRt     = Number(d.flu_rt   ?? 0);
+    const fluSign   = fluRt > 0 ? '+' : '';
+    const rsi       = d.rsi14  != null ? Number(d.rsi14).toFixed(1) : 'N/A';
+    const ma5       = d.ma5    ? Number(d.ma5).toLocaleString()  : 'N/A';
+    const ma20      = d.ma20   ? Number(d.ma20).toLocaleString() : 'N/A';
+    const ma60      = d.ma60   ? Number(d.ma60).toLocaleString() : 'N/A';
+    const strength  = d.avg_strength != null ? Number(d.avg_strength).toFixed(0) : 'N/A';
+    const bidRatio  = d.bid_ratio != null ? Number(d.bid_ratio).toFixed(2) : 'N/A';
+
+    const header =
+        `🔍 <b>[전략 심사] ${stkLabel}</b>\n` +
+        `💰 현재가: <b>${curPrc.toLocaleString()}원</b>  <b>${fluSign}${fluRt}%</b>\n` +
+        `📈 MA5: ${ma5} | MA20: ${ma20} | MA60: ${ma60}\n` +
+        `RSI(14): ${rsi}  |  체결강도: ${strength}  |  호가비율: ${bidRatio}`;
+
+    // ── 전략없음 ─────────────────────────────────────────────────
+    if (no_match || !results || results.length === 0) {
+        const skipSample = (skipped || []).slice(0, 5).join('\n  • ');
+        return [
+            header + '\n\n' +
+            `📭 <b>매칭 전략 없음</b>\n` +
+            `현재 시점 기준 15개 전략 중 진입 조건을 충족하는 전략이 없습니다.\n\n` +
+            (skipSample ? `<i>주요 탈락 사유:\n  • ${skipSample}</i>` : ''),
+        ];
+    }
+
+    // ── 매칭 전략 요약 헤더 ──────────────────────────────────────
+    const summaryHeader =
+        header + '\n\n' +
+        `✅ <b>${matched_count}개 전략 매칭</b> — 전략별 신호 아래 참조\n` +
+        `<i>AI 점수 높은 순으로 정렬됩니다</i>`;
+
+    // ── 전략별 formatSignal 출력 ─────────────────────────────────
+    const signalMessages = results.map((sig) => formatSignal(sig));
+
+    return [summaryHeader, ...signalMessages];
+}
+
 module.exports = {
     escapeHtml,
     formatSignal, formatForceClose, formatDailySummary,
     formatPerformanceSummary, formatNewsStatus, formatSectorAnalysis,
     formatSignalHistory, formatSystemHealth,
     formatDailyReportEnhanced, formatCalendarWeek, formatPerformanceDetail, formatUserSettings,
+    formatStockScore,
 };

@@ -9,7 +9,10 @@ import os
 from datetime import datetime, timedelta
 from statistics import mean
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm
+from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from ma_utils import fetch_daily_candles, _safe_price
+from indicator_atr import calc_atr
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
@@ -29,7 +32,7 @@ async def fetch_progra_netbuy(token: str, market: str) -> dict:
     result = {}
     next_key = ""
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka90003",
@@ -47,7 +50,7 @@ async def fetch_progra_netbuy(token: str, market: str) -> dict:
                     "trde_upper_tp": "2",  # 2: 순매수상위
                     "amt_qty_tp": "1",     # 1: 금액
                     "mrkt_tp": kiwoom_mrkt,
-                    "stex_tp": "1"         # KRX 고정
+                    "stex_tp": "3"         # KRX 고정
                 }
             )
             resp.raise_for_status()
@@ -87,7 +90,7 @@ async def fetch_frgn_inst_upper(token: str, market: str) -> set:
     result_set = set()
     next_key = ""
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka90009",
@@ -105,7 +108,7 @@ async def fetch_frgn_inst_upper(token: str, market: str) -> set:
                     "mrkt_tp": mrkt,
                     "amt_qty_tp": "1",
                     "qry_dt_tp": "0",
-                    "stex_tp": "1" # KRX 고정
+                    "stex_tp": "3" # KRX 고정
                 }
             )
             resp.raise_for_status()
@@ -133,12 +136,12 @@ async def check_extra_conditions(token: str, stk_cd: str, market: str = "001") -
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
         mrkt = "001" if market in ["KOSPI", "001", "000"] else "101"
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with kiwoom_client() as client:
             # 1. ka10044 전일 기관 순매수 리스트 확인
             inst_resp = await client.post(
                 f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
                 headers={"api-id": "ka10044", "authorization": f"Bearer {token}", "Content-Type": "application/json;charset=UTF-8"},
-                json={"strt_dt": yesterday, "end_dt": yesterday, "trde_tp": "2", "mrkt_tp": mrkt, "stex_tp": "1"}
+                json={"strt_dt": yesterday, "end_dt": yesterday, "trde_tp": "2", "mrkt_tp": mrkt, "stex_tp": "3"}
             )
             inst_data = inst_resp.json()
             if validate_kiwoom_response(inst_data, "ka10044", logger):
@@ -180,7 +183,7 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
 
     # 1. 기초 데이터 동시 수집
     prog_map, frgn_set = await asyncio.gather(
-        fetch_program_netbuy(token, market),
+        fetch_progra_netbuy(token, market),
         fetch_frgn_inst_upper(token, market)
     )
 
@@ -202,18 +205,37 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
         if await check_extra_conditions(token, stk_cd, market):
             info = prog_map[stk_cd]
             # ka90003 응답에서 직접 수집한 stk_nm/cur_prc 우선 사용
-            stk_nm = info.get("stk_nm") or await fetch_stk_nm(rdb, token, stk_cd)
+            stk_nm  = info.get("stk_nm") or await fetch_stk_nm(rdb, token, stk_cd)
+            cur_prc = info.get("cur_prc", 0)
+
+            # 동적 TP/SL — 일봉 기반 (프로그램+외인 수급 스윙 목표)
+            highs_d, lows_d, closes_d, ma20, atr_val = [], [], [], None, None
+            try:
+                await asyncio.sleep(_API_INTERVAL)
+                candles  = await fetch_daily_candles(token, stk_cd)
+                closes_d = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
+                highs_d  = [_safe_price(c.get("high_pric")) for c in candles]
+                lows_d   = [_safe_price(c.get("low_pric"))  for c in candles]
+                if len(closes_d) >= 20:
+                    ma20 = sum(closes_d[:20]) / 20
+                if len(highs_d) >= 14 and len(lows_d) >= 14 and len(closes_d) >= 14:
+                    atr_vals = calc_atr(highs_d, lows_d, closes_d, 14)
+                    atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+            except Exception as e:
+                logger.debug("[S5] 일봉 조회 실패 %s: %s", stk_cd, e)
+
+            tp_sl = calc_tp_sl("S5_PROG_FRGN", cur_prc, highs_d, lows_d, closes_d,
+                                stk_cd=stk_cd, ma20=ma20, atr=atr_val)
+
             results.append({
                 "stk_cd": stk_cd,
                 "stk_nm": stk_nm,
-                "cur_prc": info.get("cur_prc", 0),
+                "cur_prc": cur_prc,
                 "strategy": "S5_PROG_FRGN",  # scorer.py case 키와 일치
                 "net_buy_amt": info["net_buy_amt"],
                 "flu_rt": info.get("flu_rt", 0.0),
                 "entry_type": "지정가_1호가",
-                "target_pct": 3.0,
-                "target2_pct": 4.5,
-                "stop_pct": -2.0,
+                **tp_sl.to_signal_fields(),
             })
 
     # 순매수 금액 상위 5개 반환

@@ -51,7 +51,7 @@ async def write_tick(rdb, values: dict, stk_cd: str):
             "cntr_str":       values.get("228", ""),
         }
         await rdb.hmset(key, mapping)
-        await rdb.expire(key, 60)   # 30s→60s: S4/S12 3~5분 스캔 주기 내 만료 방지
+        await rdb.expire(key, 600)  # 300s→600s: 저거래량 종목 정규장 중 재갱신 보장 + pre_market 0B 축적분 보존
 
         # 체결강도 리스트 (최근 10개)
         cntr_str = values.get("228", "").strip()
@@ -59,7 +59,7 @@ async def write_tick(rdb, values: dict, stk_cd: str):
             sk = f"ws:strength:{stk_cd}"
             await rdb.lpush(sk, cntr_str)
             await rdb.ltrim(sk, 0, 9)
-            await rdb.expire(sk, 600)  # 300s→600s: 10분 스캔 주기(S5/S6) 대응
+            await rdb.expire(sk, 900)  # 600s→900s: 08:00 축적분이 09:15 S1 스캔까지 생존
 
     except Exception as e:
         logger.warning("[Redis] tick 저장 실패 [%s]: %s", stk_cd, e)
@@ -100,7 +100,7 @@ async def write_expected(rdb, values: dict, stk_cd: str):
                 pass
 
         await rdb.hmset(key, mapping)
-        await rdb.expire(key, 600)  # 60s→600s: 09:00 이후 S1 스캔(09:02~09:10) 만료 방지
+        await rdb.expire(key, 1800)  # 600s→1800s: 09:00 0H 해제 후 S1이 09:30까지 참조 가능
     except Exception as e:
         logger.warning("[Redis] expected 저장 실패 [%s]: %s", stk_cd, e)
 
@@ -124,7 +124,7 @@ async def write_hoga(rdb, values: dict, stk_cd: str):
             "bid_req_base_tm":   values.get("21", ""),
         }
         await rdb.hmset(key, mapping)
-        await rdb.expire(key, 60)   # 10s→60s: S7 2분 스캔 주기 내 만료 방지
+        await rdb.expire(key, 120)  # 60s→120s: 저유동성 종목 호가 갱신 주기 여유 확보
     except Exception as e:
         logger.warning("[Redis] hoga 저장 실패 [%s]: %s", stk_cd, e)
 

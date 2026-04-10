@@ -10,9 +10,11 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -31,6 +33,8 @@ public class DataQualityScheduler {
     private static final int  QUEUE_DEPTH_WARN            = 50;   // 텔레그램 큐 적체 임계값
     private static final int  ERROR_QUEUE_WARN            = 5;    // error_queue 경고 임계값
     private static final long WS_ALERT_COOLDOWN_MS        = 10 * 60 * 1000L; // WS 경고 최소 간격 10분
+    /** 장 시작(09:00) 후 WebSocket 구독이 안정화될 때까지의 grace period */
+    private static final LocalTime WS_GRACE_END           = LocalTime.of(9, 10);
     private static final String KEY_WS_RECONNECT_COUNT    = "monitor:ws_reconnect_count";
 
     /** WS 경고 마지막 발행 시각 – 연속 스팸 방지 */
@@ -84,6 +88,17 @@ public class DataQualityScheduler {
     }
 
     private void checkWebSocketHealth(List<String> alerts) {
+        LocalTime now = LocalTime.now();
+        // 07:30~08:00 (pre_open): 0B 미구독, tick 부재는 정상.
+        // 08:00~09:10: 0B 구독 시작 후 구독 안정화 및 초기 데이터 축적 대기.
+        if (now.isBefore(WS_GRACE_END)) {
+            log.debug("[DataQuality] tick 체크 스킵 ({})",
+                    now.isBefore(LocalTime.of(8, 0)) ? "pre_open 0B 미구독 구간(07:30~08:00)"
+                    : now.isBefore(LocalTime.of(9, 0)) ? "pre_market 0B 초기 축적 대기(08:00~09:00)"
+                    : "장 시작 grace period(09:00~09:10)");
+            return;
+        }
+
         // Python websocket-listener heartbeat 체크 (ws:py_heartbeat TTL 90s)
         Map<Object, Object> pyHeartbeat = redis.opsForHash().entries("ws:py_heartbeat");
         if (pyHeartbeat.isEmpty()) {
@@ -91,7 +106,15 @@ public class DataQualityScheduler {
             return;
         }
 
-        List<String> candidates = candidateService.getAllCandidates();
+        // candidates:watchlist = websocket-listener 가 실제 구독 중인 종목 SET
+        // getAllCandidates()는 candidates:001+101 (구형 풀, 다른 종목 목록) → 오탐 유발
+        List<String> candidates;
+        Set<String> watchlist = redis.opsForSet().members("candidates:watchlist");
+        if (watchlist != null && !watchlist.isEmpty()) {
+            candidates = new ArrayList<>(watchlist);
+        } else {
+            candidates = candidateService.getAllCandidates();
+        }
         if (candidates.isEmpty()) return;
 
         long missing = candidates.stream()
@@ -116,12 +139,12 @@ public class DataQualityScheduler {
             }
 
             // 쿨다운 내 중복 경고 발행 방지 (10분)
-            long now = System.currentTimeMillis();
-            if (now - lastWsAlertMs.get() < WS_ALERT_COOLDOWN_MS) {
+            long nowMs = System.currentTimeMillis();
+            if (nowMs - lastWsAlertMs.get() < WS_ALERT_COOLDOWN_MS) {
                 log.debug("[DataQuality] WS 경고 쿨다운 중 – SYSTEM_ALERT 생략");
                 return;
             }
-            lastWsAlertMs.set(now);
+            lastWsAlertMs.set(nowMs);
 
             alerts.add(String.format("📡 WebSocket tick 데이터 이상 (누락 %.0f%%) – Python websocket-listener 확인 필요", missingRatio));
         }

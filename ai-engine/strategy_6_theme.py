@@ -13,7 +13,10 @@ import asyncio
 import httpx
 import logging
 import os
-from http_utils import fetch_cntr_strength, validate_kiwoom_response, fetch_stk_nm
+from http_utils import fetch_cntr_strength, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from ma_utils import fetch_daily_candles, _safe_price
+from indicator_atr import calc_atr
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +33,7 @@ async def fetch_theme_groups(token: str) -> list:
     """ka90001 테마그룹별 상위 수익률 (연속조회 포함)"""
     results = []
     next_key = ""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {"api-id": "ka90001", "authorization": f"Bearer {token}", "Content-Type": "application/json;charset=UTF-8"}
             if next_key:
@@ -43,7 +46,7 @@ async def fetch_theme_groups(token: str) -> list:
                     "qry_tp": "1",          # 1: 테마검색
                     "date_tp": "1",         # 1일 (당일 테마)
                     "flu_pl_amt_tp": "3",   # 3: 상위등락률 (당일 강한 테마 우선)
-                    "stex_tp": "1"          # KRX 고정
+                    "stex_tp": "3"          # KRX 고정
                 }
             )
             data = resp.json()
@@ -60,7 +63,7 @@ async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
     """ka90002 테마구성종목 (연속조회 포함)"""
     results = []
     next_key = ""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {"api-id": "ka90002", "authorization": f"Bearer {token}", "Content-Type": "application/json;charset=UTF-8"}
             if next_key:
@@ -72,7 +75,7 @@ async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
                 json={
                     "date_tp": "1",
                     "thema_grp_cd": thema_grp_cd,
-                    "stex_tp": "1" # KRX 고정
+                    "stex_tp": "3" # KRX 고정
                 }
             )
             data = resp.json()
@@ -142,6 +145,26 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
             # 체결강도 115% 이상으로 수급 유입 확인
             if strength >= 115:
                 stk_nm = stk.get("stk_nm", "").strip() or await fetch_stk_nm(rdb, token, stk_cd)
+
+                # 동적 TP/SL — 일봉 기반 (테마 단기 저항/지지)
+                highs_d, lows_d, closes_d, ma5, atr_val = [], [], [], None, None
+                try:
+                    await asyncio.sleep(_API_INTERVAL)
+                    candles  = await fetch_daily_candles(token, stk_cd)
+                    closes_d = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
+                    highs_d  = [_safe_price(c.get("high_pric")) for c in candles]
+                    lows_d   = [_safe_price(c.get("low_pric"))  for c in candles]
+                    if len(closes_d) >= 5:
+                        ma5 = sum(closes_d[:5]) / 5
+                    if len(highs_d) >= 14 and len(lows_d) >= 14 and len(closes_d) >= 14:
+                        atr_vals = calc_atr(highs_d, lows_d, closes_d, 14)
+                        atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+                except Exception as e:
+                    logger.debug("[S6] 일봉 조회 실패 %s: %s", stk_cd, e)
+
+                tp_sl = calc_tp_sl("S6_THEME_LAGGARD", cur_prc, highs_d, lows_d, closes_d,
+                                    stk_cd=stk_cd, ma5=ma5, atr=atr_val)
+
                 final_candidates[stk_cd] = {
                     "stk_cd": stk_cd,
                     "stk_nm": stk_nm,
@@ -152,8 +175,7 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                     "flu_rt": flu_rt,
                     "cntr_strength": round(strength, 1),
                     "entry_type": "지정가_1호가",
-                    "target_pct": 3.5, # 후발주는 대장주 상승폭의 절반 정도를 목표로 함
-                    "stop_pct": -2.0,
+                    **tp_sl.to_signal_fields(),
                 }
 
     # 체결강도 순으로 정렬하여 상위 5개 반환

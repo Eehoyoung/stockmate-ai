@@ -21,3 +21,6 @@ RUN mkdir -p logs
 EXPOSE 8080
 
 ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-jar", "app.jar"]
+
+
+

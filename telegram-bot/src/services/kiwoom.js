@@ -7,7 +7,7 @@
 
 const axios = require('axios');
 
-const BASE_URL = 'http://localhost:8080';
+const BASE_URL = 'http://host.docker.internal:8080';
 
 const api = axios.create({
     baseURL: BASE_URL,
@@ -118,9 +118,47 @@ async function setTradingControl(mode) {
     return data;
 }
 
-/** 전략별 후보 풀 크기 조회 */
+/** 전략별 후보 풀 크기 조회 (Java orchestrator) */
 async function getCandidatePoolStatus() {
     const { data } = await api.get('/api/candidates/pool-status');
+    return data;
+}
+
+/** ai-engine /candidates 엔드포인트 — Java down 시 fallback 또는 보조 확인 */
+async function getAiEngineCandidates() {
+    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8082';
+    const axios = require('axios');
+    const { data } = await axios.get(`${AI_ENGINE_URL}/candidates`, { timeout: 5000 });
+    // pools 필드를 Java getCandidatePoolStatus() 형식(s1_001 등)으로 변환
+    const normalized = {};
+    for (const [key, count] of Object.entries(data.pools || {})) {
+        // "candidates:s1:001" → "s1_001"
+        const m = key.match(/^candidates:(s\d+):(\d+)$/);
+        if (m) normalized[`${m[1]}_${m[2]}`] = count;
+    }
+    return normalized;
+}
+
+/** /claude {code} — ai-engine Claude 종목 분석 요청 */
+async function analyzeStockWithClaude(stkCd) {
+    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8082';
+    const { data } = await axios.get(`${AI_ENGINE_URL}/analyze/${stkCd}`, { timeout: 40_000 });
+    return data;
+}
+
+/**
+ * /score {code} — ai-engine 15전략 심사 + 규칙/AI 스코어링
+ * @param {string} stkCd 6자리 종목코드
+ * @param {boolean} enableAi  AI 스코어링 활성화 여부 (기본 true)
+ * @returns {Promise<Object>} { stk_cd, stk_nm, no_match, matched_count, results, skipped, data }
+ */
+async function scoreStockFull(stkCd, enableAi = true) {
+    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8082';
+    const aiParam = enableAi ? 'true' : 'false';
+    const { data } = await axios.get(
+        `${AI_ENGINE_URL}/score/${stkCd}?ai=${aiParam}`,
+        { timeout: 60_000 },   // AI 분석 포함 최대 60초
+    );
     return data;
 }
 
@@ -131,5 +169,6 @@ module.exports = {
     getSignalPerformance, getPerformanceSummary,
     getSignalHistory, getStrategyAnalysis,
     getMonitorHealth, getCalendarWeek, setTradingControl,
-    scoreStock, getCandidatePoolStatus,
+    scoreStock, getCandidatePoolStatus, getAiEngineCandidates,
+    analyzeStockWithClaude, scoreStockFull,
 };

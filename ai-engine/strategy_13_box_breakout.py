@@ -26,8 +26,8 @@ from http_utils import fetch_stk_nm
 from indicator_bollinger import calc_bollinger
 from indicator_rsi import calc_rsi
 from indicator_volume import calc_mfi
-# 기존 유틸리티 모듈 임포트
 from ma_utils import fetch_daily_candles, detect_box_breakout, _safe_price, _safe_vol, _calc_ma
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,11 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
         score -= resistance_penalty
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+
+        # 동적 TP/SL 계산 (highs/lows/closes 이미 추출됨)
+        tp_sl = calc_tp_sl("S13_BOX_BREAKOUT", cur_prc, highs, lows, closes,
+                            stk_cd=stk_cd)
+
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
@@ -166,8 +171,7 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
             "mfi_confirmed": mfi_confirmed,
             "entry_type": "당일종가_또는_익일눌림",
             "holding_days": "3~7거래일",
-            "target_pct": 10.0,
-            "stop_pct": -5.0
+            **tp_sl.to_signal_fields(),
         })
 
     # 스코어 기준 내림차순 정렬 후 상위 5개 반환

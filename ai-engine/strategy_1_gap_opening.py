@@ -4,7 +4,10 @@ import os
 import logging
 from datetime import datetime
 
-from http_utils import validate_kiwoom_response, fetch_cntr_strength, fetch_stk_nm
+from http_utils import validate_kiwoom_response, fetch_cntr_strength, fetch_stk_nm, kiwoom_client
+from indicator_atr import get_atr_minute
+from ma_utils import fetch_daily_candles, _safe_price
+from tp_sl_engine import calc_tp_sl
 
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 logger = logging.getLogger(__name__)
@@ -26,7 +29,7 @@ async def fetch_gap_candidates(token: str) -> list:
     next_key = ""
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with kiwoom_client() as client:
             while True:
                 headers = {
                     "api-id": "ka10029",
@@ -47,7 +50,7 @@ async def fetch_gap_candidates(token: str) -> list:
                         "stk_cnd": "1",         # 관리종목제외
                         "crd_cnd": "0",
                         "pric_cnd": "8",        # 1천원이상
-                        "stex_tp": "1"          # krx
+                        "stex_tp": "3"          # krx
                     },
                 )
                 data = resp.json()
@@ -92,8 +95,8 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
             raw_exp_price = exp.get("exp_cntr_pric") or exp.get("10", "0")
             exp_price = abs(int(str(raw_exp_price).replace("+", "").replace("-", "").replace(",", "")))
 
-            # 2. 예상 등락률 파싱 (영문키 or Raw FID '12' 대응)
-            raw_gap_pct = exp.get("flu_rt") or exp.get("12", "0")
+            # 2. 예상 등락률 파싱 (ws:expected 저장 키: exp_flu_rt, FID 12)
+            raw_gap_pct = exp.get("exp_flu_rt") or exp.get("12", "0")
             gap_pct = float(str(raw_gap_pct).replace("+", "").replace(",", ""))
         except ValueError:
             continue
@@ -113,6 +116,25 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
         # 스코어링 로직 (갭상승률과 체결강도 가중치 반영)
         score = (gap_pct * 0.5) + ((strength - 100) * 0.5)
 
+        # 동적 TP/SL — 전일 종가(갭 베이스) + 5분봉 ATR 기반
+        atr_val    = None
+        prev_close = None
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            atr_result = await get_atr_minute(token, stk_cd, tic_scope="5", period=7)
+            atr_val = atr_result.atr
+        except Exception:
+            pass
+        try:
+            # 전일 종가 = 일봉 2번째(index 1) — SL(갭 필) 기준
+            daily = await fetch_daily_candles(token, stk_cd, target_count=2)
+            if len(daily) >= 2:
+                prev_close = _safe_price(daily[1].get("cur_prc"))
+        except Exception:
+            pass
+        tp_sl = calc_tp_sl("S1_GAP_OPEN", exp_price, [], [], [],
+                            stk_cd=stk_cd, atr=atr_val, prev_close=prev_close)
+
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
@@ -122,8 +144,7 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list:
             "cntr_strength": round(strength, 1),
             "score": round(score, 2),
             "entry_type": "시초가_시장가",
-            "target_pct": 4.0,
-            "stop_pct": -2.0,
+            **tp_sl.to_signal_fields(),
         })
 
     # 스코어 기준 내림차순 정렬 후 상위 5개 반환

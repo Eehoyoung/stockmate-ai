@@ -19,6 +19,7 @@ import os
 import signal
 import sys
 
+import asyncpg
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
 
@@ -31,6 +32,8 @@ from monitor_worker import run_monitor
 from overnight_worker import run_overnight_worker
 from vi_watch_worker import run_vi_watch_worker
 from candidates_builder import run_candidate_builder
+from claude_analyst import analyze_stock_for_user
+from stockScore import score_stock as score_stock_strategies
 
 load_dotenv()
 
@@ -47,10 +50,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("engine")
 
-# ── Redis 설정 ────────────────────────────────────────────────
+# ── Redis 설정 ─────────────────────────────────────────────────
 REDIS_HOST     = os.getenv("REDIS_HOST",     "localhost")
 REDIS_PORT     = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "") or None
+
+# ── PostgreSQL 설정 ─────────────────────────────────────────────
+PG_HOST     = os.getenv("POSTGRES_HOST",     "localhost")
+PG_PORT     = int(os.getenv("POSTGRES_PORT", "5432"))
+PG_DB       = os.getenv("POSTGRES_DB",       "SMA")
+PG_USER     = os.getenv("POSTGRES_USER",     "postgres")
+PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
+PG_ENABLED  = os.getenv("PG_WRITER_ENABLED", "true").lower() == "true"
 
 
 async def _run_health_server(port: int, rdb):
@@ -74,8 +85,67 @@ async def _run_health_server(port: int, rdb):
         }
         return web.json_response(body, status=200 if redis_ok else 503)
 
+    async def _candidates_handler(request):
+        """
+        /candidates — 전략별 Redis 후보 풀 현황 반환
+        candidates:s{N}:{market} 키 목록과 종목 수를 JSON으로 응답.
+        """
+        MARKETS = ["001", "101"]
+        STRATEGIES = [f"s{n}" for n in range(1, 16)]
+        pool_status = {}
+        try:
+            for s in STRATEGIES:
+                for mkt in MARKETS:
+                    key = f"candidates:{s}:{mkt}"
+                    count = await rdb.llen(key)
+                    if count > 0:
+                        pool_status[key] = count
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=503)
+
+        total = sum(pool_status.values())
+        return web.json_response({
+            "total_candidates": total,
+            "pools": pool_status,
+        })
+
+    async def _analyze_handler(request):
+        """
+        /analyze/{stk_cd} — /claude 텔레그램 명령어 전용 종목 종합 분석
+        Claude API 를 호출하여 기술적 분석 + 전략 후보 풀 정보 반환.
+        """
+        stk_cd = request.match_info.get("stk_cd", "").strip()
+        if not stk_cd or not stk_cd.isdigit() or len(stk_cd) != 6:
+            return web.json_response({"error": "6자리 숫자 종목코드 필요"}, status=400)
+        try:
+            result = await analyze_stock_for_user(rdb, stk_cd)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("[Health] /analyze/%s 오류: %s", stk_cd, e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _score_handler(request):
+        """
+        /score/{stk_cd} — /score 텔레그램 명령어 전용 15전략 심사 + AI 스코어링.
+        S1~S15 전략 조건 경량 심사 → 매칭 전략 규칙/AI 점수 반환.
+        Query param: ai=false 로 AI 스코어링 비활성화 (빠른 규칙 점수만).
+        """
+        stk_cd = request.match_info.get("stk_cd", "").strip()
+        if not stk_cd or not stk_cd.isdigit() or len(stk_cd) != 6:
+            return web.json_response({"error": "6자리 숫자 종목코드 필요"}, status=400)
+        enable_ai = request.rel_url.query.get("ai", "true").lower() != "false"
+        try:
+            result = await score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai)
+            return web.json_response(result, dumps=lambda o: __import__("json").dumps(o, ensure_ascii=False, default=str))
+        except Exception as e:
+            logger.error("[Health] /score/%s 오류: %s", stk_cd, e)
+            return web.json_response({"error": str(e)}, status=500)
+
     app = web.Application()
     app.router.add_get("/health", _health_handler)
+    app.router.add_get("/candidates", _candidates_handler)
+    app.router.add_get("/analyze/{stk_cd}", _analyze_handler)
+    app.router.add_get("/score/{stk_cd}", _score_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -95,10 +165,12 @@ async def main():
     logger.info("  Claude 모델: %s", os.getenv("CLAUDE_MODEL", "N/A"))
     logger.info("=" * 50)
 
-    # Claude API 키 확인
+    # Claude API 키 확인 (미설정 시 rule_score 단독 모드로 계속 실행)
     if not os.getenv("CLAUDE_API_KEY"):
-        logger.critical("CLAUDE_API_KEY 환경변수 미설정 – 종료")
-        sys.exit(1)
+        logger.warning(
+            "CLAUDE_API_KEY 미설정 – news_scheduler/confirm_gate 기능 제한됨. "
+            "규칙 기반 신호 흐름(rule_score)은 정상 동작."
+        )
 
     # Redis 연결
     rdb = aioredis.Redis(
@@ -113,6 +185,21 @@ async def main():
         logger.critical("[Redis] 연결 실패: %s", e)
         sys.exit(1)
 
+    # PostgreSQL 연결 풀 (asyncpg)
+    pg_pool = None
+    if PG_ENABLED:
+        try:
+            pg_pool = await asyncpg.create_pool(
+                host=PG_HOST, port=PG_PORT, database=PG_DB,
+                user=PG_USER, password=PG_PASSWORD,
+                min_size=2, max_size=8,
+                command_timeout=10,
+            )
+            logger.info("[PG] PostgreSQL 풀 생성 완료 → %s:%d/%s", PG_HOST, PG_PORT, PG_DB)
+        except Exception as e:
+            logger.warning("[PG] PostgreSQL 연결 실패 – DB 쓰기 비활성화: %s", e)
+            pg_pool = None
+
     # 종료 시그널
     loop      = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -124,7 +211,7 @@ async def main():
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    enable_confirm   = os.getenv("ENABLE_CONFIRM_GATE",      "true").lower()  == "true"
+    enable_confirm   = os.getenv("ENABLE_CONFIRM_GATE",      "false").lower() == "true"
     enable_scanner   = os.getenv("ENABLE_STRATEGY_SCANNER", "true").lower()  == "true"  # S8/S9/S11/S13 Python 전용
     enable_news      = os.getenv("NEWS_ENABLED",            "true").lower()  == "true"
     enable_monitor   = os.getenv("ENABLE_MONITOR",          "true").lower()  == "true"
@@ -154,7 +241,7 @@ async def main():
                     os.getenv("CANDIDATE_BUILD_INTERVAL_SEC", "600"))
 
     tasks = [
-        asyncio.create_task(run_worker(rdb)),
+        asyncio.create_task(run_worker(rdb, pg_pool)),
         asyncio.create_task(stop_event.wait()),
         asyncio.create_task(_run_health_server(health_port, rdb)),
     ]
@@ -167,7 +254,7 @@ async def main():
     if enable_monitor:
         tasks.append(asyncio.create_task(run_monitor(rdb)))
     if enable_overnight:
-        tasks.append(asyncio.create_task(run_overnight_worker(rdb)))
+        tasks.append(asyncio.create_task(run_overnight_worker(rdb, pg_pool)))
     if enable_vi_watch:
         tasks.append(asyncio.create_task(run_vi_watch_worker(rdb)))
     if enable_cand_builder:
@@ -178,6 +265,9 @@ async def main():
         t.cancel()
 
     await rdb.aclose()
+    if pg_pool:
+        await pg_pool.close()
+        logger.info("[PG] PostgreSQL 풀 종료")
     logger.info("[Engine] 종료 완료")
 
 

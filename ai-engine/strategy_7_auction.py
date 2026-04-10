@@ -13,7 +13,9 @@ import asyncio
 import httpx
 import logging
 import os
-from http_utils import validate_kiwoom_response, fetch_stk_nm
+from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from indicator_atr import get_atr_minute
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
@@ -28,7 +30,7 @@ async def fetch_gap_rank(token: str, market: str) -> dict:
     result = {}
     next_key = ""
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka10029",
@@ -48,7 +50,7 @@ async def fetch_gap_rank(token: str, market: str) -> dict:
                     "stk_cnd": "1",      # 1: 관리종목 제외
                     "crd_cnd": "0",
                     "pric_cnd": "0",
-                    "stex_tp": "1"       # KRX 고정
+                    "stex_tp": "3"       # KRX 고정
                 },
             )
             data = resp.json()
@@ -74,12 +76,29 @@ async def fetch_gap_rank(token: str, market: str) -> dict:
 
     return result
 
-async def fetch_credit_filter(token: str, market: str = "000") -> set:
-    """ka10033 신용비율상위 - 연속조회로 고위험 신용 종목 전체 추출"""
+async def fetch_credit_filter(token: str, market: str = "000", rdb=None) -> set:
+    """ka10033 신용비율상위 - Redis 캐시 우선, 없으면 API 호출 후 캐시 저장.
+
+    ka10033은 일일 호출 한도가 낮아 매 스캔마다 호출하면 1700 오류(한도 초과) 발생.
+    캐시 TTL 1800s(30분)로 한도 소진 방지.
+    """
+    CACHE_KEY = f"cache:high_credit:{market}"
+    CACHE_TTL = 1800  # 30분
+
+    # 1. Redis 캐시 확인
+    if rdb:
+        try:
+            cached = await rdb.smembers(CACHE_KEY)
+            if cached:
+                logger.debug("[S7] ka10033 캐시 사용 (%d종목, market=%s)", len(cached), market)
+                return set(cached)
+        except Exception as e:
+            logger.debug("[S7] ka10033 캐시 조회 실패 (API fallback): %s", e)
+
     high_credit_set = set()
     next_key = ""
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka10033",
@@ -98,7 +117,7 @@ async def fetch_credit_filter(token: str, market: str = "000") -> set:
                     "stk_cnd": "1",
                     "updown_incls": "1",
                     "crd_cnd": "0",
-                    "stex_tp": "1" # KRX 고정
+                    "stex_tp": "3"
                 }
             )
             data = resp.json()
@@ -107,7 +126,6 @@ async def fetch_credit_filter(token: str, market: str = "000") -> set:
 
             items = data.get("crd_rt_upper", [])
             for x in items:
-                # 신용비율 8% 이상인 종목은 리스크 관리 차원에서 수집
                 if clean_num(x.get("crd_rt")) >= 8.0:
                     high_credit_set.add(x.get("stk_cd"))
 
@@ -116,6 +134,18 @@ async def fetch_credit_filter(token: str, market: str = "000") -> set:
 
             if cont_yn != "Y" or not next_key:
                 break
+
+    # 2. API 조회 성공 시 Redis에 캐시 저장
+    if rdb and high_credit_set:
+        try:
+            pipe = rdb.pipeline()
+            pipe.delete(CACHE_KEY)
+            pipe.sadd(CACHE_KEY, *high_credit_set)
+            pipe.expire(CACHE_KEY, CACHE_TTL)
+            await pipe.execute()
+            logger.debug("[S7] ka10033 캐시 저장 (%d종목, TTL=%ds)", len(high_credit_set), CACHE_TTL)
+        except Exception as e:
+            logger.debug("[S7] ka10033 캐시 저장 실패: %s", e)
 
     return high_credit_set
 
@@ -138,8 +168,8 @@ async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list
         logger.debug("[S7] 풀 없음 – ka10029 직접 조회 (fallback)")
         gap_candidates = await fetch_gap_rank(token, market)
 
-    # 신용 리스크 종목 수집
-    high_credit_stocks = await fetch_credit_filter(token, market)
+    # 신용 리스크 종목 수집 (캐시 우선)
+    high_credit_stocks = await fetch_credit_filter(token, market, rdb=rdb)
 
     results = []
 
@@ -147,6 +177,7 @@ async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list
         if stk_cd in high_credit_stocks: continue
 
         # 2. Redis에서 실시간 호가잔량(0D) 데이터 확인
+        # ws:hoga 저장 키: total_buy_bid_req(FID125), total_sel_bid_req(FID121)
         try:
             hoga_data = await rdb.hgetall(f"ws:hoga:{stk_cd}") if rdb else {}
         except:
@@ -154,18 +185,32 @@ async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list
 
         if not hoga_data: continue
 
-        # 0D 필드 활용: 125(매수총잔량), 121(매도총잔량), 201(예상체결등락율)
-        total_bid = clean_num(hoga_data.get("125", 0))
-        total_ask = clean_num(hoga_data.get("121", 1))
+        total_bid = clean_num(hoga_data.get("total_buy_bid_req", 0))
+        total_ask = clean_num(hoga_data.get("total_sel_bid_req", 0))
 
         # 호가잔량 비율 계산:
         # $$Bid\ Ratio = \frac{Total\ Bid\ Quantity}{Total\ Ask\ Quantity}$$
-        bid_ratio = total_bid / total_ask
-        live_gap_pct = clean_num(hoga_data.get("201", info['gap_rt']))
+        bid_ratio = total_bid / total_ask if total_ask > 0 else 0.0
+        # FID201(예상체결등락율)은 ws:hoga 미저장 → info['gap_rt'] fallback
+        live_gap_pct = info['gap_rt']
 
         # 최종 진입 조건: 갭 2~10% 유지 & 매수잔량이 매도잔량의 2배 이상
         if (2.0 <= live_gap_pct <= 10.0) and (bid_ratio >= 2.0):
             stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+
+            # 동적 TP/SL — 5분봉 ATR (동시호가 = 시초가 진입 단기 변동성)
+            atr_val = None
+            try:
+                atr_result = await get_atr_minute(token, stk_cd, tic_scope="5", period=7)
+                atr_val = atr_result.atr
+            except Exception:
+                pass
+            # 예상체결가: ws:expected(0H) exp_cntr_pric 우선, 없으면 best bid 호가 사용
+            exp_data = await rdb.hgetall(f"ws:expected:{stk_cd}") if rdb else {}
+            exp_prc = clean_num(exp_data.get("exp_cntr_pric", 0)) or clean_num(hoga_data.get("buy_bid_pric_1", 0))
+            tp_sl = calc_tp_sl("S7_AUCTION", max(exp_prc, 1.0), [], [], [],
+                                stk_cd=stk_cd, atr=atr_val)
+
             results.append({
                 "stk_cd": stk_cd,
                 "stk_nm": stk_nm,
@@ -174,8 +219,7 @@ async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list
                 "bid_ratio": round(bid_ratio, 2),
                 "vol_rank": info['rank'],
                 "entry_type": "시초가_시장가",
-                "target_pct": 4.5,
-                "stop_pct": -2.0,
+                **tp_sl.to_signal_fields(),
             })
 
     # 잔량 비율이 높은 순(수급 강도)으로 정렬

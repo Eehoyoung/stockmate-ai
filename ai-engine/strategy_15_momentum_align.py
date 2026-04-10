@@ -50,6 +50,7 @@ from indicator_atr import calc_atr
 from indicator_stochastic import calc_stochastic
 from indicator_volume import calc_vwap, get_vwap_minute
 from http_utils import fetch_cntr_strength, fetch_stk_nm
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -185,12 +186,15 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         cond_boll = False
         pct_b = None
+        bb_upper_saved = None
         if len(closes) >= 20:
             bands = calc_bollinger(closes, 20, 2.0)
             upper, middle, lower = bands[0]
             if upper > lower > 0:
                 pct_b = (cur_prc - lower) / (upper - lower)
                 cond_boll = 0.45 <= pct_b <= 0.82
+                if upper > cur_prc:
+                    bb_upper_saved = upper
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 선택 조건 D: 거래량
@@ -246,12 +250,12 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
             + (5  if rsi_now and rsi_prev and rsi_now > rsi_prev else 0)  # RSI 상승 중
         )
 
-        # ── ATR 기반 손절·목표가 ─────────────────────────────────
-        if atr_now:
-            stop_price   = round(cur_prc - atr_now * 2.0)
-            stop_pct     = round((stop_price - cur_prc) / cur_prc * 100, 2)
-        else:
-            stop_pct = -5.0
+        # ── 동적 TP/SL 계산 ──────────────────────────────────────
+        ma20_val = ma20  # 위에서 이미 계산됨
+        tp_sl = calc_tp_sl(
+            "S15_MOMENTUM_ALIGN", cur_prc, highs, lows, closes,
+            stk_cd=stk_cd, atr=atr_now, ma20=ma20_val, bb_upper=bb_upper_saved
+        )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
@@ -275,8 +279,7 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
             "score":         round(score, 2),
             "entry_type":    "당일종가_또는_익일시가",
             "holding_days":  "5~10거래일",
-            "target_pct":    12.0,
-            "stop_pct":      stop_pct,
+            **tp_sl.to_signal_fields(),
         })
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

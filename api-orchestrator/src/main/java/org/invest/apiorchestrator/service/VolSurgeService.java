@@ -37,7 +37,7 @@ public class VolSurgeService {
                                     .trdeQtyTp("10")
                                     .stkCnd("1")
                                     .pricTp("8")
-                                    .stexTp("1")
+                                    .stexTp("3")
                                     .build());
 
             if (resp == null || resp.getItems() == null) return Collections.emptySet();

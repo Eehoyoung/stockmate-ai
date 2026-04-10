@@ -22,7 +22,9 @@ import httpx
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
 
-from http_utils import fetch_stk_nm, validate_kiwoom_response
+from http_utils import fetch_stk_nm, validate_kiwoom_response, kiwoom_client
+from indicator_atr import get_atr_minute
+from tp_sl_engine import calc_tp_sl
 
 # 부호 및 콤마 제거를 위한 유틸리티 함수
 def clean_numeric(value: str) -> float:
@@ -32,7 +34,7 @@ def clean_numeric(value: str) -> float:
 async def fetch_minute_chart(token: str, stk_cd: str, scope: int = 5) -> list:
     """ka10080 주식분봉차트 조회"""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with kiwoom_client() as client:
             resp = await client.post(
                 f"{KIWOOM_BASE_URL}/api/dostk/chart",
                 headers={
@@ -114,6 +116,17 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     # 모든 조건 통과 시 종목명 가져오기 및 결과 반환
     stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
 
+    # 동적 TP/SL — 5분봉 ATR (장대양봉 이후 단기 변동성 기준)
+    atr_val = None
+    try:
+        atr_result = await get_atr_minute(token, stk_cd, tic_scope="5", period=7)
+        atr_val = atr_result.atr
+    except Exception:
+        pass
+    # candle_low=l(장대양봉 저점→SL 기준), candle_high=h(고점→TP 기준)
+    tp_sl = calc_tp_sl("S4_BIG_CANDLE", c, [], [], [], stk_cd=stk_cd, atr=atr_val,
+                        candle_low=l, candle_high=h)
+
     return {
         "stk_cd": stk_cd,
         "stk_nm": stk_nm,
@@ -125,6 +138,5 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
         "is_new_high": is_breakout,
         "cntr_strength": round(avg_strength, 1),
         "entry_type": "추격_시장가",
-        "target_pct": 4.0,
-        "stop_pct": -2.5,
+        **tp_sl.to_signal_fields(),
     }

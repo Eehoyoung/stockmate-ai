@@ -24,7 +24,9 @@ import os
 
 import httpx
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm
+from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from ma_utils import fetch_daily_candles, _safe_price
+from tp_sl_engine import calc_tp_sl
 
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
@@ -41,7 +43,7 @@ async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: in
     all_gainers = []
     cont_yn, next_key = "N", ""
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         for _ in range(max_pages):
             resp = await client.post(
                 f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
@@ -53,7 +55,7 @@ async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: in
                 json={
                     "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "0010",
                     "stk_cnd": "1", "crd_cnd": "0", "updown_incls": "0",
-                    "pric_cnd": "8", "trde_prica_cnd": "10", "stex_tp": "1"
+                    "pric_cnd": "8", "trde_prica_cnd": "10", "stex_tp": "3"
                 }
             )
             data = resp.json()
@@ -70,7 +72,7 @@ async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: in
 
 async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
     """ka10063 장중투자자별매매요청 – 기관 당일 순매수 종목 집합"""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         resp = await client.post(
             f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
             headers={
@@ -84,7 +86,7 @@ async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
                 "invsr": "7",            # 7: 기관계
                 "frgn_all": "0",
                 "smtm_netprps_tp": "0",  # 기관 단독 순매수
-                "stex_tp": "1",
+                "stex_tp": "3",
             },
         )
         resp.raise_for_status()
@@ -107,16 +109,40 @@ async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
 
 
 async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
-    """S12: 종가 강도 + 기관 수급 교차 필터"""
+    """S12: 종가 강도 + 기관 수급 교차 필터
+
+    흐름:
+      1. candidates:s12:{market} 풀 우선 읽기 (candidates_builder가 ka10032로 생성)
+      2. ka10027 등락률상위 + ka10063 기관순매수 병렬 조회
+      3. gainers 중 inst_set 교집합 → 풀이 있으면 pool_set 추가 교집합
+      4. 조건 검증(flu_rt/cntr_str) → 점수 산정
+    """
+    # 0. candidates:s12:{market} 풀 로드 (TTL 600s, flu_rt>0 종목만 포함)
+    pool_set: set[str] = set()
+    if rdb and market in ("001", "101"):
+        try:
+            pool = await rdb.lrange(f"candidates:s12:{market}", 0, -1)
+            if pool:
+                pool_set = set(pool)
+                logger.debug("[S12] 풀 %d종목 로드 (candidates:s12:%s)", len(pool_set), market)
+            else:
+                logger.debug("[S12] candidates:s12:%s 풀 없음 — 전체 스캔 fallback", market)
+        except Exception as e:
+            logger.warning("[S12] 풀 조회 실패 (fallback): %s", e)
+
     # 1. 기관 순매수 세트와 등락률 상위 리스트 병렬 호출
     gainers_task = fetch_top_gainers_paged(token, market)
-    inst_set_task = fetch_inst_netbuy_set(token, market) # 기존 코드 활용
+    inst_set_task = fetch_inst_netbuy_set(token, market)
     gainers, inst_set = await asyncio.gather(gainers_task, inst_set_task)
 
     results = []
     for item in gainers:
         stk_cd = item.get("stk_cd")
-        if not stk_cd or stk_cd not in inst_set: continue
+        if not stk_cd or stk_cd not in inst_set:
+            continue
+        # 풀이 있을 경우 풀 내 종목만 처리 (candidates_builder가 이미 flu_rt>0 필터 적용)
+        if pool_set and stk_cd not in pool_set:
+            continue
 
         # 수치 파싱
         flu_rt = float(str(item.get("flu_rt", "0")).replace("+", ""))
@@ -139,6 +165,24 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
         except (TypeError, ValueError):
             buy_req, sel_req = 0.0, 1.0
 
+        # 동적 TP/SL — 당일 저점 + 스윙 고점 기반 (일봉 조회)
+        highs_d, lows_d, closes_d, ma5, ma20 = [], [], [], None, None
+        try:
+            await asyncio.sleep(0.2)
+            candles = await fetch_daily_candles(token, stk_cd)
+            closes_d = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
+            highs_d  = [_safe_price(c.get("high_pric")) for c in candles]
+            lows_d   = [_safe_price(c.get("low_pric")) for c in candles]
+            if len(closes_d) >= 5:
+                ma5 = sum(closes_d[:5]) / 5
+            if len(closes_d) >= 20:
+                ma20 = sum(closes_d[:20]) / 20
+        except Exception as e:
+            logger.debug("[S12] 일봉 조회 실패 %s: %s", stk_cd, e)
+
+        tp_sl = calc_tp_sl("S12_CLOSING", cur_prc, highs_d, lows_d, closes_d,
+                           stk_cd=stk_cd, ma5=ma5, ma20=ma20)
+
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
@@ -150,8 +194,7 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
             "sel_req": sel_req,
             "score": round(score, 2),
             "entry_type": "15:20_장마감_전_진입",
-            "target_pct": 5.0,
-            "stop_pct": -3.0
+            **tp_sl.to_signal_fields(),
         })
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

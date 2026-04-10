@@ -91,56 +91,56 @@ class TestS1GapBoundaries:
         """갭 정확히 3.0% → 20점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=3.0)
         ctx = _ctx(strength=100, flu_rt=3.0, bid=500, ask=1000)  # bid_ratio=0.5 → 0점
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 20.0
 
     def test_gap_just_below_5_gets_20_points(self):
         """갭 4.99% → 20점 (5% 미만)"""
         sig = _sig("S1_GAP_OPEN", gap_pct=4.99)
         ctx = _ctx(strength=100, flu_rt=4.99, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 20.0
 
     def test_gap_exactly_5_gets_15_points(self):
         """갭 정확히 5.0% → 15점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=5.0)
         ctx = _ctx(strength=100, flu_rt=5.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 15.0
 
     def test_gap_just_below_8_gets_15_points(self):
         """갭 7.99% → 15점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=7.99)
         ctx = _ctx(strength=100, flu_rt=7.99, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 15.0
 
     def test_gap_exactly_8_gets_10_points(self):
         """갭 정확히 8.0% → 10점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=8.0)
         ctx = _ctx(strength=100, flu_rt=8.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 10.0
 
     def test_gap_just_below_15_gets_10_points(self):
         """갭 14.99% → 10점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=14.99)
         ctx = _ctx(strength=100, flu_rt=5.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 10.0
 
     def test_gap_exactly_15_gets_minus_10(self):
         """갭 정확히 15% → -10점 (과열)"""
         sig = _sig("S1_GAP_OPEN", gap_pct=15.0)
         ctx = _ctx(strength=100, flu_rt=5.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 0.0  # -10점이지만 min(0) 클리핑
 
     def test_gap_above_15_with_strength_still_clamped(self):
         """갭 20%, 체결강도 강해도 과열 페널티로 스코어 제한"""
         sig = _sig("S1_GAP_OPEN", gap_pct=20.0)
         ctx = _ctx(strength=100, flu_rt=5.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # -10 (갭) + 0 (strength 100) + 0 (bid_ratio 0.5) = -10 → 클리핑 → 0
         assert score == 0.0
 
@@ -156,7 +156,7 @@ class TestS1StrengthBoundaries:
         """체결강도 정확히 150 → >130 구간 → 20점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=0)
         ctx = _ctx(strength=150.0, flu_rt=0.5, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=0 → 0점 (0<3), strength=150 → 20점, bid_ratio=0.5 → 0점 = 20
         assert score == 20.0
 
@@ -164,35 +164,35 @@ class TestS1StrengthBoundaries:
         """체결강도 151 → >150 구간 → 30점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=0)
         ctx = _ctx(strength=151.0, flu_rt=0.5, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 30.0
 
     def test_strength_130_exactly_gets_10(self):
         """체결강도 130 → >110 구간 → 10점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=0)
         ctx = _ctx(strength=130.0, flu_rt=0.5, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 10.0
 
     def test_strength_131_gets_20(self):
         """체결강도 131 → >130 구간 → 20점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=0)
         ctx = _ctx(strength=131.0, flu_rt=0.5, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 20.0
 
     def test_strength_110_gets_0(self):
         """체결강도 110 → ≤110 → 0점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=0)
         ctx = _ctx(strength=110.0, flu_rt=0.5, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 0.0
 
     def test_strength_111_gets_10(self):
         """체결강도 111 → >110 → 10점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=0)
         ctx = _ctx(strength=111.0, flu_rt=0.5, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 10.0
 
 
@@ -207,17 +207,17 @@ class TestFluRtPenaltyBoundaries:
         """flu_rt = 15.0 (경계) → 패널티 없음 (>15만 패널티)"""
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=160, flu_rt=15.0, bid=4000, ask=1000)
-        score_15 = rule_score(sig, ctx)
+        score_15, _ = rule_score(sig, ctx)
         # flu_rt > 15만 패널티이므로 15.0은 패널티 없음
         ctx2 = _ctx(strength=160, flu_rt=15.1, bid=4000, ask=1000)
-        score_151 = rule_score(sig, ctx2)
+        score_151, _ = rule_score(sig, ctx2)
         assert score_15 > score_151  # 15.0 > 15.1
 
     def test_flu_rt_exactly_15_1_gets_penalty(self):
         """flu_rt = 15.1 → -20점 패널티"""
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=100, flu_rt=15.1, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=4% → +20, flu_rt>15 → -20, net = 0
         assert score == 0.0
 
@@ -226,15 +226,15 @@ class TestFluRtPenaltyBoundaries:
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0)
         ctx_10 = _ctx(strength=100, flu_rt=10.0, bid=500, ask=1000)
         ctx_10_1 = _ctx(strength=100, flu_rt=10.1, bid=500, ask=1000)
-        score_10 = rule_score(sig, ctx_10)
-        score_10_1 = rule_score(sig, ctx_10_1)
+        score_10, _ = rule_score(sig, ctx_10)
+        score_10_1, _ = rule_score(sig, ctx_10_1)
         assert score_10 > score_10_1  # 10.0에는 패널티 없음
 
     def test_flu_rt_10_1_gets_minus_10(self):
         """flu_rt = 10.1 → -10점 패널티"""
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=100, flu_rt=10.1, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=4% → +20, flu_rt=10.1 → -10, net = 10
         assert score == 10.0
 
@@ -243,15 +243,15 @@ class TestFluRtPenaltyBoundaries:
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0)
         ctx_m5 = _ctx(strength=100, flu_rt=-5.0, bid=500, ask=1000)
         ctx_m5_1 = _ctx(strength=100, flu_rt=-5.1, bid=500, ask=1000)
-        score_m5 = rule_score(sig, ctx_m5)
-        score_m5_1 = rule_score(sig, ctx_m5_1)
+        score_m5, _ = rule_score(sig, ctx_m5)
+        score_m5_1, _ = rule_score(sig, ctx_m5_1)
         assert score_m5 > score_m5_1
 
     def test_flu_rt_minus6_gets_minus_15(self):
         """flu_rt = -6.0 → -15점 패널티"""
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=100, flu_rt=-6.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=4% → +20, flu_rt < -5 → -15, net = 5
         assert score == 5.0
 
@@ -266,48 +266,48 @@ class TestS2Boundaries:
     def test_pullback_1_exactly_gets_30(self):
         sig = _sig("S2_VI_PULLBACK", pullback_pct=-1.0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # pullback=1.0 → abs=1.0 → [1,2) → 30점
         assert score == 30.0
 
     def test_pullback_just_below_2_gets_30(self):
         sig = _sig("S2_VI_PULLBACK", pullback_pct=-1.99)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 30.0
 
     def test_pullback_exactly_2_gets_20(self):
         sig = _sig("S2_VI_PULLBACK", pullback_pct=-2.0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 20.0
 
     def test_pullback_just_below_3_gets_20(self):
         sig = _sig("S2_VI_PULLBACK", pullback_pct=-2.99)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 20.0
 
     def test_pullback_exactly_3_gets_0(self):
         sig = _sig("S2_VI_PULLBACK", pullback_pct=-3.0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 0.0
 
     def test_is_dynamic_true_adds_15(self):
         """is_dynamic=True → +15점"""
         sig = _sig("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=True)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score_dyn = rule_score(sig, ctx)
+        score_dyn, _ = rule_score(sig, ctx)
         sig2 = _sig("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=False)
-        score_static = rule_score(sig2, ctx)
+        score_static, _ = rule_score(sig2, ctx)
         assert score_dyn - score_static == 15.0
 
     def test_is_dynamic_1_treated_as_true(self):
         """is_dynamic=1 (int) → True로 처리"""
         sig = _sig("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=1)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # pullback=1.5 → 30점, is_dynamic=1 (bool(1)=True) → +15점
         assert score == 45.0
 
@@ -315,7 +315,7 @@ class TestS2Boundaries:
         """is_dynamic=0 (int) → False로 처리"""
         sig = _sig("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 30.0
 
 
@@ -329,55 +329,55 @@ class TestS3Boundaries:
     def test_cont_days_5_gets_30(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=5, vol_ratio=0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 30.0
 
     def test_cont_days_4_gets_20(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=4, vol_ratio=0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 20.0
 
     def test_cont_days_3_gets_20(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=3, vol_ratio=0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 20.0
 
     def test_cont_days_2_gets_10(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=2, vol_ratio=0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 10.0
 
     def test_cont_days_0_gets_0(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=0, vol_ratio=0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 0.0
 
     def test_vol_ratio_3_gets_25(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=0, vol_ratio=3.0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 25.0
 
     def test_vol_ratio_2_gets_20(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=0, vol_ratio=2.0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 20.0
 
     def test_vol_ratio_1_5_gets_10(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=0, vol_ratio=1.5)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 10.0
 
     def test_vol_ratio_1_gets_0(self):
         sig = _sig("S3_INST_FRGN", net_buy_amt=0, continuous_days=0, vol_ratio=1.0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 0.0
 
     def test_net_buy_amt_capped_at_25(self):
@@ -385,7 +385,7 @@ class TestS3Boundaries:
         # 500억 이상이면 25점 초과지만 min(25, ...)으로 제한
         sig = _sig("S3_INST_FRGN", net_buy_amt=1_000_000_000_000, continuous_days=0, vol_ratio=0)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 25.0
 
 
@@ -400,7 +400,7 @@ class TestS7Boundaries:
         """bid_ratio=3.0 → >2 구간 → 25점"""
         sig = _sig("S7_AUCTION", gap_pct=3.0, vol_rank=5)
         ctx = _ctx(strength=100, flu_rt=3.0, bid=3000, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=3% → +25, bid_ratio=3.0 → >2 → 25점
         assert score >= 50  # 최소 25+25=50점
 
@@ -408,7 +408,7 @@ class TestS7Boundaries:
         """bid_ratio=3.01 → >3 구간 → 30점"""
         sig = _sig("S7_AUCTION", gap_pct=3.0, vol_rank=5)
         ctx = _ctx(strength=100, flu_rt=3.0, bid=3010, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=3% → +25, bid_ratio>3 → 30점, vol_rank≤10 → 20점 = 75점
         assert score >= 75
 
@@ -420,13 +420,13 @@ class TestS7Boundaries:
 class TestEmptyAndNullInputs:
     def test_empty_signal_returns_0(self):
         """빈 딕셔너리 신호 → 0점"""
-        score = rule_score({}, _ctx())
+        score, _ = rule_score({}, _ctx())
         assert score == 0.0
 
     def test_empty_market_ctx_returns_positive(self):
         """빈 market_ctx → 기본값으로 계산"""
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0)
-        score = rule_score(sig, {})
+        score, _ = rule_score(sig, {})
         # ctx 없으면: strength=100, bid=0, ask=0 기본값
         assert isinstance(score, float)
         assert 0 <= score <= 100
@@ -434,7 +434,7 @@ class TestEmptyAndNullInputs:
     def test_none_gap_pct_treated_as_zero(self):
         """gap_pct=None → 0으로 처리 → 0점"""
         sig = _sig("S1_GAP_OPEN", gap_pct=None)
-        score = rule_score(sig, _ctx(flu_rt=1.0))
+        score, _ = rule_score(sig, _ctx(flu_rt=1.0))
         # gap=0 < 3 → 0점 (과열아님, flu_rt=1.0 패널티없음)
         # strength=120 → 10점, bid_ratio=2.0 → 20점
         assert score >= 0
@@ -442,14 +442,14 @@ class TestEmptyAndNullInputs:
     def test_unknown_strategy_returns_0(self):
         """알 수 없는 전략 → 0점"""
         sig = _sig("UNKNOWN_STRATEGY")
-        score = rule_score(sig, _ctx())
+        score, _ = rule_score(sig, _ctx())
         # 공통 패널티만 적용 (flu_rt=3.0 → 패널티 없음)
         assert score == 0.0
 
     def test_missing_stk_cd_still_scores(self):
         """stk_cd 누락 → 스코어링은 가능"""
         sig = {"strategy": "S1_GAP_OPEN", "gap_pct": 4.0}
-        score = rule_score(sig, _ctx(flu_rt=1.0))
+        score, _ = rule_score(sig, _ctx(flu_rt=1.0))
         assert isinstance(score, float)
 
 
@@ -462,21 +462,21 @@ class TestScoreClipping:
         """페널티가 많아도 0 이하로 내려가지 않음"""
         sig = _sig("S1_GAP_OPEN", gap_pct=20.0)  # -10점
         ctx = _ctx(strength=90, flu_rt=16.0, bid=500, ask=1000)  # flu_rt>15 → -20점
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score >= 0.0
 
     def test_score_never_above_100(self):
         """모든 조건 최대여도 100점 초과 없음"""
         sig = _sig("S7_AUCTION", gap_pct=3.0, vol_rank=1)
         ctx = _ctx(strength=200, flu_rt=1.0, bid=10000, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score <= 100.0
 
     def test_score_is_rounded_to_1_decimal(self):
         """점수는 소수점 1자리로 반올림"""
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=120, flu_rt=1.0, bid=1500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == round(score, 1)
 
 
@@ -534,7 +534,7 @@ class TestCombinationScores:
         """S1 모든 조건 최대 → 최고 점수"""
         sig = _sig("S1_GAP_OPEN", gap_pct=4.0, cntr_strength=160.0)
         ctx = _ctx(strength=160, flu_rt=2.0, bid=3000, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=4% → 20, strength=160 → 30, bid_ratio=3 → 25, cntr=160 → 10 = 85점
         assert score == 85.0
 
@@ -542,7 +542,7 @@ class TestCombinationScores:
         """S7 모든 조건 최대 → 75점"""
         sig = _sig("S7_AUCTION", gap_pct=3.0, vol_rank=5)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=4000, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=3% → 25, bid_ratio=4 → 30, vol_rank=5 → 20 = 75점
         assert score == 75.0
 
@@ -551,7 +551,7 @@ class TestCombinationScores:
         sig_high = _sig("S4_BIG_CANDLE", vol_ratio=8.0, body_ratio=0.85, is_new_high=True)
         sig_no_high = _sig("S4_BIG_CANDLE", vol_ratio=8.0, body_ratio=0.85, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        diff = rule_score(sig_high, ctx) - rule_score(sig_no_high, ctx)
+        diff = rule_score(sig_high, ctx)[0] - rule_score(sig_no_high, ctx)[0]
         assert diff == 20.0
 
     def test_s6_uses_signal_cntr_strength_over_context(self):
@@ -559,7 +559,7 @@ class TestCombinationScores:
         # 신호 내 강한 체결강도
         sig = _sig("S6_THEME_LAGGARD", gap_pct=2.0, cntr_strength=160.0)
         ctx = _ctx(strength=90, flu_rt=1.0, bid=500, ask=1000)  # 컨텍스트 약함
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # gap=2% → 25, cntr_sig=160 → effective=160 → >150 → +30, bid_ratio=0.5 → 0 = 55
         assert score == 55.0
 
@@ -567,6 +567,6 @@ class TestCombinationScores:
         """S5 순매수 금액 점수 최대 40점"""
         sig = _sig("S5_PROG_FRGN", net_buy_amt=200_000_000_000)  # 2000억
         ctx = _ctx(strength=100, flu_rt=1.0, bid=500, ask=1000)
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         # 2000억 / 1000000 * 0.4 = 80 → min(40, 80) = 40점 + 체결강도·호가비율
         assert score >= 40.0

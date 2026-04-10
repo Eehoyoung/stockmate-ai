@@ -16,7 +16,7 @@ public abstract class KiwoomApiRequest {
     /** @Builder.Default: @SuperBuilder 빌더 경로에서도 필드 초기값("1")이 적용됨 */
     @Builder.Default
     @JsonProperty("stex_tp")
-    protected String stexTp = "1";  // 기본: KRX
+    protected String stexTp = "3";  // 기본: KRX
 
     @JsonProperty("cont_yn")
     protected String contYn;

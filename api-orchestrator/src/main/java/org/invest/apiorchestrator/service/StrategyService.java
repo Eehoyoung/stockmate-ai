@@ -6,6 +6,7 @@ import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
+import org.invest.apiorchestrator.repository.StockMasterRepository;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +22,8 @@ public class StrategyService {
 
     private final KiwoomApiService apiService;
     private final RedisMarketDataService redisService;
+    private final StockMasterRepository stockMasterRepository;
+    private final KiwoomApiService kiwoomApiService;
 
     // ─────────────────────────────────────────────────────────────
     // 전술 1: 갭상승 + 체결강도 시초가 매수  (8:30~9:05)
@@ -69,6 +72,7 @@ public class StrategyService {
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
+                        .stkNm(resolveStkNm(stkCd))
                         .strategy(TradingSignal.StrategyType.S1_GAP_OPEN)
                         .signalScore(round(score))
                         .entryPrice(expPrice)
@@ -124,6 +128,7 @@ public class StrategyService {
 
             return Optional.of(TradingSignalDto.builder()
                     .stkCd(stkCd)
+                    .stkNm(resolveStkNm(stkCd))
                     .strategy(TradingSignal.StrategyType.S2_VI_PULLBACK)
                     .signalScore(round(score))
                     .entryPrice(curPrice)
@@ -269,6 +274,7 @@ public class StrategyService {
 
             return Optional.of(TradingSignalDto.builder()
                     .stkCd(stkCd)
+                    .stkNm(resolveStkNm(stkCd))
                     .strategy(TradingSignal.StrategyType.S4_BIG_CANDLE)
                     .signalScore(round(score))
                     .entryPrice(c)
@@ -446,7 +452,7 @@ public class StrategyService {
                     apiService.fetchKa10029(
                             StrategyRequests.ExpCntrFluRtUpperRequest.builder()
                                     .mrktTp(market).sortTp("1").trdeQtyCnd("10")
-                                    .stkCnd("1").crdCnd("0").pricCnd("8").stexTp("1").build());
+                                    .stkCnd("1").crdCnd("0").pricCnd("8").stexTp("3").build());
 
             if (gapResp == null || gapResp.getItems() == null) return Collections.emptyList();
 
@@ -580,6 +586,7 @@ public class StrategyService {
             double tp2S10 = round(todayClose * 1.15);   // 15% 2차 목표
             return Optional.of(TradingSignalDto.builder()
                     .stkCd(stkCd)
+                    .stkNm(resolveStkNm(stkCd))
                     .strategy(TradingSignal.StrategyType.S10_NEW_HIGH)
                     .signalScore(round(score))
                     .entryPrice(todayClose)
@@ -638,6 +645,7 @@ public class StrategyService {
 
             return Optional.of(TradingSignalDto.builder()
                     .stkCd(stkCd)
+                    .stkNm(resolveStkNm(stkCd))
                     .strategy(TradingSignal.StrategyType.S12_CLOSING)
                     .signalScore(round(score))
                     .entryPrice(curPrc)
@@ -724,6 +732,7 @@ public class StrategyService {
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
+                        .stkNm(resolveStkNm(stkCd))
                         .strategy(TradingSignal.StrategyType.S8_GOLDEN_CROSS)
                         .signalScore(round(score))
                         .entryPrice(closes[0])
@@ -828,6 +837,7 @@ public class StrategyService {
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
+                        .stkNm(resolveStkNm(stkCd))
                         .strategy(TradingSignal.StrategyType.S9_PULLBACK_SWING)
                         .signalScore(round(score))
                         .entryPrice(closes[0])
@@ -989,6 +999,7 @@ public class StrategyService {
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
+                        .stkNm(resolveStkNm(stkCd))
                         .strategy(TradingSignal.StrategyType.S13_BOX_BREAKOUT)
                         .signalScore(round(score))
                         .entryPrice(closes[0])
@@ -1117,6 +1128,7 @@ public class StrategyService {
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
+                        .stkNm(resolveStkNm(stkCd))
                         .strategy(TradingSignal.StrategyType.S14_OVERSOLD_BOUNCE)
                         .signalScore(round(score))
                         .entryPrice(closes[0])
@@ -1240,6 +1252,7 @@ public class StrategyService {
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
+                        .stkNm(resolveStkNm(stkCd))
                         .strategy(TradingSignal.StrategyType.S15_MOMENTUM_ALIGN)
                         .signalScore(round(score))
                         .entryPrice(closes[0])
@@ -1270,6 +1283,28 @@ public class StrategyService {
     // ─────────────────────────────────────────────────────────────
     // 유틸
     // ─────────────────────────────────────────────────────────────
+    /** Redis ws:tick → StockMaster DB 순으로 종목명 조회 (없으면 빈 문자열 반환) */
+    private String resolveStkNm(String stkCd) {
+        try {
+            var tickOpt = redisService.getTickData(stkCd);
+            if (tickOpt.isPresent()) {
+                Object nm = tickOpt.get().get("stk_nm");
+                if(nm != null || !nm.toString().isEmpty()) {
+                    nm = nm.toString().trim();
+                }else {
+                    nm = kiwoomApiService.fetchKa10001(stkCd).getStkNm().trim();
+                }
+                return nm.toString().trim();
+            }
+        } catch (Exception ignored) {}
+        try {
+            return stockMasterRepository.findByStkCd(stkCd)
+                    .map(m -> m.getStkNm() != null ? m.getStkNm().trim() : "")
+                    .orElse("");
+        } catch (Exception ignored) {}
+        return "";
+    }
+
     private double calcVolRatio(String stkCd) {
         // Redis tick 데이터에서 당일 누적거래량 비율 조회
         // ws:tick 해시에 vol_ratio 필드가 없으면 조건 통과(1.5)로 처리하여

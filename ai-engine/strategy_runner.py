@@ -24,6 +24,7 @@ import datetime
 import json
 import logging
 import os
+import time as _time
 
 # 키움 REST API 초당 약 5회 제한 → 루프 내 공통 대기 시간
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -131,6 +132,36 @@ async def _run_once(rdb):
 
     now = datetime.datetime.now().time()
     tasks = []
+
+    # ── S2: VI 눌림목 (vi_watch_queue 기반, 09:00 ~ 14:50) ────────
+    if datetime.time(9, 0) <= now <= datetime.time(14, 50):
+        async def _s2():
+            try:
+                from strategy_2_vi_pullback import check_vi_pullback
+                s2_signals = []
+                now_ms = int(_time.time() * 1000)
+                # vi_watch_queue에서 최대 20개 처리 (RPOP = FIFO)
+                for _ in range(20):
+                    item_raw = await rdb.rpop("vi_watch_queue")
+                    if not item_raw:
+                        break
+                    try:
+                        item = json.loads(item_raw)
+                        # 감시 만료 항목 폐기
+                        if item.get("watch_until", 0) < now_ms:
+                            logger.debug("[Runner] S2 watch_until 만료 – 폐기 [%s]", item.get("stk_cd"))
+                            continue
+                        result = await check_vi_pullback(token, item, rdb=rdb)
+                        if result:
+                            s2_signals.append(result)
+                            if len(s2_signals) >= 3:
+                                break
+                    except Exception as ve:
+                        logger.debug("[Runner] S2 항목 처리 실패: %s", ve)
+                await _push_signals(rdb, s2_signals, "S2_VI_PULLBACK")
+            except Exception as e:
+                logger.error("[Runner] S2 스캔 오류: %s", e)
+        tasks.append(_run_strategy_with_semaphore("S2", _s2()))
 
     # ── S7: 동시호가 (08:30 ~ 09:00) ──────────────────────────────
     if datetime.time(8, 30) <= now <= datetime.time(9, 0):

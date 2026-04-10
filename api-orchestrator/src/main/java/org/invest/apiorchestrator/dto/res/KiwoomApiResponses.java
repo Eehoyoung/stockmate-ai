@@ -426,4 +426,15 @@ public class KiwoomApiResponses {
         /** 시간외단일가 누적거래량 */
         @JsonProperty("ovt_sigpric_acc_trde_qty")  private String ovtSigpricAccTrdeQty;
     }
+
+    /* ───────────── ka10001 기본정보 ───────────── */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class infoResponse extends BaseResponse {
+        /** 시간외단일가 현재가 (장전 예상가) */
+        @JsonProperty("ovt_sigpric_cur_prc")      private String ovtSigpricCurPrc;
+        /** 시간외단일가 등락률 (예: "+2.35", "-1.20") */
+        @JsonProperty("ovt_sigpric_flu_rt")        private String ovtSigpricFluRt;
+        /** 시간외단일가 누적거래량 */
+        @JsonProperty("ovt_sigpric_acc_trde_qty")  private String ovtSigpricAccTrdeQty;
+    }
 }

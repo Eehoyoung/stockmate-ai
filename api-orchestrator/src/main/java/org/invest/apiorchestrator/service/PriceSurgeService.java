@@ -39,7 +39,7 @@ public class PriceSurgeService {
                                     .crdCnd("0")
                                     .pricCnd("8")
                                     .updownIncls("0")
-                                    .stexTp("1")
+                                    .stexTp("3")
                                     .build());
 
             if (resp == null || resp.getItems() == null) return Collections.emptySet();

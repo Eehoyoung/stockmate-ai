@@ -2,6 +2,8 @@ package org.invest.apiorchestrator;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.domain.PortfolioConfig;
+import org.invest.apiorchestrator.repository.PortfolioConfigRepository;
 import org.invest.apiorchestrator.service.TokenService;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -13,10 +15,24 @@ import org.springframework.stereotype.Component;
 public class ApplicationStartupRunner implements ApplicationRunner {
 
     private final TokenService tokenService;
+    private final PortfolioConfigRepository portfolioConfigRepository;
 
     @Override
     public void run(ApplicationArguments args) {
         log.info("=== 키움 트레이딩 시스템 시작 ===");
+
+        // portfolio_config 기본 행 보장 (없으면 INSERT)
+        try {
+            if (portfolioConfigRepository.findSingleton().isEmpty()) {
+                PortfolioConfig defaultConfig = PortfolioConfig.builder().build();
+                portfolioConfigRepository.save(defaultConfig);
+                log.info("[Startup] portfolio_config 기본 행 생성 완료");
+            } else {
+                log.info("[Startup] portfolio_config 기본 행 확인 완료");
+            }
+        } catch (Exception e) {
+            log.warn("[Startup] portfolio_config 초기화 실패 (무시): {}", e.getMessage());
+        }
 
         // 토큰 발급
         try {

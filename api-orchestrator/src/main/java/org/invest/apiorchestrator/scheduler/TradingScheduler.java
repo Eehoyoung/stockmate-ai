@@ -5,13 +5,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.config.KiwoomProperties;
+import org.invest.apiorchestrator.domain.MarketDailyContext;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
+import org.invest.apiorchestrator.repository.MarketDailyContextRepository;
 import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.service.NewsControlService.TradingControl;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -49,6 +52,7 @@ public class TradingScheduler {
     private final KiwoomProperties properties;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    private final MarketDailyContextRepository marketDailyContextRepository;
 
     private static final ExecutorService PRELOAD_POOL = Executors.newFixedThreadPool(5);
 
@@ -104,8 +108,16 @@ public class TradingScheduler {
     public void preparePreOpenData() {
         log.info("=== 장전 전일종가 사전 저장 시작 (08:00) ===");
         try {
-            List<String> candidates = candidateService.getAllCandidates();
-            log.info("[PreOpen] 후보 종목 {}개에 대해 전일종가 수집 시작", candidates.size());
+            // getAllCandidates()는 candidates:001/101 (구형 키, 미적재)를 읽어 항상 0개 반환.
+            // 전일종가가 필요한 전략은 S1·S7(갭 계산)이므로 해당 풀을 직접 조회한다.
+            // getS1/S7Candidates()는 캐시 만료 시 ka10029를 재호출하여 풀을 갱신한다.
+            java.util.Set<String> candidateSet = new java.util.LinkedHashSet<>();
+            for (String mkt : new String[]{"001", "101"}) {
+                candidateSet.addAll(candidateService.getS1Candidates(mkt));
+                candidateSet.addAll(candidateService.getS7Candidates(mkt));
+            }
+            List<String> candidates = new ArrayList<>(candidateSet);
+            log.info("[PreOpen] S1+S7 후보 종목 {}개에 대해 전일종가 수집 시작", candidates.size());
 
             List<CompletableFuture<Void>> futures = new ArrayList<>();
             for (String stkCd : candidates) {
@@ -191,6 +203,9 @@ public class TradingScheduler {
             );
             redisMarketDataService.pushScoredQueue(objectMapper.writeValueAsString(msg));
             log.info("[PreMarketBrief] 장전 뉴스 브리핑 발행 완료 – control={} sentiment={}", control, sentiment);
+
+            // MarketDailyContext 장전 스냅샷 저장 (당일 행이 없을 때만 INSERT)
+            saveMarketDailyContextMorning(sentiment, control);
         } catch (Exception e) {
             log.error("[PreMarketBrief] 장전 뉴스 브리핑 실패: {}", e.getMessage());
         }
@@ -457,11 +472,76 @@ public class TradingScheduler {
                 log.warn("[DailySummary] 리포트 큐 발행 실패: {}", ex.getMessage());
             }
 
+            // MarketDailyContext 당일 성과 요약 업데이트
+            updateMarketDailyContextPerf(totalSignals, totalWins, totalLosses, avgPnl);
+
             log.info("[DailySummary] 집계 완료 – totalSignals={} avgScore={} wins={} losses={} avgPnl={}",
                     totalSignals, String.format("%.1f", avgScore), totalWins, totalLosses,
                     String.format("%.2f", avgPnl));
         } catch (Exception e) {
             log.error("[DailySummary] 집계 실패: {}", e.getMessage());
+        }
+    }
+
+    /** 08:30 – MarketDailyContext 장전 뉴스 스냅샷 INSERT (중복 방지) */
+    private void saveMarketDailyContextMorning(String sentiment, String control) {
+        try {
+            LocalDate today = LocalDate.now();
+            if (marketDailyContextRepository.existsByDate(today)) return;
+
+            boolean hasEconEvent = false;
+            String econEventNm   = null;
+            try {
+                List<org.invest.apiorchestrator.domain.EconomicEvent> events = calendarService.getTodayEvents();
+                if (!events.isEmpty()) {
+                    hasEconEvent = true;
+                    econEventNm  = events.get(0).getEventName();
+                }
+            } catch (Exception ignored) {}
+
+            MarketDailyContext ctx = MarketDailyContext.builder()
+                    .date(today)
+                    .newsSentiment(sentiment)
+                    .newsTradingCtrl(control)
+                    .economicEventToday(hasEconEvent)
+                    .economicEventNm(econEventNm)
+                    .build();
+            marketDailyContextRepository.save(ctx);
+            log.info("[MarketCtx] 장전 스냅샷 저장 – sentiment={} ctrl={}", sentiment, control);
+        } catch (Exception e) {
+            log.warn("[MarketCtx] 장전 스냅샷 저장 실패 (무시): {}", e.getMessage());
+        }
+    }
+
+    /** 15:35 – MarketDailyContext 당일 성과 요약 업데이트 */
+    private void updateMarketDailyContextPerf(long totalSignals, long wins, long losses, double avgPnl) {
+        try {
+            LocalDate today = LocalDate.now();
+            MarketDailyContext ctx = marketDailyContextRepository.findByDate(today).orElse(null);
+            if (ctx == null) {
+                ctx = MarketDailyContext.builder().date(today).build();
+            }
+            BigDecimal winRate = (wins + losses) > 0
+                    ? BigDecimal.valueOf((double) wins / (wins + losses) * 100)
+                            .setScale(2, java.math.RoundingMode.HALF_UP)
+                    : null;
+            // MarketDailyContext는 setter가 없으므로 새 객체를 저장 (id 유지)
+            ctx = MarketDailyContext.builder()
+                    .id(ctx.getId())
+                    .date(today)
+                    .newsSentiment(ctx.getNewsSentiment())
+                    .newsTradingCtrl(ctx.getNewsTradingCtrl())
+                    .economicEventToday(ctx.getEconomicEventToday())
+                    .economicEventNm(ctx.getEconomicEventNm())
+                    .totalSignalsToday((int) totalSignals)
+                    .signalWinRateToday(winRate)
+                    .avgPnlPctToday(BigDecimal.valueOf(avgPnl).setScale(4, java.math.RoundingMode.HALF_UP))
+                    .build();
+            marketDailyContextRepository.save(ctx);
+            log.info("[MarketCtx] 성과 업데이트 – signals={} winRate={} avgPnl={}",
+                    totalSignals, winRate, String.format("%.2f", avgPnl));
+        } catch (Exception e) {
+            log.warn("[MarketCtx] 성과 업데이트 실패 (무시): {}", e.getMessage());
         }
     }
 

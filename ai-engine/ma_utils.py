@@ -16,7 +16,7 @@ from typing import Optional
 
 import httpx
 
-from http_utils import validate_kiwoom_response
+from http_utils import validate_kiwoom_response, kiwoom_client
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
@@ -149,7 +149,7 @@ async def fetch_daily_candles(token: str, stk_cd: str, target_count: int = 120) 
     next_key = ""
     base_dt = datetime.now().strftime("%Y%m%d")
 
-    async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+    async with kiwoom_client() as client:
         while len(all_candles) < target_count:
             headers = {
                 "api-id": "ka10081",

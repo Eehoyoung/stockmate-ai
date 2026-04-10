@@ -24,7 +24,10 @@ import os
 from ma_utils import fetch_daily_candles, detect_golden_cross, _calc_ma, _safe_price, _safe_vol
 from indicator_rsi import calc_rsi
 from indicator_macd import calc_macd
+from indicator_bollinger import calc_bollinger
+from indicator_atr import calc_atr
 from http_utils import fetch_cntr_strength, fetch_stk_nm
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -67,6 +70,8 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
 
         # 3. 가격 및 거래량 리스트 추출
         closes = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
+        highs  = [_safe_price(c.get("high_pric")) for c in candles]
+        lows   = [_safe_price(c.get("low_pric")) for c in candles]
         vols   = [_safe_vol(c.get("trde_qty")) for c in candles]
 
         if len(closes) < 60: continue
@@ -76,6 +81,7 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
         vol_ma20 = sum(vols[1:21]) / 20 # 전일까지의 20일 평균 거래량
 
         # 조건 2: MA60 지지권 확인 ($Price \ge MA_{60} \times 0.95$)
+        ma20 = sum(closes[:20]) / 20
         ma60 = sum(closes[:60]) / 60
         if cur_prc < ma60 * 0.95:
             continue
@@ -122,6 +128,26 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         vol_ratio = round(vol_today / vol_ma20, 2) if vol_ma20 > 0 else 0.0
+
+        # 볼린저 상단 계산 (TP 후보)
+        bb_upper = None
+        if len(closes) >= 20:
+            bands = calc_bollinger(closes, period=20, num_std=2.0)
+            if bands and bands[0][0] > 0:
+                bb_upper = bands[0][0]
+
+        # ATR 계산 (SL 폴백용 — MA20이 정상이면 불필요하지만 이격 클 때 중요)
+        atr_val = None
+        if len(highs) >= 14 and len(lows) >= 14 and len(closes) >= 14:
+            atr_vals = calc_atr(highs, lows, closes, 14)
+            atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+
+        # 동적 TP/SL 계산
+        ma5 = sum(closes[:5]) / 5 if len(closes) >= 5 else None
+        tp_sl = calc_tp_sl("S8_GOLDEN_CROSS", cur_prc, highs, lows, closes,
+                            stk_cd=stk_cd, ma5=ma5, ma20=ma20, ma60=ma60,
+                            atr=atr_val, bb_upper=bb_upper)
+
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
@@ -136,8 +162,7 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
             "is_today_cross": is_today_cross,
             "is_macd_accel": is_macd_accel,
             "entry_type": "현재가_종가",
-            "target_pct": 10.0,
-            "stop_pct": -5.0
+            **tp_sl.to_signal_fields(),
         })
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

@@ -50,9 +50,10 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
     int expireOldSignals(@Param("expireBefore") LocalDateTime expireBefore);
 
     @Query("""
-        SELECT s.strategy, COUNT(s), AVG(s.realizedPnl)
+        SELECT s.strategy, COUNT(s), AVG(s.aiScore)
         FROM TradingSignal s
-        WHERE s.signalStatus IN ('WIN','LOSS')
+        WHERE s.action = 'ENTER'
+          AND s.signalStatus IN ('SENT','EXPIRED','WIN','LOSS')
           AND s.createdAt >= :startAt
         GROUP BY s.strategy
         """)

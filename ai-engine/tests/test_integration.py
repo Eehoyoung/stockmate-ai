@@ -245,7 +245,7 @@ class TestScoringAndAnalysisIntegration:
             "strength": 160.0,
             "vi": {},
         }
-        score = rule_score(high_sig, ctx)
+        score, _ = rule_score(high_sig, ctx)
         skip = should_skip_ai(score, "S1_GAP_OPEN")
         assert not skip  # 높은 점수 → 건너뛰지 않음
 
@@ -314,7 +314,7 @@ class TestScoringAndAnalysisIntegration:
 
         for strategy, fields in strategy_signals.items():
             sig = {"strategy": strategy, "stk_cd": "005930", **fields}
-            score = rule_score(sig, ctx)
+            score, _ = rule_score(sig, ctx)
             assert isinstance(score, float), f"{strategy}: score should be float"
             assert 0 <= score <= 100, f"{strategy}: score {score} out of range"
 
@@ -327,8 +327,8 @@ class TestScoringAndAnalysisIntegration:
         sig_int = {"strategy": "S2_VI_PULLBACK", "pullback_pct": -1.5, "is_dynamic": 1}
         sig_bool = {"strategy": "S2_VI_PULLBACK", "pullback_pct": -1.5, "is_dynamic": True}
 
-        score_int = rule_score(sig_int, ctx)
-        score_bool = rule_score(sig_bool, ctx)
+        score_int, _ = rule_score(sig_int, ctx)
+        score_bool, _ = rule_score(sig_bool, ctx)
 
         assert score_int == score_bool
 
@@ -343,7 +343,7 @@ class TestEdgeCasesIntegration:
         from scorer import rule_score
         sig = {"strategy": "S1_GAP_OPEN", "gap_pct": 0}
         ctx = {"tick": {"flu_rt": "0"}, "hoga": {}, "strength": 0.0, "vi": {}}
-        score = rule_score(sig, ctx)
+        score, _ = rule_score(sig, ctx)
         assert score == 0.0
 
     def test_overheat_penalty_reduces_high_base_score(self):
@@ -353,8 +353,8 @@ class TestEdgeCasesIntegration:
         ctx_hot = {"tick": {"flu_rt": "16.0"}, "hoga": {"total_buy_bid_req": "3000", "total_sel_bid_req": "1000"}, "strength": 160.0, "vi": {}}
         ctx_normal = {"tick": {"flu_rt": "4.0"}, "hoga": {"total_buy_bid_req": "3000", "total_sel_bid_req": "1000"}, "strength": 160.0, "vi": {}}
 
-        score_hot = rule_score(sig, ctx_hot)
-        score_normal = rule_score(sig, ctx_normal)
+        score_hot, _ = rule_score(sig, ctx_hot)
+        score_normal, _ = rule_score(sig, ctx_normal)
 
         assert score_hot < score_normal  # 과열 페널티 효과
 
@@ -372,5 +372,5 @@ class TestEdgeCasesIntegration:
         ctx = {"tick": {"flu_rt": "3.0"}, "hoga": {}, "strength": 120.0, "vi": {}}
 
         for sig in test_cases:
-            score = rule_score(sig, ctx)
+            score, _ = rule_score(sig, ctx)
             assert 0 <= score <= 100, f"Score {score} out of range for {sig}"

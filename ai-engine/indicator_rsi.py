@@ -21,7 +21,7 @@ from typing import Optional
 
 import httpx
 
-from http_utils import validate_kiwoom_response
+from http_utils import validate_kiwoom_response, kiwoom_client
 
 from ma_utils import fetch_daily_candles, _safe_price, _safe_vol
 
@@ -162,7 +162,7 @@ async def fetch_minute_candles(
 
     base_dt = datetime.now().strftime("%Y%m%d")
     try:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+        async with kiwoom_client() as client:
             resp = await client.post(
                 f"{KIWOOM_BASE_URL}/api/dostk/chart",
                 headers={

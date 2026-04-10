@@ -22,7 +22,10 @@ import os
 import asyncio
 import httpx
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm
+from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from ma_utils import fetch_daily_candles, _safe_price
+from indicator_bollinger import calc_bollinger
+from tp_sl_engine import calc_tp_sl
 
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
@@ -45,7 +48,7 @@ async def fetch_frgn_cont_buy(token: str, market: str = "000", max_pages: int = 
     cont_yn = "N"
     next_key = ""
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         for _ in range(max_pages):
             headers = {
                 "api-id": "ka10035",
@@ -59,7 +62,7 @@ async def fetch_frgn_cont_buy(token: str, market: str = "000", max_pages: int = 
                 "mrkt_tp": market,
                 "trde_tp": "2",       # 2: 연속순매수
                 "base_dt_tp": "1",    # 1: 전일기준
-                "stex_tp": "1",       # KRX
+                "stex_tp": "3",       # KRX
             }
 
             try:
@@ -161,12 +164,32 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         cur_prc = abs(float(str(item.get("cur_prc", "0")).replace("+", "").replace(",", "")))
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+
+        # 동적 TP/SL — 일봉 MA20 + 볼린저 상단 기반
+        highs_d, lows_d, closes_d, ma20, bb_upper = [], [], [], None, None
+        try:
+            await asyncio.sleep(0.25)
+            candles = await fetch_daily_candles(token, stk_cd)
+            closes_d = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
+            highs_d  = [_safe_price(c.get("high_pric")) for c in candles]
+            lows_d   = [_safe_price(c.get("low_pric")) for c in candles]
+            if len(closes_d) >= 20:
+                ma20 = sum(closes_d[:20]) / 20
+                bands = calc_bollinger(closes_d, 20, 2.0)
+                if bands and bands[0][0] > cur_prc:
+                    bb_upper = bands[0][0]
+        except Exception as e:
+            logger.debug("[S11] 일봉 조회 실패 %s: %s", stk_cd, e)
+
+        tp_sl = calc_tp_sl("S11_FRGN_CONT", cur_prc, highs_d, lows_d, closes_d,
+                           stk_cd=stk_cd, ma20=ma20, bb_upper=bb_upper)
+
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
             "strategy": "S11_FRGN_CONT",  # scorer.py case 키와 일치
             "score": round(score, 2),
-            "cur_prc": cur_prc,
+            "cur_prc": round(cur_prc),
             "dm1": dm1,
             "dm2": dm2,   # scorer.py cont_days 계산에 필요
             "dm3": dm3,   # scorer.py cont_days 계산에 필요
@@ -174,9 +197,7 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
             "entry_type": "현재가_종가",
-            "target_pct": 8.0,
-            "target2_pct": 12.0,
-            "stop_pct": -4.0
+            **tp_sl.to_signal_fields(),
         })
 
     # 점수 높은 순으로 상위 5개 반환

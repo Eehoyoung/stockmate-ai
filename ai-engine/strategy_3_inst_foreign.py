@@ -14,7 +14,10 @@ import httpx
 import logging
 import os
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm
+from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from ma_utils import fetch_daily_candles, _safe_price, _calc_ma
+from indicator_atr import calc_atr
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,7 @@ async def fetch_intraday_investor(token: str, market_type: str = "000") -> list:
     results = []
     next_key = ""
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka10063",
@@ -53,7 +56,7 @@ async def fetch_intraday_investor(token: str, market_type: str = "000") -> list:
                 "invsr": "6",           # 외국인 (기준 투자자)
                 "frgn_all": "1",        # 외국계 전체 체크
                 "smtm_netprps_tp": "1", # ★동시순매수 체크 (외인+기관)
-                "stex_tp": "1"          # KRX
+                "stex_tp": "3"          # KRX
             }
 
             resp = await client.post(
@@ -89,7 +92,7 @@ async def fetch_continuous_netbuy(token: str, market: str) -> dict:
     result = {}
     next_key = ""
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             # 1. 헤더 설정 (연속조회 키 포함)
             headers = {
@@ -108,7 +111,7 @@ async def fetch_continuous_netbuy(token: str, market: str) -> dict:
                 "netslmt_tp": "2",
                 "stk_inds_tp": "0",
                 "amt_qty_tp": "0",
-                "stex_tp": "1"
+                "stex_tp": "3"
             }
 
             resp = await client.post(
@@ -161,7 +164,7 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
         total_qty = 0
         next_key = ""
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with kiwoom_client() as client:
             while True:
                 headers = {
                     "api-id": "ka10055",
@@ -274,6 +277,26 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
 
         continuous_days = cont_map.get(stk_cd, 1)
         stk_nm = str(item.get("stk_nm", "")).strip() or await fetch_stk_nm(rdb, token, stk_cd)
+
+        # 동적 TP/SL — 일봉 기반 (기관+외인 수급 스윙 목표)
+        highs_d, lows_d, closes_d, ma20, atr_val = [], [], [], None, None
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            candles = await fetch_daily_candles(token, stk_cd)
+            closes_d = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
+            highs_d  = [_safe_price(c.get("high_pric")) for c in candles]
+            lows_d   = [_safe_price(c.get("low_pric"))  for c in candles]
+            if len(closes_d) >= 20:
+                ma20 = sum(closes_d[:20]) / 20
+            if len(highs_d) >= 14 and len(lows_d) >= 14 and len(closes_d) >= 14:
+                atr_vals = calc_atr(highs_d, lows_d, closes_d, 14)
+                atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+        except Exception as e:
+            logger.debug("[S3] 일봉 조회 실패 %s: %s", stk_cd, e)
+
+        tp_sl = calc_tp_sl("S3_INST_FRGN", cur_prc, highs_d, lows_d, closes_d,
+                            stk_cd=stk_cd, ma20=ma20, atr=atr_val)
+
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
@@ -284,8 +307,7 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             "vol_ratio": round(vol_ratio, 2),
             "continuous_days": continuous_days,
             "entry_type": "지정가_1호가",
-            "target_pct": 3.5,
-            "stop_pct": -2.0,
+            **tp_sl.to_signal_fields(),
         })
 
     return sorted(results, key=lambda x: x["net_buy_amt"], reverse=True)[:5]

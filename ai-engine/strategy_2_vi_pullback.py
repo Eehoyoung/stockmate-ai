@@ -15,6 +15,8 @@ import logging
 import httpx
 
 from http_utils import fetch_cntr_strength, fetch_stk_nm
+from indicator_atr import get_atr_minute
+from tp_sl_engine import calc_tp_sl
 
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
@@ -73,7 +75,7 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     if not rdb:
         return None
 
-    # 1. 현재가 및 호가 데이터 조회 (가장 저렴한 작업)
+    # 1. 현재가 조회 (ws:tick)
     cur = await rdb.hgetall(f"ws:tick:{stk_cd}")
     if not cur:
         return None
@@ -86,9 +88,11 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     if not (-3.0 <= pullback_pct <= -1.0):
         return None
 
-    # [조건 2] 호가잔량 매수/매도 비율 체크 (Redis 데이터 활용)
-    bid_qty = float(cur.get("total_buy_bid_req", 0))
-    ask_qty = float(cur.get("total_sel_bid_req", 0))
+    # [조건 2] 호가잔량 매수/매도 비율 체크 (ws:hoga — 0D 구독 데이터)
+    # ws:tick 에는 hoga 필드가 없음. ws:hoga 해시 별도 조회 필요.
+    hoga = await rdb.hgetall(f"ws:hoga:{stk_cd}")
+    bid_qty = float(hoga.get("total_buy_bid_req", 0))
+    ask_qty = float(hoga.get("total_sel_bid_req", 0))
     bid_ratio = bid_qty / ask_qty if ask_qty > 0 else 0
     if bid_ratio < 1.3:
         return None
@@ -109,6 +113,19 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
         return None
 
     stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+
+    # 동적 TP/SL — 5분봉 ATR 기반 (VI 눌림목 = 단기 변동성 기준)
+    atr_val = None
+    try:
+        atr_result = await get_atr_minute(token, stk_cd, tic_scope="5", period=7)
+        atr_val = atr_result.atr
+    except Exception:
+        pass
+    # vi_price: VI 발동가 → TP 목표 (VI 레벨 재탈환)
+    tp_sl = calc_tp_sl("S2_VI_PULLBACK", cur_price, [], [], [],
+                        stk_cd=stk_cd, atr=atr_val,
+                        vi_price=vi_price if vi_price > cur_price else None)
+
     return {
         "stk_cd": stk_cd,
         "stk_nm": stk_nm,
@@ -120,6 +137,5 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
         "bid_ratio": round(bid_ratio, 2),
         "is_dynamic": bool(watch_item.get("is_dynamic", False)),
         "entry_type": "지정가_눌림목",
-        "target_pct": 3.0,
-        "stop_pct": -2.0,
+        **tp_sl.to_signal_fields(),
     }

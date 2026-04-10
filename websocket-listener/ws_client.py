@@ -3,10 +3,17 @@ ws_client.py
 키움 WebSocket 연결·구독·재연결을 담당하는 모듈.
 
 그룹 할당 (Python 단독 WS 연결 – Java WS 비활성화):
-  GRP 1  0B 체결      – 후보 종목 (최대 200)
-  GRP 2  0H 예상체결  – 상위 100
-  GRP 3  1h VI발동해제 – 전체
-  GRP 4  0D 호가잔량  – 상위 100
+  GRP 1  0B 체결      – 후보 종목 (최대 200)  [pre_market 08:00~ / market]
+  GRP 2  0H 예상체결  – 상위 100              [pre_open 07:30~ / pre_market ~09:00]
+  GRP 3  1h VI발동해제 – 전체                 [pre_open / pre_market / market]
+  GRP 4  0D 호가잔량  – 상위 100              [pre_open / pre_market / market]
+
+장 구분별 구독 전략:
+  pre_open   07:30~08:00  GRP2(0H) + GRP3(1h) + GRP4(0D)
+  pre_market 08:00~09:00  GRP1(0B) + GRP2(0H) + GRP3(1h) + GRP4(0D)
+             ※ 08:00부터 0B 추가 → ws:tick/ws:strength 축적, S1·S7 체결강도 확보
+  market     09:00~15:20  GRP1(0B) + GRP3(1h) + GRP4(0D)  [GRP2 해제]
+  closed     15:20~       전 그룹 해제
 
   Kiwoom 은 토큰당 1개 WS 연결만 허용.
   Java api-orchestrator 의 WS 클라이언트(JAVA_WS_ENABLED=false)는 비활성화하고
@@ -39,9 +46,7 @@ _MARKET_OPEN_HOUR   = (7, 30)   # 07:30 – 장전 구독 시작
 _MARKET_CLOSE_HOUR  = (15, 35)  # 15:35 – 장 완전 종료
 _WEEKDAYS           = {0, 1, 2, 3, 4}  # Mon=0 … Fri=4
 
-# 장 시간 외 재연결 허용 여부 (모의 테스트용)
-BYPASS_MARKET_HOURS = os.getenv("BYPASS_MARKET_HOURS", "false").lower() in ("1", "true", "yes")
-
+BYPASS_MARKET_HOURS = "true"
 
 def _now_kst() -> datetime:
     """현재 KST 시각 반환 (timezone-aware)"""
@@ -120,7 +125,19 @@ MIN_CONNECTED_SEC    = 30     # 이 미만으로 연결이 유지되면 "즉시 
 
 
 async def _get_candidates(rdb, market: str = "001") -> list[str]:
-    """Redis 후보 종목 캐시 읽기 (Java CandidateService 가 저장)"""
+    """Redis 후보 종목 캐시 읽기.
+    우선순위:
+      1. candidates:watchlist (SET) – websocket-listener 전용 통합 풀 (TTL 없음)
+      2. candidates:{market}  (LIST) – 구형 호환 (TTL 3분, 만료 시 빈 목록)
+    """
+    # 1차: candidates:watchlist 전체 (시장 구분 없이)
+    try:
+        watchlist = await rdb.smembers("candidates:watchlist")
+        if watchlist:
+            return list(watchlist)[:200]
+    except Exception:
+        pass
+    # 2차: 구형 시장별 LIST (fallback)
     key = f"candidates:{market}"
     items = await rdb.lrange(key, 0, 199)
     return items or []
@@ -128,15 +145,18 @@ async def _get_candidates(rdb, market: str = "001") -> list[str]:
 
 def _get_market_phase() -> str:
     """현재 KST 시각 기준 장 구분 반환.
-    - pre_market : 07:30 ~ 09:00  (예상체결·호가잔량·VI)
-    - market     : 09:00 ~ 15:20  (체결·호가잔량·VI)
+    - pre_open   : 07:30 ~ 08:00  0H/0D/1h 구독 (장전 시간외 초반, 0B 활동 미미)
+    - pre_market : 08:00 ~ 09:00  0B 추가 구독 (동시호가, ws:tick/strength 축적)
+    - market     : 09:00 ~ 15:20  0B/0D/1h (0H 해제)
     - closed     : 그 외
     """
     now = _now_kst()
     if now.weekday() not in _WEEKDAYS:
         return "closed"
     t = dtime(now.hour, now.minute, now.second)
-    if dtime(7, 30) <= t < dtime(9, 0):
+    if dtime(7, 30) <= t < dtime(8, 0):
+        return "pre_open"
+    if dtime(8, 0) <= t < dtime(9, 0):
         return "pre_market"
     if dtime(9, 0) <= t < dtime(15, 20):
         return "market"
@@ -152,25 +172,35 @@ async def _send_unreg(ws, grp_no: str, ttype: str):
 async def _subscribe_by_phase(ws, rdb, phase: str):
     """장 구분(phase)에 따라 적절한 그룹을 구독/해제한다.
 
-    GRP 1: 0B 체결      – 후보 전체 (최대 200) [정규장]
-    GRP 2: 0H 예상체결  – 상위 100             [장전]
-    GRP 3: 1h VI발동해제 – 전종목              [장전+정규장]
-    GRP 4: 0D 호가잔량  – 상위 100             [장전+정규장]
+    GRP 1: 0B 체결      – 후보 전체 (최대 200) [pre_market 08:00~ / market]
+    GRP 2: 0H 예상체결  – 상위 100             [pre_open / pre_market]
+    GRP 3: 1h VI발동해제 – 전종목              [pre_open / pre_market / market]
+    GRP 4: 0D 호가잔량  – 상위 100             [pre_open / pre_market / market]
     """
     kospi  = await _get_candidates(rdb, "001")
     kosdaq = await _get_candidates(rdb, "101")
     all_cands = list(dict.fromkeys(kospi + kosdaq))[:200]
     top100 = all_cands[:100]
 
-    if phase == "pre_market":
+    if phase == "pre_open":
+        # 07:30~08:00: 0B 활동 미미 – 예상체결·호가잔량·VI 만 구독
         groups = [
-            ("2", "0H", top100),  # 예상체결 – 장전 핵심
+            ("2", "0H", top100),  # 예상체결
             ("4", "0D", top100),  # 호가잔량
             ("3", "1h", [""]),    # VI 전종목
         ]
-    elif phase == "market":
+    elif phase == "pre_market":
+        # 08:00~09:00: 0B 추가 – ws:tick/ws:strength 축적 (S1·S7 체결강도 준비)
         groups = [
-            ("1", "0B", all_cands),  # 체결 – 전체 후보
+            ("1", "0B", all_cands),  # 체결 – 08:00부터 시작
+            ("2", "0H", top100),     # 예상체결
+            ("4", "0D", top100),     # 호가잔량
+            ("3", "1h", [""]),       # VI 전종목
+        ]
+    elif phase == "market":
+        # 09:00~15:20: 예상체결(0H) 해제, 체결(0B) 계속
+        groups = [
+            ("1", "0B", all_cands),  # 체결
             ("4", "0D", top100),     # 호가잔량
             ("3", "1h", [""]),       # VI 전종목
         ]
@@ -200,7 +230,7 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
             logger.info("[WS] 구독 grp=%s type=%s %d개", grp_no, ttype, len(batch))
             await asyncio.sleep(0.3)
 
-    # 정규장 전환 시 예상체결(0H) 구독 해제 (장전에 등록된 GRP2)
+    # 정규장 전환 시 예상체결(0H) 구독 해제 (pre_market 에서 등록된 GRP2)
     if phase == "market":
         try:
             await _send_unreg(ws, "2", "0H")
@@ -433,8 +463,8 @@ async def run_ws_loop(rdb):
                 # 구독(REG) 도중 서버가 PING을 보내도 즉시 PONG 응답 가능
                 message_task = asyncio.create_task(_run_message_loop(ws, rdb))
 
-                # BYPASS 모드: 장 시간 무관 → 전체 구독(market phase로 처리)
-                initial_phase = "market" if BYPASS_MARKET_HOURS else _get_market_phase()
+                # BYPASS 모드: 장 시간 무관 → pre_market phase(0B 포함 전체 구독)로 처리
+                initial_phase = "pre_market" if BYPASS_MARKET_HOURS else _get_market_phase()
                 await _subscribe_by_phase(ws, rdb, initial_phase)
 
                 # 초기 구독 후보를 subscribed_set 에 등록 (watchlist poller 가 중복 UNREG 방지)

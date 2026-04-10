@@ -3,8 +3,10 @@ package org.invest.apiorchestrator.controller;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.domain.EconomicEvent;
+import org.invest.apiorchestrator.domain.StrategyParamHistory;
 import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
+import org.invest.apiorchestrator.repository.StrategyParamHistoryRepository;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.service.OvernightScoringService;
@@ -34,6 +36,7 @@ public class TradingController {
     private final OvernightScoringService overnightScoringService;
     private final TradingSignalRepository signalRepository;
     private final StringRedisTemplate redis;
+    private final StrategyParamHistoryRepository strategyParamHistoryRepository;
 
     /** 토큰 수동 갱신 */
     @PostMapping("/token/refresh")
@@ -383,6 +386,43 @@ public class TradingController {
             }
         }
         return ResponseEntity.ok(result);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Feature D2 – 전략 파라미터 변경 이력 (StrategyParamHistory)
+    // ──────────────────────────────────────────────────────────────
+
+    /**
+     * GET /api/trading/strategy-params/{strategy}
+     * 전략별 파라미터 변경 이력 조회
+     */
+    @GetMapping("/strategy-params/{strategy}")
+    public ResponseEntity<List<StrategyParamHistory>> getStrategyParams(
+            @PathVariable String strategy,
+            @RequestParam(required = false) String paramName) {
+        List<StrategyParamHistory> result = paramName != null && !paramName.isBlank()
+                ? strategyParamHistoryRepository.findByStrategyAndParamNameOrderByChangedAtDesc(strategy, paramName)
+                : strategyParamHistoryRepository.findByStrategyOrderByChangedAtDesc(strategy);
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * POST /api/trading/strategy-params
+     * 전략 파라미터 변경 이력 기록
+     * body: { "strategy":"S10_NEW_HIGH", "param_name":"threshold", "old_value":"65.0", "new_value":"70.0",
+     *         "changed_by":"admin", "reason":"백테스트 결과 반영" }
+     */
+    @PostMapping("/strategy-params")
+    public ResponseEntity<StrategyParamHistory> recordStrategyParam(@RequestBody Map<String, Object> body) {
+        StrategyParamHistory record = StrategyParamHistory.builder()
+                .strategy(String.valueOf(body.get("strategy")))
+                .paramName(String.valueOf(body.get("param_name")))
+                .oldValue(body.containsKey("old_value") ? String.valueOf(body.get("old_value")) : null)
+                .newValue(String.valueOf(body.get("new_value")))
+                .changedBy(body.containsKey("changed_by") ? String.valueOf(body.get("changed_by")) : "API")
+                .reason(body.containsKey("reason") ? String.valueOf(body.get("reason")) : null)
+                .build();
+        return ResponseEntity.ok(strategyParamHistoryRepository.save(record));
     }
 
     /** 시스템 종합 헬스 정보 */

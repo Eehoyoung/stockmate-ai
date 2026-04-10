@@ -44,7 +44,7 @@ public class BidUpperService {
                                     .trdeQtyTp("0000")
                                     .stkCnd("1")
                                     .crdCnd("0")
-                                    .stexTp("1")
+                                    .stexTp("3")
                                     .build());
 
             if (resp == null || resp.getItems() == null) return Collections.emptySet();

@@ -19,12 +19,8 @@ logger = logging.getLogger(__name__)
 NEWS_MAX_ITEMS = int(os.getenv("NEWS_MAX_ITEMS", "30"))
 
 # 수집 대상 RSS 피드 (우선순위 순)
+# naver_finance(rss.naver.com)는 Docker 컨테이너 환경에서 DNS 해석 실패로 제거
 NEWS_SOURCES = [
-    {
-        "name": "naver_finance",
-        "url": "https://rss.naver.com/business/financialNews.xml",
-        "type": "rss",
-    },
     {
         "name": "hankyung",
         "url": "https://www.hankyung.com/feed/all-news",

@@ -3,14 +3,57 @@ http_utils.py
 공통 Kiwoom API HTTP 유틸리티 – 전술 파일 간 코드 중복 제거용.
 """
 
+import asyncio
 import logging
 import os
+import time as _time
 
 import httpx
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _DEFAULT_TIMEOUT = 10.0
+
+
+class _KiwoomRateLimiter:
+    """asyncio 토큰 버킷 – Java KiwoomRateLimiter와 동일한 3 req/s.
+
+    candidates_builder, strategy_runner, http_utils 모두 이 싱글턴을 공유하여
+    Python ai-engine 내 전체 Kiwoom API 호출 속도를 제한한다.
+    """
+
+    def __init__(self, rate: float = 3.0):
+        self._interval = 1.0 / rate  # seconds per request
+        self._lock = asyncio.Lock()
+        self._last = 0.0
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = _time.monotonic()
+            wait = self._interval - (now - self._last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last = _time.monotonic()
+
+
+# 전역 싱글턴 – 모든 Kiwoom API 호출에서 공유
+kiwoom_rate_limiter = _KiwoomRateLimiter(rate=3.0)
+
+
+def kiwoom_client(timeout: float = _DEFAULT_TIMEOUT) -> httpx.AsyncClient:
+    """Rate Limiter가 내장된 Kiwoom API 전용 httpx AsyncClient 팩토리.
+
+    Usage:
+        async with kiwoom_client() as client:
+            resp = await client.post(url, headers=..., json=...)
+    """
+    async def _rate_hook(request: httpx.Request) -> None:
+        await kiwoom_rate_limiter.acquire()
+
+    return httpx.AsyncClient(
+        timeout=timeout,
+        event_hooks={"request": [_rate_hook]},
+    )
 
 
 def validate_kiwoom_response(data: dict, api_id: str, log=None) -> bool:
@@ -49,7 +92,7 @@ async def fetch_stk_nm(rdb, token: str, stk_cd: str) -> str:
             pass
 
     try:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+        async with kiwoom_client() as client:
             resp = await client.post(
                 f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
                 headers={
@@ -118,7 +161,7 @@ async def fetch_hoga(token: str, stk_cd: str, rdb=None) -> float | None:
 
     # 2. ka10004 REST 조회
     try:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+        async with kiwoom_client() as client:
             resp = await client.post(
                 f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
                 headers={
@@ -157,7 +200,7 @@ async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
     최근 5개 cntr_str 평균을 반환. 데이터 없거나 오류 시 100.0 반환.
     """
     try:
-        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+        async with kiwoom_client() as client:
             resp = await client.post(
                 f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
                 headers={
@@ -165,7 +208,7 @@ async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
                     "authorization": f"Bearer {token}",
                     "Content-Type": "application/json;charset=UTF-8",
                 },
-                json={"stk_cd": stk_cd, "stex_tp": "1"},
+                json={"stk_cd": stk_cd, "stex_tp": "3"},
             )
             resp.raise_for_status()
             data = resp.json()

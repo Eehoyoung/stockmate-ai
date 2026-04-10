@@ -26,6 +26,7 @@ from ma_utils import fetch_daily_candles, detect_pullback_setup, _safe_price, _s
 from indicator_rsi import calc_rsi
 from indicator_stochastic import calc_stochastic
 from http_utils import fetch_cntr_strength, fetch_stk_nm
+from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -127,9 +128,18 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         vol_ma20 = sum(vols[1:21]) / 20 if len(vols) >= 21 else 0
         vol_ratio = round(vols[0] / vol_ma20, 2) if vol_ma20 > 0 else 0.0
+
+        # 동적 TP/SL 계산 (highs/lows 이미 추출됨)
+        ma5  = sum(closes[:5])  / 5  if len(closes) >= 5  else None
+        ma20 = sum(closes[:20]) / 20 if len(closes) >= 20 else None
+        ma60 = sum(closes[:60]) / 60 if len(closes) >= 60 else None
+        tp_sl = calc_tp_sl("S9_PULLBACK_SWING", t_close, highs, lows, closes,
+                            stk_cd=stk_cd, ma5=ma5, ma20=ma20, ma60=ma60)
+
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
+            "cur_prc": round(t_close),
             "strategy": "S9_PULLBACK_SWING",
             "score": round(score, 2),
             "pct_ma5": round(pct_ma5, 2),
@@ -139,8 +149,7 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
             "vol_ratio": vol_ratio,
             "flu_rt": round(flu_rt, 2),
             "entry_type": "현재가_종가_분할매수",
-            "target_pct": 6.0,
-            "stop_pct": -4.0
+            **tp_sl.to_signal_fields(),
         })
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

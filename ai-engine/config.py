@@ -6,5 +6,5 @@ COMMON_FILTERS = {
     "stk_cnd": "1",        # 관리종목 제외
     "updown_incls": "0",   # 상하한 미포함
     "trde_qty_tp": "10",   # 만주 이상
-    "stex_tp": "1",        # KRX
+    "stex_tp": "3",        # KRX
 }

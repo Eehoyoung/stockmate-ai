@@ -33,6 +33,7 @@ const {
     formatCalendarWeek,
     formatPerformanceDetail,
     formatUserSettings,
+    formatStockScore,
 } = require('../utils/formatter');
 
 /** 허용된 Chat ID 확인 */
@@ -174,10 +175,17 @@ const candidates = guard(async (ctx) => {
         ? '\n<i>괄호 안: 오늘 해당 종목에 신호를 발생시킨 전략</i>'
         : '\n<i>아직 전략 신호 없음 (장 중 전략 실행 후 표시됩니다)</i>';
 
-    // 전략별 풀 크기 테이블
+    // 전략별 풀 크기 테이블 (Java 실패 시 ai-engine fallback)
     let poolLines = '';
-    if (poolStatus.status === 'fulfilled' && poolStatus.value) {
-        const ps = poolStatus.value;
+    let poolSource = 'orchestrator';
+    let ps = poolStatus.status === 'fulfilled' ? poolStatus.value : null;
+    if (!ps) {
+        try {
+            ps = await kiwoom.getAiEngineCandidates();
+            poolSource = 'ai-engine';
+        } catch (_) { ps = null; }
+    }
+    if (ps) {
         const strategies = ['s1','s7','s8','s9','s10','s11','s12','s13','s14','s15'];
         const rows = strategies.map(s => {
             const k = market === '101' ? `${s}_101` : (market === '001' ? `${s}_001` : null);
@@ -188,7 +196,8 @@ const candidates = guard(async (ctx) => {
             return `  ${s.toUpperCase()}: ${total}건`;
         }).filter(Boolean);
         if (rows.length > 0) {
-            poolLines = '\n\n📊 <b>전략별 풀 크기</b>\n' + rows.join('\n');
+            const sourceTag = poolSource === 'ai-engine' ? ' <i>(ai-engine)</i>' : '';
+            poolLines = `\n\n📊 <b>전략별 풀 크기</b>${sourceTag}\n` + rows.join('\n');
         }
     }
 
@@ -457,107 +466,119 @@ const sectorStatus = guard(async (ctx) => {
 });
 
 /**
- * /점수 {종목코드} – 개인 보유/관심 종목 오버나잇 가능성 점수 조회
- * 전략 신호 없이 실시간 시세(등락률·체결강도·호가비율)만으로 점수 계산
+ * /score {종목코드} — 15전략 심사 + 규칙/AI 스코어링
+ * S1~S15 전략 조건을 실시간 데이터 기반으로 경량 심사 후
+ * 매칭 전략별 규칙점수 + Claude AI 점수를 계산하여 결과 반환.
+ *
+ * 전략 미매칭 → "전략없음" 반환
+ * 매칭 → 전략별 신호 카드 (formatSignal 포맷) 순서대로 전송
  */
 const scoreStock = guard(async (ctx) => {
     const args  = ctx.message.text.split(' ');
     const stkCd = args[1]?.trim();
     if (!stkCd) return ctx.reply('Usage: /score 005930');
-    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ Stock code must be 6 digits. e.g. /score 005930');
+    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /score 005930');
 
-    await ctx.reply(`🔍 Calculating score for ${stkCd}...`);
+    await ctx.reply(
+        `🔍 <b>${stkCd}</b> 전략 심사 중...\nS1~S15 조건 체크 + AI 스코어링 (최대 60초 소요)`,
+        { parse_mode: 'HTML' },
+    );
 
-    const d = await kiwoom.scoreStock(stkCd);
+    let d;
+    try {
+        d = await kiwoom.scoreStockFull(stkCd);
+    } catch (e) {
+        return ctx.reply(`❌ ai-engine 심사 실패: ${e.message}`);
+    }
 
-    if (!d.data_available) {
+    // 데이터 수집 자체 실패 (토큰 없음 등)
+    if (d.skipped && d.skipped.length === 1 && d.skipped[0].includes('데이터 수집 실패')) {
         return ctx.reply(
-            `❓ <b>${stkCd}</b> – Data unavailable\n` +
-            `No response from Kiwoom REST API or WebSocket.\n` +
-            `Check token validity or retry later.`,
-            { parse_mode: 'HTML' }
+            `❓ <b>${stkCd}</b> – 데이터 조회 불가\n` +
+            `Kiwoom 토큰 유효성 또는 ai-engine 연결을 확인하세요.\n` +
+            `사유: ${d.skipped[0]}`,
+            { parse_mode: 'HTML' },
         );
     }
 
-    const score      = Number(d.score ?? 0);
-    const threshold  = Number(d.overnight_threshold ?? 65);
-    const fluRt      = Number(d.flu_rt ?? 0);
-    const fluSign    = fluRt > 0 ? '+' : '';
-    const bidRatio   = Number(d.bid_ratio ?? 0);
-    const strength   = Number(d.cntr_strength ?? 0);
-    const curPrc     = Number(d.cur_prc ?? 0);
-    const dataSource = d.data_source ?? 'NONE';
-    const stkNm      = d.stk_nm ? `${d.stk_nm} ` : '';
+    const messages = formatStockScore(d);
 
-    // 점수 등급 및 이모지
-    let grade, gradeEmoji;
-    if (score >= 80)      { grade = 'A';  gradeEmoji = '🟢'; }
-    else if (score >= 65) { grade = 'B+'; gradeEmoji = '🟡'; }
-    else if (score >= 50) { grade = 'B';  gradeEmoji = '🟠'; }
-    else                  { grade = 'C';  gradeEmoji = '🔴'; }
-
-    const aboveThreshold = score >= threshold;
-    const thresholdLine  = aboveThreshold
-        ? `✅ 오버나잇 기준(<b>${threshold}점</b>) 초과 – Claude 평가 대상`
-        : `❌ 오버나잇 기준(<b>${threshold}점</b>) 미달 – 강제청산 대상`;
-
-    // 세부 점수 바 시각화 (10단계)
-    const bar = (v, max) => {
-        const filled = Math.max(0, Math.round((v / max) * 10));
-        return '█'.repeat(filled) + '░'.repeat(10 - filled);
-    };
-
-    const mom  = Number(d.score_momentum  ?? 0);
-    const pres = Number(d.score_pressure  ?? 0);
-    const str  = Number(d.score_strength  ?? 0);
-
-    // REST fallback 시 호가·체결강도 데이터 없음 안내
-    // WS 온라인 여부에 따라 다른 메시지 표시
-    let dataNote = '';
-    if (dataSource !== 'WS') {
-        const redis = getClient();
-        let pyWsOnline = false;
-        try {
-            const hb = await redis.hgetall('ws:py_heartbeat');
-            if (hb && hb.updated_at) {
-                pyWsOnline = (Date.now() / 1000 - parseFloat(hb.updated_at)) < 90;
-            }
-        } catch (_) {}
-
-        if (pyWsOnline) {
-            // WS는 켜져 있지만 이 종목이 구독 목록에 없었던 경우 → 방금 구독 추가됨
-            dataNote = `\n⚠️ <i>${stkCd} 실시간 미구독 종목 (구독 추가 완료)\n약 10초 후 재조회하면 체결강도·호가비율 포함됩니다</i>`;
-        } else {
-            // WS 자체가 꺼진 경우
-            dataNote = `\n⚠️ <i>장 마감 후 종가 기준 점수 (호가·체결강도 없음)\nWS 미연결 – /wsStart 후 재조회하세요</i>`;
+    // 메시지 배열 순서대로 전송 (전략없음은 1건)
+    for (const msg of messages) {
+        if (msg && msg.trim()) {
+            await ctx.reply(msg, { parse_mode: 'HTML' });
         }
     }
+});
 
-    const hogaLine     = dataSource === 'WS'
-        ? `호가비율(매수/매도): <b>${bidRatio}</b>\n`
-        : `호가비율: <i>조회불가 (실시간 WebSocket 전용)</i>\n`;
-    const strengthLine = dataSource === 'WS'
-        ? `체결강도: <b>${strength}</b>\n`
-        : `체결강도: <i>조회불가 (실시간 WebSocket 전용)</i>\n`;
+/**
+ * /claude {종목코드} — Claude AI 종목 종합 분석
+ * ai-engine /analyze/{code} 엔드포인트 호출 → 기술적 분석 + 전략 후보 풀 정보 + Claude 의견
+ */
+const claudeAnalyze = guard(async (ctx) => {
+    const args  = ctx.message.text.split(' ');
+    const stkCd = args[1]?.trim();
+    if (!stkCd) return ctx.reply('Usage: /claude 005930');
+    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /claude 005930');
 
-    await ctx.reply(
-        `${gradeEmoji} <b>${stkNm}(${stkCd}) 오버나잇 점수 분석</b>\n\n` +
-        `📊 종합 점수: <b>${score}점</b> (등급 ${grade})\n` +
-        `${thresholdLine}\n\n` +
-        `<b>── 현재 시세 ──</b>\n` +
-        `현재가: <b>${curPrc.toLocaleString()}원</b>\n` +
-        `등락률: <b>${fluSign}${fluRt}%</b>\n` +
-        strengthLine +
-        hogaLine +
-        `\n<b>── 점수 구성 ──</b>\n` +
-        `모멘텀   : ${bar(Math.max(0, mom), 25)} ${mom > 0 ? '+' : ''}${mom}점\n` +
-        `매수 우위 : ${bar(pres, 20)} +${pres}점\n` +
-        `체결강도  : ${bar(str, 10)} +${str}점\n` +
-        `기본 점수 : +25점\n` +
-        dataNote + `\n\n` +
-        `💡 <i>65점 이상: Claude AI 오버나잇 평가 | 50~65점: 주의 | 50점 미만: 청산 권고</i>`,
-        { parse_mode: 'HTML' }
-    );
+    await ctx.reply(`🔍 <b>${stkCd}</b> Claude 분석 중... (최대 30초 소요)`, { parse_mode: 'HTML' });
+
+    let d;
+    try {
+        d = await kiwoom.analyzeStockWithClaude(stkCd);
+    } catch (e) {
+        return ctx.reply(`❌ ai-engine 분석 실패: ${e.message}`);
+    }
+
+    if (d.error && !d.claude_analysis) {
+        return ctx.reply(`❌ 분석 오류: ${d.error}`);
+    }
+
+    const stk_nm = d.stk_nm || stkCd;
+    const curPrc = Number(d.cur_prc ?? 0);
+    const fluRt  = Number(d.flu_rt ?? 0);
+    const fluSign = fluRt > 0 ? '+' : '';
+
+    // 후보 풀 전략 목록
+    const pools = (d.strategies_in_pool || []);
+    const poolStr = pools.length > 0
+        ? pools.map(s => `  • ${s}`).join('\n')
+        : '  (현재 후보 풀에 없음)';
+
+    // 기술지표 요약
+    const ma5  = d.ma5  ? `${Number(d.ma5).toLocaleString()}원`  : 'N/A';
+    const ma20 = d.ma20 ? `${Number(d.ma20).toLocaleString()}원` : 'N/A';
+    const ma60 = d.ma60 ? `${Number(d.ma60).toLocaleString()}원` : 'N/A';
+    const rsi  = d.rsi14 != null ? `${d.rsi14}` : 'N/A';
+    const bbU  = d.bb_upper ? `${Number(d.bb_upper).toLocaleString()}` : 'N/A';
+    const bbL  = d.bb_lower ? `${Number(d.bb_lower).toLocaleString()}` : 'N/A';
+
+    const header =
+        `🤖 <b>Claude 종목 분석 — ${stk_nm}(${stkCd})</b>\n\n` +
+        `💰 현재가: <b>${curPrc.toLocaleString()}원</b>  <b>${fluSign}${fluRt}%</b>\n\n` +
+        `📊 <b>전략 후보 풀</b>\n${poolStr}\n\n` +
+        `📈 <b>기술지표 요약</b>\n` +
+        `MA5: ${ma5} | MA20: ${ma20} | MA60: ${ma60}\n` +
+        `RSI(14): ${rsi} | BB: ${bbL} ~ ${bbU}\n` +
+        `──────────────────────\n`;
+
+    const analysis = d.claude_analysis || '분석 결과 없음';
+
+    // Telegram 메시지 4096자 제한 — 길면 분할 전송
+    const full = header + analysis;
+    if (full.length <= 4096) {
+        await ctx.reply(full, { parse_mode: 'HTML' });
+    } else {
+        await ctx.reply(header, { parse_mode: 'HTML' });
+        // 분석 텍스트는 HTML 태그 없이 일반 텍스트로 분할 전송
+        const chunks = [];
+        for (let i = 0; i < analysis.length; i += 4000) {
+            chunks.push(analysis.slice(i, i + 4000));
+        }
+        for (const chunk of chunks) {
+            await ctx.reply(chunk);
+        }
+    }
 });
 
 /** /history {종목코드} */
@@ -604,6 +625,7 @@ const help = guard(async (ctx) => {
         `/history {code} – Signal history for a stock\n` +
         `/quote {code} – Realtime quote\n` +
         `/score {code} – Overnight score\n` +
+        `/claude {code} – Claude AI 종합 분석\n` +
         `/candidates [market] – Candidate stocks\n` +
         `/report – Today's signal summary\n\n` +
         `<b>── News & Market ──</b>\n` +
@@ -643,6 +665,6 @@ module.exports = {
     newsStatus, sectorStatus, signalHistory, strategyAnalysis, systemErrors,
     pauseTrading, resumeTrading, calendarEvents, performanceDetail,
     watchlistAdd, watchlistRemove, userSettings,
-    scoreStock,
+    scoreStock, claudeAnalyze,
     isAllowed,
 };

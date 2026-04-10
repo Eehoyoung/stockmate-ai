@@ -13,15 +13,48 @@ from datetime import datetime, time
 
 import httpx
 
-from http_utils import validate_kiwoom_response
+from http_utils import validate_kiwoom_response, kiwoom_client
 
 logger = logging.getLogger(__name__)
 
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 CANDIDATE_BUILD_INTERVAL_SEC = int(os.getenv("CANDIDATE_BUILD_INTERVAL_SEC", "600"))
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_429_BACKOFF_SEC = 60  # 429 Too Many Requests 시 대기 시간
 
 MARKETS = ["001", "101"]  # KOSPI, KOSDAQ
+
+
+async def _post_with_retry(client: httpx.AsyncClient, url: str, headers: dict, json_body: dict,
+                            api_id: str, max_retries: int = 2) -> httpx.Response | None:
+    """429 오류 시 지수 백오프로 재시도하는 POST 헬퍼.
+
+    Returns None if all retries exhausted or non-retriable error.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await client.post(url, headers=headers, json=json_body)
+            if resp.status_code == 429:
+                wait = _429_BACKOFF_SEC * (2 ** attempt)
+                logger.warning("[builder] %s 429 Too Many Requests – %ds 대기 (attempt %d/%d)",
+                               api_id, wait, attempt + 1, max_retries + 1)
+                if attempt < max_retries:
+                    await asyncio.sleep(wait)
+                    continue
+                return None  # 재시도 소진
+            resp.raise_for_status()
+            return resp
+        except httpx.HTTPStatusError as e:
+            if attempt < max_retries:
+                logger.warning("[builder] %s HTTP 오류 %s – 재시도", api_id, e.response.status_code)
+                await asyncio.sleep(_API_INTERVAL)
+                continue
+            logger.error("[builder] %s HTTP 오류 최종 실패: %s", api_id, e)
+            return None
+        except Exception as e:
+            logger.error("[builder] %s 요청 오류: %s", api_id, e)
+            return None
+    return None
 
 
 # ── 공통 유틸 ──────────────────────────────────────────────────────────
@@ -53,7 +86,7 @@ async def _fetch_ka10029(token: str, market: str) -> list[dict]:
     """ka10029 예상체결등락률상위 (POST /api/dostk/rkinfo)"""
     results = []
     next_key = ""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka10029",
@@ -64,20 +97,16 @@ async def _fetch_ka10029(token: str, market: str) -> list[dict]:
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers=headers,
-                json={
-                    "mrkt_tp": market,
-                    "sort_tp": "1",
-                    "trde_qty_cnd": "10",
-                    "stk_cnd": "1",
-                    "crd_cnd": "0",
-                    "pric_cnd": "8",
-                    "stex_tp": "1",
+            resp = await _post_with_retry(
+                client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+                {
+                    "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "10",
+                    "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "3",
                 },
+                "ka10029",
             )
-            resp.raise_for_status()
+            if resp is None:
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10029", logger):
                 break
@@ -128,7 +157,7 @@ async def _fetch_ka10027(token: str, market: str, sort_tp: str = "1") -> list[di
     """ka10027 전일대비등락률상위 (POST /api/dostk/rkinfo)"""
     results = []
     next_key = ""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka10027",
@@ -139,22 +168,17 @@ async def _fetch_ka10027(token: str, market: str, sort_tp: str = "1") -> list[di
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers=headers,
-                json={
-                    "mrkt_tp": market,
-                    "sort_tp": sort_tp,
-                    "trde_qty_cnd": "0010",
-                    "stk_cnd": "1",
-                    "crd_cnd": "0",
-                    "updown_incls": "0",
-                    "pric_cnd": "8",
-                    "trde_prica_cnd": "0",
-                    "stex_tp": "1",
+            resp = await _post_with_retry(
+                client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+                {
+                    "mrkt_tp": market, "sort_tp": sort_tp, "trde_qty_cnd": "0010",
+                    "stk_cnd": "1", "crd_cnd": "0", "updown_incls": "0",
+                    "pric_cnd": "8", "trde_prica_cnd": "0", "stex_tp": "3",
                 },
+                "ka10027",
             )
-            resp.raise_for_status()
+            if resp is None:
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10027", logger):
                 break
@@ -252,7 +276,7 @@ async def _build_s10(token: str, market: str, rdb) -> None:
     """S10 52주 신고가: ka10016, 필터 없음, TTL 1200s, 100개"""
     results = []
     next_key = ""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka10016",
@@ -263,22 +287,17 @@ async def _build_s10(token: str, market: str, rdb) -> None:
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-                headers=headers,
-                json={
-                    "mrkt_tp": market,
-                    "ntl_tp": "1",
-                    "high_low_close_tp": "1",
-                    "stk_cnd": "1",
-                    "trde_qty_tp": "00010",
-                    "crd_cnd": "0",
-                    "updown_incls": "0",
-                    "dt": "250",
-                    "stex_tp": "1",
+            resp = await _post_with_retry(
+                client, f"{KIWOOM_BASE_URL}/api/dostk/stkinfo", headers,
+                {
+                    "mrkt_tp": market, "ntl_tp": "1", "high_low_close_tp": "1",
+                    "stk_cnd": "1", "trde_qty_tp": "00010", "crd_cnd": "0",
+                    "updown_incls": "0", "dt": "250", "stex_tp": "3",
                 },
+                "ka10016",
             )
-            resp.raise_for_status()
+            if resp is None:
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10016", logger):
                 break
@@ -303,7 +322,7 @@ async def _build_s11(token: str, market: str, rdb) -> None:
     """S11 외인 연속 순매수: dm1>0, dm2>0, dm3>0, tot>0, TTL 1800s, 80개"""
     results = []
     next_key = ""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka10035",
@@ -314,17 +333,13 @@ async def _build_s11(token: str, market: str, rdb) -> None:
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers=headers,
-                json={
-                    "mrkt_tp": market,
-                    "trde_tp": "2",
-                    "base_dt_tp": "1",
-                    "stex_tp": "1",
-                },
+            resp = await _post_with_retry(
+                client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+                {"mrkt_tp": market, "trde_tp": "2", "base_dt_tp": "1", "stex_tp": "3"},
+                "ka10035",
             )
-            resp.raise_for_status()
+            if resp is None:
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10035", logger):
                 break
@@ -362,7 +377,7 @@ async def _build_s12(token: str, market: str, rdb) -> None:
     """S12 종가강도: flu_rt > 0, TTL 600s, 50개"""
     results = []
     next_key = ""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         while True:
             headers = {
                 "api-id": "ka10032",
@@ -373,16 +388,13 @@ async def _build_s12(token: str, market: str, rdb) -> None:
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers=headers,
-                json={
-                    "mrkt_tp": market,
-                    "mang_stk_incls": "0",
-                    "stex_tp": "1",
-                },
+            resp = await _post_with_retry(
+                client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+                {"mrkt_tp": market, "mang_stk_incls": "0", "stex_tp": "3"},
+                "ka10032",
             )
-            resp.raise_for_status()
+            if resp is None:
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10032", logger):
                 break
@@ -411,32 +423,26 @@ async def _build_s12(token: str, market: str, rdb) -> None:
 
 async def _build_s2(token: str, market: str, rdb) -> None:
     """S2 VI 발동 종목: ka10054 상승방향 동적VI, TTL 300s, 50개"""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-            headers={
+    async with kiwoom_client() as client:
+        resp = await _post_with_retry(
+            client, f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+            {
                 "api-id": "ka10054",
                 "authorization": f"Bearer {token}",
                 "Content-Type": "application/json;charset=UTF-8",
             },
-            json={
-                "mrkt_tp": market,
-                "bf_mkrt_tp": "1",
-                "stk_cd": "",
-                "motn_tp": "0",
-                "skip_stk": "000000000",
-                "trde_qty_tp": "0",
-                "min_trde_qty": "0",
-                "max_trde_qty": "0",
-                "trde_prica_tp": "0",
-                "min_trde_prica": "0",
-                "max_trde_prica": "0",
-                "motn_drc": "1",
-                "stex_tp": "3",
+            {
+                "mrkt_tp": market, "bf_mkrt_tp": "1", "stk_cd": "",
+                "motn_tp": "0", "skip_stk": "000000000",
+                "trde_qty_tp": "0", "min_trde_qty": "0", "max_trde_qty": "0",
+                "trde_prica_tp": "0", "min_trde_prica": "0", "max_trde_prica": "0",
+                "motn_drc": "1", "stex_tp": "3",
             },
+            "ka10054",
         )
-        resp.raise_for_status()
-        data = resp.json()
+    if resp is None:
+        return
+    data = resp.json()
     if not validate_kiwoom_response(data, "ka10054", logger):
         return
 
@@ -461,18 +467,20 @@ async def _build_s2(token: str, market: str, rdb) -> None:
 async def _fetch_ka10065_set(token: str, market: str, orgn_tp: str) -> set:
     """ka10065 장중투자자별매매상위 – 지정 투자자 순매수 종목코드 세트 반환"""
     codes: set = set()
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-            headers={
+    async with kiwoom_client() as client:
+        resp = await _post_with_retry(
+            client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+            {
                 "api-id": "ka10065",
                 "authorization": f"Bearer {token}",
                 "Content-Type": "application/json;charset=UTF-8",
             },
-            json={"trde_tp": "1", "mrkt_tp": market, "orgn_tp": orgn_tp},
+            {"trde_tp": "1", "mrkt_tp": market, "orgn_tp": orgn_tp},
+            "ka10065",
         )
-        resp.raise_for_status()
-        data = resp.json()
+    if resp is None:
+        return codes
+    data = resp.json()
     if not validate_kiwoom_response(data, "ka10065", logger):
         return codes
     for x in data.get("opmr_invsr_trde_upper", []):
@@ -500,23 +508,20 @@ _PROG_MRKT_MAP = {"001": "P00101", "101": "P10102"}
 async def _build_s5(token: str, market: str, rdb) -> None:
     """S5 프로그램순매수: ka90003, TTL 600s, 100개"""
     kiwoom_mkt = _PROG_MRKT_MAP.get(market, "P00101")
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-            headers={
+    async with kiwoom_client() as client:
+        resp = await _post_with_retry(
+            client, f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+            {
                 "api-id": "ka90003",
                 "authorization": f"Bearer {token}",
                 "Content-Type": "application/json;charset=UTF-8",
             },
-            json={
-                "trde_upper_tp": "2",
-                "amt_qty_tp": "1",
-                "mrkt_tp": kiwoom_mkt,
-                "stex_tp": "1",
-            },
+            {"trde_upper_tp": "2", "amt_qty_tp": "1", "mrkt_tp": kiwoom_mkt, "stex_tp": "3"},
+            "ka90003",
         )
-        resp.raise_for_status()
-        data = resp.json()
+    if resp is None:
+        return
+    data = resp.json()
     if not validate_kiwoom_response(data, "ka90003", logger):
         return
 
@@ -540,22 +545,19 @@ async def _build_s6(token: str, rdb) -> None:
     """S6 테마 구성종목: ka90001 상위 5테마→ka90002, TTL 300s, 150개"""
     # 1단계: 상위 5개 테마 코드 추출
     theme_codes: list[str] = []
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/thme",
-            headers={
+    async with kiwoom_client() as client:
+        resp = await _post_with_retry(
+            client, f"{KIWOOM_BASE_URL}/api/dostk/thme",
+            {
                 "api-id": "ka90001",
                 "authorization": f"Bearer {token}",
                 "Content-Type": "application/json;charset=UTF-8",
             },
-            json={
-                "qry_tp": "1",
-                "date_tp": "1",
-                "flu_pl_amt_tp": "3",
-                "stex_tp": "1",
-            },
+            {"qry_tp": "1", "date_tp": "1", "flu_pl_amt_tp": "3", "stex_tp": "3"},
+            "ka90001",
         )
-    resp.raise_for_status()
+    if resp is None:
+        return
     data = resp.json()
     if validate_kiwoom_response(data, "ka90001", logger):
         for grp in data.get("thema_grp", [])[:5]:
@@ -570,18 +572,21 @@ async def _build_s6(token: str, rdb) -> None:
     # 2단계: 각 테마 구성종목 수집
     all_codes: list[str] = []
     seen: set[str] = set()
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with kiwoom_client() as client:
         for tc in theme_codes:
             await asyncio.sleep(_API_INTERVAL)
-            resp2 = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/thme",
-                headers={
+            resp2 = await _post_with_retry(
+                client, f"{KIWOOM_BASE_URL}/api/dostk/thme",
+                {
                     "api-id": "ka90002",
                     "authorization": f"Bearer {token}",
                     "Content-Type": "application/json;charset=UTF-8",
                 },
-                json={"date_tp": "1", "thema_grp_cd": tc, "stex_tp": "1"},
+                {"date_tp": "1", "thema_grp_cd": tc, "stex_tp": "3"},
+                "ka90002",
             )
+            if resp2 is None:
+                continue
             data2 = resp2.json()
             if not validate_kiwoom_response(data2, "ka90002", logger):
                 continue
@@ -654,36 +659,35 @@ async def _build_pre_market(token: str, rdb) -> None:
 
 
 async def _build_intraday(token: str, rdb) -> None:
-    """장중 배치: S2~S15 전략 풀 갱신"""
+    """장중 배치: S2~S15 전략 풀 갱신.
+
+    각 전략 빌드 함수를 개별 try-except로 감싸서 하나 실패해도 나머지가 계속 실행되도록 함.
+    """
     for market in MARKETS:
-        try:
-            await _build_s2(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s3(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s4(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s5(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s8(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s9(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s10(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s11(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s12(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s14(token, market, rdb)
+        for fn, name in [
+            (_build_s2,  f"S2 {market}"),
+            (_build_s3,  f"S3 {market}"),
+            (_build_s4,  f"S4 {market}"),
+            (_build_s5,  f"S5 {market}"),
+            (_build_s8,  f"S8 {market}"),
+            (_build_s9,  f"S9 {market}"),
+            (_build_s10, f"S10 {market}"),
+            (_build_s11, f"S11 {market}"),
+            (_build_s12, f"S12 {market}"),
+            (_build_s14, f"S14 {market}"),
+        ]:
+            try:
+                await fn(token, market, rdb)
+            except Exception as e:
+                logger.error("[builder] 장중 %s 빌드 오류: %s", name, e)
             await asyncio.sleep(_API_INTERVAL)
 
-            # 파생 풀: S8/S10 완료 후 구성
-            await _build_s13(market, rdb)
-            await _build_s15(market, rdb)
-
-        except Exception as e:
-            logger.error("[builder] 장중 %s 빌드 오류: %s", market, e)
+        # 파생 풀: S8/S10 완료 후 구성
+        for derive_fn, name in [(_build_s13, f"S13 {market}"), (_build_s15, f"S15 {market}")]:
+            try:
+                await derive_fn(market, rdb)
+            except Exception as e:
+                logger.error("[builder] 장중 %s 빌드 오류: %s", name, e)
 
     # S6: 테마는 시장 무관 → 루프 외부에서 1회 호출
     try:

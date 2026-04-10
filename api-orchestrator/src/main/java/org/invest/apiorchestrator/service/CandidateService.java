@@ -64,7 +64,7 @@ public class CandidateService {
                                     .stkCnd("1")        // 관리종목 제외
                                     .crdCnd("0")
                                     .pricCnd("8")       // 1천원 이상
-                                    .stexTp("1")
+                                    .stexTp("3")
                                     .build());
 
             if (resp == null || resp.getItems() == null) return Collections.emptyList();
@@ -179,7 +179,7 @@ public class CandidateService {
                                     .stkCnd("1")        // 관리종목 제외
                                     .crdCnd("0")
                                     .pricCnd("8")       // 1천원 이상
-                                    .stexTp("1")
+                                    .stexTp("3")
                                     .build());
 
             if (resp == null || resp.getItems() == null) return Collections.emptyList();
@@ -232,7 +232,7 @@ public class CandidateService {
                     apiService.fetchKa10029(
                             StrategyRequests.ExpCntrFluRtUpperRequest.builder()
                                     .mrktTp(market).sortTp("1").trdeQtyCnd("10")
-                                    .stkCnd("1").crdCnd("0").pricCnd("8").stexTp("1")
+                                    .stkCnd("1").crdCnd("0").pricCnd("8").stexTp("3")
                                     .build());
             if (resp == null || resp.getItems() == null) return Collections.emptyList();
             List<String> codes = resp.getItems().stream()

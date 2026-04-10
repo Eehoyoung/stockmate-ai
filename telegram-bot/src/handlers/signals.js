@@ -241,6 +241,21 @@ async function processItem(bot, item) {
         return;
     }
 
+    // OVERNIGHT_HOLD – Python overnight_worker가 HOLD 판정한 오버나잇 유지 알림
+    if (item.type === 'OVERNIGHT_HOLD') {
+        const chatIds = getAllowedChatIds();
+        const message = item.message || `🌙 오버나잇 홀딩 승인 [${item.strategy}] ${item.stk_cd}`;
+        for (const chatId of chatIds) {
+            try {
+                await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
+            } catch (e) {
+                console.error(`[Signal] OVERNIGHT_HOLD 발송 실패 chatId=${chatId}:`, e.message);
+            }
+        }
+        logger.info('OVERNIGHT_HOLD 발송 완료', { stk_cd: item.stk_cd, strategy: item.strategy, score: item.overnight_final });
+        return;
+    }
+
     // DAILY_REPORT 타입 – 가상 P&L 포함 향상된 포맷으로 발송
     if (item.type === 'DAILY_REPORT') {
         const chatIds = getAllowedChatIds();

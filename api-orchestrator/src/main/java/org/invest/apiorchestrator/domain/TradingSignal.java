@@ -5,13 +5,17 @@ import lombok.*;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
+import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "trading_signals", indexes = {
-        @Index(name = "idx_signal_stk_cd", columnList = "stk_cd"),
-        @Index(name = "idx_signal_strategy", columnList = "strategy"),
-        @Index(name = "idx_signal_created_at", columnList = "created_at")
+        @Index(name = "idx_signal_stk_cd",    columnList = "stk_cd"),
+        @Index(name = "idx_signal_strategy",   columnList = "strategy"),
+        @Index(name = "idx_signal_created_at", columnList = "created_at"),
+        @Index(name = "idx_ts_action_created", columnList = "action, created_at"),
+        @Index(name = "idx_ts_stk_action",     columnList = "stk_cd, action, created_at")
 })
 @EntityListeners(AuditingEntityListener.class)
 @Getter
@@ -107,6 +111,105 @@ public class TradingSignal {
     @Column(name = "realized_pnl")
     private Double realizedPnl;
 
+    // ── Python ai-engine 스코어링 결과 (V2 추가) ──────────────────────────
+    /** 1차 규칙 기반 스코어 */
+    @Column(name = "rule_score", precision = 5, scale = 2)
+    private BigDecimal ruleScore;
+
+    /** 최종 AI 스코어 (현재는 rule_score와 동일) */
+    @Column(name = "ai_score", precision = 5, scale = 2)
+    private BigDecimal aiScore;
+
+    /** Risk:Reward 비율 (슬리피지 반영) */
+    @Column(name = "rr_ratio", precision = 5, scale = 2)
+    private BigDecimal rrRatio;
+
+    /** 진입 판단: ENTER / CANCEL / HOLD */
+    @Column(name = "action", length = 20)
+    private String action;
+
+    /** 신뢰도: HIGH / MEDIUM / LOW */
+    @Column(name = "confidence", length = 10)
+    private String confidence;
+
+    /** 판단 사유 */
+    @Column(name = "ai_reason", columnDefinition = "TEXT")
+    private String aiReason;
+
+    /** TP 계산 방법 (swing_resistance / fib_1272 / MA20_x099 등) */
+    @Column(name = "tp_method", length = 60)
+    private String tpMethod;
+
+    /** SL 계산 방법 (swing_low_x099 / MA20_x099 / ATR_x20 등) */
+    @Column(name = "sl_method", length = 60)
+    private String slMethod;
+
+    /** R:R < 1.0 경보 플래그 */
+    @Column(name = "skip_entry")
+    @Builder.Default
+    private Boolean skipEntry = false;
+
+    /** 스코어링 완료 시각 */
+    @Column(name = "scored_at")
+    private OffsetDateTime scoredAt;
+
+    // ── 신호 시점 기술지표 스냅샷 ─────────────────────────────────────────
+    @Column(name = "ma5_at_signal", precision = 10, scale = 0)
+    private BigDecimal ma5AtSignal;
+
+    @Column(name = "ma20_at_signal", precision = 10, scale = 0)
+    private BigDecimal ma20AtSignal;
+
+    @Column(name = "ma60_at_signal", precision = 10, scale = 0)
+    private BigDecimal ma60AtSignal;
+
+    @Column(name = "rsi14_at_signal", precision = 5, scale = 2)
+    private BigDecimal rsi14AtSignal;
+
+    @Column(name = "bb_upper_at_sig", precision = 10, scale = 0)
+    private BigDecimal bbUpperAtSig;
+
+    @Column(name = "bb_lower_at_sig", precision = 10, scale = 0)
+    private BigDecimal bbLowerAtSig;
+
+    @Column(name = "atr_at_signal", precision = 10, scale = 2)
+    private BigDecimal atrAtSignal;
+
+    // ── 신호 시점 시장 컨텍스트 ──────────────────────────────────────────
+    @Column(name = "market_flu_rt", precision = 6, scale = 3)
+    private BigDecimal marketFluRt;
+
+    /** 신호 시점 뉴스 감성: BULLISH / NEUTRAL / BEARISH */
+    @Column(name = "news_sentiment", length = 20)
+    private String newsSentiment;
+
+    /** 신호 시점 매매 제어 상태 */
+    @Column(name = "news_ctrl", length = 20)
+    private String newsCtrl;
+
+    // ── 청산 결과 (Java ForceCloseScheduler 기록) ─────────────────────────
+    /** TP1_HIT / TP2_HIT / SL_HIT / FORCE_CLOSE / EXPIRED */
+    @Column(name = "exit_type", length = 20)
+    private String exitType;
+
+    @Column(name = "exit_price", precision = 10, scale = 0)
+    private BigDecimal exitPrice;
+
+    /** 슬리피지 반영 실현 수익률 */
+    @Column(name = "exit_pnl_pct", precision = 7, scale = 4)
+    private BigDecimal exitPnlPct;
+
+    /** 손익 원화 */
+    @Column(name = "exit_pnl_abs", precision = 14, scale = 0)
+    private BigDecimal exitPnlAbs;
+
+    @Column(name = "hold_duration_min")
+    private Integer holdDurationMin;
+
+    @Column(name = "exited_at")
+    private OffsetDateTime exitedAt;
+
+    // ── 도메인 메서드 ────────────────────────────────────────────────────
     public void updateStatus(SignalStatus status) {
         this.signalStatus = status;
     }
@@ -115,6 +218,26 @@ public class TradingSignal {
         this.realizedPnl = pnl;
         this.closedAt = LocalDateTime.now();
         this.signalStatus = pnl >= 0 ? SignalStatus.WIN : SignalStatus.LOSS;
+    }
+
+    /** ForceCloseScheduler 가 청산 결과를 기록할 때 사용 */
+    public void recordExit(String exitType, BigDecimal exitPrice,
+                           BigDecimal exitPnlPct, BigDecimal exitPnlAbs,
+                           int holdDurationMin) {
+        this.exitType = exitType;
+        this.exitPrice = exitPrice;
+        this.exitPnlPct = exitPnlPct;
+        this.exitPnlAbs = exitPnlAbs;
+        this.holdDurationMin = holdDurationMin;
+        this.exitedAt = OffsetDateTime.now();
+        this.closedAt = LocalDateTime.now();
+        if (exitType.startsWith("TP")) {
+            this.signalStatus = SignalStatus.WIN;
+        } else if ("SL_HIT".equals(exitType) || "FORCE_CLOSE".equals(exitType)) {
+            this.signalStatus = SignalStatus.LOSS;
+        } else {
+            this.signalStatus = SignalStatus.EXPIRED;
+        }
     }
 
     public enum SignalStatus {
