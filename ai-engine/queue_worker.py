@@ -27,7 +27,8 @@ from redis_reader import (
     get_vi_status,
     push_score_only_queue,
 )
-from scorer import rule_score, should_skip_ai, get_claude_threshold
+from analyzer import analyze_signal
+from scorer import rule_score, should_skip_ai, get_claude_threshold, check_daily_limit
 from db_writer import update_signal_score, insert_score_components, insert_python_signal
 
 logger        = logging.getLogger(__name__)
@@ -122,36 +123,65 @@ async def process_one(rdb, pg_pool=None) -> bool:
         logger.info("[Worker] 1차 스코어 [%s %s]: %.1f", stk_cd, strategy, r_score)
 
         # 4. 전략별 임계값 미달 → CANCEL
-        threshold = get_claude_threshold(strategy)
+        threshold    = get_claude_threshold(strategy)
+        ai_score_val = r_score   # 기본값: 규칙 스코어 (Claude 미호출 폴백)
+        rr_ratio     = None
+        ai_result    = {}        # Claude 분석 결과 (빈 dict = 폴백)
         if should_skip_ai(r_score, strategy):
             action     = "CANCEL"
             confidence = "LOW"
             reason     = f"1차 스코어 {r_score:.1f}점 미달 – 진입 취소"
         else:
-            # 5. 임계값 통과 → R:R 확인 후 ENTER / CANCEL
-            if signal.get("skip_entry"):
-                # TP/SL 계산 시 R:R < MIN_RR_RATIO → 진입 취소
-                rr_val     = signal.get("rr_ratio", 0.0)
+            # 5. R:R 직접 계산 (tp1_price / sl_price / cur_prc) — H-4
+            MIN_RR = float(os.getenv("MIN_RR_RATIO", "1.3"))
+            def _fv(v):
+                try: return float(str(v).replace(",", "").replace("+", ""))
+                except Exception: return 0.0
+            tp1 = _fv(signal.get("tp1_price") or signal.get("target_price"))
+            sl  = _fv(signal.get("sl_price")  or signal.get("stop_loss"))
+            cur = _fv(signal.get("cur_prc")   or signal.get("entry_price"))
+            if tp1 > 0 and sl > 0 and cur > sl:
+                rr_ratio = (tp1 - cur) / (cur - sl)
+
+            if rr_ratio is not None and rr_ratio < MIN_RR:
                 action     = "CANCEL"
                 confidence = "LOW"
                 reason     = (
                     f"1차 스코어 {r_score:.1f}점 통과 – "
-                    f"R:R {float(rr_val):.2f} 미달 (최소 1.3) – 진입 취소"
+                    f"R:R {rr_ratio:.2f} 미달 (최소 {MIN_RR:.1f}) – 진입 취소"
                 )
             else:
-                action     = "ENTER"
-                confidence = "HIGH"
-                reason     = f"1차 스코어 {r_score:.1f}점 통과 – 즉시 발송"
+                # 6. Claude 2차 분석 — H-7
+                can_call = await check_daily_limit(rdb)
+                if can_call:
+                    try:
+                        ai_result    = await analyze_signal(signal, ctx, r_score, rdb=rdb)
+                        ai_score_val = ai_result.get("ai_score", r_score)
+                        action       = ai_result.get("action", "ENTER")
+                        confidence   = ai_result.get("confidence", "HIGH")
+                        reason       = ai_result.get("reason", f"1차 스코어 {r_score:.1f}점 통과")
+                    except Exception as claude_err:
+                        logger.warning(
+                            "[Worker] Claude 오류 [%s %s]: %s – 규칙 폴백",
+                            stk_cd, strategy, claude_err,
+                        )
+                        action     = "ENTER"
+                        confidence = "HIGH"
+                        reason     = f"1차 스코어 {r_score:.1f}점 통과 – Claude 오류 규칙 기반 처리"
+                else:
+                    action     = "ENTER"
+                    confidence = "HIGH"
+                    reason     = f"1차 스코어 {r_score:.1f}점 통과 – 일별 한도 초과 규칙 기반 처리"
 
         enriched = {
             **item,
             "rule_score":          r_score,
-            "ai_score":            r_score,
+            "ai_score":            ai_score_val,
             "action":              action,
             "confidence":          confidence,
             "ai_reason":           reason,
-            "adjusted_target_pct": None,
-            "adjusted_stop_pct":   None,
+            "adjusted_target_pct": ai_result.get("adjusted_target_pct"),
+            "adjusted_stop_pct":   ai_result.get("adjusted_stop_pct"),
         }
         await push_score_only_queue(rdb, enriched)
         logger.info(
@@ -167,13 +197,13 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 db_id = await insert_python_signal(
                     pg_pool, signal,
                     action=action, confidence=confidence,
-                    rule_score=r_score, ai_score=r_score,
+                    rule_score=r_score, ai_score=ai_score_val,
                     ai_reason=reason, skip_entry=(action == "CANCEL"),
                 )
             if db_id:
                 await update_signal_score(
                     pg_pool, db_id,
-                    rule_score=r_score, ai_score=r_score, rr_ratio=None,
+                    rule_score=r_score, ai_score=ai_score_val, rr_ratio=rr_ratio,
                     action=action, confidence=confidence, ai_reason=reason,
                     tp_method=signal.get("tp_method"),
                     sl_method=signal.get("sl_method"),

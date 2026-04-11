@@ -20,7 +20,7 @@ from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 NEW_HIGH_TERM = os.getenv("S10_NEW_HIGH_TERM", "250")
 

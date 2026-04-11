@@ -165,12 +165,10 @@ async def main():
     logger.info("  Claude 모델: %s", os.getenv("CLAUDE_MODEL", "N/A"))
     logger.info("=" * 50)
 
-    # Claude API 키 확인 (미설정 시 rule_score 단독 모드로 계속 실행)
+    # Claude API 키 확인 – 미설정 시 신호 처리 중 RuntimeError CRASH 발생하므로 기동 차단
     if not os.getenv("CLAUDE_API_KEY"):
-        logger.warning(
-            "CLAUDE_API_KEY 미설정 – news_scheduler/confirm_gate 기능 제한됨. "
-            "규칙 기반 신호 흐름(rule_score)은 정상 동작."
-        )
+        logger.critical("CLAUDE_API_KEY 미설정 – ai-engine 기동 불가. 환경변수를 확인하세요.")
+        sys.exit(1)
 
     # Redis 연결
     rdb = aioredis.Redis(

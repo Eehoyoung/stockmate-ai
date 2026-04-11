@@ -213,6 +213,58 @@ public class CandidateService {
     // ─────────────────────────────────────────────────────────────
 
     private static final Duration POOL_TTL    = Duration.ofMinutes(20);  // 스윙 풀 – Java 스캔 주기(5분) × 4배 여유
+    private static final Duration S4_TTL     = Duration.ofMinutes(5);   // S4: 장중 급변 반영
+
+    /**
+     * S4 장대양봉 + 거래량급증 후보 풀 (ka10023, 캐시 5분).
+     * 거래량급증률 >= 50% AND 등락률 3~20% 필터.
+     * key: candidates:s4:{market}
+     */
+    public List<String> getS4Candidates(String market) {
+        String cacheKey = "candidates:s4:" + market;
+        List<String> cached = redis.opsForList().range(cacheKey, 0, -1);
+        if (cached != null && !cached.isEmpty()) return cached;
+        if (!org.invest.apiorchestrator.util.MarketTimeUtil.isTradingActive()) {
+            log.debug("[Candidate] 거래 시간 외 – S4 풀 호출 생략 [market={}]", market);
+            return Collections.emptyList();
+        }
+        try {
+            KiwoomApiResponses.TrdeQtySdninResponse resp =
+                    apiService.fetchKa10023(
+                            StrategyRequests.TrdeQtySdninRequest.builder()
+                                    .mrktTp(market)
+                                    .sortTp("2")
+                                    .tmTp("1")
+                                    .tm("5")
+                                    .trdeQtyTp("10")
+                                    .stkCnd("1")
+                                    .pricTp("8")
+                                    .build());
+            if (resp == null || resp.getItems() == null) return Collections.emptyList();
+            List<String> codes = resp.getItems().stream()
+                    .filter(item -> {
+                        try {
+                            double sdninRt = Double.parseDouble(
+                                    item.getSdninRt().replace("+", "").replace(",", ""));
+                            double fluRt = Double.parseDouble(
+                                    item.getFluRt().replace("+", "").replace(",", ""));
+                            return sdninRt >= 50.0 && fluRt >= 3.0 && fluRt <= 20.0;
+                        } catch (Exception ex) { return false; }
+                    })
+                    .map(KiwoomApiResponses.TrdeQtySdninResponse.TrdeQtySdninItem::getStkCd)
+                    .filter(cd -> cd != null && !cd.isBlank())
+                    .limit(100).collect(Collectors.toList());
+            if (!codes.isEmpty()) {
+                redis.delete(cacheKey);
+                redis.opsForList().rightPushAll(cacheKey, codes);
+                redis.expire(cacheKey, S4_TTL);
+            }
+            return codes;
+        } catch (Exception e) {
+            log.error("[Candidate] S4 후보 조회 실패 [{}]: {}", market, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
 
     /**
      * S7 동시호가 후보 풀 (ka10029, 캐시 3분).
@@ -458,8 +510,9 @@ public class CandidateService {
     }
 
     /**
-     * S13 박스권 돌파 스윙 후보 풀 (S8 ∪ S10 합산, 별도 API 호출 없음).
-     * key: candidates:s13:{market}, TTL 5분
+     * S13 박스권 돌파 스윙 후보 풀 (ka10023 거래량급증, 캐시 10분).
+     * 거래량급증률 >= 30% AND 등락률 3~8% 필터 — 박스 돌파 특화.
+     * key: candidates:s13:{market}
      */
     public List<String> getS13Candidates(String market) {
         String cacheKey = "candidates:s13:" + market;
@@ -469,16 +522,43 @@ public class CandidateService {
             log.debug("[Candidate] 거래 시간 외 – S13 풀 호출 생략 [market={}]", market);
             return Collections.emptyList();
         }
-        List<String> codes = java.util.stream.Stream.concat(
-                        getS8Candidates(market).stream(),
-                        getS10Candidates(market).stream())
-                .distinct().limit(150).collect(Collectors.toList());
-        if (!codes.isEmpty()) {
-            redis.delete(cacheKey);
-            redis.opsForList().rightPushAll(cacheKey, codes);
-            redis.expire(cacheKey, POOL_TTL);
+        try {
+            KiwoomApiResponses.TrdeQtySdninResponse resp =
+                    apiService.fetchKa10023(
+                            StrategyRequests.TrdeQtySdninRequest.builder()
+                                    .mrktTp(market)
+                                    .sortTp("2")
+                                    .tmTp("1")
+                                    .tm("5")
+                                    .trdeQtyTp("10")
+                                    .stkCnd("1")
+                                    .pricTp("8")
+                                    .build());
+            if (resp == null || resp.getItems() == null) return Collections.emptyList();
+            List<String> codes = resp.getItems().stream()
+                    .filter(item -> {
+                        try {
+                            double sdninRt = Double.parseDouble(
+                                    item.getSdninRt().replace("+", "").replace(",", ""));
+                            double fluRt = Double.parseDouble(
+                                    item.getFluRt().replace("+", "").replace(",", ""));
+                            // 박스 돌파: 거래량 급증(30%+) + 제한적 등락(3~8%)
+                            return sdninRt >= 30.0 && fluRt >= 3.0 && fluRt <= 8.0;
+                        } catch (Exception ex) { return false; }
+                    })
+                    .map(KiwoomApiResponses.TrdeQtySdninResponse.TrdeQtySdninItem::getStkCd)
+                    .filter(cd -> cd != null && !cd.isBlank())
+                    .limit(100).collect(Collectors.toList());
+            if (!codes.isEmpty()) {
+                redis.delete(cacheKey);
+                redis.opsForList().rightPushAll(cacheKey, codes);
+                redis.expire(cacheKey, Duration.ofMinutes(10));
+            }
+            return codes;
+        } catch (Exception e) {
+            log.error("[Candidate] S13 후보 조회 실패 [{}]: {}", market, e.getMessage());
+            return Collections.emptyList();
         }
-        return codes;
     }
 
     /**
@@ -523,8 +603,8 @@ public class CandidateService {
     }
 
     /**
-     * S15 모멘텀 동조 스윙 후보 풀 (S8 풀 재활용, 캐시 20분).
-     * S8과 동일한 소스(ka10027 0.5~8%) 사용, 별도 TTL로 독립 관리.
+     * S15 모멘텀 정렬 스윙 후보 풀 (ka10032 거래대금상위, 캐시 15분).
+     * 거래대금 상위 종목 중 등락률 0.5~8% — 수급·모멘텀 동조 신호 포착.
      * key: candidates:s15:{market}
      */
     public List<String> getS15Candidates(String market) {
@@ -535,13 +615,33 @@ public class CandidateService {
             log.debug("[Candidate] 거래 시간 외 – S15 풀 호출 생략 [market={}]", market);
             return Collections.emptyList();
         }
-        List<String> codes = getS8Candidates(market);
-        if (!codes.isEmpty()) {
-            redis.delete(cacheKey);
-            redis.opsForList().rightPushAll(cacheKey, codes);
-            redis.expire(cacheKey, POOL_TTL);
+        try {
+            KiwoomApiResponses.TrdePricaUpperResponse resp =
+                    apiService.fetchKa10032(
+                            StrategyRequests.TrdePricaUpperRequest.builder()
+                                    .mrktTp(market).mangStkIncls("0").build());
+            if (resp == null || resp.getItems() == null) return Collections.emptyList();
+            List<String> codes = resp.getItems().stream()
+                    .filter(item -> {
+                        try {
+                            double f = Double.parseDouble(item.getFluRt().replace("+", "").replace(",", ""));
+                            // 모멘텀 정렬: 양전 + 과열 아닌 꾸준한 상승 (0.5~8%)
+                            return f >= 0.5 && f <= 8.0;
+                        } catch (Exception ex) { return false; }
+                    })
+                    .map(KiwoomApiResponses.TrdePricaUpperResponse.TrdePricaUpperItem::getStkCd)
+                    .filter(cd -> cd != null && !cd.isBlank())
+                    .limit(80).collect(Collectors.toList());
+            if (!codes.isEmpty()) {
+                redis.delete(cacheKey);
+                redis.opsForList().rightPushAll(cacheKey, codes);
+                redis.expire(cacheKey, Duration.ofMinutes(15));
+            }
+            return codes;
+        } catch (Exception e) {
+            log.error("[Candidate] S15 후보 조회 실패 [{}]: {}", market, e.getMessage());
+            return Collections.emptyList();
         }
-        return codes;
     }
 
     // 부호 포함 정수 파싱 (+34396981, -140)

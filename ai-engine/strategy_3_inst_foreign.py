@@ -258,12 +258,12 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             continue
 
         # ka10063 실제 응답 필드: netprps_qty(순매수수량), netprps_amt(순매수금액)
-        # 이전 코드의 net_buy_amt 필드는 API에 존재하지 않아 항상 0 반환 → 버그 수정
+        # net_buy_amt: 원(KRW) 단위 금액 사용 → scorer S3 `min(25, amt/1_000_000_000*25)` 기준
         try:
-            raw_qty = str(item.get("netprps_qty", "0")).replace("+", "").replace(",", "")
-            net_buy_qty = int(raw_qty) if raw_qty.lstrip("-").isdigit() else 0
+            raw_amt = str(item.get("netprps_amt", "0")).replace("+", "").replace(",", "")
+            net_buy_amt = int(raw_amt) if raw_amt.lstrip("-").isdigit() else 0
         except (TypeError, ValueError):
-            net_buy_qty = 0
+            net_buy_amt = 0
 
         # cur_prc, flu_rt: ka10063 응답에 포함 (부호 처리)
         try:
@@ -302,7 +302,7 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             "stk_nm": stk_nm,
             "cur_prc": cur_prc,
             "strategy": "S3_INST_FRGN",  # scorer.py case 키와 일치
-            "net_buy_amt": net_buy_qty,   # 순매수수량(주) — scorer가 /100_000 기준으로 스케일
+            "net_buy_amt": net_buy_amt,    # 순매수금액(원) — scorer S3 min(25, amt/1_000_000_000*25)
             "flu_rt": round(flu_rt, 2),
             "vol_ratio": round(vol_ratio, 2),
             "continuous_days": continuous_days,
@@ -310,4 +310,4 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             **tp_sl.to_signal_fields(),
         })
 
-    return sorted(results, key=lambda x: x["net_buy_amt"], reverse=True)[:5]
+    return sorted(results, key=lambda x: x.get("net_buy_amt", 0), reverse=True)[:5]

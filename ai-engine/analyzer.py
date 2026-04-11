@@ -16,7 +16,7 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS      = 512   # TP/SL 절대가 출력을 위한 공간 확보
 CLAUDE_TIMEOUT  = 10    # seconds
 

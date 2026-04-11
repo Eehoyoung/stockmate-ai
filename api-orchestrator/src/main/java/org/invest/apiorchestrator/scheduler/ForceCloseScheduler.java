@@ -37,14 +37,18 @@ public class ForceCloseScheduler {
     private final OpenPositionRepository openPositionRepository;
 
     /**
-     * 당일 청산 전략: 14:50 강제청산 대상
-     * 제외 전략: S12(종가-15:20 진입), S8/S9/S15(스윙 5~10일 보유)
+     * 스윙/종가 전략: 14:50 강제청산 제외 대상.
+     * Python strategy_runner.py _SWING_STRATEGIES 와 동기화 유지.
      */
     private static final Set<TradingSignal.StrategyType> SWING_STRATEGIES = EnumSet.of(
-            TradingSignal.StrategyType.S12_CLOSING,       // 종가 전략: 15:20 진입 → 장마감 자동청산
-            TradingSignal.StrategyType.S8_GOLDEN_CROSS,   // 중기 추세 (5~10일)
-            TradingSignal.StrategyType.S9_PULLBACK_SWING, // 스윙 눌림목 (5~10일)
-            TradingSignal.StrategyType.S15_MOMENTUM_ALIGN // 다중 모멘텀 정렬 (5~10일)
+            TradingSignal.StrategyType.S8_GOLDEN_CROSS,    // 중기 추세 (5~10일)
+            TradingSignal.StrategyType.S9_PULLBACK_SWING,  // 스윙 눌림목 (5~10일)
+            TradingSignal.StrategyType.S10_NEW_HIGH,        // 신고가 스윙 (익일 갭업 기대)
+            TradingSignal.StrategyType.S11_FRGN_CONT,       // 외인 연속 매수 스윙
+            TradingSignal.StrategyType.S12_CLOSING,         // 종가 전략: 15:20 진입 → 장마감 자동청산
+            TradingSignal.StrategyType.S13_BOX_BREAKOUT,    // 박스권 돌파 스윙 (1~3일)
+            TradingSignal.StrategyType.S14_OVERSOLD_BOUNCE, // 과매도 반등 스윙
+            TradingSignal.StrategyType.S15_MOMENTUM_ALIGN   // 다중 모멘텀 정렬 (5~10일)
     );
 
     /**

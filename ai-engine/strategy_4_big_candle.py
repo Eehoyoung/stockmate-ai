@@ -20,7 +20,7 @@ import httpx
 # rdb (redis.asyncio.Redis) 는 strategy_runner.py 에서 전달받습니다.
 
 logger = logging.getLogger(__name__)
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 from http_utils import fetch_stk_nm, validate_kiwoom_response, kiwoom_client
 from indicator_atr import get_atr_minute

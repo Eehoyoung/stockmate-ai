@@ -176,7 +176,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             net_amt   = _safe_float(signal.get("net_buy_amt", 0))
             cont_days = int(signal.get("continuous_days", 0) or 0)
             vol_ratio = _safe_float(signal.get("vol_ratio", 0))
-            _net_sc  = min(25, net_amt / 100_000 * 0.5)
+            # net_buy_amt: 원(KRW) 기준. 10억(1B) 이상에서 만점(25pt)
+            _net_sc  = min(25, net_amt / 1_000_000_000 * 25)
             _cont_sc = 30 if cont_days >= 5 else (20 if cont_days >= 3 else (10 if cont_days >= 1 else 0))
             _vol_sc  = 25 if vol_ratio >= 3 else (20 if vol_ratio >= 2 else (10 if vol_ratio >= 1.5 else 0))
             score += _net_sc + _cont_sc + _vol_sc
@@ -188,7 +189,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             vol_ratio  = _safe_float(signal.get("vol_ratio", 0))
             body_ratio = _safe_float(signal.get("body_ratio", 0))
             _vol_sc  = 25 if vol_ratio > 10 else (20 if vol_ratio > 5 else (10 if vol_ratio > 3 else 0))
-            _body_sc = 20 if body_ratio >= 0.8 else (10 if body_ratio >= 0.7 else 0)
+            _body_sc = 20 if body_ratio >= 0.8 else (10 if body_ratio >= 0.7 else (5 if body_ratio >= 0.65 else 0))
             _high_sc = 20 if signal.get("is_new_high") else 0
             _str_sc  = 20 if strength > 150 else (15 if strength > 140 else (5 if strength > 120 else 0))
             score += _vol_sc + _body_sc + _high_sc + _str_sc
@@ -198,8 +199,14 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
 
         case "S5_PROG_FRGN":
             net_amt = _safe_float(signal.get("net_buy_amt", 0))
-            _net_sc = min(40, net_amt / 1_000_000 * 0.4)
-            _str_sc = 25 if strength > 130 else (20 if strength > 120 else (10 if strength > 100 else 0))
+            # net_buy_amt: 원(KRW) 기준. 1000억(100B) 이상에서 만점(40pt)
+            _net_sc = min(40, net_amt / 100_000_000_000 * 40)
+            # WS 오프라인 시 체결강도 미지 → 중립 10점 부여 (기회비용 방어)
+            ws_online_s5 = market_ctx.get("ws_online", True)
+            if not ws_online_s5 and strength == 100.0:
+                _str_sc = 10  # 중립 점수
+            else:
+                _str_sc = 25 if strength > 130 else (20 if strength > 120 else (10 if strength > 100 else 0))
             _bid_sc = 0.0
             if bid_ratio is not None:
                 _bid_sc = 20 if bid_ratio > 2 else (15 if bid_ratio > 1.5 else (8 if bid_ratio > 1.2 else 0))
@@ -329,7 +336,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _bid_sc = 0.0
             if bid_ratio is not None:
                 _bid_sc = 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
-            _rsi_sc = (10 if 40 <= rsi <= 60 else (5 if 60 < rsi <= 70 else 0)) if rsi > 0 else 0
+            _rsi_sc = (15 if 40 <= rsi <= 52 else (8 if 52 < rsi <= 62 else (3 if 30 <= rsi < 40 else 0))) if rsi > 0 else 0
             pct_ma5 = _safe_float(signal.get("pct_ma5", 999))
             _ma_sc  = (15 if -1.0 <= pct_ma5 <= 2.0 else (8 if abs(pct_ma5) <= 4.0 else 0)) if pct_ma5 != 999 else 0
             _stoch_sc = 10 if bool(signal.get("stoch_gc", False)) else 0
@@ -362,7 +369,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
             effective_str = cntr_sig if cntr_sig > 0 else strength
             _rsi_sc = (40 if rsi < 25 else (30 if rsi < 30 else (20 if rsi < 35 else (10 if rsi < 40 else 0)))) if rsi > 0 else 15
-            _atr_sc = 20 if atr_pct > 3 else (12 if atr_pct > 2 else (5 if atr_pct > 1 else 0))
+            _atr_sc = 15 if 1.0 <= atr_pct <= 2.5 else (5 if 0.5 <= atr_pct < 1.0 else (-5 if atr_pct > 3.0 else 0))
             _str_sc = 25 if effective_str > 120 else (15 if effective_str > 110 else (5 if effective_str > 100 else 0))
             _bid_sc = 0.0
             if bid_ratio is not None:
@@ -378,7 +385,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             effective_str = cntr_sig if cntr_sig > 0 else strength
             vol_ratio_s15 = _safe_float(signal.get("vol_ratio", 0))
             flu_rt_s15 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
-            _rsi_sc = (35 if 50 <= rsi <= 65 else (25 if 65 < rsi <= 75 else (10 if 45 <= rsi < 50 else 0))) if rsi > 0 else 10
+            _rsi_sc = (35 if 50 <= rsi <= 65 else (25 if 65 < rsi <= 75 else (10 if 45 <= rsi < 50 else 0))) if rsi > 0 else 0
             _vol_sc = 25 if vol_ratio_s15 >= 3.0 else (18 if vol_ratio_s15 >= 2.0 else (10 if vol_ratio_s15 >= 1.5 else 0))
             _str_sc = 25 if effective_str > 130 else (18 if effective_str > 110 else (8 if effective_str > 100 else 0))
             _bid_sc = 0.0

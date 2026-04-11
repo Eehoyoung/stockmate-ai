@@ -23,7 +23,7 @@ from tp_sl_engine import calc_tp_sl
 # rdb (redis.asyncio.Redis) 는 strategy_runner.py 에서 전달받습니다.
 
 logger = logging.getLogger(__name__)
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://mockapi.kiwoom.com")
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 vi_events = defaultdict(list)  # stk_cd → [vi_event, ...]
 

@@ -78,7 +78,8 @@ public class SignalService {
      */
     @Transactional
     public boolean processSignal(TradingSignalDto dto) {
-        String stkCd = dto.getStkCd();
+        // C-5: Kiwoom API가 알고리즘 거래 구분용 _AL suffix를 붙이는 경우 제거
+        String stkCd = cleanStkCd(dto.getStkCd());
         String strategy = dto.getStrategy().name();
         MDC.put("strategy", strategy);
         MDC.put("stk_cd", stkCd);
@@ -145,7 +146,9 @@ public class SignalService {
                 OpenPosition position = buildOpenPosition(dto, signal);
                 openPositionRepository.save(position);
             } catch (Exception e) {
-                log.warn("[Signal] OpenPosition 생성 실패 (신호는 계속 처리): {}", e.getMessage());
+                // C-4 진단: 전체 스택 트레이스 출력으로 근본 원인 파악
+                log.error("[Signal] OpenPosition 생성 실패 [{} {}] – {}",
+                        stkCd, strategy, e.getMessage(), e);
             }
 
             // 7. 전략 태그 기록 (Redis – 후보 종목 출처 추적)
@@ -227,7 +230,7 @@ public class SignalService {
         double t1 = dto.calcTarget1Price();
         double sp = dto.calcStopPrice();
         return TradingSignal.builder()
-                .stkCd(dto.getStkCd())
+                .stkCd(cleanStkCd(dto.getStkCd()))
                 .stkNm(dto.getStkNm())
                 .strategy(dto.getStrategy())
                 .signalScore(dto.getSignalScore())
@@ -284,7 +287,7 @@ public class SignalService {
 
         return OpenPosition.builder()
                 .signal(signal)
-                .stkCd(dto.getStkCd())
+                .stkCd(cleanStkCd(dto.getStkCd()))
                 .stkNm(dto.getStkNm())
                 .strategy(dto.getStrategy().name())
                 .market(dto.getMarketType())
@@ -298,6 +301,13 @@ public class SignalService {
                         ? BigDecimal.valueOf(dto.getSignalScore()).setScale(2, java.math.RoundingMode.HALF_UP)
                         : null)
                 .build();
+    }
+
+    /** Kiwoom API _AL suffix(알고리즘 거래 구분 코드) 제거 후 표준 6자리 코드 반환 */
+    private static String cleanStkCd(String stkCd) {
+        if (stkCd == null) return null;
+        int idx = stkCd.indexOf('_');
+        return idx > 0 ? stkCd.substring(0, idx) : stkCd;
     }
 
     private void logRiskEvent(String eventType, String stkCd, String strategy,

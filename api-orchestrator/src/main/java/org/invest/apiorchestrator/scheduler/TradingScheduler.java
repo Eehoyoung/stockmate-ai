@@ -286,6 +286,7 @@ public class TradingScheduler {
         try {
             PRELOAD_POOL.submit(() -> {
                 for (String mkt : new String[]{"001", "101"}) {
+                    try { candidateService.getS4Candidates(mkt); }  catch (Exception e) { log.warn("[Pool] S4 {} 오류: {}", mkt, e.getMessage()); }
                     try { candidateService.getS8Candidates(mkt); }  catch (Exception e) { log.warn("[Pool] S8 {} 오류: {}", mkt, e.getMessage()); }
                     try { candidateService.getS9Candidates(mkt); }  catch (Exception e) { log.warn("[Pool] S9 {} 오류: {}", mkt, e.getMessage()); }
                     try { candidateService.getS10Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S10 {} 오류: {}", mkt, e.getMessage()); }

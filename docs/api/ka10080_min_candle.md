@@ -1,48 +1,93 @@
-# ka10080 – 주식분봉차트조회요청
-
-> **전술 사용**: S4(장대양봉 + 거래량 급증 판별)
-
-**URL**: `POST https://api.kiwoom.com/api/dostk/chart`  
-**Header**: `api-id: ka10080`
-
-### Request Body
-| 필드 | 타입 | 필수 | 설명 |
-|------|------|------|------|
-| `stk_cd` | String(20) | Y | 종목코드 |
-| `tic_scope` | String(2) | Y | `1`1분 `3`3분 `5`5분 `10`10분 `15`15분 `30`30분 `45`45분 `60`60분 |
-| `upd_stkpc_tp` | String(1) | Y | `0` or `1` (수정주가여부) |
-| `base_dt` | String(8) | N | YYYYMMDD (기준일자, 미입력 시 당일) |
-
-### Response Body
-| 필드 | 설명 |
-|------|------|
-| `stk_cd` | 종목코드 |
-| `stk_min_pole_chart_qry` | **분봉 데이터 리스트** |
-| `- cur_prc` | 현재가 (=종가) |
-| `- open_pric` | 시가 |
-| `- high_pric` | 고가 |
-| `- low_pric` | 저가 |
-| `- trde_qty` | 거래량 |
-| `- cntr_tm` | 체결시간 (YYYYMMDDHHmmss) |
-| `- pred_pre` | 전일대비 |
-
-### S4 전술 장대양봉 조건
-```
-5분봉 기준 (tic_scope: "5"):
-  1. 현재봉 종가(cur_prc) > 시가(open_pric) → 양봉
-  2. 몸통비율 = (종가 - 시가) / (고가 - 저가) >= 0.7
-  3. 상승폭 = (종가 - 시가) / 시가 * 100 >= 3.0%
-  4. 거래량비율 = 현재봉 거래량 / 직전5봉 평균거래량 >= 5배
-  5. 체결강도(Redis ws:strength) >= 140
-  6. 신고가 여부: 현재 고가 >= 직전 96봉(8시간) 고가 최대값
-```
-
-### 표준 호출 (5분봉 당일)
-```json
-{"stk_cd":"005930","tic_scope":"5","upd_stkpc_tp":"1"}
-```
-
-### 주의
-- 인덱스 0 = 가장 최근 봉
-- 숫자 앞에 `+`, `-` 기호 포함 → `NumberParseUtil.toDouble()` 사용
-- 연속조회(cont-yn=Y)로 더 많은 봉 데이터 조회 가능
+키움 REST API
+API 정보
+메뉴 위치 국내주식 > 차트 > 주식분봉차트조회요청(ka10080)
+API 명 주식분봉차트조회요청
+API ID ka10080
+기본정보
+Method POST
+운영 도메인 https://api.kiwoom.com
+모의투자 도메인 https://mockapi.kiwoom.com(KRX만 지원가능)
+URL /api/dostk/chart
+Format JSON
+Content-Type application/json;charset=UTF-8
+개요
+Request
+구분 Element 한글명 Type Require
+d
+Length Description
+Header api-id TR명 String Y 10
+Header authorization 접근토큰 String Y 1000 토큰 지정시 토큰타입("Bearer") 붙혀서 호출
+예) Bearer Egicyx...
+Header cont-yn 연속조회여부 String N 1
+응답 Header의 연속조회여부값이 Y일 경우 다음데이터
+요청시 응답 Header의 cont-yn값 세팅
+Header next-key 연속조회키 String N 50 응답 Header의 연속조회여부값이 Y일 경우 다음데이터
+요청시 응답 Header의 next-key값 세팅
+Body stk_cd 종목코드 String Y 20 거래소별 종목코드
+(KRX:039490,NXT:039490_NX,SOR:039490_AL)
+Body tic_scope 틱범위 String Y 2
+1:1분, 3:3분, 5:5분, 10:10분, 15:15분, 30:30분, 45:45분,
+60:60분
+Body upd_stkpc_tp 수정주가구분 String Y 1 0 or 1
+Body base_dt 기준일자 String N 8 YYYYMMDD
+Response
+구분 Element 한글명 Type Require
+d
+Length Description
+Header api-id TR명 String Y 10
+Header cont-yn 연속조회여부 String N 1 다음 데이터가 있을시 Y값 전달
+Header next-key 연속조회키 String N 50 다음 데이터가 있을시 다음 키값 전달
+Body stk_cd 종목코드 String N 6
+Body stk_min_pole_chart_
+qry
+주식분봉차트조회 LIST N
+Body - cur_prc 현재가 String N 20 종가
+Body - trde_qty 거래량 String N 20
+Body - cntr_tm 체결시간 String N 20
+Body - open_pric 시가 String N 20
+Body - high_pric 고가 String N 20
+199 / 528
+Response
+구분 Element 한글명 Type Require
+d
+Length Description
+Body - low_pric 저가 String N 20
+Body - pred_pre 전일대비 String N 20 현재가 - 전일종가
+Body - pred_pre_sig 전일대비 기호 String N 20 1: 상한가, 2:상승, 3:보합, 4:하한가, 5:하락
+Request Example
+{
+"stk_cd": "005930",
+"tic_scope": "1",
+"upd_stkpc_tp": "1",
+"base_dt": "20260202"
+}
+Response Example
+{
+"stk_cd": "005930",
+"stk_min_pole_chart_qry": [
+{
+"cur_prc": "-78800",
+"trde_qty": "7913",
+"cntr_tm": "20250917132000",
+"open_pric": "-78850",
+"high_pric": "-78900",
+"low_pric": "-78800",
+"acc_trde_qty": "14947571",
+"pred_pre": "-600",
+"pred_pre_sig": "5"
+},
+{
+"cur_prc": "-78900",
+"trde_qty": "16084",
+"cntr_tm": "20250917131900",
+"open_pric": "-78900",
+"high_pric": "-78900",
+"low_pric": "-78800",
+"acc_trde_qty": "14939658",
+"pred_pre": "-500",
+"pred_pre_sig": "5"
+},
+],
+"return_code": 0,
+"return_msg": "정상적으로 처리되었습니다"
+}

@@ -126,7 +126,7 @@ async function getCandidatePoolStatus() {
 
 /** ai-engine /candidates 엔드포인트 — Java down 시 fallback 또는 보조 확인 */
 async function getAiEngineCandidates() {
-    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8082';
+    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://ai-engine:8082';
     const axios = require('axios');
     const { data } = await axios.get(`${AI_ENGINE_URL}/candidates`, { timeout: 5000 });
     // pools 필드를 Java getCandidatePoolStatus() 형식(s1_001 등)으로 변환
@@ -141,7 +141,7 @@ async function getAiEngineCandidates() {
 
 /** /claude {code} — ai-engine Claude 종목 분석 요청 */
 async function analyzeStockWithClaude(stkCd) {
-    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8082';
+    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://ai-engine:8082';
     const { data } = await axios.get(`${AI_ENGINE_URL}/analyze/${stkCd}`, { timeout: 40_000 });
     return data;
 }
@@ -153,7 +153,7 @@ async function analyzeStockWithClaude(stkCd) {
  * @returns {Promise<Object>} { stk_cd, stk_nm, no_match, matched_count, results, skipped, data }
  */
 async function scoreStockFull(stkCd, enableAi = true) {
-    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8082';
+    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://ai-engine:8082';
     const aiParam = enableAi ? 'true' : 'false';
     const { data } = await axios.get(
         `${AI_ENGINE_URL}/score/${stkCd}?ai=${aiParam}`,
