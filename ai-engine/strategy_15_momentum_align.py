@@ -49,7 +49,7 @@ from indicator_bollinger import calc_bollinger
 from indicator_atr import calc_atr
 from indicator_stochastic import calc_stochastic
 from indicator_volume import calc_vwap, get_vwap_minute
-from http_utils import fetch_cntr_strength, fetch_stk_nm
+from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,6 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
     candidates: list[str] = []
     if rdb:
         try:
-            # S15 전용 풀 (S8 재활용: ka10027 소폭상승 0.5~8%)
             kospi  = await rdb.lrange("candidates:s15:001", 0, 99)
             kosdaq = await rdb.lrange("candidates:s15:101", 0, 99)
             candidates = list(dict.fromkeys(kospi + kosdaq))[:30]
@@ -135,7 +134,7 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
 
         if cntr_str is None:
             await asyncio.sleep(_API_INTERVAL)
-            cntr_str = await fetch_cntr_strength(token, stk_cd)
+            cntr_str, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
 
         # ── 필수 2: 양봉 + 과열 미달 ─────────────────────────────
         if flu_rt <= 0 or flu_rt > 12.0:

@@ -6,7 +6,10 @@
       "Bash(where python3:*)",
       "Bash(xargs grep:*)",
       "Bash(\"C:/Users/LeeHoYoung/IdeaProjects/t/stockmate-ai/websocket-listener/.venv/Scripts/python.exe\" --version)",
-      "Bash(C:/Users/LeeHoYoung/IdeaProjects/t/stockmate-ai/websocket-listener/venv/Scripts/python.exe:*)"
+      "Bash(C:/Users/LeeHoYoung/IdeaProjects/t/stockmate-ai/websocket-listener/venv/Scripts/python.exe:*)",
+      "Bash(python -m py_compile ai-engine/candidates_builder.py ai-engine/http_utils.py)",
+      "Bash(grep -rL \"from __future__ import annotations\" /c/Users/LeeHoYoung/IdeaProjects/t/stockmate-ai/ai-engine/*.py)",
+      "Bash(python -m py_compile ai-engine/candidates_builder.py ai-engine/http_utils.py ai-engine/engine.py ai-engine/queue_worker.py ai-engine/overnight_worker.py ai-engine/position_monitor.py)"
     ]
   }
 }

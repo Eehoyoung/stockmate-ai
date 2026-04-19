@@ -6,6 +6,7 @@ import org.invest.apiorchestrator.domain.StockMaster;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.repository.StockMasterRepository;
 import org.invest.apiorchestrator.service.KiwoomApiService;
+import org.invest.apiorchestrator.util.StockCodeNormalizer;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -40,12 +41,13 @@ public class StockMasterScheduler {
     private static final String[] MARKETS = {"001", "101"};
 
     /**
-     * 매주 월요일 07:00 – 트레이딩 유니버스 종목 기준정보 갱신
+     * 09:10 – 트레이딩 유니버스 종목 기준정보 갱신.
+     * 09:05 preloadCandidatePools 첫 실행 후 pools 적재 완료 시점에 읽어 stock_master 에 UPSERT.
      */
-    @Scheduled(cron = "0 0 7 * * MON-FRI")
+    @Scheduled(cron = "0 10 9 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void refreshStockMaster() {
-        log.info("=== StockMaster 갱신 시작 (월요일 07:00) ===");
+        log.info("=== StockMaster 갱신 시작 (09:10) ===");
         try {
             Set<String> kospiCodes  = collectFromRedis("001");
             Set<String> kosdaqCodes = collectFromRedis("101");
@@ -69,11 +71,19 @@ public class StockMasterScheduler {
         for (String s : STRATEGY_KEYS) {
             String key = "candidates:" + s + ":" + market;
             List<String> list = redis.opsForList().range(key, 0, -1);
-            if (list != null) codes.addAll(list);
+            if (list != null) {
+                list.stream()
+                        .map(StockCodeNormalizer::normalize)
+                        .forEach(codes::add);
+            }
         }
         // 구형 키도 포함
         List<String> legacy = redis.opsForList().range("candidates:" + market, 0, -1);
-        if (legacy != null) codes.addAll(legacy);
+        if (legacy != null) {
+            legacy.stream()
+                    .map(StockCodeNormalizer::normalize)
+                    .forEach(codes::add);
+        }
         return codes;
     }
 

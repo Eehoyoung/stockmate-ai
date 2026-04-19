@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 overnight_worker.py
 14:50 강제청산 타임에 Java ForceCloseScheduler 가 overnight_eval_queue 에
@@ -27,11 +28,14 @@ from redis_reader import (
     get_avg_cntr_strength,
     push_score_only_queue,
 )
+from db_reader import get_daily_indicators
+from http_utils import fetch_stk_nm
 from overnight_scorer import evaluate_overnight
-from db_writer import record_overnight_eval
+from db_writer import insert_overnight_eval, record_overnight_eval
 
 logger = logging.getLogger(__name__)
 POLL_INTERVAL = float(os.getenv("OVERNIGHT_POLL_SEC", "2.0"))
+REDIS_TOKEN_KEY = "kiwoom:token"
 
 
 async def _process_one(rdb, pg_pool=None) -> bool:
@@ -48,15 +52,34 @@ async def _process_one(rdb, pg_pool=None) -> bool:
     stk_cd   = item.get("stk_cd", "")
     strategy = item.get("strategy", "")
     stk_nm   = item.get("stk_nm", "")
+    if stk_cd and not stk_nm:
+        try:
+            token = await rdb.get(REDIS_TOKEN_KEY)
+            if token:
+                stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+                if stk_nm:
+                    item["stk_nm"] = stk_nm
+        except Exception as nm_err:
+            logger.debug("[OvernightWorker] stk_nm 조회 실패 [%s %s]: %s", stk_cd, strategy, nm_err)
 
     try:
-        tick, hoga, strength = await asyncio.gather(
+        tick, hoga, strength, indicators = await asyncio.gather(
             get_tick_data(rdb, stk_cd),
             get_hoga_data(rdb, stk_cd),
             get_avg_cntr_strength(rdb, stk_cd, 5),
+            get_daily_indicators(pg_pool, stk_cd) if pg_pool else asyncio.sleep(0, result=None),
         )
 
         verdict = evaluate_overnight(item, tick, hoga, strength)
+        bid_ratio = None
+        try:
+            if hoga:
+                bid = float(str(hoga.get("total_buy_bid_req", "0")).replace(",", "").replace("+", "") or "0")
+                ask = float(str(hoga.get("total_sel_bid_req", "0")).replace(",", "").replace("+", "") or "0")
+                if ask > 0:
+                    bid_ratio = bid / ask
+        except Exception:
+            bid_ratio = None
 
         if verdict.hold:
             payload = {
@@ -97,6 +120,32 @@ async def _process_one(rdb, pg_pool=None) -> bool:
 
         # DB 기록 (signal_id 있을 때만)
         signal_id = item.get("id") or item.get("signal_id")
+        if pg_pool and signal_id:
+            try:
+                await insert_overnight_eval(
+                    pg_pool,
+                    signal_id=signal_id,
+                    position_id=item.get("position_id"),
+                    stk_cd=stk_cd,
+                    strategy=strategy,
+                    java_overnight_score=item.get("overnight_score"),
+                    verdict="HOLD" if verdict.hold else "FORCE_CLOSE",
+                    final_score=verdict.score,
+                    confidence=verdict.confidence,
+                    reason=verdict.reason,
+                    pnl_pct=item.get("pnl_pct"),
+                    flu_rt=tick.get("flu_rt") if tick else None,
+                    cntr_strength=strength,
+                    rsi14=(verdict.detail or {}).get("rsi14") or (indicators or {}).get("rsi14"),
+                    ma_alignment=(verdict.detail or {}).get("ma_alignment"),
+                    bid_ratio=bid_ratio,
+                    entry_price=item.get("entry_price"),
+                    cur_price=tick.get("cur_prc") if tick else None,
+                    score_components=verdict.detail,
+                )
+            except Exception as oe:
+                logger.error("[OvernightWorker] overnight_evaluations 저장 실패 [%s %s]: %s", stk_cd, strategy, oe)
+
         if pg_pool and signal_id:
             await record_overnight_eval(
                 pg_pool, signal_id,

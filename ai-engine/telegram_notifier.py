@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 ai-engine/telegram_notifier.py
 ──────────────────────────────────────────────────────────────
@@ -20,6 +21,8 @@ from typing import Optional
 
 import aiohttp
 
+from utils import safe_float_opt as _safe_float
+
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -31,7 +34,7 @@ STRATEGY_DISPLAY: dict[str, tuple[str, str]] = {
     "S4_BIG_CANDLE":        ("📊 장대양봉 추격",      "장대양봉+거래량 급증 돌파"),
     "S5_PROG_FRGN":         ("💻 프로그램+외인",      "프로그램 순매수+외인 동반"),
     "S6_THEME_LAGGARD":     ("🔥 테마 후발주",        "테마 상위+후발주 체결강도 충족"),
-    "S7_AUCTION":           ("⚡ 동시호가",            "갭+호가비율 조건 충족"),
+    "S7_ICHIMOKU_BREAKOUT":           ("일목 돌파 스윙",      "구름대 돌파 + 후행스팬/거래량 조건 충족"),
     "S8_GOLDEN_CROSS":      ("📈 골든크로스 스윙",    "5일선 골든크로스+거래량 확인"),
     "S9_PULLBACK_SWING":    ("🔄 눌림목 반등 스윙",   "정배열 5MA 근접 눌림 반등"),
     "S10_NEW_HIGH":         ("🏆 52주 신고가 돌파",   "신고가+거래량 급증"),
@@ -41,16 +44,6 @@ STRATEGY_DISPLAY: dict[str, tuple[str, str]] = {
     "S14_OVERSOLD_BOUNCE":  ("↩️ 과매도 반등",        "RSI 과매도+ATR 수렴"),
     "S15_MOMENTUM_ALIGN":   ("⚡ 모멘텀 정렬 스윙",   "다중 지표 동조+거래량 확인"),
 }
-
-
-def _safe_float(val, default=None) -> Optional[float]:
-    """None-safe float 변환. 실패 시 default 반환."""
-    if val is None:
-        return default
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return default
 
 
 def _fmt_price(price: Optional[float]) -> str:

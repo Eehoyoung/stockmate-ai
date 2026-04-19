@@ -60,7 +60,7 @@ class TestIsMarketHours:
 
     def test_03_market_close_boundary(self):
         """TC-03: 15:35 (장 마감 경계) → False."""
-        with self._patch_now(15, 35, weekday=1):
+        with self._patch_now(20, 10, weekday=1):
             import ws_client
             assert ws_client._is_market_hours() is False
 
@@ -92,7 +92,7 @@ class TestNextMarketOpen:
 
     def test_07_friday_after_close(self):
         """TC-07: 금요일 16:00 → 다음 월요일 07:30."""
-        dt = _kst_dt(16, 0, weekday=4)
+        dt = _kst_dt(21, 0, weekday=4)
         with patch("ws_client._now_kst", return_value=dt):
             import ws_client
             nxt = ws_client._next_market_open()
@@ -112,7 +112,7 @@ class TestNextMarketOpen:
 
     def test_09_weekday_after_close(self):
         """TC-09: 수요일 16:00 → 다음날(목) 07:30."""
-        dt = _kst_dt(16, 0, weekday=2)
+        dt = _kst_dt(21, 0, weekday=2)
         with patch("ws_client._now_kst", return_value=dt):
             import ws_client
             nxt = ws_client._next_market_open()
@@ -191,19 +191,17 @@ class TestBackoffLogic:
 class TestWaitForMarketOpen:
     """TC-16 ~ TC-18: _wait_for_market_open() 대기/즉시반환 검증."""
 
-    @pytest.mark.asyncio
-    async def test_16_returns_immediately_during_market(self):
+    def test_16_returns_immediately_during_market(self):
         """TC-16: 장 운영 시간이면 즉시 반환 (sleep 호출 없음)."""
         dt = _kst_dt(10, 0, weekday=0)
         with patch("ws_client._now_kst", return_value=dt), \
              patch("ws_client._is_market_hours", return_value=True), \
              patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             import ws_client
-            await ws_client._wait_for_market_open()
+            asyncio.run(ws_client._wait_for_market_open())
             mock_sleep.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_17_sleeps_when_outside_market(self):
+    def test_17_sleeps_when_outside_market(self):
         """TC-17: 장 외 시간이면 sleep 호출됨."""
         import ws_client
         # now=16:00, next_open=16:00+15h30m → wait_sec 확실히 양수
@@ -221,22 +219,21 @@ class TestWaitForMarketOpen:
              patch("ws_client._is_market_hours", side_effect=_is_market_side_effect), \
              patch("ws_client._next_market_open", return_value=next_open), \
              patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            await ws_client._wait_for_market_open()
+            asyncio.run(ws_client._wait_for_market_open())
             mock_sleep.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_18_cancelled_error_propagates(self):
+    def test_18_cancelled_error_propagates(self):
         """TC-18: CancelledError 발생 시 상위로 전파 (루프 탈출 가능)."""
         import ws_client
         now       = datetime.now(KST).replace(hour=16, minute=0, second=0, microsecond=0)
         next_open = now + timedelta(hours=15, minutes=30)
 
         with patch("ws_client._now_kst", return_value=now), \
-             patch("ws_client._is_market_hours", return_value=False), \
-             patch("ws_client._next_market_open", return_value=next_open), \
-             patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+            patch("ws_client._is_market_hours", return_value=False), \
+            patch("ws_client._next_market_open", return_value=next_open), \
+            patch("asyncio.sleep", side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
-                await ws_client._wait_for_market_open()
+                asyncio.run(ws_client._wait_for_market_open())
 
 
 # ──────────────────────────────────────────────────────────────

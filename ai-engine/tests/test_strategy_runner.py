@@ -316,8 +316,8 @@ class TestTimeBasedStrategyActivation:
             # 07:00은 어떤 전략도 활성화 안 됨
             assert calls == []
 
-    def test_s7_active_during_auction(self):
-        """08:45 (동시호가) → S7 전략 활성화"""
+    def test_s7_active_during_intraday_window(self):
+        """10:00~14:30 장중 구간에서 S7 전략 활성화"""
         import datetime
         from strategy_runner import _run_once
 
@@ -336,7 +336,7 @@ class TestTimeBasedStrategyActivation:
                    side_effect=fake_strategy_runner), \
              patch("strategy_runner._load_token", new_callable=AsyncMock,
                    return_value="valid-token"):
-            mock_dt.datetime.now.return_value.time.return_value = datetime.time(8, 45)
+            mock_dt.datetime.now.return_value.time.return_value = datetime.time(10, 15)
             mock_dt.time = datetime.time
 
             with patch("strategy_runner.scan_auction_signal",
@@ -423,3 +423,19 @@ class TestGatherErrorHandling:
         _run(main())
         assert "S2" in completed
         assert "S3" in completed
+
+
+class TestS1Fallback:
+    def test_scan_s1_runs_even_when_candidate_pool_empty(self):
+        from strategy_runner import _scan_s1
+
+        rdb = _make_rdb(lrange=[])
+
+        with patch("strategy_1_gap_opening.scan_gap_opening", new_callable=AsyncMock, return_value=[] ) as scan_mock, \
+             patch("strategy_runner._push_signals", new_callable=AsyncMock):
+            _run(_scan_s1(rdb, "valid-token"))
+
+        scan_mock.assert_awaited_once()
+        args = scan_mock.await_args.args
+        assert args[0] == "valid-token"
+        assert args[1] == []

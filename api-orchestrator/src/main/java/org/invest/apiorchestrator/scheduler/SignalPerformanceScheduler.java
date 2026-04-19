@@ -3,12 +3,15 @@ package org.invest.apiorchestrator.scheduler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.domain.DailyPnl;
+import org.invest.apiorchestrator.domain.MarketDailyContext;
 import org.invest.apiorchestrator.domain.StrategyDailyStat;
 import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.repository.DailyPnlRepository;
+import org.invest.apiorchestrator.repository.MarketDailyContextRepository;
 import org.invest.apiorchestrator.repository.StrategyDailyStatRepository;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.service.RedisMarketDataService;
+import org.invest.apiorchestrator.service.StrategyParamSnapshotService;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -40,13 +43,15 @@ public class SignalPerformanceScheduler {
     private final RedisMarketDataService redisService;
     private final DailyPnlRepository dailyPnlRepository;
     private final StrategyDailyStatRepository strategyDailyStatRepository;
+    private final MarketDailyContextRepository marketDailyContextRepository;
+    private final StrategyParamSnapshotService strategyParamSnapshotService;
     private final StringRedisTemplate redis;
 
     /**
      * 장중 10분마다 가상 P&L 계산 및 WIN/LOSS 판정
      * 09:00 ~ 15:30, 월~금
      */
-    @Scheduled(cron = "0 0/10 9-15 * * MON-FRI")
+    @Scheduled(cron = "0 0/10 9-15 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void updatePerformance() {
         LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
@@ -79,7 +84,7 @@ public class SignalPerformanceScheduler {
     /**
      * 장마감 후 잔여 SENT 신호 EXPIRED 처리 (15:35 월~금)
      */
-    @Scheduled(cron = "0 35 15 * * MON-FRI")
+    @Scheduled(cron = "0 35 15 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void expireSentSignals() {
         LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
@@ -101,7 +106,7 @@ public class SignalPerformanceScheduler {
     /**
      * 15:45 – DailyPnl + StrategyDailyStat 집계 후 DB 저장 (UPSERT 패턴)
      */
-    @Scheduled(cron = "0 45 15 * * MON-FRI")
+    @Scheduled(cron = "0 45 15 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void aggregateDailyStats() {
         log.info("=== 일별 성과 집계 시작 (15:45) ===");
@@ -164,6 +169,7 @@ public class SignalPerformanceScheduler {
 
         // 시장 심리 (Redis)
         String marketSentiment = redis.opsForValue().get("news:market_sentiment");
+        MarketDailyContext marketCtx = marketDailyContextRepository.findByDate(today).orElse(null);
 
         DailyPnl pnl = dailyPnlRepository.findByDate(today)
                 .map(existing -> existing)
@@ -185,6 +191,8 @@ public class SignalPerformanceScheduler {
                     .grossPnlPct(avgPnlPct)
                     .netPnlPct(avgPnlPct)
                     .avgPnlPerTrade(avgPnlPct)
+                    .kospiChangePct(marketCtx != null ? marketCtx.getKospiChangePct() : null)
+                    .kosdaqChangePct(marketCtx != null ? marketCtx.getKosdaqChangePct() : null)
                     .marketSentiment(marketSentiment != null ? marketSentiment : "NEUTRAL")
                     .build();
         } else {
@@ -206,6 +214,8 @@ public class SignalPerformanceScheduler {
                     .grossPnlPct(avgPnlPct)
                     .netPnlPct(avgPnlPct)
                     .avgPnlPerTrade(avgPnlPct)
+                    .kospiChangePct(marketCtx != null ? marketCtx.getKospiChangePct() : null)
+                    .kosdaqChangePct(marketCtx != null ? marketCtx.getKosdaqChangePct() : null)
                     .marketSentiment(marketSentiment != null ? marketSentiment : "NEUTRAL")
                     .build();
         }
@@ -225,11 +235,13 @@ public class SignalPerformanceScheduler {
             int total       = stratSignals.size();
             int enters      = (int) stratSignals.stream().filter(s -> "ENTER".equals(s.getAction())).count();
             int cancels     = (int) stratSignals.stream().filter(s -> "CANCEL".equals(s.getAction())).count();
+            int skips       = (int) stratSignals.stream().filter(s -> Boolean.TRUE.equals(s.getSkipEntry())).count();
             int wins        = (int) stratSignals.stream().filter(s -> s.getSignalStatus() == TradingSignal.SignalStatus.WIN).count();
             int losses      = (int) stratSignals.stream().filter(s -> s.getSignalStatus() == TradingSignal.SignalStatus.LOSS).count();
             int expired     = (int) stratSignals.stream().filter(s -> s.getSignalStatus() == TradingSignal.SignalStatus.EXPIRED).count();
             int forceClosed = (int) stratSignals.stream().filter(s -> "FORCE_CLOSE".equals(s.getExitType())).count();
             int overnight   = (int) stratSignals.stream().filter(s -> s.getSignalStatus() == TradingSignal.SignalStatus.OVERNIGHT_HOLD).count();
+            int tp2Hits     = (int) stratSignals.stream().filter(s -> "TP2_HIT".equals(s.getExitType())).count();
 
             int closed = wins + losses;
             BigDecimal winRate = closed > 0
@@ -251,6 +263,26 @@ public class SignalPerformanceScheduler {
             long aiScoreCnt = stratSignals.stream().filter(s -> s.getAiScore() != null).count();
             BigDecimal avgAiScore = aiScoreCnt > 0
                     ? BigDecimal.valueOf(aiScoreSum / aiScoreCnt).setScale(2, RoundingMode.HALF_UP)
+                    : null;
+
+            double rrSum = stratSignals.stream()
+                    .filter(s -> s.getRrRatio() != null)
+                    .mapToDouble(s -> s.getRrRatio().doubleValue()).sum();
+            long rrCnt = stratSignals.stream().filter(s -> s.getRrRatio() != null).count();
+            BigDecimal avgRrRatio = rrCnt > 0
+                    ? BigDecimal.valueOf(rrSum / rrCnt).setScale(2, RoundingMode.HALF_UP)
+                    : null;
+
+            Double threshold = strategyParamSnapshotService.getClaudeThreshold(strategyName);
+            long aboveThresholdCount = stratSignals.stream()
+                    .filter(s -> {
+                        Double score = s.getAiScore() != null ? s.getAiScore().doubleValue()
+                                : (s.getRuleScore() != null ? s.getRuleScore().doubleValue() : null);
+                        return score != null && score >= threshold;
+                    })
+                    .count();
+            BigDecimal pctAboveThreshold = total > 0
+                    ? BigDecimal.valueOf((double) aboveThresholdCount / total * 100).setScale(2, RoundingMode.HALF_UP)
                     : null;
 
             // 성과 통계
@@ -279,29 +311,43 @@ public class SignalPerformanceScheduler {
                     ? BigDecimal.valueOf(bestPnl).setScale(4, RoundingMode.HALF_UP) : null;
             final BigDecimal fWorstPnl  = pnlCnt > 0
                     ? BigDecimal.valueOf(worstPnl).setScale(4, RoundingMode.HALF_UP) : null;
+            long holdCount = stratSignals.stream().filter(s -> s.getHoldDurationMin() != null).count();
+            double holdSum = stratSignals.stream()
+                    .filter(s -> s.getHoldDurationMin() != null)
+                    .mapToInt(TradingSignal::getHoldDurationMin)
+                    .sum();
+            final BigDecimal fAvgHoldMin = holdCount > 0
+                    ? BigDecimal.valueOf(holdSum / holdCount).setScale(1, RoundingMode.HALF_UP)
+                    : null;
 
             StrategyDailyStat stat = strategyDailyStatRepository
                     .findByDateAndStrategy(today, strategyName)
                     .map(existing -> StrategyDailyStat.builder()
                             .id(existing.getId())
                             .date(today).strategy(strategyName)
-                            .totalSignals(total).enterCount(enters).cancelCount(cancels)
-                            .tp1HitCount(wins).slHitCount(losses).forceCloseCount(forceClosed)
+                            .totalSignals(total).enterCount(enters).cancelCount(cancels).skipEntryCount(skips)
+                            .tp1HitCount(wins).tp2HitCount(tp2Hits).slHitCount(losses).forceCloseCount(forceClosed)
                             .expiredCount(expired).overnightCount(overnight)
-                            .winRate(winRate).avgRuleScore(avgRuleScore).avgAiScore(avgAiScore)
+                            .winRate(winRate).avgRuleScore(avgRuleScore).avgAiScore(avgAiScore).avgRrRatio(avgRrRatio)
+                            .pctAboveThreshold(pctAboveThreshold)
                             .avgPnlPct(fAvgPnlPct)
+                            .avgHoldMin(fAvgHoldMin)
                             .totalPnlAbs(fPnlAbsSum.compareTo(BigDecimal.ZERO) != 0 ? fPnlAbsSum : null)
                             .bestPnlPct(fBestPnl).worstPnlPct(fWorstPnl)
+                            .thresholdSnapshot(BigDecimal.valueOf(threshold).setScale(2, RoundingMode.HALF_UP))
                             .build())
                     .orElse(StrategyDailyStat.builder()
                             .date(today).strategy(strategyName)
-                            .totalSignals(total).enterCount(enters).cancelCount(cancels)
-                            .tp1HitCount(wins).slHitCount(losses).forceCloseCount(forceClosed)
+                            .totalSignals(total).enterCount(enters).cancelCount(cancels).skipEntryCount(skips)
+                            .tp1HitCount(wins).tp2HitCount(tp2Hits).slHitCount(losses).forceCloseCount(forceClosed)
                             .expiredCount(expired).overnightCount(overnight)
-                            .winRate(winRate).avgRuleScore(avgRuleScore).avgAiScore(avgAiScore)
+                            .winRate(winRate).avgRuleScore(avgRuleScore).avgAiScore(avgAiScore).avgRrRatio(avgRrRatio)
+                            .pctAboveThreshold(pctAboveThreshold)
                             .avgPnlPct(fAvgPnlPct)
+                            .avgHoldMin(fAvgHoldMin)
                             .totalPnlAbs(fPnlAbsSum.compareTo(BigDecimal.ZERO) != 0 ? fPnlAbsSum : null)
                             .bestPnlPct(fBestPnl).worstPnlPct(fWorstPnl)
+                            .thresholdSnapshot(BigDecimal.valueOf(threshold).setScale(2, RoundingMode.HALF_UP))
                             .build());
             strategyDailyStatRepository.save(stat);
         }

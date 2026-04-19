@@ -1,147 +1,56 @@
-# 키움 REST API 데이트레이딩 시스템 - Java 백엔드
+# Docs Guide
 
-## 개요
-키움증권 REST API 기반 7가지 데이트레이딩 전술 자동 종목 선별 시스템입니다.
+이 디렉터리는 현재 운영과 개발에 직접 필요한 문서만 남기고, 일회성 보고서와 중복 계획서는 정리한 상태를 기준으로 유지한다.
 
-## 기술 스택
-- **Java 21** / Spring Boot 3.2
-- **PostgreSQL** - 신호 이력, 토큰, VI 이벤트 영구 저장
-- **Redis** - WebSocket 실시간 시세 캐시, 신호 중복 제거, 텔레그램 큐
-- **OkHttp** - 키움 WebSocket 클라이언트
-- **WebFlux (WebClient)** - 키움 REST API 비동기 호출
+## Core
 
-## 프로젝트 구조
+- [project-capabilities.md](./project-capabilities.md): 시스템 기능 개요
+- [project-process.md](./project-process.md): 서비스 흐름과 운영 프로세스
+- [project-review.md](./project-review.md): 전체 구조 리뷰
+- [all_strategies_flow.md](./all_strategies_flow.md): 전략 전체 흐름
+- [전략.md](./전략.md): 전략 요약
 
-```
-src/main/java/com/trading/kiwoom/
-├── config/
-│   ├── KiwoomProperties.java     # application.yml 바인딩
-│   ├── RedisConfig.java          # Redis 설정
-│   ├── WebClientConfig.java      # HTTP 클라이언트
-│   ├── JpaConfig.java            # JPA/Auditing
-│   ├── AsyncConfig.java          # 스레드풀 설정
-│   └── ObjectMapperConfig.java   # Jackson 설정
-│
-├── domain/
-│   ├── TradingSignal.java        # 거래 신호 엔티티
-│   ├── KiwoomToken.java          # 액세스 토큰 엔티티
-│   ├── ViEvent.java              # VI 이벤트 엔티티
-│   └── WsTickData.java           # WebSocket 틱 데이터 엔티티
-│
-├── dto/
-│   ├── request/
-│   │   ├── KiwoomApiRequest.java # 공통 요청 기반
-│   │   ├── TokenRequest.java     # 토큰 발급 요청
-│   │   └── StrategyRequests.java # 전술별 API 요청 DTO 모음
-│   └── response/
-│       ├── TokenResponse.java        # 토큰 응답
-│       ├── KiwoomApiResponses.java   # 전술별 API 응답 DTO 모음
-│       ├── TradingSignalDto.java     # 신호 전달 DTO
-│       └── WsMarketData.java         # WebSocket 실시간 데이터 DTO
-│
-├── repository/
-│   ├── TradingSignalRepository.java
-│   ├── KiwoomTokenRepository.java
-│   ├── ViEventRepository.java
-│   └── WsTickDataRepository.java
-│
-├── service/
-│   ├── TokenService.java            # 토큰 발급/갱신/캐싱
-│   ├── KiwoomApiService.java        # REST API 공통 호출
-│   ├── RedisMarketDataService.java  # Redis 실시간 데이터 R/W
-│   ├── SignalService.java           # 신호 저장/발행
-│   ├── StrategyService.java         # 7가지 전술 핵심 로직
-│   ├── ViWatchService.java          # VI 눌림목 감시 워커
-│   └── CandidateService.java        # 후보 종목 조회/캐싱
-│
-├── websocket/
-│   ├── KiwoomWebSocketClient.java          # OkHttp WS 클라이언트
-│   └── WebSocketSubscriptionManager.java  # 구독 종목 관리
-│
-├── scheduler/
-│   ├── TradingScheduler.java        # 전술별 시간 스케줄러 (메인)
-│   ├── TokenRefreshScheduler.java   # 토큰 자동 갱신
-│   ├── ForceCloseScheduler.java     # 14:50 강제 청산 알림
-│   └── DataCleanupScheduler.java    # 오래된 데이터 정리
-│
-├── controller/
-│   └── TradingController.java       # REST API 컨트롤러
-│
-├── exception/
-│   ├── KiwoomApiException.java
-│   └── GlobalExceptionHandler.java
-│
-├── util/
-│   ├── MarketTimeUtil.java          # 장시간 유틸
-│   └── NumberParseUtil.java         # 숫자 파싱 유틸
-│
-├── ApplicationStartupRunner.java    # 앱 시작 초기화
-└── KiwoomTradingApplication.java    # 메인 클래스
-```
+## Operations
 
-## 7가지 전술별 스케줄
+- [operations-and-security.md](./operations-and-security.md): 운영 안정화, 장애 대응, 보안 강화 통합 문서
+- [logging_standards.md](./logging_standards.md): 로깅 기준
+- [redis_recovery.md](./redis_recovery.md): Redis 복구 절차
+- [ws_solver.md](./ws_solver.md): WebSocket 이슈 해결 메모
 
-| 전술 | 설명 | 실행 시간 | 주기 |
-|------|------|----------|------|
-| S1 | 갭상승 + 체결강도 시초가 | 09:00~09:10 | 2분 |
-| S2 | VI 발동 후 눌림목 | 09:00~15:20 | 5초 (이벤트 기반) |
-| S3 | 외인+기관 동시 순매수 | 09:30~14:30 | 5분 |
-| S4 | 장대양봉 + 거래량 급증 | 09:30~14:30 | 3분 |
-| S5 | 프로그램+외인 상위 | 10:00~14:00 | 10분 |
-| S6 | 테마 후발주 | 09:30~13:00 | 10분 |
-| S7 | 장전 동시호가 | 08:30~09:00 | 2분 |
+## Strategy And Candidate
 
-## WebSocket 그룹별 구독
+- [strategy-consolidation.md](./strategy-consolidation.md): 전략 통합 계획, 감사 결과, 코드 정리 방향
+- [candidate-pool-architecture.md](./candidate-pool-architecture.md): 후보풀 구조, 전략별 운용, 추천 기준 통합 문서
+- [candidate_selection_report.md](./candidate_selection_report.md): 후보 선정 결과 요약
+- [table_persistence_completion_2026-04-16.md](./table_persistence_completion_2026-04-16.md): 테이블 영속화 작업 결과
+- [tp_sl_plan.md](./tp_sl_plan.md): TP/SL 공통 계획
+- [tp_sl_per_strategy_plan.md](./tp_sl_per_strategy_plan.md): 전략별 TP/SL 계획
 
-| 그룹 | 타입 | 설명 |
-|------|------|------|
-| GRP 1 | 0B | 주식체결 - 상위 200종목 |
-| GRP 2 | 0D | 호가잔량 - 상위 100종목 |
-| GRP 3 | 0H | 예상체결 - 장전용 상위 100종목 |
-| GRP 4 | 1h | VI발동/해제 - 전체 |
+## Telegram And AI
 
-## 환경 변수
+- [telegram_signal.md](./telegram_signal.md): 텔레그램 신호/브리핑 규격
+- [telegram_dead_code_plan.md](./telegram_dead_code_plan.md): 텔레그램 정리 계획
+- [scorer_telegram_upgrade_plan.md](./scorer_telegram_upgrade_plan.md): scorer-telegram 연계 개선안
+- [scorer_upgrade_plan_20260404.md](./scorer_upgrade_plan_20260404.md): scorer 고도화 계획
 
-```bash
-KIWOOM_APP_KEY=발급받은_앱키
-KIWOOM_SECRET_KEY=발급받은_시크릿키
-DB_USERNAME=trading
-DB_PASSWORD=your_password
-REDIS_HOST=localhost
-REDIS_PORT=6379
-```
+## API Reference
 
-## 실행 방법
+- [kiwoom_api_reference.md](./kiwoom_api_reference.md): Kiwoom API 상위 레퍼런스
+- [kiwoom_error_code.md](./kiwoom_error_code.md): Kiwoom 오류코드
+- [error_codes.md](./error_codes.md): 공통 오류 메모
+- [api/](./api): 주요 API 세부 레퍼런스
+- [candidate/](./candidate): 후보풀 관련 API 메모
+- [rank_info/](./rank_info): 랭킹/순위 조회 API 메모
 
-```bash
-# 로컬 개발
-./gradlew bootRun --args='--spring.profiles.active=local'
+## Historical But Retained
 
-# 운영
-./gradlew bootJar
-java -jar build/libs/kiwoom-trading-1.0.0.jar \
-  --spring.profiles.active=prod \
-  --KIWOOM_APP_KEY=xxx \
-  --KIWOOM_SECRET_KEY=xxx
-```
+- [db_schema_upgrade_plan_20260406.md](./db_schema_upgrade_plan_20260406.md): DB 스키마 변경 계획
+- [value_up_dev_plan.md](./value_up_dev_plan.md): Value-up 관련 기획
+- [SMA_사용설명서.md](./SMA_%EC%82%AC%EC%9A%A9%EC%84%A4%EB%AA%85%EC%84%9C.md): SMA 사용 가이드
+- [SMA_완성도_평가.md](./SMA_%EC%99%84%EC%84%B1%EB%8F%84_%ED%8F%89%EA%B0%80.md): SMA 평가 메모
 
-## Redis 키 규약
+## Cleanup Rule
 
-| 키 패턴 | TTL | 설명 |
-|---------|-----|------|
-| `kiwoom:token` | 23시간 | 액세스 토큰 |
-| `ws:tick:{stkCd}` | 30초 | 실시간 체결 |
-| `ws:expected:{stkCd}` | 60초 | 예상체결 |
-| `ws:hoga:{stkCd}` | 10초 | 호가잔량 |
-| `ws:strength:{stkCd}` | 5분 | 체결강도 리스트 |
-| `vi:{stkCd}` | 1시간 | VI 이벤트 상태 |
-| `vi_watch_queue` | 2시간 | VI 눌림목 감시 큐 |
-| `signal:{stkCd}:{strategy}` | 1시간 | 중복 신호 방지 |
-| `telegram_queue` | 12시간 | 텔레그램 발송 큐 |
-| `candidates:{market}` | 3분 | 후보 종목 캐시 |
-
-## 타 서비스 연동
-
-- **Python**: `telegram_queue` → Redis 큐 폴링하여 전술 로직 분석/스코어링
-- **Node.js 텔레그램 봇**: `telegram_queue` → 폴링하여 메시지 발송
-- **PostgreSQL**: 신호 이력, VI 이벤트 영구 저장 (백테스트 데이터)
+- 날짜가 붙은 일회성 보고서나 동일 주제의 중복 계획서는 새 통합 문서가 있으면 삭제한다.
+- API 문서는 상위 요약 1개와 세부 레퍼런스 디렉터리 1세트만 유지한다.
+- 신규 문서는 가능하면 기존 통합 문서에 추가하고, 별도 파일 생성은 범위가 명확히 독립적일 때만 허용한다.

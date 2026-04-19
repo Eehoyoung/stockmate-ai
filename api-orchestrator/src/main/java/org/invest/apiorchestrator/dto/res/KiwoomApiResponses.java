@@ -2,8 +2,10 @@ package org.invest.apiorchestrator.dto.res;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.invest.apiorchestrator.util.StockCodeDeserializer;
 
 import java.util.List;
 
@@ -44,7 +46,7 @@ public class KiwoomApiResponses {
     /* ───────────── 분봉차트 ───────────── */
     @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
     public static class MinuteCandleResponse extends BaseResponse {
-        @JsonProperty("stk_cd") private String stkCd;
+        @JsonProperty("stk_cd") @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
         @JsonProperty("stk_min_pole_chart_qry") private List<CandleItem> candles;
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
@@ -63,7 +65,7 @@ public class KiwoomApiResponses {
     /* ───────────── 일봉차트 ───────────── */
     @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DailyCandleResponse extends BaseResponse {
-        @JsonProperty("stk_cd") private String stkCd;
+        @JsonProperty("stk_cd") @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
         @JsonProperty("stk_dt_pole_chart_qry") private List<DailyCandleItem> candles;
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
@@ -86,7 +88,7 @@ public class KiwoomApiResponses {
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class VolumeRankItem {
             @JsonProperty("rank")      private String rank;
-            @JsonProperty("stk_cd")    private String stkCd;
+            @JsonProperty("stk_cd")    @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")    private String stkNm;
             @JsonProperty("cur_prc")   private String curPrc;
             @JsonProperty("flu_rt")    private String fluRt;
@@ -103,7 +105,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class InvestorItem {
-            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("cur_prc")     private String curPrc;
             @JsonProperty("flu_rt")      private String fluRt;
@@ -120,7 +122,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class InvestorUpperItem {
-            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("net_buy_qty") private String netBuyQty;
             @JsonProperty("net_buy_amt") private String netBuyAmt;
@@ -134,7 +136,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class ContTrdeItem {
-            @JsonProperty("stk_cd")       private String stkCd;
+            @JsonProperty("stk_cd")       @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")       private String stkNm;
             @JsonProperty("cont_dt_cnt")  private String contDtCnt;
             @JsonProperty("net_buy_amt")  private String netBuyAmt;
@@ -149,7 +151,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class ProgramItem {
-            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("cur_prc")     private String curPrc;
             @JsonProperty("flu_rt")      private String fluRt;
@@ -165,7 +167,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class FrgnInstItem {
-            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("for_buy_amt") private String forBuyAmt;
             @JsonProperty("org_buy_amt") private String orgBuyAmt;
@@ -195,7 +197,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class ThemeStockItem {
-            @JsonProperty("stk_cd")   private String stkCd;
+            @JsonProperty("stk_cd")   @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")   private String stkNm;
             @JsonProperty("cur_prc")  private String curPrc;
             @JsonProperty("flu_rt")   private String fluRt;
@@ -223,7 +225,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class ExpCntrFluRtItem {
-            @JsonProperty("stk_cd")       private String stkCd;
+            @JsonProperty("stk_cd")       @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")       private String stkNm;
             @JsonProperty("exp_cntr_pric")private String expCntrPric;
             @JsonProperty("base_pric")    private String basePric;
@@ -252,7 +254,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class TdyTrdeQtyItem {
-            @JsonProperty("stk_cd")          private String stkCd;
+            @JsonProperty("stk_cd")          @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")          private String stkNm;
             @JsonProperty("cur_prc")         private String curPrc;
             @JsonProperty("flu_rt")          private String fluRt;
@@ -273,7 +275,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class TrdeQtySdninItem {
-            @JsonProperty("stk_cd")       private String stkCd;
+            @JsonProperty("stk_cd")       @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")       private String stkNm;
             @JsonProperty("cur_prc")      private String curPrc;
             @JsonProperty("flu_rt")       private String fluRt;
@@ -291,7 +293,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class PricJmpFluItem {
-            @JsonProperty("stk_cd")  private String stkCd;
+            @JsonProperty("stk_cd")  @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")  private String stkNm;
             @JsonProperty("cur_prc") private String curPrc;
             @JsonProperty("flu_rt")  private String fluRt;
@@ -309,7 +311,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class BidReqUpperItem {
-            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("cur_prc")     private String curPrc;
             @JsonProperty("flu_rt")      private String fluRt;
@@ -324,9 +326,14 @@ public class KiwoomApiResponses {
     /* ───────────── 주식기본정보 (ka10001) ───────────── */
     @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
     public static class StkBasicInfoResponse extends BaseResponse {
-        @JsonProperty("stk_cd")   private String stkCd;
+        @JsonProperty("stk_cd")   @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
         @JsonProperty("stk_nm")   private String stkNm;
         @JsonProperty("base_pric")private String basePric;   // 전일종가
+        @JsonProperty("open_pric") private String openPric;
+        @JsonProperty("high_pric") private String highPric;
+        @JsonProperty("low_pric")  private String lowPric;
+        @JsonProperty("exp_cntr_pric") private String expCntrPric;
+        @JsonProperty("exp_cntr_qty")  private String expCntrQty;
         @JsonProperty("cur_prc")  private String curPrc;
         @JsonProperty("flu_rt")   private String fluRt;
         @JsonProperty("trde_qty") private String trdeQty;
@@ -339,7 +346,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class FluRtUpperItem {
-            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("cur_prc")     private String curPrc;
             @JsonProperty("flu_rt")      private String fluRt;       // +XX.XX or -XX.XX
@@ -357,7 +364,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class PrevVolumeUpperItem {
-            @JsonProperty("stk_cd")  private String stkCd;
+            @JsonProperty("stk_cd")  @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")  private String stkNm;
             @JsonProperty("cur_prc") private String curPrc;
             @JsonProperty("trde_qty")private String trdeQty;  // 전일거래량
@@ -371,7 +378,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class FrgnContNettrdItem {
-            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("cur_prc")     private String curPrc;
             @JsonProperty("dm1")         private String dm1;     // D-1 순매수량
@@ -389,7 +396,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class TrdePricaUpperItem {
-            @JsonProperty("stk_cd")      private String stkCd;
+            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("cur_prc")     private String curPrc;
             @JsonProperty("flu_rt")      private String fluRt;
@@ -405,7 +412,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class NtlPricItem {
-            @JsonProperty("stk_cd")              private String stkCd;
+            @JsonProperty("stk_cd")              @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")              private String stkNm;
             @JsonProperty("cur_prc")             private String curPrc;
             @JsonProperty("flu_rt")              private String fluRt;

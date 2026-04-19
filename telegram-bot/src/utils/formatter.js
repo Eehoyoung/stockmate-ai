@@ -1,5 +1,7 @@
 'use strict';
 
+const { normalizeForDisplay } = require('./price');
+
 /**
  * formatter.js
  * ai_scored_queue 항목을 텔레그램 메시지로 변환
@@ -12,7 +14,7 @@ const STRATEGY_EMOJI = {
     S4_BIG_CANDLE:      '📊',
     S5_PROG_FRGN:       '💻',
     S6_THEME_LAGGARD:   '🔥',
-    S7_AUCTION:         '⚡',
+    S7_ICHIMOKU_BREAKOUT:         '☁️',
     S8_GOLDEN_CROSS:    '📈',
     S9_PULLBACK_SWING:  '🔽',
     S10_NEW_HIGH:       '🏔',
@@ -30,7 +32,7 @@ const STRATEGY_DESC = {
     S4_BIG_CANDLE:      '장대양봉 + 거래량 급증',
     S5_PROG_FRGN:       '프로그램+외국인 동반 매수',
     S6_THEME_LAGGARD:   '테마주 후발 소외주 갭 상승',
-    S7_AUCTION:         '동시호가 매수세 우위 + 갭',
+    S7_ICHIMOKU_BREAKOUT:         '일목균형표 구름대 돌파 스윙',
     S8_GOLDEN_CROSS:    'MA5×MA20 골든크로스 + 거래량 확인',
     S9_PULLBACK_SWING:  '정배열 내 5MA 눌림목 반등',
     S10_NEW_HIGH:       '52주 신고가 돌파 + 거래량 급증',
@@ -113,25 +115,27 @@ function formatSignal(item) {
     const ruleScore= (item.rule_score ?? 0).toFixed(1);
     const stratDesc = STRATEGY_DESC[item.strategy];
 
+    const stockLabel = item.stk_nm
+        ? `${item.stk_nm} (${item.stk_cd})`
+        : item.stk_cd;
     const lines = [
-        `${emoji} <b>[${item.strategy}] ${item.stk_cd} ${item.stk_nm || ''}</b>`,
+        `${emoji} <b>[${item.strategy}] ${stockLabel}</b>`,
     ];
     if (stratDesc) lines.push(`<i>${stratDesc}</i>`);
-    lines.push(
-        `${action}  |  신뢰도: ${conf}`,
-        `AI 스코어: <b>${aiScore}</b>점  (규칙: ${ruleScore}점)`,
-    );
 
     // 진입가 표시
-    const curPrc = Number(item.cur_prc ?? item.entry_price ?? 0);
-    if (curPrc > 0) {
-        lines.push(`진입가: <b>${curPrc.toLocaleString()}원</b>  (${item.entry_type ?? '-'})`);
-    }
+    const curPrc = normalizeForDisplay(item.cur_prc ?? item.entry_price ?? 0);
+    const formatWon = (price) => `${Number(price).toLocaleString()}원`;
+    const formatMove = (price) => {
+        if (!(curPrc > 0) || !(price > 0)) return null;
+        const pct = (((price - curPrc) / curPrc) * 100).toFixed(1);
+        return `${pct.startsWith('-') ? '' : '+'}${pct}%`;
+    };
 
     // ── Claude 확정 TP/SL (human_confirmed=true 일 때 우선 표시) ──
-    const claudeTp1 = item.claude_tp1 ? Number(item.claude_tp1) : null;
-    const claudeTp2 = item.claude_tp2 ? Number(item.claude_tp2) : null;
-    const claudeSl  = item.claude_sl  ? Number(item.claude_sl)  : null;
+    const claudeTp1 = item.claude_tp1 ? normalizeForDisplay(item.claude_tp1) : null;
+    const claudeTp2 = item.claude_tp2 ? normalizeForDisplay(item.claude_tp2) : null;
+    const claudeSl  = item.claude_sl  ? normalizeForDisplay(item.claude_sl)  : null;
 
     if (item.human_confirmed && (claudeTp1 || claudeTp2 || claudeSl)) {
         lines.push('🤖 <b>Claude 최종 목표가</b>');
@@ -147,21 +151,86 @@ function formatSignal(item) {
             const pct = (((claudeSl - curPrc) / curPrc) * 100).toFixed(1);
             lines.push(`  SL:  <b>${claudeSl.toLocaleString()}원</b>  (${pct}%)`);
         }
-        // R/R
+        // R/R (슬리피지 반영 단일 경로)
         if (claudeTp1 && claudeSl && curPrc > 0 && claudeSl < curPrc) {
-            const rr = ((claudeTp1 - curPrc) / (curPrc - claudeSl)).toFixed(1);
-            lines.push(`  R/R: 1:${rr}`);
             const effRR = _effectiveRR(item.stk_cd, curPrc, claudeTp1, claudeSl);
             if (effRR) lines.push(`  ${effRR}`);
         }
     }
 
     // ── 규칙 기반 TP/SL ──
-    const tp1 = item.tp1_price ? Number(item.tp1_price) : null;
-    const tp2 = item.tp2_price ? Number(item.tp2_price) : null;
-    const sl  = item.sl_price  ? Number(item.sl_price)  : null;
+    const tp1 = item.tp1_price ? normalizeForDisplay(item.tp1_price) : null;
+    const tp2 = item.tp2_price ? normalizeForDisplay(item.tp2_price) : null;
+    const sl  = item.sl_price  ? normalizeForDisplay(item.sl_price)  : null;
 
-    if (!item.human_confirmed) {
+    const displayedTp1 = item.human_confirmed && claudeTp1 ? claudeTp1 : tp1;
+    const displayedTp2 = item.human_confirmed && claudeTp2 ? claudeTp2 : tp2;
+    const displayedSl  = item.human_confirmed && claudeSl  ? claudeSl  : sl;
+
+    if (item.action === 'ENTER') {
+        lines.push('');
+        // lines.push('<b>초보자용 매수 가이드</b>');
+        lines.push(`종목: <b>${escapeHtml(stockLabel)}</b>`);
+        lines.push(`지금 할 일: <b>매수 후보 확인</b>`);
+        lines.push(`신뢰도: ${conf}  |  AI 점수: <b>${aiScore}</b>점  |  규칙 점수: ${ruleScore}점`);
+
+        if (curPrc > 0) {
+            lines.push(`현재가(매수 기준): <b>${formatWon(curPrc)}</b>`);
+        }
+        if (displayedTp1) {
+            lines.push(`1차 목표가: <b>${formatWon(displayedTp1)}</b>${formatMove(displayedTp1) ? ` (${formatMove(displayedTp1)})` : ''}`);
+        } else {
+            const targetPct = item.adjusted_target_pct ?? item.target_pct;
+            if (targetPct != null) lines.push(`1차 목표 수익률: <b>+${targetPct}%</b>`);
+        }
+        if (displayedTp2) {
+            lines.push(`2차 목표가: <b>${formatWon(displayedTp2)}</b>${formatMove(displayedTp2) ? ` (${formatMove(displayedTp2)})` : ''}`);
+        }
+        if (displayedSl) {
+            lines.push(`손절가: <b>${formatWon(displayedSl)}</b>${formatMove(displayedSl) ? ` (${formatMove(displayedSl)})` : ''}`);
+        } else {
+            const stopPct = item.adjusted_stop_pct ?? item.stop_pct;
+            if (stopPct != null) lines.push(`손절 기준: <b>${stopPct}%</b>`);
+        }
+
+        if (item.rr_ratio != null) {
+            const rrVal = Number(item.rr_ratio);
+            const rrFlag = rrVal < 1.0 ? ' 위험' : (rrVal < 1.3 ? ' 주의' : '');
+            lines.push(`손익비(R:R): <b>${rrVal.toFixed(2)}</b>${rrFlag}`);
+        } else if (displayedTp1 && displayedSl && curPrc > 0 && displayedSl < curPrc) {
+            const effRR = _effectiveRR(item.stk_cd, curPrc, displayedTp1, displayedSl);
+            if (effRR) lines.push(effRR);
+        }
+
+        const pos = _positionSize(item.ai_score, item.confidence);
+        if (pos) lines.push(`권장 비중: <b>${pos}</b>`);
+        if (item.entry_type) lines.push(`매수 방식: ${item.entry_type}`);
+        if (item.ai_reason) lines.push(`추천이유: ${escapeHtml(item.ai_reason)}`);
+
+        lines.push('');
+        lines.push('<b>실행 순서</b>');
+        lines.push(`1. ${curPrc > 0 ? `<b>${formatWon(curPrc)}</b>` : '매수 기준가'} 근처인지 먼저 확인`);
+        lines.push('2. 한 번에 전액 매수하지 말고 권장 비중만 진입');
+        if (displayedSl) {
+            lines.push(`3. 주가가 <b>${formatWon(displayedSl)}</b> 아래로 밀리면 바로 재검토`);
+        } else {
+            lines.push('3. 손절 기준을 어기면 바로 재검토');
+        }
+        if (item.skip_entry) {
+            const rrStr = item.rr_ratio != null ? ` (현재 R:R ${Number(item.rr_ratio).toFixed(2)})` : '';
+            lines.push(`주의: 손익비가 낮아 추격 매수는 비추천${rrStr}`);
+        }
+    } else {
+        lines.push(
+            `${action}  |  신뢰도: ${conf}`,
+            `AI 스코어: <b>${aiScore}</b>점  (규칙: ${ruleScore}점)`,
+        );
+        if (curPrc > 0) {
+            lines.push(`진입가: <b>${curPrc.toLocaleString()}원</b>  (${item.entry_type ?? '-'})`);
+        }
+    }
+
+    if (!item.human_confirmed && item.action !== 'ENTER') {
         // 미확정: 규칙 기반을 주 표시
         if (tp1 || tp2 || sl) {
             // skip_entry 경고 (R:R < 1.3 시 tp_sl_engine이 설정)
@@ -183,14 +252,12 @@ function formatSignal(item) {
                 const pct = (((sl - curPrc) / curPrc) * 100).toFixed(1);
                 lines.push(`  SL:  <b>${sl.toLocaleString()}원</b>  (${pct}%)`);
             }
-            // R:R — tp_sl_engine 계산값 우선, 없으면 직접 계산
+            // R:R — tp_sl_engine 계산값 우선, 없으면 슬리피지 반영 단일 경로
             if (item.rr_ratio != null) {
                 const rrVal = Number(item.rr_ratio);
                 const rrFlag = rrVal < 1.0 ? ' ❌' : (rrVal < 1.3 ? ' ⚠️' : ' ✅');
                 lines.push(`  실질R:R: <b>${rrVal.toFixed(2)}</b>${rrFlag}`);
             } else if (tp1 && sl && curPrc > 0 && sl < curPrc) {
-                const rr = ((tp1 - curPrc) / (curPrc - sl)).toFixed(1);
-                lines.push(`  R/R: 1:${rr}`);
                 const effRR = _effectiveRR(item.stk_cd, curPrc, tp1, sl);
                 if (effRR) lines.push(`  ${effRR}`);
             }
@@ -209,7 +276,7 @@ function formatSignal(item) {
                 lines.push(`목표: <b>+${targetPct ?? '-'}%</b>  손절: <b>${stopPct ?? '-'}%</b>`);
             }
         }
-    } else if (tp1 || tp2 || sl) {
+    } else if (item.action !== 'ENTER' && (tp1 || tp2 || sl)) {
         // Claude 확정 후: 규칙 기반은 참고용
         const ruleParts = [];
         if (tp1) ruleParts.push(`TP1: ${tp1.toLocaleString()}원`);
@@ -243,14 +310,14 @@ function formatSignal(item) {
         lines.push(`순매수: ${amt}억`);
     }
 
-    // 포지션 크기 제안 (ENTER 신호만)
-    if (item.action === 'ENTER') {
+    // 포지션 크기 제안 (ENTER 신호 외)
+    if (item.action !== 'ENTER') {
         const pos = _positionSize(item.ai_score, item.confidence);
         if (pos) lines.push(`💰 권장 비중: <b>${pos}</b>`);
     }
 
     // AI 분석 근거
-    if (item.ai_reason) {
+    if (item.ai_reason && item.action !== 'ENTER') {
         lines.push('');
         lines.push(`💬 <i>${escapeHtml(item.ai_reason)}</i>`);
     }
@@ -559,11 +626,193 @@ function formatStockScore(scoreData) {
     return [summaryHeader, ...signalMessages];
 }
 
+/**
+ * SELL_SIGNAL — 포지션 청산 알림 포맷
+ * exit_type: SL_HIT / TP1_HIT / TP2_HIT / TRAILING_STOP / TREND_REVERSAL
+ */
+function formatSellSignal(item) {
+    const EXIT_EMOJI = {
+        SL_HIT:         '🔴',
+        TP1_HIT:        '🟡',
+        TP2_HIT:        '🟢',
+        TRAILING_STOP:  '🔵',
+        TREND_REVERSAL: '⚠️',
+    };
+    const EXIT_LABEL = {
+        SL_HIT:         '손절 (SL 도달)',
+        TP1_HIT:        '1차 목표가 도달 (부분 청산)',
+        TP2_HIT:        '2차 목표가 도달 (전량 청산)',
+        TRAILING_STOP:  '트레일링 스탑 발동',
+        TREND_REVERSAL: '추세 반전 감지 청산',
+    };
+
+    const exitType  = item.exit_type  || 'UNKNOWN';
+    const emoji     = EXIT_EMOJI[exitType]  || '📤';
+    const label     = EXIT_LABEL[exitType]  || exitType;
+    const stratEmoji = STRATEGY_EMOJI[item.strategy] ?? '📌';
+    const pnl        = Number(item.realized_pnl_pct ?? 0);
+    const pnlSign    = pnl >= 0 ? '+' : '';
+    const pnlLabel   = `${pnlSign}${pnl.toFixed(2)}%`;
+
+    const entryPrc  = normalizeForDisplay(item.entry_price ?? 0);
+    const curPrc    = normalizeForDisplay(item.cur_prc ?? 0);
+
+    const lines = [
+        `${emoji} <b>[매도신호] ${stratEmoji} ${item.strategy}</b>`,
+        `종목: <b>${escapeHtml(item.stk_cd)} ${escapeHtml(item.stk_nm || '')}</b>`,
+        `청산유형: <b>${label}</b>`,
+        `손익: <b>${pnlLabel}</b>`,
+        '',
+    ];
+
+    if (entryPrc > 0) lines.push(`진입가: ${entryPrc.toLocaleString()}원`);
+    if (curPrc   > 0) lines.push(`청산가: ${curPrc.toLocaleString()}원`);
+
+    if (exitType === 'TP1_HIT') {
+        lines.push('');
+        lines.push('💡 <i>TP1 도달 — 절반 청산, 나머지는 트레일링 스탑으로 관리</i>');
+    }
+
+    if (exitType === 'TRAILING_STOP' && item.peak_price) {
+        const peak = normalizeForDisplay(item.peak_price);
+        const tPct = Number(item.trailing_pct ?? 1.5);
+        lines.push(`고점: ${peak.toLocaleString()}원  낙폭: ${tPct}%`);
+    }
+
+    if (exitType === 'TREND_REVERSAL') {
+        const score = Number(item.reversal_score ?? 0);
+        lines.push(`추세반전점수: ${score.toFixed(1)}/5`);
+        if (item.ai_reason) lines.push(`AI판단: ${escapeHtml(item.ai_reason)}`);
+    }
+
+    if (item.sl_price  && exitType !== 'SL_HIT') {
+        lines.push(`SL기준: ${Number(item.sl_price).toLocaleString()}원`);
+    }
+
+    lines.push('');
+    lines.push(`🕐 ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}`);
+
+    return lines.filter((l) => l !== null).join('\n');
+}
+
+/**
+ * NEWS_ALERT 메시지 포맷 (Java 측에서 message 필드가 없을 경우 폴백)
+ */
+function formatNewsAlert(item) {
+    const controlEmoji   = { PAUSE: '🚨', CAUTIOUS: '⚠️', CONTINUE: '✅' };
+    const controlLabel   = { PAUSE: '매매 중단', CAUTIOUS: '신중 매매', CONTINUE: '정상 매매' };
+    const sentimentLabel = { BULLISH: '강세 📈', BEARISH: '약세 📉', NEUTRAL: '중립 ➡️' };
+
+    const ctrl  = item.trading_control || 'CONTINUE';
+    const emoji = controlEmoji[ctrl] || '📰';
+    const lines = [
+        `${emoji} <b>[뉴스 기반 매매 제어]</b>`,
+        `상태: <b>${controlLabel[ctrl] || ctrl}</b>`,
+        `시장심리: ${sentimentLabel[item.market_sentiment] || item.market_sentiment || '-'}`,
+    ];
+    if (item.sectors && item.sectors.length > 0) {
+        lines.push(`추천섹터: ${item.sectors.join(', ')}`);
+    }
+    if (item.summary) {
+        lines.push(`요약: ${item.summary}`);
+    }
+    return lines.join('\n');
+}
+
+function formatSignalEnhanced(item) {
+    const message = formatSignal(item);
+    if (item?.action !== 'ENTER' || message.includes('초보자용 매수 가이드')) {
+        return message;
+    }
+
+    const lines = message.split('\n');
+    const insertAt = lines.findIndex((line) => line.startsWith('종목:'));
+    if (insertAt === -1) {
+        return message;
+    }
+    lines.splice(insertAt, 0, '<b>초보자용 매수 가이드</b>');
+    return lines.join('\n');
+}
+
+function formatPerformanceSummaryEnhanced(rows) {
+    if (!rows || rows.length === 0) {
+        return formatPerformanceSummary(rows);
+    }
+
+    const sorted = [...rows].sort((a, b) => Number(b[1] ?? 0) - Number(a[1] ?? 0));
+    const totalTrades = sorted.reduce((sum, [, total]) => sum + Number(total ?? 0), 0);
+    const totalWins = sorted.reduce((sum, [, , wins]) => sum + Number(wins ?? 0), 0);
+    const totalLosses = sorted.reduce((sum, [, , , losses]) => sum + Number(losses ?? 0), 0);
+    const overallWinRate = (totalWins + totalLosses) > 0
+        ? ((totalWins / (totalWins + totalLosses)) * 100).toFixed(0)
+        : '-';
+
+    const lines = [
+        '?뱤 <b>?꾨왂蹂?媛???깃낵</b>',
+        `총 ${totalTrades}건 | 승 ${totalWins} / 패 ${totalLosses} | 승률 ${overallWinRate}%`,
+        '',
+    ];
+
+    for (const row of sorted) {
+        const [strategy, total, wins, losses, avgPnl] = row;
+        const winRate = total > 0 ? ((Number(wins) / Number(total)) * 100).toFixed(0) : '-';
+        const pnlStr = avgPnl != null ? `${Number(avgPnl).toFixed(2)}%` : 'N/A';
+        lines.push(`${STRATEGY_EMOJI[strategy] ?? '??'} ${strategy}: ${total}건 | 승률 ${winRate}% | 평균 ${pnlStr}`);
+    }
+    return lines.join('\n');
+}
+
+function formatPerformanceDetailEnhanced(signals, summaryRows) {
+    const base = formatPerformanceDetail(signals, summaryRows);
+    if (!signals || signals.length === 0) {
+        return base;
+    }
+
+    const openSignals = signals.filter((s) => s.realizedPnl == null);
+    const closedSignals = signals.filter((s) => s.realizedPnl != null);
+    const extra = [];
+
+    if (openSignals.length > 0) {
+        extra.push('');
+        extra.push(`오픈 포지션: <b>${openSignals.length}건</b>`);
+        openSignals.slice(0, 5).forEach((s, index) => {
+            const stockLabel = s.stkNm ?? s.stkCd;
+            extra.push(`${index + 1}. ${stockLabel} [${s.strategy}]`);
+        });
+        if (openSignals.length > 5) {
+            extra.push(`...외 ${openSignals.length - 5}건`);
+        }
+    }
+
+    if (closedSignals.length > 0) {
+        const avgClosedPnl = closedSignals
+            .reduce((sum, s) => sum + Number(s.realizedPnl ?? 0), 0) / closedSignals.length;
+        extra.push('');
+        extra.push(`청산 평균 P&L: <b>${avgClosedPnl.toFixed(2)}%</b>`);
+    }
+
+    return `${base}${extra.length > 0 ? `\n${extra.join('\n')}` : ''}`;
+}
+
+function formatUserSettingsEnhanced(filter, watchlist) {
+    const base = formatUserSettings(filter, watchlist);
+    const lines = [
+        base,
+        '',
+        '명령 예시',
+        '/filter all',
+        '/filter s1 s4 s8',
+        '/watchAdd 005930',
+        '/watchRemove 005930',
+    ];
+    return lines.join('\n');
+}
+
 module.exports = {
     escapeHtml,
-    formatSignal, formatForceClose, formatDailySummary,
-    formatPerformanceSummary, formatNewsStatus, formatSectorAnalysis,
+    formatSignal: formatSignalEnhanced, formatForceClose, formatDailySummary,
+    formatPerformanceSummary: formatPerformanceSummaryEnhanced, formatNewsStatus, formatSectorAnalysis,
     formatSignalHistory, formatSystemHealth,
-    formatDailyReportEnhanced, formatCalendarWeek, formatPerformanceDetail, formatUserSettings,
-    formatStockScore,
+    formatDailyReportEnhanced, formatCalendarWeek, formatPerformanceDetail: formatPerformanceDetailEnhanced, formatUserSettings: formatUserSettingsEnhanced,
+    formatStockScore, formatSellSignal, formatNewsAlert,
 };

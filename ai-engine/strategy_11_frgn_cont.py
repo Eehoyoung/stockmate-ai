@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 11: 외국인 연속 순매수 스윙
 유형: 스윙 / 보유기간: 5~7거래일
@@ -22,7 +23,7 @@ import os
 import asyncio
 import httpx
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client, fetch_cntr_strength_cached
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_bollinger import calc_bollinger
 from tp_sl_engine import calc_tp_sl
@@ -149,6 +150,26 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
             if tick:
                 flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", ""))
                 cntr_str = float(str(tick.get("cntr_str", "100")).replace(",", ""))
+
+        # WS 미수신 시에는 일봉 시가 대비 등락률과 REST 체결강도로 보강한다.
+        if flu_rt == 0.0 or cntr_str <= 100.0:
+            try:
+                await asyncio.sleep(0.25)
+                candles_fallback = await fetch_daily_candles(token, stk_cd)
+                if candles_fallback:
+                    cur_fb = _safe_price(candles_fallback[0].get("cur_prc"))
+                    open_fb = _safe_price(candles_fallback[0].get("open_pric"))
+                    if flu_rt == 0.0 and cur_fb > 0 and open_fb > 0:
+                        flu_rt = (cur_fb - open_fb) / open_fb * 100
+            except Exception as e:
+                logger.debug("[S11] flu_rt fallback 실패 %s: %s", stk_cd, e)
+
+            if cntr_str <= 100.0:
+                try:
+                    await asyncio.sleep(0.25)
+                    cntr_str, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
+                except Exception as e:
+                    logger.debug("[S11] 체결강도 fallback 실패 %s: %s", stk_cd, e)
 
         # 4. 진입 조건 필터링
         # - 당일 마이너스(-)이거나 10% 이상 과열된 종목 제외

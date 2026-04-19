@@ -17,12 +17,12 @@ public class TokenRefreshScheduler {
      * 매일 06:50, 07:20, 토큰 갱신
      * 키움 토큰 유효시간은 약 24시간이나 여유 있게 갱신
      */
-    @Scheduled(cron = "0 50 6 * * MON-FRI")
+    @Scheduled(cron = "0 50 6 * * MON-FRI", zone = "Asia/Seoul")
     public void refreshMorning() {
         refresh("06:50");
     }
 
-    @Scheduled(cron = "0 20 7 * * MON-FRI")
+    @Scheduled(cron = "0 20 7 * * MON-FRI", zone = "Asia/Seoul")
     public void refreshPreMarket() {
         refresh("07:20");
     }

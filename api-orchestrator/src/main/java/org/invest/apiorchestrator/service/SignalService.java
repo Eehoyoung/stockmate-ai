@@ -13,6 +13,8 @@ import org.invest.apiorchestrator.repository.OpenPositionRepository;
 import org.invest.apiorchestrator.repository.PortfolioConfigRepository;
 import org.invest.apiorchestrator.repository.RiskEventRepository;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
+import org.invest.apiorchestrator.util.KstClock;
+import org.invest.apiorchestrator.util.StockCodeNormalizer;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -78,8 +80,7 @@ public class SignalService {
      */
     @Transactional
     public boolean processSignal(TradingSignalDto dto) {
-        // C-5: Kiwoom API가 알고리즘 거래 구분용 _AL suffix를 붙이는 경우 제거
-        String stkCd = cleanStkCd(dto.getStkCd());
+        String stkCd = StockCodeNormalizer.normalize(dto.getStkCd());
         String strategy = dto.getStrategy().name();
         MDC.put("strategy", strategy);
         MDC.put("stk_cd", stkCd);
@@ -136,19 +137,22 @@ public class SignalService {
             // 5-1. candidate_pool_history led_to_signal 갱신
             try {
                 candidatePoolHistoryRepository.markLedToSignal(
-                        LocalDate.now(), strategy, dto.getMarketType(), stkCd, signal.getId());
+                        KstClock.today(), strategy, dto.getMarketType(), stkCd, signal.getId());
             } catch (Exception e) {
                 log.debug("[Signal] pool history 갱신 실패 (무시): {}", e.getMessage());
             }
 
             // 6. OpenPosition 생성 (진입 의도 기록 – ACTIVE 상태로 당일 추적)
-            try {
-                OpenPosition position = buildOpenPosition(dto, signal);
-                openPositionRepository.save(position);
-            } catch (Exception e) {
-                // C-4 진단: 전체 스택 트레이스 출력으로 근본 원인 파악
-                log.error("[Signal] OpenPosition 생성 실패 [{} {}] – {}",
-                        stkCd, strategy, e.getMessage(), e);
+            if (dto.getEntryPrice() == null || dto.getEntryPrice() <= 0) {
+                log.warn("[Signal] OpenPosition 생성 건너뜀 – entryPrice 미설정 [{} {}]", stkCd, strategy);
+            } else {
+                try {
+                    OpenPosition position = buildOpenPosition(dto, signal);
+                    openPositionRepository.save(position);
+                } catch (Exception e) {
+                    log.error("[Signal] OpenPosition 생성 실패 [{} {}] – {}",
+                            stkCd, strategy, e.getMessage(), e);
+                }
             }
 
             // 7. 전략 태그 기록 (Redis – 후보 종목 출처 추적)
@@ -192,7 +196,7 @@ public class SignalService {
      */
     @Transactional(readOnly = true)
     public List<TradingSignal> getTodaySignals() {
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         return signalRepository.findTodaySignals(startOfDay);
     }
 
@@ -201,7 +205,7 @@ public class SignalService {
      */
     @Transactional(readOnly = true)
     public List<Object[]> getTodayStats() {
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         return signalRepository.getStrategyStats(startOfDay);
     }
 
@@ -210,7 +214,7 @@ public class SignalService {
      */
     @Transactional(readOnly = true)
     public List<Object[]> getPerformanceStats() {
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         return signalRepository.getStrategyPerformanceStats(startOfDay);
     }
 
@@ -219,7 +223,7 @@ public class SignalService {
      */
     @Transactional
     public int expireOldSignals() {
-        LocalDateTime expireBefore = LocalDateTime.now()
+        LocalDateTime expireBefore = KstClock.now()
                 .minusSeconds(properties.getTrading().getSignalTtlSeconds());
         return signalRepository.expireOldSignals(expireBefore);
     }
@@ -228,18 +232,25 @@ public class SignalService {
 
     private TradingSignal buildSignalEntity(TradingSignalDto dto) {
         double t1 = dto.calcTarget1Price();
+        double t2 = dto.calcTarget2Price();
         double sp = dto.calcStopPrice();
+
+        // tp1/tp2/sl: 절대가 우선, 없으면 % 기반 calc 값 fallback
+        double rawTp1 = dto.getTp1Price() != null && dto.getTp1Price() > 0 ? dto.getTp1Price() : (t1 > 0 ? t1 : 0);
+        double rawTp2 = dto.getTp2Price() != null && dto.getTp2Price() > 0 ? dto.getTp2Price() : (t2 > 0 ? t2 : 0);
+        double rawSl  = dto.getSlPrice()  != null && dto.getSlPrice()  > 0 ? dto.getSlPrice()  : (sp > 0 ? sp : 0);
+
         return TradingSignal.builder()
-                .stkCd(cleanStkCd(dto.getStkCd()))
+                .stkCd(StockCodeNormalizer.normalize(dto.getStkCd()))
                 .stkNm(dto.getStkNm())
                 .strategy(dto.getStrategy())
                 .signalScore(dto.getSignalScore())
                 .entryPrice(dto.getEntryPrice())
                 .targetPrice(t1 > 0 ? t1 : null)
                 .stopPrice(sp > 0 ? sp : null)
-                .tp1Price(dto.getTp1Price())
-                .tp2Price(dto.getTp2Price())
-                .slPrice(dto.getSlPrice())
+                .tp1Price(rawTp1 > 0 ? rawTp1 : null)
+                .tp2Price(rawTp2 > 0 ? rawTp2 : null)
+                .slPrice(rawSl  > 0 ? rawSl  : null)
                 .targetPct(dto.getTargetPct())
                 .stopPct(dto.getStopPct())
                 .entryType(dto.getEntryType())
@@ -267,12 +278,15 @@ public class SignalService {
                 ? BigDecimal.valueOf(slRaw).setScale(0, java.math.RoundingMode.HALF_UP)
                 : entryPrice.multiply(new BigDecimal("0.97")).setScale(0, java.math.RoundingMode.HALF_UP);
 
+        double calcT1 = dto.calcTarget1Price();
         BigDecimal tp1Price = dto.getTp1Price() != null && dto.getTp1Price() > 0
                 ? BigDecimal.valueOf(dto.getTp1Price()).setScale(0, java.math.RoundingMode.HALF_UP)
-                : null;
+                : (calcT1 > 0 ? BigDecimal.valueOf(calcT1).setScale(0, java.math.RoundingMode.HALF_UP) : null);
+
+        double calcT2 = dto.calcTarget2Price();
         BigDecimal tp2Price = dto.getTp2Price() != null && dto.getTp2Price() > 0
                 ? BigDecimal.valueOf(dto.getTp2Price()).setScale(0, java.math.RoundingMode.HALF_UP)
-                : null;
+                : (calcT2 > 0 ? BigDecimal.valueOf(calcT2).setScale(0, java.math.RoundingMode.HALF_UP) : null);
 
         // R:R 계산
         BigDecimal rrRatio = null;
@@ -287,7 +301,7 @@ public class SignalService {
 
         return OpenPosition.builder()
                 .signal(signal)
-                .stkCd(cleanStkCd(dto.getStkCd()))
+                .stkCd(StockCodeNormalizer.normalize(dto.getStkCd()))
                 .stkNm(dto.getStkNm())
                 .strategy(dto.getStrategy().name())
                 .market(dto.getMarketType())
@@ -301,13 +315,6 @@ public class SignalService {
                         ? BigDecimal.valueOf(dto.getSignalScore()).setScale(2, java.math.RoundingMode.HALF_UP)
                         : null)
                 .build();
-    }
-
-    /** Kiwoom API _AL suffix(알고리즘 거래 구분 코드) 제거 후 표준 6자리 코드 반환 */
-    private static String cleanStkCd(String stkCd) {
-        if (stkCd == null) return null;
-        int idx = stkCd.indexOf('_');
-        return idx > 0 ? stkCd.substring(0, idx) : stkCd;
     }
 
     private void logRiskEvent(String eventType, String stkCd, String strategy,

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 logger.py
 StockMate AI 공통 JSON 구조화 로거 – ai-engine 모듈용.

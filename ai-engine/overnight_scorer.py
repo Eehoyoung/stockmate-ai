@@ -26,11 +26,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from utils import safe_float as _sf
+
 logger = logging.getLogger(__name__)
 
 # 오버나잇 친화적인 스윙 전략
 _SWING_FRIENDLY = {
-    "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S10_NEW_HIGH",
+    "S7_ICHIMOKU_BREAKOUT", "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S10_NEW_HIGH",
     "S11_FRGN_CONT",   "S13_BOX_BREAKOUT",
 }
 # 오버나잇 중립 전략
@@ -39,14 +41,7 @@ _NEUTRAL = {
     "S12_CLOSING",  "S14_OVERSOLD_BOUNCE", "S15_MOMENTUM_ALIGN",
 }
 # 오버나잇 비적합 데이트레이딩 전략
-_DAYTRADING = {"S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE", "S7_AUCTION"}
-
-
-def _sf(v, default: float = 0.0) -> float:
-    try:
-        return float(str(v).replace(",", "").replace("+", "").replace(" ", "") or str(default))
-    except (TypeError, ValueError):
-        return default
+_DAYTRADING = {"S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE"}
 
 
 # ── 캐시 기반 기술지표 (API 미호출) ────────────────────────────

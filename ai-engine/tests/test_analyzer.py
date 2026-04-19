@@ -135,11 +135,11 @@ class TestBuildUserMessage:
         msg = _build_user_message(signal, _ctx(), 65.0)
         assert "테마" in msg
 
-    def test_s7_message_contains_auction(self):
+    def test_s7_message_contains_ichimoku(self):
         from analyzer import _build_user_message
-        signal = _signal("S7_AUCTION", gap_pct=3.0, vol_rank=5)
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=1.8, rsi=55, cond_count=3)
         msg = _build_user_message(signal, _ctx(), 75.0)
-        assert "동시호가" in msg or "갭" in msg
+        assert "일목" in msg or "구름" in msg
 
     def test_unknown_strategy_message(self):
         from analyzer import _build_user_message
@@ -354,6 +354,6 @@ class TestStrategySignalValidity:
         assert "theme_name" in signal
 
     def test_s7_signal_has_required_fields(self):
-        signal = _signal("S7_AUCTION", gap_pct=3.0, vol_rank=5)
-        assert "gap_pct" in signal
-        assert "vol_rank" in signal
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=1.8, rsi=55, cond_count=3)
+        assert "cloud_thickness_pct" in signal
+        assert "chikou_above" in signal

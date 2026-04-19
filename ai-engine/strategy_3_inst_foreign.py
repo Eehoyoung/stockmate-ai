@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 3: 외인 + 기관 동시 순매수 돌파
 타이밍: 9:30 이후 장중
@@ -163,9 +164,17 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
     async def get_total_volume(tdy_pred: str) -> int:
         total_qty = 0
         next_key = ""
+        page = 0
+        MAX_PAGES = 50  # 안전 상한: 키움 휴장/시간외 empty-loop 방지
 
         async with kiwoom_client() as client:
             while True:
+                page += 1
+                if page > MAX_PAGES:
+                    logger.warning("[S3] ka10055 %s/%s 페이지 상한(%d) 도달, 루프 강제 종료",
+                                   stk_cd, tdy_pred, MAX_PAGES)
+                    break
+
                 headers = {
                     "api-id": "ka10055",
                     "authorization": f"Bearer {token}",
@@ -190,6 +199,10 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
                     break
 
                 items = data.get("tdy_pred_cntr_qty", [])
+                # 빈 응답 = 휴장·시간외 등 더 이상 데이터 없음 → 즉시 종료
+                if not items:
+                    break
+
                 for x in items:
                     cntr_tm = x.get("cntr_tm", "")
 

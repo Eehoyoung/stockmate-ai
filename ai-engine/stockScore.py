@@ -41,17 +41,11 @@ from redis_reader import get_tick_data, get_hoga_data, get_avg_cntr_strength, ge
 from scorer import rule_score as _rule_score, CLAUDE_THRESHOLDS
 from analyzer import analyze_signal
 from tp_sl_engine import calc_tp_sl
+from utils import safe_float as _sf
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _API_INTERVAL   = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
-
-
-def _sf(v, default: float = 0.0) -> float:
-    try:
-        return float(str(v).replace(",", "").replace("+", "").replace(" ", "") or str(default))
-    except (TypeError, ValueError):
-        return default
 
 
 def _parse_qty(val) -> int:
@@ -469,22 +463,40 @@ def _check_s6(snap: StockSnapshot) -> Optional[dict]:
 
 
 def _check_s7(snap: StockSnapshot) -> Optional[dict]:
-    """S7 동시호가: 09:00~09:30 only + 갭 2%+ + bid_ratio 1.3+"""
-    if not snap.is_opening:
+    """S7 일목 돌파 체크: 구름 돌파 + 후행/거래량 조건 + 보조 확인 2개 이상."""
+    if len(snap.closes) < 78 or len(snap.highs) < 78 or len(snap.lows) < 78:
         return None
-    if snap.flu_rt < 2.0:
+
+    ichi = calc_ichimoku(snap.highs, snap.lows, snap.closes)
+    if ichi is None:
         return None
-    if snap.bid_ratio is None or snap.bid_ratio < 1.3:
+    if not (ichi.price_above_cloud and ichi.tenkan_above_kijun and ichi.is_bullish_cloud):
         return None
+
+    vol_ratio = snap.vol_ratio or 0.0
+    cond_count = sum([
+        ichi.chikou_above_price,
+        vol_ratio >= 1.5,
+        bool(snap.rsi14 is not None and 45.0 <= snap.rsi14 <= 70.0),
+        ichi.kijun_rising,
+    ])
+    if cond_count < 2:
+        return None
+
     return {
-        "strategy":   "S7_AUCTION",
-        "stk_cd":     snap.stk_cd,
-        "stk_nm":     snap.stk_nm,
-        "cur_prc":    snap.cur_prc,
-        "entry_type": "시초가",
-        "gap_pct":    snap.flu_rt,
-        "bid_ratio":  snap.bid_ratio,
-        "holding_days": 1,
+        "strategy": "S7_ICHIMOKU_BREAKOUT",
+        "stk_cd": snap.stk_cd,
+        "stk_nm": snap.stk_nm,
+        "cur_prc": snap.cur_prc,
+        "entry_type": "일목돌파_시장가",
+        "cloud_thickness_pct": round(ichi.cloud_thickness_pct, 2),
+        "chikou_above": ichi.chikou_above_price,
+        "vol_ratio": round(vol_ratio, 2) if vol_ratio else None,
+        "rsi": snap.rsi14,
+        "cntr_strength": round(snap.avg_strength, 1),
+        "flu_rt": snap.flu_rt,
+        "cond_count": cond_count,
+        "holding_days": 5,
     }
 
 
@@ -754,7 +766,7 @@ _CHECKERS = [
     ("S4_BIG_CANDLE",       _check_s4,  None),
     ("S5_PROG_FRGN",        _check_s5,  "기관+외인 조건 미충족"),
     ("S6_THEME_LAGGARD",    _check_s6,  None),
-    ("S7_AUCTION",          _check_s7,  "09:00~09:30 이외 시간대"),
+    ("S7_ICHIMOKU_BREAKOUT", _check_s7,  "10:00~14:30 이외 시간대"),
     ("S8_GOLDEN_CROSS",     _check_s8,  None),
     ("S9_PULLBACK_SWING",   _check_s9,  None),
     ("S10_NEW_HIGH",        _check_s10, None),

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 6: 테마 상위 + 구성종목 연동
 타이밍: 9:30~13:00 (테마 모멘텀 집중 시간)
@@ -13,7 +14,7 @@ import asyncio
 import httpx
 import logging
 import os
-from http_utils import fetch_cntr_strength, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import fetch_cntr_strength_cached, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
@@ -140,7 +141,7 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 continue
 
             await asyncio.sleep(_API_INTERVAL)
-            strength = await fetch_cntr_strength(token, stk_cd)
+            strength, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
             cur_prc = abs(float(str(stk.get("cur_prc", "0")).replace("+", "").replace(",", "")))
             # 체결강도 115% 이상으로 수급 유입 확인
             if strength >= 115:

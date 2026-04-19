@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 ma_utils.py
 이동평균선 유틸리티 – ka10081 주식일봉차트 기반

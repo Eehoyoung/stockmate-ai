@@ -131,20 +131,23 @@ def sample_s6_signal():
 
 @pytest.fixture
 def sample_s7_signal():
-    """S7 동시호가 신호"""
+    """S7 일목균형표 돌파 스윙 신호"""
     return {
-        "strategy": "S7_AUCTION",
+        "strategy": "S7_ICHIMOKU_BREAKOUT",
         "stk_cd": "028260",
         "stk_nm": "삼성물산",
-        "gap_pct": 3.5,
-        "bid_ratio": 2.8,
-        "vol_rank": 8,
-        "entry_type": "시초가_시장가",
+        "cloud_thickness_pct": 0.8,
+        "chikou_above": True,
+        "vol_ratio": 1.8,
+        "rsi": 55,
+        "cond_count": 3,
+        "entry_type": "일목돌파_시장가",
         "target_pct": 2.8,
         "stop_pct": -2.0,
-        "signal_time": "2026-03-21T08:55:00",
+        "signal_time": "2026-03-21T10:15:00",
         "cur_prc": 180000,
     }
+
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -323,6 +326,6 @@ def daily_report_item():
             "S1_GAP_OPEN": 5,
             "S2_VI_PULLBACK": 3,
             "S4_BIG_CANDLE": 4,
-            "S7_AUCTION": 3,
+            "S7_ICHIMOKU_BREAKOUT": 3,
         },
     }

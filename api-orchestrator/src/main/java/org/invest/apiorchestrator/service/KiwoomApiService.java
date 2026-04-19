@@ -6,6 +6,7 @@ import org.invest.apiorchestrator.config.KiwoomRateLimiter;
 import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.exception.KiwoomApiException;
+import org.invest.apiorchestrator.util.StockCodeNormalizer;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -234,6 +235,7 @@ public class KiwoomApiService {
 
     /** ka10001 주식기본정보 (전일종가 조회) */
     public KiwoomApiResponses.StkBasicInfoResponse fetchKa10001(String stkCd) {
+        stkCd = StockCodeNormalizer.normalize(stkCd);
         return post("ka10001", STKINFO_PATH,
                 StrategyRequests.StkBasicInfoRequest.builder().stkCd(stkCd).build(),
                 KiwoomApiResponses.StkBasicInfoResponse.class);
@@ -241,6 +243,7 @@ public class KiwoomApiService {
 
     /** ka10081 주식일봉차트 (52주 신고가 확인용) */
     public KiwoomApiResponses.DailyCandleResponse fetchKa10081(String stkCd) {
+        stkCd = StockCodeNormalizer.normalize(stkCd);
         return post("ka10081", "/api/dostk/chart",
                 StrategyRequests.DailyCandleRequest.builder().stkCd(stkCd).baseDt(LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))).build(),
                 KiwoomApiResponses.DailyCandleResponse.class);
@@ -278,6 +281,7 @@ public class KiwoomApiService {
 
     /** ka10087 시간외단일가요청 – 장전 갭다운 경보용 */
     public KiwoomApiResponses.OvtSigPricResponse fetchKa10087(String stkCd) {
+        stkCd = StockCodeNormalizer.normalize(stkCd);
         return post("ka10087", MRKCOND_PATH,
                 StrategyRequests.OvtSigPricRequest.builder().stkCd(stkCd).build(),
                 KiwoomApiResponses.OvtSigPricResponse.class);

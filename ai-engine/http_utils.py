@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 http_utils.py
 공통 Kiwoom API HTTP 유틸리티 – 전술 파일 간 코드 중복 제거용.
@@ -5,13 +6,14 @@ http_utils.py
 
 import asyncio
 import logging
-import os
 import time as _time
 
 import httpx
 
+from config import KIWOOM_BASE_URL
+from utils import safe_float as _sf_global, normalize_stock_code
+
 logger = logging.getLogger(__name__)
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _DEFAULT_TIMEOUT = 10.0
 
 
@@ -56,6 +58,55 @@ def kiwoom_client(timeout: float = _DEFAULT_TIMEOUT) -> httpx.AsyncClient:
     )
 
 
+async def kiwoom_post(
+    url: str,
+    headers: dict,
+    json_body: dict,
+    api_id: str,
+    max_retries: int = 2,
+    backoff_base: float = 60.0,
+) -> "httpx.Response | None":
+    """Rate-limited Kiwoom API POST with 429 exponential-backoff retry.
+
+    Replaces the private ``_post_with_retry()`` helper that was duplicated in
+    ``candidates_builder.py``.  Each call opens its own ``kiwoom_client()``
+    context so the rate-limiter singleton is always respected.
+
+    Returns the ``httpx.Response`` on success, or ``None`` when all retries are
+    exhausted or a non-retriable error occurs.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            async with kiwoom_client() as client:
+                resp = await client.post(url, headers=headers, json=json_body)
+            if resp.status_code == 429:
+                wait = backoff_base * (2 ** attempt)
+                logger.warning(
+                    "[http_utils] %s 429 Too Many Requests – %.0fs 대기 (attempt %d/%d)",
+                    api_id, wait, attempt + 1, max_retries + 1,
+                )
+                if attempt < max_retries:
+                    await asyncio.sleep(wait)
+                    continue
+                return None
+            resp.raise_for_status()
+            return resp
+        except httpx.HTTPStatusError as e:
+            if attempt < max_retries:
+                logger.warning(
+                    "[http_utils] %s HTTP 오류 %s – 재시도",
+                    api_id, e.response.status_code,
+                )
+                await asyncio.sleep(0.5)
+                continue
+            logger.error("[http_utils] %s HTTP 오류 최종 실패: %s", api_id, e)
+            return None
+        except Exception as e:
+            logger.error("[http_utils] %s 요청 오류: %s", api_id, e)
+            return None
+    return None
+
+
 def validate_kiwoom_response(data: dict, api_id: str, log=None) -> bool:
     """
     Kiwoom API가 HTTP 200이지만 에러 바디를 반환하는 경우를 감지한다.
@@ -83,6 +134,9 @@ async def fetch_stk_nm(rdb, token: str, stk_cd: str) -> str:
     캐시 미스 시 ka10001 주식기본정보로 조회 후 캐시 저장.
     rdb=None 이면 항상 REST API 직접 호출.
     """
+    stk_cd = normalize_stock_code(stk_cd)
+    if not stk_cd:
+        return ""
     if rdb:
         try:
             cached = await rdb.get(f"stk_nm:{stk_cd}")
@@ -109,7 +163,9 @@ async def fetch_stk_nm(rdb, token: str, stk_cd: str) -> str:
             if not validate_kiwoom_response(data, "ka10001", logger):
                 return ""
             items = data.get("stk_info", [])
-            stk_nm = str(items[0].get("stk_nm", "")).strip() if items else ""
+            stk_nm = str(data.get("stk_nm", "")).strip()
+            if not stk_nm and items:
+                stk_nm = str(items[0].get("stk_nm", "")).strip()
     except Exception as e:
         logger.debug("[http_utils] fetch_stk_nm [%s] 실패: %s", stk_cd, e)
         return ""
@@ -134,11 +190,10 @@ async def fetch_hoga(token: str, stk_cd: str, rdb=None) -> float | None:
     반환: bid_ratio (float, ≥ 0) | None (조회 실패 또는 데이터 없음)
     캐시 TTL: REST 조회 결과를 Redis hoga:{stk_cd}:rest 에 30초 캐싱.
     """
-    def _sf(v) -> float:
-        try:
-            return float(str(v).replace(",", "").replace("+", ""))
-        except (TypeError, ValueError):
-            return 0.0
+    _sf = _sf_global
+    stk_cd = normalize_stock_code(stk_cd)
+    if not stk_cd:
+        return None
 
     # 1. WS Redis 캐시 우선
     if rdb:
@@ -199,6 +254,10 @@ async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
     체결강도 조회 (ka10046 체결강도추이시간별요청).
     최근 5개 cntr_str 평균을 반환. 데이터 없거나 오류 시 100.0 반환.
     """
+    stk_cd = normalize_stock_code(stk_cd)
+    if not stk_cd:
+        return 100.0
+
     try:
         async with kiwoom_client() as client:
             resp = await client.post(
@@ -235,3 +294,38 @@ async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
     except Exception as e:
         logger.debug("[http_utils] fetch_cntr_strength [%s] 실패: %s", stk_cd, e)
         return 100.0
+
+
+async def fetch_cntr_strength_cached(token: str, stk_cd: str, rdb=None, count: int = 5) -> tuple[float, str]:
+    """Return execution strength from Redis/tick cache first, then REST fallback."""
+    stk_cd = normalize_stock_code(stk_cd)
+    if not stk_cd:
+        return ""
+
+    stk_cd = normalize_stock_code(stk_cd)
+    if not stk_cd:
+        return ""
+
+    if rdb:
+        try:
+            strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, max(count - 1, 0))
+            values = []
+            for raw in strength_data:
+                try:
+                    values.append(float(str(raw).replace("+", "").replace(",", "")))
+                except (TypeError, ValueError):
+                    continue
+            if values:
+                return sum(values) / len(values), "redis"
+        except Exception as e:
+            logger.debug("[http_utils] fetch_cntr_strength_cached redis [%s] failed: %s", stk_cd, e)
+
+        try:
+            tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+            raw = tick.get("cntr_str") if tick else None
+            if raw not in (None, ""):
+                return float(str(raw).replace("+", "").replace(",", "")), "tick"
+        except Exception as e:
+            logger.debug("[http_utils] fetch_cntr_strength_cached tick [%s] failed: %s", stk_cd, e)
+
+    return await fetch_cntr_strength(token, stk_cd), "rest"

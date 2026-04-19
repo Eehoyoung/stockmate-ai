@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 8: 5일선 골든크로스 스윙
 유형: 스윙 / 보유기간: 3~7거래일
@@ -26,7 +27,7 @@ from indicator_rsi import calc_rsi
 from indicator_macd import calc_macd
 from indicator_bollinger import calc_bollinger
 from indicator_atr import calc_atr
-from http_utils import fetch_cntr_strength, fetch_stk_nm
+from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,8 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
             if tick:
                 flu_rt = clean_num(tick.get("flu_rt", 0))
                 cntr_str = clean_num(tick.get("cntr_str", 100))
+        if cntr_str <= 100:
+            cntr_str, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
 
         # 조건 4: 당일 등락률 필터 (0~15%)
         if not (0.0 <= flu_rt <= 15.0):

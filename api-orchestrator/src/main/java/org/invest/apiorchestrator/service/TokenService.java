@@ -78,7 +78,6 @@ public class TokenService {
                 .appKey(properties.getApi().getAppKey())
                 .secretKey(properties.getApi().getAppSecret())
                 .build();
-        log.info(properties.getApi().getAppKey() + " / " + properties.getApi().getAppSecret());
 
         TokenResponse resp = kiwoomWebClient.post()
                 .uri(TOKEN_ISSUE_URL)

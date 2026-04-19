@@ -1,23 +1,15 @@
 """
-websocket-listener/main.py
-──────────────────────────────────────────────────────────────
-StockMate AI – 키움 WebSocket 리스너 (Python)
-
-역할
-  • Java api-orchestrator 와 협력하여 실시간 시세를 Redis 에 저장
-  • Java GRP 1~4 와 충돌 방지: GRP 5~8 사용
-  • 수신 타입: 0B 체결, 0H 예상체결, 0D 호가잔량, 1h VI 발동/해제
-  • vi_watch_queue 에 VI 해제 종목 등록 (S2 전술 지원)
-
-실행
-  python main.py
+Entrypoint for websocket-listener.
 """
+
+from __future__ import annotations
 
 import asyncio
 import os
 import signal
 import sys
 
+import asyncpg
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
 
@@ -27,7 +19,6 @@ from ws_client import run_ws_loop
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
-# ── JSON 구조화 로깅 초기화 ───────────────────────────────────
 setup_logging(
     service="websocket-listener",
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -35,47 +26,80 @@ setup_logging(
 )
 logger = get_logger("main")
 
-# ── Redis 설정 ────────────────────────────────────────────────
-REDIS_HOST     = os.getenv("REDIS_HOST",     "localhost")
-REDIS_PORT     = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "") or None
-HEALTH_PORT    = int(os.getenv("HEALTH_PORT", "8081"))
+HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8081"))
+
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
+POSTGRES_DB = os.getenv("POSTGRES_DB", "stockmate")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
+PG_WRITER_ENABLED = os.getenv("PG_WRITER_ENABLED", "true").lower() in ("1", "true", "yes")
+
+
+async def _create_pg_pool():
+    if not PG_WRITER_ENABLED:
+        logger.info("[Postgres] direct event writer disabled")
+        return None
+    try:
+        pool = await asyncpg.create_pool(
+            host=POSTGRES_HOST,
+            port=POSTGRES_PORT,
+            database=POSTGRES_DB,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD,
+            min_size=1,
+            max_size=4,
+            command_timeout=5,
+        )
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT 1")
+        logger.info("[Postgres] connected for event persistence %s:%d/%s", POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB)
+        return pool
+    except Exception as e:
+        logger.warning("[Postgres] direct event writer unavailable: %s", e)
+        return None
 
 
 async def main():
     logger.info("=" * 50)
-    logger.info("  StockMate AI – WebSocket Listener 시작")
+    logger.info("  StockMate AI WebSocket Listener start")
     logger.info("=" * 50)
 
-    # Redis 연결
     rdb = aioredis.Redis(
-        host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
-        decode_responses=True, socket_connect_timeout=5,
-        socket_timeout=5, retry_on_timeout=True,
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        password=REDIS_PASSWORD,
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+        retry_on_timeout=True,
     )
     try:
         await rdb.ping()
-        logger.info("[Redis] 연결 성공 → %s:%d", REDIS_HOST, REDIS_PORT)
-        set_redis(rdb)   # 헬스체크 서버에 Redis 클라이언트 주입
+        logger.info("[Redis] connected %s:%d", REDIS_HOST, REDIS_PORT)
+        set_redis(rdb)
     except Exception as e:
-        logger.critical("[Redis] 연결 실패: %s", e)
+        logger.critical("[Redis] connection failed: %s", e)
         sys.exit(1)
 
-    # 종료 시그널 핸들러
+    pg_pool = await _create_pg_pool()
+
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
     def _shutdown(sig, frame=None):
-        logger.info("[Main] 종료 시그널 수신 (%s)", sig)
+        logger.info("[Main] shutdown signal received (%s)", sig)
         loop.call_soon_threadsafe(stop_event.set)
 
-    signal.signal(signal.SIGINT,  _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # 헬스체크 서버 + WebSocket 루프 동시 실행
-    ws_task     = asyncio.create_task(run_ws_loop(rdb))
+    ws_task = asyncio.create_task(run_ws_loop(rdb, pg_pool))
     health_task = asyncio.create_task(run_health_server(HEALTH_PORT))
-    stop_task   = asyncio.create_task(stop_event.wait())
+    stop_task = asyncio.create_task(stop_event.wait())
 
     try:
         done, pending = await asyncio.wait(
@@ -84,9 +108,14 @@ async def main():
         )
         for task in pending:
             task.cancel()
+        for task in done:
+            if task.exception():
+                raise task.exception()
     finally:
+        if pg_pool is not None:
+            await pg_pool.close()
         await rdb.aclose()
-        logger.info("[Main] 종료 완료")
+        logger.info("[Main] shutdown complete")
 
 
 if __name__ == "__main__":

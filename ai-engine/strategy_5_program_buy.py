@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 5: 프로그램 순매수 + 외인 동반 상위
 수정 사항: ka90003 URI 변경 및 ka10044/ka10001 필터 로직 추가
@@ -9,7 +10,7 @@ import os
 from datetime import datetime, timedelta
 from statistics import mean
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import fetch_cntr_strength_cached, fetch_hoga, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
@@ -207,6 +208,8 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
             # ka90003 응답에서 직접 수집한 stk_nm/cur_prc 우선 사용
             stk_nm  = info.get("stk_nm") or await fetch_stk_nm(rdb, token, stk_cd)
             cur_prc = info.get("cur_prc", 0)
+            cntr_strength, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
+            bid_ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
 
             # 동적 TP/SL — 일봉 기반 (프로그램+외인 수급 스윙 목표)
             highs_d, lows_d, closes_d, ma20, atr_val = [], [], [], None, None
@@ -234,6 +237,8 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
                 "strategy": "S5_PROG_FRGN",  # scorer.py case 키와 일치
                 "net_buy_amt": info["net_buy_amt"],
                 "flu_rt": info.get("flu_rt", 0.0),
+                "cntr_strength": round(cntr_strength, 1),
+                "bid_ratio": round(bid_ratio, 2) if bid_ratio is not None else None,
                 "entry_type": "지정가_1호가",
                 **tp_sl.to_signal_fields(),
             })

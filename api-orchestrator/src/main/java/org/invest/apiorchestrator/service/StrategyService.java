@@ -437,78 +437,21 @@ public class StrategyService {
     // ─────────────────────────────────────────────────────────────
     // 전술 7: 장전 예상체결 + 호가잔량  (8:30~9:00)
     // ─────────────────────────────────────────────────────────────
+    @Deprecated
     public List<TradingSignalDto> scanAuction(String market) {
         return scanAuction(market, Collections.emptySet());
     }
 
     /**
-     * 사전 필터링된 종목 집합으로 S7 스캔 (preFiltered 비어있으면 전체 대상).
+     * Deprecated.
+     * S7은 더 이상 동시호가 스캔이 아니며 Python ai-engine의
+     * `strategy_7_ichimoku_breakout.py`에서만 장중 실행된다.
      */
+    @Deprecated
     public List<TradingSignalDto> scanAuction(String market, Set<String> preFiltered) {
-        log.info("[S7] 동시호가 스캔 [{}] preFiltered={}건", market, preFiltered.size());
-        try {
-            // ka10029 예상체결등락률 상위로 후보 조회
-            KiwoomApiResponses.ExpCntrFluRtUpperResponse gapResp =
-                    apiService.fetchKa10029(
-                            StrategyRequests.ExpCntrFluRtUpperRequest.builder()
-                                    .mrktTp(market).sortTp("1").trdeQtyCnd("10")
-                                    .stkCnd("1").crdCnd("0").pricCnd("8").stexTp("3").build());
-
-            if (gapResp == null || gapResp.getItems() == null) return Collections.emptyList();
-
-            List<TradingSignalDto> results = new ArrayList<>();
-            int rank = 1;
-            for (var item : gapResp.getItems().stream().limit(50).toList()) {
-                String stkCd = item.getStkCd();
-                // 사전 필터 적용 (비어있으면 전체 허용)
-                if (!preFiltered.isEmpty() && !preFiltered.contains(stkCd)) { rank++; continue; }
-
-                var expOpt = redisService.getExpectedData(stkCd);
-                if (expOpt.isEmpty()) { rank++; continue; }
-
-                double prevClose = parseDouble(expOpt.get(), "pred_pre_pric");
-                double expPrice  = parseDouble(expOpt.get(), "exp_cntr_pric");
-                if (prevClose <= 0 || expPrice <= 0) { rank++; continue; }
-
-                double gapPct = (expPrice - prevClose) / prevClose * 100;
-                if (gapPct < 2.0 || gapPct > 10.0) { rank++; continue; }
-
-                var hogaOpt = redisService.getHogaData(stkCd);
-                if (hogaOpt.isEmpty()) { rank++; continue; }
-                double bid = parseDouble(hogaOpt.get(), "total_buy_bid_req");
-                double ask = parseDouble(hogaOpt.get(), "total_sel_bid_req");
-                double bidRatio = ask > 0 ? bid / ask : 0;
-                if (bidRatio < 2.0) { rank++; continue; }
-
-                double score = bidRatio * 10 + gapPct + (50 - rank) * 0.5;
-
-                double t1 = Math.min(gapPct * 0.8, 5.0);
-                double t2 = Math.min(t1 * 1.5, 8.0);
-                results.add(TradingSignalDto.builder()
-                        .stkCd(stkCd)
-                        .stkNm(item.getStkNm())
-                        .strategy(TradingSignal.StrategyType.S7_AUCTION)
-                        .signalScore(round(score))
-                        .entryPrice(expPrice)
-                        .gapPct(round(gapPct))
-                        .bidRatio(round(bidRatio))
-                        .volRank(rank)
-                        .marketType(market)
-                        .entryType("시초가_시장가")
-                        .targetPct(round(t1)).target2Pct(round(t2)).stopPct(-2.0)
-                        .tp1Price(round(expPrice * (1 + t1 / 100)))
-                        .tp2Price(round(expPrice * (1 + t2 / 100)))
-                        .slPrice(round(expPrice * 0.98))
-                        .build());
-                rank++;
-            }
-            return results.stream()
-                    .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
-                    .limit(5).collect(Collectors.toList());
-        } catch (Exception e) {
-            log.error("[S7] 스캔 오류: {}", e.getMessage());
-            return Collections.emptyList();
-        }
+        log.warn("[S7] legacy auction scan requested for market={} preFiltered={}건; returning empty list",
+                market, preFiltered.size());
+        return Collections.emptyList();
     }
 
     // ─────────────────────────────────────────────────────────────

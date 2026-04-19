@@ -14,13 +14,14 @@ RUN ./gradlew bootJar -x test --no-daemon -q
 FROM eclipse-temurin:25-jdk
 WORKDIR /app
 
+ENV TZ=Asia/Seoul
+
 COPY --from=builder /build/build/libs/*.jar app.jar
 
 RUN mkdir -p logs
 
 EXPOSE 8080
 
-ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-jar", "app.jar"]
-
+ENTRYPOINT ["java", "-Duser.timezone=Asia/Seoul", "--enable-native-access=ALL-UNNAMED", "-jar", "app.jar"]
 
 

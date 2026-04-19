@@ -20,7 +20,7 @@ ws_client.py
   Python 이 단독으로 모든 실시간 데이터를 수신하여 Redis 에 기록한다.
 
 환경변수:
-  BYPASS_MARKET_HOURS=true  : 장 시간 외에도 연결 시도 (모의 테스트용)
+  BYPASS_MARKET_HOURS=true  : 장 시간 외에도 연결 시도 (상시 운영 모드)
                               지수 백오프 적용, 최대 MAX_RECONNECTS 회 후 5분 대기 반복
   KIWOOM_MODE=real|mock     : real → wss://api.kiwoom.com, mock → wss://mockapi.kiwoom.com
 """
@@ -43,10 +43,10 @@ KST = timezone(timedelta(hours=9))
 
 # 장 운영 시간대 (KST)
 _MARKET_OPEN_HOUR   = (7, 30)   # 07:30 – 장전 구독 시작
-_MARKET_CLOSE_HOUR  = (15, 35)  # 15:35 – 장 완전 종료
+_MARKET_CLOSE_HOUR  = (20, 10)  # 20:10 – NXT 포함 종료
 _WEEKDAYS           = {0, 1, 2, 3, 4}  # Mon=0 … Fri=4
 
-BYPASS_MARKET_HOURS = "true"
+BYPASS_MARKET_HOURS = os.getenv("BYPASS_MARKET_HOURS", "false").lower() in ("1", "true", "yes")
 
 def _now_kst() -> datetime:
     """현재 KST 시각 반환 (timezone-aware)"""
@@ -124,6 +124,37 @@ HEARTBEAT_INTERVAL   = 30     # 초 (ws:py_heartbeat Redis 갱신 주기)
 MIN_CONNECTED_SEC    = 30     # 이 미만으로 연결이 유지되면 "즉시 종료" 로 간주
 
 
+async def _replace_subscription_set(rdb, key: str, codes: list[str]):
+    """Persist actual subscribed codes so monitors can use the real WS scope."""
+    try:
+        uniq = [code for code in dict.fromkeys(codes) if code]
+        await rdb.delete(key)
+        if uniq:
+            await rdb.sadd(key, *uniq)
+            await rdb.expire(key, 180)
+    except Exception as e:
+        logger.debug("[WS] subscription set refresh failed %s: %s", key, e)
+
+
+async def _add_subscription_code(rdb, key: str, code: str):
+    if not code:
+        return
+    try:
+        await rdb.sadd(key, code)
+        await rdb.expire(key, 180)
+    except Exception as e:
+        logger.debug("[WS] subscription set add failed %s %s: %s", key, code, e)
+
+
+async def _remove_subscription_code(rdb, key: str, code: str):
+    if not code:
+        return
+    try:
+        await rdb.srem(key, code)
+    except Exception as e:
+        logger.debug("[WS] subscription set remove failed %s %s: %s", key, code, e)
+
+
 async def _get_candidates(rdb, market: str = "001") -> list[str]:
     """Redis 후보 종목 캐시 읽기.
     우선순위:
@@ -143,6 +174,30 @@ async def _get_candidates(rdb, market: str = "001") -> list[str]:
     return items or []
 
 
+async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
+    """S1/S7 우선 후보를 앞에 배치한 전체/상위 100개 목록을 반환한다."""
+    try:
+        priority_codes = await rdb.smembers("candidates:watchlist:priority")
+    except Exception:
+        priority_codes = set()
+
+    try:
+        watchlist = await rdb.smembers("candidates:watchlist")
+    except Exception:
+        watchlist = set()
+
+    if not watchlist:
+        combined: list[str] = []
+        for market in ("001", "101"):
+            combined.extend(await _get_candidates(rdb, market))
+        watchlist = set(c for c in combined if c)
+
+    priority_list = sorted(c for c in priority_codes if c)
+    remaining = sorted(c for c in watchlist if c and c not in priority_codes)
+    ranked = (priority_list + remaining)[:200]
+    return ranked, ranked[:100]
+
+
 def _get_market_phase() -> str:
     """현재 KST 시각 기준 장 구분 반환.
     - pre_open   : 07:30 ~ 08:00  0H/0D/1h 구독 (장전 시간외 초반, 0B 활동 미미)
@@ -158,7 +213,7 @@ def _get_market_phase() -> str:
         return "pre_open"
     if dtime(8, 0) <= t < dtime(9, 0):
         return "pre_market"
-    if dtime(9, 0) <= t < dtime(15, 20):
+    if dtime(9, 0) <= t < dtime(20, 10):
         return "market"
     return "closed"
 
@@ -177,10 +232,10 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     GRP 3: 1h VI발동해제 – 전종목              [pre_open / pre_market / market]
     GRP 4: 0D 호가잔량  – 상위 100             [pre_open / pre_market / market]
     """
-    kospi  = await _get_candidates(rdb, "001")
-    kosdaq = await _get_candidates(rdb, "101")
-    all_cands = list(dict.fromkeys(kospi + kosdaq))[:200]
-    top100 = all_cands[:100]
+    all_cands, top100 = await _get_ranked_candidates(rdb)
+    subscribed_0b: list[str] = []
+    subscribed_0d: list[str] = []
+    subscribed_0h: list[str] = []
 
     if phase == "pre_open":
         # 07:30~08:00: 0B 활동 미미 – 예상체결·호가잔량·VI 만 구독
@@ -198,7 +253,7 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
             ("3", "1h", [""]),       # VI 전종목
         ]
     elif phase == "market":
-        # 09:00~15:20: 예상체결(0H) 해제, 체결(0B) 계속
+        # 09:00~20:10: 예상체결(0H) 해제, 체결(0B) 계속
         groups = [
             ("1", "0B", all_cands),  # 체결
             ("4", "0D", top100),     # 호가잔량
@@ -211,6 +266,9 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
                 await asyncio.sleep(0.1)
             except Exception:
                 pass
+        await _replace_subscription_set(rdb, "ws:subscribed:0B", [])
+        await _replace_subscription_set(rdb, "ws:subscribed:0H", [])
+        await _replace_subscription_set(rdb, "ws:subscribed:0D", [])
         logger.info("[WS] 장 종료 – 전체 구독 해제 완료")
         return
 
@@ -238,6 +296,10 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
         except Exception:
             pass
 
+    subscribed_map = {ttype: items for _, ttype, items in groups}
+    await _replace_subscription_set(rdb, "ws:subscribed:0B", subscribed_map.get("0B", []))
+    await _replace_subscription_set(rdb, "ws:subscribed:0H", subscribed_map.get("0H", []))
+    await _replace_subscription_set(rdb, "ws:subscribed:0D", subscribed_map.get("0D", []))
     logger.info("[WS] 구독 설정 완료 (phase=%s, 후보=%d개)", phase, len(all_cands))
 
 
@@ -255,13 +317,14 @@ async def _phase_watcher(ws, rdb):
             await asyncio.sleep(30)
             new_phase = _get_market_phase()
             refresh_counter += 1
+            refresh_every = 2 if current_phase in {"pre_open", "pre_market"} else 10
 
             if new_phase != current_phase:
                 logger.info("[WS] 장 구분 전환 %s → %s", current_phase, new_phase)
                 await _subscribe_by_phase(ws, rdb, new_phase)
                 current_phase = new_phase
                 refresh_counter = 0
-            elif refresh_counter >= REFRESH_EVERY and current_phase != "closed":
+            elif refresh_counter >= refresh_every and current_phase != "closed":
                 logger.info("[WS] 후보 갱신 구독 재전송 (phase=%s)", current_phase)
                 await _subscribe_by_phase(ws, rdb, current_phase)
                 refresh_counter = 0
@@ -272,7 +335,7 @@ async def _phase_watcher(ws, rdb):
             logger.warning("[WS] phase_watcher 오류: %s", e)
 
 
-async def _handle_message(msg_str: str, ws, rdb):
+async def _handle_message(msg_str: str, ws, rdb, pg_pool=None):
     """수신 메시지 파싱 및 Redis 저장 분기.
 
     키움 실시간 메시지 형식:
@@ -294,10 +357,10 @@ async def _handle_message(msg_str: str, ws, rdb):
                 stk_cd     = entry.get("item", "")
                 values     = entry.get("values") or {}
                 match entry_type:
-                    case "0B": await write_tick(rdb, values, stk_cd)
-                    case "0H": await write_expected(rdb, values, stk_cd)
-                    case "0D": await write_hoga(rdb, values, stk_cd)
-                    case "1h": await write_vi(rdb, values, stk_cd)
+                    case "0B": await write_tick(rdb, values, stk_cd, pg_pool)
+                    case "0H": await write_expected(rdb, values, stk_cd, pg_pool)
+                    case "0D": await write_hoga(rdb, values, stk_cd, pg_pool)
+                    case "1h": await write_vi(rdb, values, stk_cd, pg_pool)
             record_message_received()
             return
 
@@ -315,18 +378,24 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
     while True:
         try:
             await asyncio.sleep(WATCHLIST_POLL_SEC)
-            watchlist = await rdb.smembers("candidates:watchlist")
+            watchlist, top100 = await _get_ranked_candidates(rdb)
             if not watchlist:
                 continue
 
-            new_codes     = watchlist - subscribed_set
-            removed_codes = subscribed_set - watchlist
+            watchset = set(watchlist)
+            topset = set(top100)
+            new_codes     = watchset - subscribed_set
+            removed_codes = subscribed_set - watchset
 
             for code in new_codes:
-                for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("4", "0D")]:
+                groups = [("1", "0B")]
+                if code in topset:
+                    groups.extend([("2", "0H"), ("4", "0D")])
+                for grp_no, ttype in groups:
                     payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "0",
                                "data": [{"item": [code], "type": [ttype]}]}
                     await ws.send(json.dumps(payload))
+                    await _add_subscription_code(rdb, f"ws:subscribed:{ttype}", code)
                 subscribed_set.add(code)
                 logger.info("[WS] 동적 구독 추가 [%s]", code)
 
@@ -335,6 +404,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                     payload = {"trnm": "UNREG", "grp_no": grp_no,
                                "data": [{"item": [code], "type": [ttype]}]}
                     await ws.send(json.dumps(payload))
+                    await _remove_subscription_code(rdb, f"ws:subscribed:{ttype}", code)
                 subscribed_set.discard(code)
                 logger.info("[WS] 동적 구독 해제 [%s]", code)
 
@@ -355,21 +425,21 @@ async def _heartbeat_writer(rdb):
 
 
 
-async def _run_message_loop(ws, rdb):
+async def _run_message_loop(ws, rdb, pg_pool=None):
     """메시지 수신 루프 – 서버 PING 포함 모든 메시지 즉시 처리"""
     async for message in ws:
-        await _handle_message(message, ws, rdb)
+        await _handle_message(message, ws, rdb, pg_pool)
     logger.info("[WS] 서버 정상 종료 (clean close)")
 
 
-async def run_ws_loop(rdb):
+async def run_ws_loop(rdb, pg_pool=None):
     """
     WebSocket 메인 루프 – 장 운영 시간 감지 + 지수 백오프 재연결 포함.
 
     BYPASS_MARKET_HOURS=true 일 때:
       장 시간과 무관하게 연결 시도, 지수 백오프 적용 (최대 5분).
       MAX_RECONNECTS 초과 시 5분 대기 후 카운터 리셋하여 무한 재시도.
-    BYPASS_MARKET_HOURS=false (기본):
+    BYPASS_MARKET_HOURS=false 일 때:
       장 시간 외 연결 종료 시 _wait_for_market_open() 으로 개장까지 대기.
     """
     # 실전/모의 환경 분기
@@ -382,7 +452,7 @@ async def run_ws_loop(rdb):
 
     if BYPASS_MARKET_HOURS:
         logger.warning(
-            "[WS] ⚠️  BYPASS_MARKET_HOURS=true – 장 시간 외 연결 허용 (모의 테스트 모드)"
+            "[WS] ⚠️  BYPASS_MARKET_HOURS=true – 장 시간 외에도 WebSocket 연결을 유지합니다"
         )
 
     # GRP 충돌 방지 검사: JAVA_WS_ENABLED=true 이면 Python과 Java가 동일 GRP 사용 위험
@@ -461,7 +531,7 @@ async def run_ws_loop(rdb):
 
                 # ── 메시지 루프를 구독보다 먼저 시작 ──────────────────────
                 # 구독(REG) 도중 서버가 PING을 보내도 즉시 PONG 응답 가능
-                message_task = asyncio.create_task(_run_message_loop(ws, rdb))
+                message_task = asyncio.create_task(_run_message_loop(ws, rdb, pg_pool))
 
                 # BYPASS 모드: 장 시간 무관 → pre_market phase(0B 포함 전체 구독)로 처리
                 initial_phase = "pre_market" if BYPASS_MARKET_HOURS else _get_market_phase()

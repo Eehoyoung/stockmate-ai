@@ -7,7 +7,11 @@
 
 const axios = require('axios');
 
-const BASE_URL = 'http://host.docker.internal:8080';
+const BASE_URL = process.env.API_ORCHESTRATOR_BASE_URL;
+
+if (!BASE_URL) {
+    throw new Error('API_ORCHESTRATOR_BASE_URL is required');
+}
 
 const api = axios.create({
     baseURL: BASE_URL,
@@ -120,7 +124,7 @@ async function setTradingControl(mode) {
 
 /** 전략별 후보 풀 크기 조회 (Java orchestrator) */
 async function getCandidatePoolStatus() {
-    const { data } = await api.get('/api/candidates/pool-status');
+    const { data } = await api.get('/api/trading/candidates/pool-status');
     return data;
 }
 
@@ -162,6 +166,17 @@ async function scoreStockFull(stkCd, enableAi = true) {
     return data;
 }
 
+/** /news 즉시 브리핑 */
+async function getLiveNewsBrief(slot) {
+    const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://ai-engine:8082';
+    const params = slot ? { slot } : undefined;
+    const { data } = await axios.get(
+        `${AI_ENGINE_URL}/news/brief`,
+        { params, timeout: 40_000 },
+    );
+    return data;
+}
+
 module.exports = {
     health, getTodaySignals, getTodayStats,
     getCandidates, refreshToken, runStrategy,
@@ -170,5 +185,5 @@ module.exports = {
     getSignalHistory, getStrategyAnalysis,
     getMonitorHealth, getCalendarWeek, setTradingControl,
     scoreStock, getCandidatePoolStatus, getAiEngineCandidates,
-    analyzeStockWithClaude, scoreStockFull,
+    analyzeStockWithClaude, scoreStockFull, getLiveNewsBrief,
 };

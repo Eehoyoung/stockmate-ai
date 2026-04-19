@@ -14,7 +14,8 @@ tp_sl_engine.py
 지원 단계:
   Phase 1 (현재): S8/S9/S13/S15 — 일봉 기반, 추가 API 호출 없음
   Phase 2       : S10/S11/S12   — 일봉 기반, 피보나치 확장
-  Phase 3       : S1/S2/S4/S7  — 5분봉 ATR 기반 데이트레이딩
+  Phase 3       : S1/S2/S4     — 5분봉 ATR 기반 데이트레이딩
+  Phase 4       : S7/S8~S15    — 스윙/추세 기반 TP/SL
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Optional
+
+from price_utils import round_to_tick
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +52,15 @@ class TpSlResult:
     def to_signal_fields(self) -> dict:
         """전략 결과 dict에 merge할 TP/SL 필드 반환"""
         d: dict = {
-            "sl_price":   self.sl_price,
-            "tp1_price":  self.tp1_price,
+            "sl_price":   round_to_tick(self.sl_price, "nearest"),
+            "tp1_price":  round_to_tick(self.tp1_price, "nearest"),
             "sl_method":  self.sl_method,
             "tp_method":  self.tp_method,
             "rr_ratio":   round(self.rr_ratio, 2),
             "skip_entry": self.skip_entry,
         }
         if self.tp2_price:
-            d["tp2_price"] = self.tp2_price
+            d["tp2_price"] = round_to_tick(self.tp2_price, "nearest")
         return d
 
 
@@ -246,6 +249,28 @@ def _slip_fee(stk_cd: str) -> float:
     return SLIP_FEE_KOSPI if str(stk_cd).startswith("0") else SLIP_FEE_KOSDAQ
 
 
+def compute_rr(
+    stk_cd: str,
+    cur_prc: float,
+    tp_price: float,
+    sl_price: float,
+    min_rr: float | None = None,
+) -> tuple[float, bool]:
+    """
+    공개 R:R 계산 헬퍼 – 슬리피지·수수료 반영.
+
+    :param stk_cd:   종목코드 (KOSPI/KOSDAQ 구분에 사용)
+    :param cur_prc:  현재가 (진입가)
+    :param tp_price: 목표가
+    :param sl_price: 손절가
+    :param min_rr:   최소 R:R (None 이면 환경변수 MIN_RR_RATIO 또는 1.3)
+    :returns: (rr_ratio, skip_entry) — skip_entry=True 이면 진입 취소 대상
+    """
+    slip = _slip_fee(stk_cd)
+    _min = min_rr if min_rr is not None else MIN_RR_RATIO
+    return _calc_rr(cur_prc, tp_price, sl_price, slip, _min)
+
+
 # ──────────────────────────────────────────────────────────────
 # 메인 함수: 통합 TP/SL 계산
 # ──────────────────────────────────────────────────────────────
@@ -297,7 +322,7 @@ def calc_tp_sl(
     # 전략별 디스패치 (번호 오름차순)
     s = strategy.upper()
 
-    # ── 데이트레이딩 (S1~S7) ──────────────────────────────────
+    # ── 데이트레이딩 (S1/S2/S4) ───────────────────────────────
     if "S1_" in s or "GAP_OPEN" in s:
         return _tp_sl_gap_open(cur_prc, prev_close, atr, slip, min_rr)
 
@@ -319,8 +344,9 @@ def calc_tp_sl(
         _ma5 = ma5 or (sum(closes[:5]) / 5 if len(closes) >= 5 else None)
         return _tp_sl_theme(cur_prc, highs, lows, closes, _ma5, atr, slip, min_rr)
 
-    if "S7_" in s or "AUCTION" in s:
-        return _tp_sl_day_trading(cur_prc, atr, slip, min_rr)
+    # S7은 더 이상 장전/데이트레이딩 전략이 아니라 일목 스윙으로 고정한다.
+    if "S7_" in s:
+        return _tp_sl_ichimoku_breakout(cur_prc, highs, lows, closes, atr, slip, min_rr)
 
     # ── 스윙 (S8~S15) ─────────────────────────────────────────
     if "S8_" in s or "GOLDEN" in s:
@@ -695,6 +721,82 @@ def _tp_sl_theme(
     else:
         tp1_price = int(cur_prc * 1.035)
         tp_method = "pct_3.5%_fallback"
+
+    rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
+    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                      sl_method=sl_method, tp_method=tp_method,
+                      rr_ratio=rr_ratio, skip_entry=skip)
+
+
+# ── S7: 일목균형표 구름대 돌파 스윙 ───────────────────────────
+
+def _tp_sl_ichimoku_breakout(
+    cur_prc: float,
+    highs:   list[float],
+    lows:    list[float],
+    closes:  list[float],
+    atr:     Optional[float],
+    slip:    float,
+    min_rr:  float,
+) -> TpSlResult:
+    """
+    S7 일목균형표 구름대 돌파 TP/SL  (3~7거래일 스윙)
+
+    진입 근거: 기준선(Kijun/26) 지지 위 돌파 확인.
+    SL = max(swing_low_D20 × 0.998, cur_prc - ATR × 1.5)
+         → 기준선 하락 이탈 = 구름대 돌파 가설 무효화
+    TP1 = 가장 가까운 스윙 고점 (30봉 저항)
+    TP2 = Fibonacci 1.272 확장 (swing_low ~ tp1)
+    """
+    # ── SL: 스윙 저점 vs ATR×1.5 중 더 높은 값 ─────────────────
+    swing_lows = find_swing_lows(lows, cur_prc, lookback=20)
+    if swing_lows and swing_lows[0] > cur_prc * 0.88:
+        sl_swing  = int(swing_lows[0] * 0.998)
+        swing_ref = swing_lows[0]
+        sl_method = "swing_low_D20(×0.998)"
+    else:
+        sl_swing  = 0
+        swing_ref = lows[1] if len(lows) > 1 else cur_prc * 0.95
+        sl_method = ""
+
+    if atr:
+        sl_atr = int(cur_prc - atr * 1.5)
+        if sl_swing > 0:
+            sl_price  = max(sl_swing, sl_atr)
+            sl_method = "swing_low_D20_or_ATR×1.5"
+        else:
+            sl_price  = sl_atr
+            sl_method = "ATR×1.5"
+    else:
+        sl_price = sl_swing if sl_swing > 0 else int(cur_prc * 0.95)
+        if not sl_method:
+            sl_method = "pct_5%_fallback"
+
+    sl_price = max(sl_price, 1)
+    if sl_price >= cur_prc:
+        sl_price  = int(cur_prc * 0.95)
+        sl_method = "pct_5%_fallback"
+
+    # ── TP1: 가장 가까운 스윙 고점 저항 (30봉) ──────────────────
+    swing_highs = find_swing_highs(highs, cur_prc, lookback=30)
+    tp2_price   = None
+
+    if swing_highs and swing_highs[0] > cur_prc * 1.03:
+        tp1_price = int(swing_highs[0])
+        # TP2: Fibonacci 1.272 (swing_low ~ tp1 레인지 기준)
+        fib_base = swing_ref if swing_ref < cur_prc else sl_price
+        _, fib_1272, _ = calc_fibonacci_extension(fib_base, tp1_price)
+        tp2_price = int(fib_1272) if fib_1272 > tp1_price else (
+            int(swing_highs[1]) if len(swing_highs) > 1 else None
+        )
+        tp_method = "swing_resistance(D30)"
+    else:
+        # 스윙 고점 없음 → Fibonacci 확장
+        fib_base = swing_ref if swing_ref < cur_prc else sl_price
+        _, fib_1272, fib_1618 = calc_fibonacci_extension(fib_base, cur_prc)
+        tp1_price = int(fib_1272) if fib_1272 > cur_prc * 1.03 else int(cur_prc * 1.08)
+        tp2_price = int(fib_1618) if fib_1618 > tp1_price else int(cur_prc * 1.15)
+        tp_method = "fib_1272(ichimoku_swing)"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
     return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
@@ -1302,7 +1404,7 @@ def _tp_sl_day_trading(
     min_rr:  float,
 ) -> TpSlResult:
     """
-    데이트레이딩 TP/SL (S1/S2/S4/S7)
+    데이트레이딩 TP/SL (S1/S2/S4)
 
     5분봉 ATR 기반 당일 변동성 활용.
     스윙 전략보다 배수를 작게 설정하여 당일 청산 목표에 맞춤:

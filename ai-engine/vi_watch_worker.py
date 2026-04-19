@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 vi_watch_worker.py
 ──────────────────────────────────────────────────────────────

@@ -47,7 +47,7 @@ from indicator_rsi import calc_rsi
 from indicator_atr import calc_atr, calc_williams_r
 from indicator_stochastic import calc_stochastic
 from indicator_volume import calc_mfi
-from http_utils import fetch_cntr_strength, fetch_stk_nm
+from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         # ── 필수 조건 1 & 2: RSI 과매도(20~38) & MA60 추세 생존 ──
         rsi_vals = calc_rsi(closes, 14)
         rsi_now, rsi_prev = rsi_vals[0], rsi_vals[1]
-        if not (20 <= rsi_now <= 38): continue
+        if not (18 <= rsi_now <= 42): continue
 
         ma60 = sum(closes[:60]) / 60
         if cur_prc < ma60 * 0.88: continue # 추세 완전 붕괴 제외
@@ -104,6 +104,8 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
             if tick:
                 flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", ""))
                 cntr_str = float(str(tick.get("cntr_str", "100")))
+        if cntr_str <= 100:
+            cntr_str, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
 
         if flu_rt < -5.0: continue # 하락 진행 중인 칼날 제외
 
@@ -121,7 +123,7 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
 
         # ── 선택 조건 집계 및 스코어링 ──
         cond_count = sum([cond_stoch, cond_wr, cond_mfi])
-        if cond_count < 2: continue # 최소 2개 이상 지표 일치 필수
+        if cond_count < 1: continue # RSI/ATR/추세 필터를 통과한 종목은 반등 단서 1개만 보여도 재평가 허용
 
         vol_ma20 = sum(vols[1:21]) / 20
         vol_ratio = vols[0] / vol_ma20 if vol_ma20 > 0 else 1.0

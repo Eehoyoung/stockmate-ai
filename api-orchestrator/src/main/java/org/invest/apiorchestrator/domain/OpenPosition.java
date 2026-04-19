@@ -16,9 +16,9 @@ import java.time.OffsetDateTime;
  * - 실시간 포트폴리오 P&amp;L 계산 불가
  * <p>
  * 쓰기 주체:
- * - Java SignalService        → ENTER 확정 시 INSERT
- * - Java ForceCloseScheduler  → TP/SL/FORCE_CLOSE 시 UPDATE
- * - Python overnight_worker   → overnight_verdict UPDATE
+ * - Java SignalService           → ENTER 확정 시 INSERT
+ * - Java PositionMonitorScheduler → TP/SL 도달 시 DELETE (CLOSED UPDATE 아님)
+ * - Python overnight_worker      → overnight_verdict UPDATE
  */
 @Entity
 @Table(name = "open_positions", indexes = {
@@ -65,7 +65,7 @@ public class OpenPosition {
     @Column(name = "rr_ratio",  precision = 5, scale = 2) private BigDecimal rrRatio;
 
     // ── 상태 ──────────────────────────────────────────────────────────────
-    /** ACTIVE / PARTIAL_TP / OVERNIGHT / CLOSING / CLOSED */
+    /** ACTIVE / PARTIAL_TP / OVERNIGHT */
     @Column(name = "status", nullable = false, length = 20)
     @Builder.Default
     private String status = "ACTIVE";
@@ -85,37 +85,19 @@ public class OpenPosition {
     @Column(name = "rule_score", precision = 5, scale = 2) private BigDecimal ruleScore;
     @Column(name = "ai_score",   precision = 5, scale = 2) private BigDecimal aiScore;
 
-    // ── 청산 완료 ─────────────────────────────────────────────────────────
-    @Column(name = "closed_at") private OffsetDateTime closedAt;
-    /** TP1_HIT / TP2_HIT / SL_HIT / FORCE_CLOSE / MANUAL */
-    @Column(name = "exit_type", length = 20)  private String exitType;
-    @Column(name = "exit_price", precision = 10, scale = 0) private BigDecimal exitPrice;
-    @Column(name = "realized_pnl_pct", precision = 7, scale = 4) private BigDecimal realizedPnlPct;
-    @Column(name = "realized_pnl_abs", precision = 14, scale = 0) private BigDecimal realizedPnlAbs;
-    @Column(name = "hold_duration_min") private Integer holdDurationMin;
+    // 종료 이력은 trading_signals (exit_type, exit_pnl_pct, exited_at) 에 기록.
+    // open_positions 행은 포지션 종료 즉시 DELETE된다.
 
     // ── 도메인 메서드 ─────────────────────────────────────────────────────
     public boolean isActive() {
         return "ACTIVE".equals(status) || "PARTIAL_TP".equals(status) || "OVERNIGHT".equals(status);
     }
 
-    public void markTp1Hit(int exitQty, int remainingQty, BigDecimal tp1Price) {
+    public void markTp1Hit(int exitQty, int remainingQty) {
         this.tp1HitAt  = OffsetDateTime.now();
         this.tp1ExitQty = exitQty;
         this.remainingQty = remainingQty;
-        this.exitPrice = tp1Price;
         this.status = "PARTIAL_TP";
-    }
-
-    public void close(String exitType, BigDecimal exitPrice,
-                      BigDecimal pnlPct, BigDecimal pnlAbs, int holdMin) {
-        this.exitType = exitType;
-        this.exitPrice = exitPrice;
-        this.realizedPnlPct = pnlPct;
-        this.realizedPnlAbs = pnlAbs;
-        this.holdDurationMin = holdMin;
-        this.closedAt = OffsetDateTime.now();
-        this.status = "CLOSED";
     }
 
     public void markOvernight(String verdict, BigDecimal score) {

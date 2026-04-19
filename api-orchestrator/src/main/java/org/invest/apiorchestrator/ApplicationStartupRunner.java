@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.domain.PortfolioConfig;
 import org.invest.apiorchestrator.repository.PortfolioConfigRepository;
+import org.invest.apiorchestrator.service.StrategyParamSnapshotService;
 import org.invest.apiorchestrator.service.TokenService;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -16,35 +17,41 @@ public class ApplicationStartupRunner implements ApplicationRunner {
 
     private final TokenService tokenService;
     private final PortfolioConfigRepository portfolioConfigRepository;
+    private final StrategyParamSnapshotService strategyParamSnapshotService;
 
     @Override
     public void run(ApplicationArguments args) {
-        log.info("=== 키움 트레이딩 시스템 시작 ===");
+        log.info("=== Stockmate Trading System Startup ===");
 
-        // portfolio_config 기본 행 보장 (없으면 INSERT)
         try {
             if (portfolioConfigRepository.findSingleton().isEmpty()) {
-                PortfolioConfig defaultConfig = PortfolioConfig.builder().build();
-                portfolioConfigRepository.save(defaultConfig);
-                log.info("[Startup] portfolio_config 기본 행 생성 완료");
+                portfolioConfigRepository.save(PortfolioConfig.builder().build());
+                log.info("[Startup] portfolio_config bootstrap complete");
             } else {
-                log.info("[Startup] portfolio_config 기본 행 확인 완료");
+                log.info("[Startup] portfolio_config already initialized");
             }
         } catch (Exception e) {
-            log.warn("[Startup] portfolio_config 초기화 실패 (무시): {}", e.getMessage());
+            log.warn("[Startup] portfolio_config bootstrap failed: {}", e.getMessage());
         }
 
-        // 토큰 발급
+        try {
+            strategyParamSnapshotService.syncCurrentParams(
+                    "SYSTEM_BOOTSTRAP",
+                    "Initial activation metadata snapshot"
+            );
+        } catch (Exception e) {
+            log.warn("[Startup] strategy_param_history bootstrap failed: {}", e.getMessage());
+        }
+
         try {
             tokenService.refreshToken();
-            log.info("초기 토큰 발급 완료");
+            log.info("[Startup] initial token refresh complete");
         } catch (Exception e) {
-            log.error("초기 토큰 발급 실패 - 스케줄러에서 재시도: {}", e.getMessage());
+            log.error("[Startup] initial token refresh failed - scheduler retry will handle it: {}", e.getMessage());
             return;
         }
 
-        // WebSocket 은 Python websocket-listener 가 단독 운영
-        log.info("WebSocket: Python websocket-listener 단독 운영 중");
-        log.info("=== 시스템 초기화 완료 ===");
+        log.info("[Startup] WebSocket listener is managed by python websocket-listener");
+        log.info("=== Startup Complete ===");
     }
 }

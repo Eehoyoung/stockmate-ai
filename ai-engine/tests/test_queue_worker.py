@@ -239,6 +239,71 @@ class TestNormalSignalPipeline:
         assert result["ai_score"] == 80.0
         assert result["action"] == "ENTER"
 
+    def test_prices_are_normalized_to_tick_size_before_publish(self):
+        item = _signal("S1_GAP_OPEN", cur_prc=84321, tp1_price=86123, sl_price=83234)
+        rdb = _make_rdb(rpop=json.dumps(item))
+
+        captured = []
+
+        async def capture_push(rdb, payload):
+            captured.append(payload)
+
+        mock_ai_result = {
+            "action": "ENTER", "ai_score": 80.0, "confidence": "HIGH",
+            "reason": "good", "adjusted_target_pct": None, "adjusted_stop_pct": None,
+        }
+
+        with patch("queue_worker.rule_score", return_value=75.0), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch("queue_worker.analyze_signal", new_callable=AsyncMock, return_value=mock_ai_result), \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push), \
+             patch("queue_worker._build_market_ctx", new_callable=AsyncMock,
+                   return_value={"tick": {}, "hoga": {}, "strength": 120.0, "vi": {}}):
+            from queue_worker import process_one
+            _run(process_one(rdb))
+
+        result = captured[0]
+        assert result["cur_prc"] == 84300
+        assert result["tp1_price"] == 86100
+        assert result["sl_price"] == 83200
+
+    def test_strategy_provided_rr_ratio_bypasses_global_rr_gate(self):
+        item = _signal("S2_VI_PULLBACK", rr_ratio=0.9, skip_entry=False)
+        rdb = _make_rdb(rpop=json.dumps(item))
+
+        captured = []
+        async def capture_push(rdb, payload):
+            captured.append(payload)
+
+        mock_ai_result = {
+            "action": "ENTER",
+            "ai_score": 78.0,
+            "confidence": "HIGH",
+            "reason": "strategy rr accepted",
+            "adjusted_target_pct": None,
+            "adjusted_stop_pct": None,
+        }
+
+        with patch("queue_worker.rule_score", return_value=75.0), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch("queue_worker.compute_rr") as mock_compute_rr, \
+             patch("queue_worker.analyze_signal", new_callable=AsyncMock,
+                   return_value=mock_ai_result) as mock_analyze, \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push), \
+             patch("queue_worker._build_market_ctx", new_callable=AsyncMock,
+                   return_value={"tick": {}, "hoga": {}, "strength": 120.0, "vi": {}}):
+            from queue_worker import process_one
+            result = _run(process_one(rdb))
+
+        assert result is True
+        mock_compute_rr.assert_not_called()
+        mock_analyze.assert_awaited_once()
+        assert len(captured) == 1
+        assert captured[0]["action"] == "ENTER"
+        assert captured[0]["rule_score"] == 75.0
+
     def test_daily_limit_exceeded_uses_fallback(self):
         """일별 Claude 호출 상한 초과 시 폴백 사용"""
         item = _signal("S1_GAP_OPEN")

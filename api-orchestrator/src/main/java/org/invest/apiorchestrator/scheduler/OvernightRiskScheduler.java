@@ -51,7 +51,7 @@ public class OvernightRiskScheduler {
             StrategyType.S15_MOMENTUM_ALIGN
     );
 
-    @Scheduled(cron = "0 30 8 * * MON-FRI")
+    @Scheduled(cron = "0 30 8 * * MON-FRI", zone = "Asia/Seoul")
     public void checkOvernightRisk() {
         log.info("=== 장전 갭다운 경보 스캔 시작 (08:30) ===");
         try {

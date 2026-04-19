@@ -42,7 +42,7 @@ public class CandidatePoolHistoryScheduler {
         STRATEGY_MAP.put("s4",  "S4_BIG_CANDLE");
         STRATEGY_MAP.put("s5",  "S5_PROG_FRGN");
         STRATEGY_MAP.put("s6",  "S6_THEME_LAGGARD");
-        STRATEGY_MAP.put("s7",  "S7_AUCTION");
+        STRATEGY_MAP.put("s7",  "S7_ICHIMOKU_BREAKOUT");
         STRATEGY_MAP.put("s8",  "S8_GOLDEN_CROSS");
         STRATEGY_MAP.put("s9",  "S9_PULLBACK_SWING");
         STRATEGY_MAP.put("s10", "S10_NEW_HIGH");

@@ -8,6 +8,8 @@ import java.util.Optional;
 
 public interface StockMasterRepository extends JpaRepository<StockMaster, String> {
 
+    List<StockMaster> findByIsActiveTrue();
+
     List<StockMaster> findByMarketAndIsActiveTrue(String market);
 
     List<StockMaster> findBySectorAndIsActiveTrue(String sector);

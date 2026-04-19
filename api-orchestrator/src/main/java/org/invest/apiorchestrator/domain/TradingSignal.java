@@ -247,7 +247,8 @@ public class TradingSignal {
     public enum StrategyType {
         // ── 장전/시초가 ──────────────────────────
         S1_GAP_OPEN,        // 갭상승 + 체결강도 시초가
-        S7_AUCTION,         // 동시호가 예상체결 갭 필터
+        S7_AUCTION,         // 레거시 동시호가 예상체결 갭 필터 (기존 데이터 호환용)
+        S7_ICHIMOKU_BREAKOUT, // 일목균형표 구름대 돌파 스윙
         // ── 단기 이벤트 ─────────────────────────
         S2_VI_PULLBACK,     // VI 발동 후 눌림목 재진입
         S4_BIG_CANDLE,      // 장대양봉 + 거래량 급증 추격

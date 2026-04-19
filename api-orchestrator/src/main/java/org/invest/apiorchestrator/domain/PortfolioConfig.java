@@ -2,6 +2,8 @@ package org.invest.apiorchestrator.domain;
 
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -63,10 +65,11 @@ public class PortfolioConfig {
     private BigDecimal minRrRatio = new BigDecimal("1.0");
 
     // ── 전략 활성화 (JSONB 배열) ──────────────────────────────────────────
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "enabled_strategies", columnDefinition = "jsonb")
     @Builder.Default
     private String enabledStrategies =
-            "[\"S1_GAP_OPEN\",\"S7_AUCTION\",\"S8_GOLDEN_CROSS\",\"S9_PULLBACK_SWING\"," +
+            "[\"S1_GAP_OPEN\",\"S7_ICHIMOKU_BREAKOUT\",\"S8_GOLDEN_CROSS\",\"S9_PULLBACK_SWING\"," +
             "\"S10_NEW_HIGH\",\"S11_FRGN_CONT\",\"S12_CLOSING\",\"S13_BOX_BREAKOUT\"," +
             "\"S14_OVERSOLD_BOUNCE\",\"S15_MOMENTUM_ALIGN\"]";
 

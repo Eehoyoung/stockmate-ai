@@ -10,8 +10,10 @@ import org.invest.apiorchestrator.repository.StrategyParamHistoryRepository;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.service.OvernightScoringService;
+import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
@@ -37,6 +39,8 @@ public class TradingController {
     private final TradingSignalRepository signalRepository;
     private final StringRedisTemplate redis;
     private final StrategyParamHistoryRepository strategyParamHistoryRepository;
+    private final JdbcTemplate jdbcTemplate;
+    private final OperationsHealthService operationsHealthService;
 
     /** 토큰 수동 갱신 */
     @PostMapping("/token/refresh")
@@ -133,14 +137,15 @@ public class TradingController {
                 "signals", signals, "published", cnt));
     }
 
-    /** 전술 7 수동 실행 (동시호가) */
+    /** 전략 7 수동 실행 (일목균형표 스윙) */
     @PostMapping("/strategy/s7/run")
     public ResponseEntity<Map<String, Object>> runS7(
             @RequestParam(defaultValue = "000") String market) {
-        List<TradingSignalDto> signals = strategyService.scanAuction(market);
-        int cnt = signalService.processSignals(signals);
-        return ResponseEntity.ok(Map.of("strategy", "S7_AUCTION",
-                "signals", signals, "published", cnt));
+        return ResponseEntity.ok(Map.of(
+                "strategy", "S7_ICHIMOKU_BREAKOUT",
+                "published", 0,
+                "msg", "S7은 Python ai-engine에서 장중 자동 실행됩니다. 수동 실행은 현재 비활성화되어 있습니다."
+        ));
     }
 
     /** 전술 10 수동 실행 (52주 신고가 돌파) */
@@ -225,8 +230,8 @@ public class TradingController {
 
     /** 헬스체크 */
     @GetMapping("/health")
-    public ResponseEntity<Map<String, String>> health() {
-        return ResponseEntity.ok(Map.of("status", "UP", "service", "kiwoom-trading"));
+    public ResponseEntity<Map<String, Object>> health() {
+        return ResponseEntity.ok(operationsHealthService.buildHealthSnapshot());
     }
 
     /**
@@ -267,7 +272,7 @@ public class TradingController {
                     "trading_control", upperMode,
                     "message",         message
             ));
-            redisMarketDataService.pushScoredQueue(alert);
+            log.info("[Control] ai-engine scheduled brief owns user-facing news delivery; NEWS_ALERT push skipped");
 
             return ResponseEntity.ok(Map.of("status", "ok", "mode", upperMode, "prev", prev != null ? prev : "CONTINUE"));
         } catch (Exception e) {
@@ -283,7 +288,7 @@ public class TradingController {
     /** 오늘 신호 + 가상 P&L 목록 */
     @GetMapping("/signals/performance")
     public ResponseEntity<List<TradingSignal>> getSignalPerformance() {
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         List<TradingSignal> signals = signalRepository.findTodaySignals(startOfDay);
         return ResponseEntity.ok(signals);
     }
@@ -291,7 +296,7 @@ public class TradingController {
     /** 전략별 가상 성과 요약 */
     @GetMapping("/signals/performance/summary")
     public ResponseEntity<List<Object[]>> getPerformanceSummary() {
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(startOfDay));
     }
 
@@ -337,7 +342,7 @@ public class TradingController {
     public ResponseEntity<List<TradingSignal>> getSignalHistory(
             @PathVariable String stkCd,
             @RequestParam(defaultValue = "7") int days) {
-        LocalDateTime since = LocalDateTime.now().minusDays(days);
+        LocalDateTime since = KstClock.now().minusDays(days);
         List<TradingSignal> history =
                 signalRepository.findByStkCdAndCreatedAtAfterOrderByCreatedAtDesc(stkCd, since);
         return ResponseEntity.ok(history);
@@ -346,7 +351,7 @@ public class TradingController {
     /** 전략별 성과 상세 (Feature 3 – /전략분석) */
     @GetMapping("/signals/strategy-analysis")
     public ResponseEntity<List<Object[]>> getStrategyAnalysis() {
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(startOfDay));
     }
 
@@ -444,5 +449,35 @@ public class TradingController {
                 "daily_signals",      dailySignals,
                 "ws_reconnect_today", wsReconnect != null ? Long.parseLong(wsReconnect) : 0L
         ));
+    }
+
+    @GetMapping("/db/table-status")
+    public ResponseEntity<Map<String, Object>> getTableStatus() {
+        String[] tables = {
+                "candidate_pool_history",
+                "daily_indicators",
+                "daily_pnl",
+                "economic_events",
+                "kiwoom_tokens",
+                "market_daily_context",
+                "news_analysis",
+                "open_positions",
+                "overnight_evaluations",
+                "portfolio_config",
+                "risk_events",
+                "signal_score_components",
+                "stock_master",
+                "strategy_daily_stats",
+                "strategy_param_history",
+                "trading_signals",
+                "vi_events",
+                "ws_tick_data"
+        };
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        for (String table : tables) {
+            Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + table, Long.class);
+            result.put(table, count != null ? count : 0L);
+        }
+        return ResponseEntity.ok(result);
     }
 }

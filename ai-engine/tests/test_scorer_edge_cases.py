@@ -394,23 +394,30 @@ class TestS3Boundaries:
 # ──────────────────────────────────────────────────────────────────
 
 class TestS7Boundaries:
-    """호가비율: >3=30점, >2=25점, >1.5=10점"""
+    """S7 ?? ???"""
 
-    def test_bid_ratio_3_gets_25(self):
-        """bid_ratio=3.0 → >2 구간 → 25점"""
-        sig = _sig("S7_AUCTION", gap_pct=3.0, vol_rank=5)
-        ctx = _ctx(strength=100, flu_rt=3.0, bid=3000, ask=1000)
-        score, _ = rule_score(sig, ctx)
-        # gap=3% → +25, bid_ratio=3.0 → >2 → 25점
-        assert score >= 50  # 최소 25+25=50점
+    def test_cloud_boundary_under_1_scores_20(self):
+        sig = _sig("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.99, chikou_above=False, vol_ratio=1.0, rsi=80, cond_count=0)
+        score, _ = rule_score(sig, _ctx())
+        assert score == 20.0
 
-    def test_bid_ratio_just_above_3_gets_30(self):
-        """bid_ratio=3.01 → >3 구간 → 30점"""
-        sig = _sig("S7_AUCTION", gap_pct=3.0, vol_rank=5)
-        ctx = _ctx(strength=100, flu_rt=3.0, bid=3010, ask=1000)
-        score, _ = rule_score(sig, ctx)
-        # gap=3% → +25, bid_ratio>3 → 30점, vol_rank≤10 → 20점 = 75점
-        assert score >= 75
+    def test_cloud_boundary_under_2_scores_15(self):
+        sig = _sig("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=1.5, chikou_above=False, vol_ratio=1.0, rsi=80, cond_count=0)
+        score, _ = rule_score(sig, _ctx())
+        assert score == 15.0
+
+    def test_vol_ratio_just_above_1_5_scores_15(self):
+        sig = _sig("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=False, vol_ratio=1.51, rsi=80, cond_count=0)
+        score, _ = rule_score(sig, _ctx())
+        assert score == 15.0
+
+    def test_vol_ratio_2_scores_25(self):
+        sig = _sig("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=False, vol_ratio=2.0, rsi=80, cond_count=0)
+        score, _ = rule_score(sig, _ctx())
+        assert score == 25.0
+
+
+
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -467,7 +474,7 @@ class TestScoreClipping:
 
     def test_score_never_above_100(self):
         """모든 조건 최대여도 100점 초과 없음"""
-        sig = _sig("S7_AUCTION", gap_pct=3.0, vol_rank=1)
+        sig = _sig("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=2.0, rsi=55, cond_count=3)
         ctx = _ctx(strength=200, flu_rt=1.0, bid=10000, ask=1000)
         score, _ = rule_score(sig, ctx)
         assert score <= 100.0
@@ -539,12 +546,11 @@ class TestCombinationScores:
         assert score == 85.0
 
     def test_s7_all_max_conditions(self):
-        """S7 모든 조건 최대 → 75점"""
-        sig = _sig("S7_AUCTION", gap_pct=3.0, vol_rank=5)
+        """S7 모든 조건 최대 → 고득점"""
+        sig = _sig("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=2.0, rsi=55, cond_count=3)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=4000, ask=1000)
         score, _ = rule_score(sig, ctx)
-        # gap=3% → 25, bid_ratio=4 → 30, vol_rank=5 → 20 = 75점
-        assert score == 75.0
+        assert score >= 90.0
 
     def test_s4_is_new_high_bonus(self):
         """S4 신고가 플래그 +20점"""

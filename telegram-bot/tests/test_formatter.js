@@ -132,6 +132,16 @@ test('종목명이 포함됨', () => {
     assert.ok(msg.includes('삼성전자'));
 });
 
+test('ENTER 알림에 초보자용 가이드가 포함됨', () => {
+    const msg = formatSignal(makeSignal());
+    assert.ok(msg.includes('초보자용 매수 가이드'));
+});
+
+test('ENTER 알림에 종목 라인이 별도로 포함됨', () => {
+    const msg = formatSignal(makeSignal());
+    assert.ok(msg.includes('종목: <b>삼성전자 (005930)</b>'));
+});
+
 test('AI 스코어가 포함됨', () => {
     const msg = formatSignal(makeSignal());
     assert.ok(msg.includes('78.5') || msg.includes('78'));
@@ -145,6 +155,14 @@ test('규칙 스코어가 포함됨', () => {
 test('진입방식이 포함됨', () => {
     const msg = formatSignal(makeSignal());
     assert.ok(msg.includes('시초가_시장가'));
+});
+
+test('ENTER 알림에 실행 순서가 포함됨', () => {
+    const msg = formatSignal(makeSignal());
+    assert.ok(msg.includes('실행 순서'));
+    assert.ok(msg.includes('1.'));
+    assert.ok(msg.includes('2.'));
+    assert.ok(msg.includes('3.'));
 });
 
 test('목표 퍼센트가 포함됨 (폴백 % 표시)', () => {

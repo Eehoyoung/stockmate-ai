@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 monitor_worker.py
 Feature 5 – 데이터 품질 모니터링 비동기 태스크.
@@ -12,11 +13,12 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("monitor_worker")
 
 MONITOR_INTERVAL_SEC = int(os.getenv("MONITOR_INTERVAL_SEC", "60"))
+_KST = timezone(timedelta(hours=9))
 QUEUE_DEPTH_WARN     = int(os.getenv("MONITOR_QUEUE_DEPTH_WARN", "50"))
 ERROR_QUEUE_WARN     = int(os.getenv("MONITOR_ERROR_QUEUE_WARN", "5"))
 MEMORY_WARN_PCT      = float(os.getenv("MONITOR_MEMORY_WARN_PCT", "80.0"))
@@ -84,7 +86,7 @@ async def _publish_system_alert(rdb, alert_messages: list):
             "type":    "SYSTEM_ALERT",
             "alerts":  alert_messages,
             "message": f"🔧 <b>[시스템 경고]</b>\n{joined}",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(_KST).isoformat(),
         }, ensure_ascii=False)
         await rdb.lpush("ai_scored_queue", payload)
         await rdb.expire("ai_scored_queue", 43200)

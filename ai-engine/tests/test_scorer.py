@@ -96,6 +96,12 @@ class TestS1GapOpen:
         score, _ = rule_score(signal, ctx)
         assert score == 15.0
 
+    def test_strategy_raw_score_boost_used(self):
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", gap_pct=3.0, vol_rank=999, score=40)
+        ctx = _ctx(strength=100, flu_rt=0, bid_ratio=0.5)
+        score, _ = rule_score(signal, ctx)
+        assert score == 35.0
+
     def test_overheat_penalty_above_15pct(self):
         """flu_rt > 15% → 과열 패널티 -20점"""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0)
@@ -150,6 +156,24 @@ class TestS1GapOpen:
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
         assert isinstance(score, float)
+
+    def test_signal_bid_ratio_fallback_used_when_hoga_missing(self):
+        """WS 호가가 없어도 signal.bid_ratio 로 S1 수요 점수를 계산한다."""
+        signal = _signal("S1_GAP_OPEN", gap_pct=4.0, bid_ratio=2.5)
+        ctx = {
+            "tick": {"flu_rt": "4.0"},
+            "hoga": {},
+            "strength": 100.0,
+            "vi": {},
+        }
+        score, _ = rule_score(signal, ctx)
+        assert score == 45.0
+
+    def test_strategy_raw_score_boost_used(self):
+        signal = _signal("S1_GAP_OPEN", gap_pct=4.0, score=100)
+        ctx = _ctx(strength=100, flu_rt=4.0, bid_ratio=0.5)
+        score, _ = rule_score(signal, ctx)
+        assert score == 40.0
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -329,6 +353,12 @@ class TestS3InstFrgn:
         score, _ = rule_score(signal, ctx)
         assert score == 25.0
 
+    def test_flu_rt_positive_adds_bonus(self):
+        signal = _signal("S3_INST_FRGN", net_buy_amt=0, continuous_days=0, vol_ratio=0, flu_rt=2.0)
+        ctx = _ctx()
+        score, _ = rule_score(signal, ctx)
+        assert score == 10.0
+
     def test_missing_continuous_days_defaults(self):
         """continuous_days 없을 때 0으로 처리"""
         signal = _signal("S3_INST_FRGN", net_buy_amt=0, vol_ratio=0)
@@ -365,19 +395,19 @@ class TestS4BigCandle:
         score, _ = rule_score(signal, ctx)
         assert score < 30, f"Expected <30 but got {score}"
 
-    def test_vol_ratio_over_10_gets_25(self):
+    def test_vol_ratio_over_10_gets_30(self):
         """거래량비율 > 10 → 25점"""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=11, body_ratio=0, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
-        assert score == 25.0
+        assert score == 30.0
 
-    def test_vol_ratio_5_to_10_gets_20(self):
+    def test_vol_ratio_5_to_10_gets_25(self):
         """거래량비율 5~10 → 20점"""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=7, body_ratio=0, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
-        assert score == 20.0
+        assert score == 25.0
 
     def test_body_ratio_over_0_8_gets_20(self):
         """몸통비율 ≥ 0.8 → 20점"""
@@ -386,12 +416,18 @@ class TestS4BigCandle:
         score, _ = rule_score(signal, ctx)
         assert score == 20.0
 
+    def test_body_ratio_0_65_to_0_69_gets_10(self):
+        signal = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0.66, is_new_high=False)
+        ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
+        score, _ = rule_score(signal, ctx)
+        assert score == 10.0
+
     def test_is_new_high_adds_20(self):
         """신고가 → +20점"""
         signal_high = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0, is_new_high=True)
         signal_no = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
-        assert rule_score(signal_high, ctx)[0] == rule_score(signal_no, ctx) + 20
+        assert rule_score(signal_high, ctx)[0] == rule_score(signal_no, ctx)[0] + 20
 
     def test_missing_is_new_high(self):
         """is_new_high 없을 때 0점"""
@@ -407,6 +443,11 @@ class TestS4BigCandle:
         score, _ = rule_score(signal, ctx)
         assert score == 20.0
 
+    def test_gain_pct_3_5_plus_gets_10(self):
+        signal = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0, gain_pct=3.6, is_new_high=False)
+        ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
+        score, _ = rule_score(signal, ctx)
+        assert score == 10.0
 
 # ──────────────────────────────────────────────────────────────────
 # S5_PROG_FRGN 테스트
@@ -456,6 +497,18 @@ class TestS5ProgFrgn:
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=2.5)
         score, _ = rule_score(signal, ctx)
         assert score == 20.0
+
+    def test_signal_strength_and_bid_ratio_fallback_used(self):
+        signal = _signal("S5_PROG_FRGN", net_buy_amt=0, cntr_strength=135, bid_ratio=2.5)
+        ctx = {
+            "tick": {"flu_rt": "3.0"},
+            "hoga": {},
+            "strength": 100.0,
+            "vi": {},
+            "ws_online": True,
+        }
+        score, _ = rule_score(signal, ctx)
+        assert score == 45.0
 
     def test_zero_net_buy_amt(self):
         """net_buy_amt=0 → 0점"""
@@ -545,111 +598,62 @@ class TestS6ThemeLaggard:
 
 
 # ──────────────────────────────────────────────────────────────────
-# S7_AUCTION 테스트
+# S7_ICHIMOKU_BREAKOUT 테스트
 # ──────────────────────────────────────────────────────────────────
 
-class TestS7Auction:
-    """S7: 동시호가 전략"""
+class TestS7IchimokuBreakout:
+    """S7: ????? ??? ?? ??"""
 
     def test_optimal_conditions_high_score(self):
-        """갭 2~5%, 높은 호가비율, 상위 거래량 순위 → ≥70점"""
-        signal = _signal("S7_AUCTION", gap_pct=3.0, vol_rank=5)
-        ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=3.5)
-        score, _ = rule_score(signal, ctx)
-        assert score >= 70, f"Expected >=70 but got {score}"
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=2.0, rsi=55, cond_count=3)
+        score, _ = rule_score(signal, _ctx(strength=100, flu_rt=3.0))
+        assert score >= 90
 
     def test_minimal_conditions_low_score(self):
-        """갭 없음, 낮은 호가비율, 낮은 거래량 순위 → <20점"""
-        signal = _signal("S7_AUCTION", gap_pct=0, vol_rank=50)
-        ctx = _ctx(strength=100, flu_rt=0, bid_ratio=1.0)
-        score, _ = rule_score(signal, ctx)
-        assert score < 20, f"Expected <20 but got {score}"
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=False, vol_ratio=1.0, rsi=80, cond_count=0)
+        score, _ = rule_score(signal, _ctx(strength=100, flu_rt=0.0))
+        assert score == 0.0
 
-    def test_gap_2_to_5_gets_25(self):
-        """갭 2~5% → 25점"""
-        signal = _signal("S7_AUCTION", gap_pct=3.0, vol_rank=999)
-        ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
-        score, _ = rule_score(signal, ctx)
-        assert score == 25.0
-
-    def test_gap_5_to_8_gets_15(self):
-        """갭 5~8% → 15점"""
-        signal = _signal("S7_AUCTION", gap_pct=6.0, vol_rank=999)
-        ctx = _ctx(strength=100, flu_rt=6.0, bid_ratio=0.5)
-        score, _ = rule_score(signal, ctx)
-        assert score == 15.0
-
-    def test_bid_ratio_above_3_gets_30(self):
-        """호가비율 > 3 → 30점 + gap=0(<8) 15점 = 45점"""
-        signal = _signal("S7_AUCTION", gap_pct=0, vol_rank=999)
-        ctx = _ctx(strength=100, flu_rt=0, bid_ratio=3.5)
-        score, _ = rule_score(signal, ctx)
-        # gap=0 < 8 → 15점, bid_ratio=3.5 > 3 → 30점, vol_rank=999 → 0점
-        assert score == 45.0
-
-    def test_bid_ratio_2_to_3_gets_25(self):
-        """호가비율 2~3 → 25점 + gap=0(<8) 15점 = 40점"""
-        signal = _signal("S7_AUCTION", gap_pct=0, vol_rank=999)
-        ctx = _ctx(strength=100, flu_rt=0, bid_ratio=2.5)
-        score, _ = rule_score(signal, ctx)
-        # gap=0 < 8 → 15점, bid_ratio=2.5 > 2 → 25점, vol_rank=999 → 0점
-        assert score == 40.0
-
-    def test_bid_ratio_1_5_to_2_gets_10(self):
-        """호가비율 1.5~2 → 10점 (gap=10 ≥ 8 → 0점, flu_rt=10 → 페널티 없음)"""
-        signal = _signal("S7_AUCTION", gap_pct=10.0, vol_rank=999)
-        ctx = _ctx(strength=100, flu_rt=10.0, bid_ratio=1.7)
-        score, _ = rule_score(signal, ctx)
-        # gap=10 ≥ 8 → 0점, bid_ratio=1.7 > 1.5 → 10점, vol_rank=999 → 0점
-        # flu_rt=10 → > 10 조건에 해당하지 않으므로 패널티 없음
-        assert score == 10.0
-
-    def test_vol_rank_top10_gets_20(self):
-        """거래량 순위 10위 이내 → +20점 + gap=0(<8) 15점 = 35점"""
-        signal = _signal("S7_AUCTION", gap_pct=0, vol_rank=5)
-        ctx = _ctx(strength=100, flu_rt=0, bid_ratio=0.5)
-        score, _ = rule_score(signal, ctx)
-        # gap=0 < 8 → 15점, bid_ratio=0.5 ≤ 1.5 → 0점, vol_rank=5 ≤ 10 → 20점
-        assert score == 35.0
-
-    def test_vol_rank_top20_gets_15(self):
-        """거래량 순위 11~20위 → +15점 + gap=0(<8) 15점 = 30점"""
-        signal = _signal("S7_AUCTION", gap_pct=0, vol_rank=15)
-        ctx = _ctx(strength=100, flu_rt=0, bid_ratio=0.5)
-        score, _ = rule_score(signal, ctx)
-        # gap=0 < 8 → 15점, bid_ratio=0.5 → 0점, vol_rank=15 ≤ 20 → 15점
-        assert score == 30.0
-
-    def test_vol_rank_top30_gets_5(self):
-        """거래량 순위 21~30위 → +5점 + gap=0(<8) 15점 = 20점"""
-        signal = _signal("S7_AUCTION", gap_pct=0, vol_rank=25)
-        ctx = _ctx(strength=100, flu_rt=0, bid_ratio=0.5)
-        score, _ = rule_score(signal, ctx)
-        # gap=0 < 8 → 15점, bid_ratio=0.5 → 0점, vol_rank=25 ≤ 30 → 5점
+    def test_cloud_thickness_below_1_gets_20(self):
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=False, vol_ratio=1.0, rsi=80, cond_count=0)
+        score, _ = rule_score(signal, _ctx())
         assert score == 20.0
 
-    def test_vol_rank_none_defaults_999(self):
-        """vol_rank=None → 999로 처리 → 0점 + gap=0(<8) 15점 = 15점"""
-        signal = _signal("S7_AUCTION", gap_pct=0, vol_rank=None)
-        ctx = _ctx(strength=100, flu_rt=0, bid_ratio=0.5)
-        score, _ = rule_score(signal, ctx)
-        # gap=0 < 8 → 15점, bid_ratio=0.5 → 0점, vol_rank=999 > 30 → 0점
+    def test_chikou_above_adds_20(self):
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=True, vol_ratio=1.0, rsi=80, cond_count=0)
+        score, _ = rule_score(signal, _ctx())
+        assert score == 20.0
+
+    def test_vol_ratio_2_gets_25(self):
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=False, vol_ratio=2.0, rsi=80, cond_count=0)
+        score, _ = rule_score(signal, _ctx())
+        assert score == 25.0
+
+    def test_rsi_in_range_gets_15(self):
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=False, vol_ratio=1.0, rsi=55, cond_count=0)
+        score, _ = rule_score(signal, _ctx())
         assert score == 15.0
 
+    def test_condition_count_adds_five_each(self):
+        signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=False, vol_ratio=1.0, rsi=80, cond_count=3)
+        score, _ = rule_score(signal, _ctx())
+        assert score == 20.0
 
-# ──────────────────────────────────────────────────────────────────
-# get_claude_threshold / should_skip_ai 테스트
-# ──────────────────────────────────────────────────────────────────
 
 class TestThresholdAndSkipAi:
     def test_known_strategy_thresholds(self):
-        assert get_claude_threshold("S1_GAP_OPEN") == 70
+        assert get_claude_threshold("S1_GAP_OPEN") == 55
         assert get_claude_threshold("S2_VI_PULLBACK") == 65
         assert get_claude_threshold("S3_INST_FRGN") == 60
-        assert get_claude_threshold("S4_BIG_CANDLE") == 75
+        assert get_claude_threshold("S4_BIG_CANDLE") == 65
         assert get_claude_threshold("S5_PROG_FRGN") == 65
         assert get_claude_threshold("S6_THEME_LAGGARD") == 60
-        assert get_claude_threshold("S7_AUCTION") == 70
+        assert get_claude_threshold("S7_ICHIMOKU_BREAKOUT") == 62
+        assert get_claude_threshold("S8_GOLDEN_CROSS") == 50
+        assert get_claude_threshold("S9_PULLBACK_SWING") == 45
+        assert get_claude_threshold("S10_NEW_HIGH") == 48
+        assert get_claude_threshold("S13_BOX_BREAKOUT") == 55
+        assert get_claude_threshold("S14_OVERSOLD_BOUNCE") == 50
 
     def test_unknown_strategy_default_threshold(self):
         threshold = get_claude_threshold("UNKNOWN")
@@ -699,3 +703,47 @@ class TestCommonPenalties:
         score, _ = rule_score(signal, {})
         assert isinstance(score, float)
         assert 0.0 <= score <= 100.0
+
+
+class TestSwingScoreBoosts:
+    def test_s8_strategy_score_bonus_is_applied(self):
+        signal = _signal(
+            "S8_GOLDEN_CROSS",
+            flu_rt=2.0,
+            cntr_strength=125,
+            vol_ratio=2.0,
+            score=40,
+            rsi=58,
+            gap_pct=1.5,
+            is_today_cross=True,
+            is_macd_accel=True,
+        )
+        score, _ = rule_score(signal, _ctx(strength=120, flu_rt=2.0, bid_ratio=1.4))
+        assert score >= 70.0
+
+    def test_s13_strategy_payload_is_reflected_in_score(self):
+        signal = _signal(
+            "S13_BOX_BREAKOUT",
+            flu_rt=4.0,
+            cntr_strength=135,
+            vol_ratio=2.5,
+            score=55,
+            rsi=62,
+            bollinger_squeeze=True,
+            mfi_confirmed=True,
+        )
+        score, _ = rule_score(signal, _ctx(strength=130, flu_rt=4.0, bid_ratio=1.6))
+        assert score >= 70.0
+
+    def test_s14_single_reversal_signal_can_still_score(self):
+        signal = _signal(
+            "S14_OVERSOLD_BOUNCE",
+            rsi=28,
+            atr_pct=1.8,
+            cntr_strength=112,
+            vol_ratio=1.6,
+            cond_count=1,
+            score=42,
+        )
+        score, _ = rule_score(signal, _ctx(strength=110, flu_rt=-1.0, bid_ratio=1.3))
+        assert score >= 50.0

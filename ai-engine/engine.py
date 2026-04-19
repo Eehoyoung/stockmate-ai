@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 ai-engine/engine.py
 ──────────────────────────────────────────────────────────────
@@ -21,21 +22,23 @@ import sys
 
 import asyncpg
 import redis.asyncio as aioredis
-from dotenv import load_dotenv
 
-from aiohttp import web
+from health_server import run_health_server
 from queue_worker import run_worker
 from confirm_worker import run_confirm_worker
 from strategy_runner import run_strategy_scanner
 from news_scheduler import run_news_scheduler
 from monitor_worker import run_monitor
+from status_report_worker import run_status_report_worker
+from position_monitor import run_position_monitor
 from overnight_worker import run_overnight_worker
 from vi_watch_worker import run_vi_watch_worker
 from candidates_builder import run_candidate_builder
-from claude_analyst import analyze_stock_for_user
-from stockScore import score_stock as score_stock_strategies
-
-load_dotenv()
+from config import (
+    REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
+    PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD, PG_ENABLED,
+)
+from utils import bool_env
 
 # ── 로깅 설정 ────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -50,115 +53,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("engine")
 
-# ── Redis 설정 ─────────────────────────────────────────────────
-REDIS_HOST     = os.getenv("REDIS_HOST",     "localhost")
-REDIS_PORT     = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "") or None
-
-# ── PostgreSQL 설정 ─────────────────────────────────────────────
-PG_HOST     = os.getenv("POSTGRES_HOST",     "localhost")
-PG_PORT     = int(os.getenv("POSTGRES_PORT", "5432"))
-PG_DB       = os.getenv("POSTGRES_DB",       "SMA")
-PG_USER     = os.getenv("POSTGRES_USER",     "postgres")
-PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
-PG_ENABLED  = os.getenv("PG_WRITER_ENABLED", "true").lower() == "true"
-
-
-async def _run_health_server(port: int, rdb):
-    """간단한 /health HTTP 엔드포인트 제공"""
-    import time
-    _start_time = time.time()
-
-    async def _health_handler(request):
-        try:
-            await rdb.ping()
-            redis_ok = True
-        except Exception:
-            redis_ok = False
-        status_str = "UP" if redis_ok else "DEGRADED"
-        body = {
-            "status": status_str,
-            "service": "stockmate-ai-engine",
-            "redis_connected": redis_ok,
-            "uptime_sec": int(time.time() - _start_time),
-            "claude_model": os.getenv("CLAUDE_MODEL", "N/A"),
-        }
-        return web.json_response(body, status=200 if redis_ok else 503)
-
-    async def _candidates_handler(request):
-        """
-        /candidates — 전략별 Redis 후보 풀 현황 반환
-        candidates:s{N}:{market} 키 목록과 종목 수를 JSON으로 응답.
-        """
-        MARKETS = ["001", "101"]
-        STRATEGIES = [f"s{n}" for n in range(1, 16)]
-        pool_status = {}
-        try:
-            for s in STRATEGIES:
-                for mkt in MARKETS:
-                    key = f"candidates:{s}:{mkt}"
-                    count = await rdb.llen(key)
-                    if count > 0:
-                        pool_status[key] = count
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=503)
-
-        total = sum(pool_status.values())
-        return web.json_response({
-            "total_candidates": total,
-            "pools": pool_status,
-        })
-
-    async def _analyze_handler(request):
-        """
-        /analyze/{stk_cd} — /claude 텔레그램 명령어 전용 종목 종합 분석
-        Claude API 를 호출하여 기술적 분석 + 전략 후보 풀 정보 반환.
-        """
-        stk_cd = request.match_info.get("stk_cd", "").strip()
-        if not stk_cd or not stk_cd.isdigit() or len(stk_cd) != 6:
-            return web.json_response({"error": "6자리 숫자 종목코드 필요"}, status=400)
-        try:
-            result = await analyze_stock_for_user(rdb, stk_cd)
-            return web.json_response(result)
-        except Exception as e:
-            logger.error("[Health] /analyze/%s 오류: %s", stk_cd, e)
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def _score_handler(request):
-        """
-        /score/{stk_cd} — /score 텔레그램 명령어 전용 15전략 심사 + AI 스코어링.
-        S1~S15 전략 조건 경량 심사 → 매칭 전략 규칙/AI 점수 반환.
-        Query param: ai=false 로 AI 스코어링 비활성화 (빠른 규칙 점수만).
-        """
-        stk_cd = request.match_info.get("stk_cd", "").strip()
-        if not stk_cd or not stk_cd.isdigit() or len(stk_cd) != 6:
-            return web.json_response({"error": "6자리 숫자 종목코드 필요"}, status=400)
-        enable_ai = request.rel_url.query.get("ai", "true").lower() != "false"
-        try:
-            result = await score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai)
-            return web.json_response(result, dumps=lambda o: __import__("json").dumps(o, ensure_ascii=False, default=str))
-        except Exception as e:
-            logger.error("[Health] /score/%s 오류: %s", stk_cd, e)
-            return web.json_response({"error": str(e)}, status=500)
-
-    app = web.Application()
-    app.router.add_get("/health", _health_handler)
-    app.router.add_get("/candidates", _candidates_handler)
-    app.router.add_get("/analyze/{stk_cd}", _analyze_handler)
-    app.router.add_get("/score/{stk_cd}", _score_handler)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info("[Health] AI Engine 헬스체크 서버 시작 → http://localhost:%d/health", port)
-
-    # 서버를 계속 실행 (태스크 취소 시 자동 종료)
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await runner.cleanup()
-
-
 async def main():
     logger.info("=" * 50)
     logger.info("  StockMate AI – AI Engine 시작")
@@ -169,6 +63,20 @@ async def main():
     if not os.getenv("CLAUDE_API_KEY"):
         logger.critical("CLAUDE_API_KEY 미설정 – ai-engine 기동 불가. 환경변수를 확인하세요.")
         sys.exit(1)
+
+    # 매도 신호 환경변수 검증
+    for _bool_var in ("ENABLE_POSITION_MONITOR", "REVERSAL_CLAUDE_ENABLED"):
+        _val = os.getenv(_bool_var, "true").lower()
+        if _val not in ("true", "false"):
+            logger.warning("%s 값이 'true'/'false'가 아님: '%s' – 기본값 true로 처리", _bool_var, _val)
+
+    for _int_var, _default in (("POSITION_MONITOR_INTERVAL_SEC", "30"), ("REVERSAL_CLAUDE_COOLDOWN_SEC", "120")):
+        _raw = os.getenv(_int_var, _default)
+        try:
+            int(_raw)
+        except ValueError:
+            logger.critical("%s 값이 정수가 아님: '%s'", _int_var, _raw)
+            sys.exit(1)
 
     # Redis 연결
     rdb = aioredis.Redis(
@@ -209,13 +117,15 @@ async def main():
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    enable_confirm   = os.getenv("ENABLE_CONFIRM_GATE",      "false").lower() == "true"
-    enable_scanner   = os.getenv("ENABLE_STRATEGY_SCANNER", "true").lower()  == "true"  # S8/S9/S11/S13 Python 전용
-    enable_news      = os.getenv("NEWS_ENABLED",            "true").lower()  == "true"
-    enable_monitor   = os.getenv("ENABLE_MONITOR",          "true").lower()  == "true"
-    enable_overnight = os.getenv("ENABLE_OVERNIGHT_WORKER", "true").lower()  == "true"
-    enable_vi_watch       = os.getenv("ENABLE_VI_WATCH_WORKER",  "true").lower()  == "true"  # S2 VI 눌림목 감시
-    enable_cand_builder   = os.getenv("ENABLE_CANDIDATE_BUILDER", "true").lower()  == "true"  # 후보 풀 적재
+    enable_confirm      = False
+    enable_scanner      = bool_env("ENABLE_STRATEGY_SCANNER",   True)   # S8/S9/S11/S13 Python 전용
+    enable_news         = bool_env("NEWS_ENABLED",              True)
+    enable_monitor      = bool_env("ENABLE_MONITOR",            True)
+    enable_status_report = bool_env("ENABLE_STATUS_REPORT",     True)
+    enable_pos_monitor  = bool_env("ENABLE_POSITION_MONITOR",   True)
+    enable_overnight    = bool_env("ENABLE_OVERNIGHT_WORKER",   True)
+    enable_vi_watch     = bool_env("ENABLE_VI_WATCH_WORKER",    True)   # S2 VI 눌림목 감시
+    enable_cand_builder = bool_env("ENABLE_CANDIDATE_BUILDER",  True)   # 후보 풀 적재
     health_port      = int(os.getenv("AI_HEALTH_PORT", "8082"))
     logger.info("[Engine] AI Engine ready – telegram_queue 폴링 시작")
     if enable_confirm:
@@ -230,6 +140,12 @@ async def main():
     if enable_monitor:
         logger.info("[Engine] 데이터 품질 모니터링 활성화 (ENABLE_MONITOR=true, 주기=%ss)",
                     os.getenv("MONITOR_INTERVAL_SEC", "60"))
+    if enable_status_report:
+        logger.info("[Engine] status report enabled (ENABLE_STATUS_REPORT=true, slots=%s KST)",
+                    os.getenv("STATUS_REPORT_SLOTS", "08:30,12:00,15:40"))
+    if enable_pos_monitor:
+        logger.info("[Engine] 포지션 모니터 활성화 (ENABLE_POSITION_MONITOR=true, 주기=%ss)",
+                    os.getenv("POSITION_MONITOR_INTERVAL_SEC", "30"))
     if enable_overnight:
         logger.info("[Engine] 오버나잇 평가 워커 활성화 (ENABLE_OVERNIGHT_WORKER=true)")
     if enable_vi_watch:
@@ -241,16 +157,20 @@ async def main():
     tasks = [
         asyncio.create_task(run_worker(rdb, pg_pool)),
         asyncio.create_task(stop_event.wait()),
-        asyncio.create_task(_run_health_server(health_port, rdb)),
+        asyncio.create_task(run_health_server(health_port, rdb)),
     ]
     if enable_confirm:
-        tasks.append(asyncio.create_task(run_confirm_worker(rdb)))
+        tasks.append(asyncio.create_task(run_confirm_worker(rdb, pg_pool)))
     if enable_scanner:
         tasks.append(asyncio.create_task(run_strategy_scanner(rdb)))
     if enable_news:
         tasks.append(asyncio.create_task(run_news_scheduler(rdb)))
     if enable_monitor:
         tasks.append(asyncio.create_task(run_monitor(rdb)))
+    if enable_status_report:
+        tasks.append(asyncio.create_task(run_status_report_worker(rdb)))
+    if enable_pos_monitor:
+        tasks.append(asyncio.create_task(run_position_monitor(rdb, pg_pool)))
     if enable_overnight:
         tasks.append(asyncio.create_task(run_overnight_worker(rdb, pg_pool)))
     if enable_vi_watch:

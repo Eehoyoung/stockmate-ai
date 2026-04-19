@@ -1,20 +1,25 @@
 package org.invest.apiorchestrator.scheduler;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.invest.apiorchestrator.config.KiwoomProperties;
 import org.invest.apiorchestrator.domain.MarketDailyContext;
+import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.repository.MarketDailyContextRepository;
-import org.invest.apiorchestrator.service.*;
-import org.invest.apiorchestrator.service.NewsControlService.TradingControl;
+import org.invest.apiorchestrator.service.CandidateService;
+import org.invest.apiorchestrator.service.EconomicCalendarService;
+import org.invest.apiorchestrator.service.KiwoomApiService;
+import org.invest.apiorchestrator.service.RedisMarketDataService;
+import org.invest.apiorchestrator.service.SignalService;
+import org.invest.apiorchestrator.service.TokenService;
+import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -25,395 +30,183 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.stream.Collectors;
 
-/**
- * TradingScheduler – Java 보조 역할 전담
- *
- * 역할 분리 (2026-04-03):
- *   Java: 토큰 관리 · 후보 풀 적재 · 브리핑/리포트
- *   Python: 전략 스캔 S1~S15 (strategy_runner.py) · S2 VI 감시 (vi_watch_worker.py)
- *
- * 후보 풀 키 규약:
- *   candidates:s{N}:{market}  – Python strategy_runner 가 읽음
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class TradingScheduler {
+
+    private static final String KOSPI_PROXY_CODE = "069500";
+    private static final String KOSDAQ_PROXY_CODE = "229200";
 
     private final SignalService signalService;
     private final CandidateService candidateService;
     private final TokenService tokenService;
     private final KiwoomApiService kiwoomApiService;
     private final RedisMarketDataService redisMarketDataService;
-    private final NewsControlService newsControlService;
     private final EconomicCalendarService calendarService;
-    private final KiwoomProperties properties;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
     private final MarketDailyContextRepository marketDailyContextRepository;
 
     private static final ExecutorService PRELOAD_POOL = Executors.newFixedThreadPool(5);
 
-    // ─────────────────────────────────────────────
-    // 시스템 준비
-    // ─────────────────────────────────────────────
-
-    /** 06:50 - 다음 거래일 준비 (토큰 사전 발급) */
-    @Scheduled(cron = "0 50 6 * * MON-FRI")
+    @Scheduled(cron = "0 50 6 * * MON-FRI", zone = "Asia/Seoul")
     public void dailyPrepare() {
-        log.info("=== 일일 준비 (06:50) ===");
+        log.info("=== daily prepare (06:50) ===");
         try {
             tokenService.refreshToken();
         } catch (Exception e) {
-            log.error("사전 토큰 발급 실패: {}", e.getMessage());
+            log.error("pre-market token refresh failed: {}", e.getMessage());
         }
     }
 
-    /** 07:25 - 토큰 갱신 */
-    @Scheduled(cron = "0 25 7 * * MON-FRI")
+    @Scheduled(cron = "0 25 7 * * MON-FRI", zone = "Asia/Seoul")
     public void prepareSystem() {
-        log.info("=== 시스템 준비 시작 (07:25) ===");
+        log.info("=== system prepare (07:25) ===");
         try {
             tokenService.refreshToken();
         } catch (Exception e) {
-            log.error("토큰 갱신 실패: {}", e.getMessage());
+            log.error("token refresh failed: {}", e.getMessage());
         }
     }
 
-    /** 07:30 - Python strategy_runner 를 위해 S1·S7 후보 풀 사전 적재 */
-    @Scheduled(cron = "0 30 7 * * MON-FRI")
+    @Scheduled(cron = "0 30 7 * * MON-FRI", zone = "Asia/Seoul")
     public void startPreMarketSubscription() {
-        log.info("=== 장전 시작 (07:30) – Python websocket-listener 운영 중 ===");
-        // S1 (갭상승 08:30~09:10) · S7 (동시호가 08:30~09:00) 풀은
-        // preloadCandidatePools 가 09:05 부터 실행되므로 여기서 미리 적재
+        log.info("=== pre-market start (07:30) / python websocket-listener owned ===");
+    }
+
+    @Scheduled(cron = "0 50 7 * * MON-FRI", zone = "Asia/Seoul")
+    public void preloadAuctionCandidates() {
+        log.info("=== preload S1 candidate pools (07:50) ===");
         try {
-            for (String mkt : new String[]{"001", "101"}) {
-                try { candidateService.getS1Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S1 {} 오류: {}", mkt, e.getMessage()); }
-                try { candidateService.getS7Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S7 {} 오류: {}", mkt, e.getMessage()); }
+            for (String market : new String[]{"001", "101"}) {
+                try {
+                    candidateService.getS1Candidates(market);
+                } catch (Exception e) {
+                    log.warn("[Pool] S1 {} error: {}", market, e.getMessage());
+                }
             }
-            log.info("[Pool] S1/S7 사전 적재 완료");
+            log.info("[Pool] S1 preload complete");
         } catch (Exception e) {
-            log.error("[Pool] S1/S7 사전 적재 오류: {}", e.getMessage());
+            log.error("[Pool] S1 preload failed: {}", e.getMessage());
         }
     }
 
-    // ─────────────────────────────────────────────
-    // 장전 데이터 준비
-    // ─────────────────────────────────────────────
-
-    /** 08:00 – 후보 종목 전일종가 일괄 수집 후 Redis 저장 (S1 갭 계산용) */
-    @Scheduled(cron = "0 0 8 * * MON-FRI")
+    @Scheduled(cron = "0 45 8 * * MON-FRI", zone = "Asia/Seoul")
     public void preparePreOpenData() {
-        log.info("=== 장전 전일종가 사전 저장 시작 (08:00) ===");
+        log.info("=== prepare pre-open data (08:45) ===");
         try {
-            // getAllCandidates()는 candidates:001/101 (구형 키, 미적재)를 읽어 항상 0개 반환.
-            // 전일종가가 필요한 전략은 S1·S7(갭 계산)이므로 해당 풀을 직접 조회한다.
-            // getS1/S7Candidates()는 캐시 만료 시 ka10029를 재호출하여 풀을 갱신한다.
             java.util.Set<String> candidateSet = new java.util.LinkedHashSet<>();
-            for (String mkt : new String[]{"001", "101"}) {
-                candidateSet.addAll(candidateService.getS1Candidates(mkt));
-                candidateSet.addAll(candidateService.getS7Candidates(mkt));
+            for (String market : new String[]{"001", "101"}) {
+                candidateSet.addAll(candidateService.getS1Candidates(market));
             }
-            List<String> candidates = new ArrayList<>(candidateSet);
-            log.info("[PreOpen] S1+S7 후보 종목 {}개에 대해 전일종가 수집 시작", candidates.size());
 
+            List<String> candidates = new ArrayList<>(candidateSet);
             List<CompletableFuture<Void>> futures = new ArrayList<>();
             for (String stkCd : candidates) {
-                CompletableFuture<Void> f = CompletableFuture.runAsync(() -> {
+                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
                     try {
-                        KiwoomApiResponses.StkBasicInfoResponse info =
-                                kiwoomApiService.fetchKa10001(stkCd);
+                        KiwoomApiResponses.StkBasicInfoResponse info = kiwoomApiService.fetchKa10001(stkCd);
                         if (info != null && info.getBasePric() != null) {
                             String key = "ws:expected:" + stkCd;
                             redis.opsForHash().put(key, "pred_pre_pric", info.getBasePric());
                             redis.expire(key, Duration.ofHours(12));
                         }
                     } catch (Exception e) {
-                        log.debug("[PreOpen] {} 전일종가 조회 실패: {}", stkCd, e.getMessage());
+                        log.debug("[PreOpen] {} fetch failed: {}", stkCd, e.getMessage());
                     }
                 }, PRELOAD_POOL);
-                futures.add(f);
+                futures.add(future);
             }
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            log.info("[PreOpen] 전일종가 사전 저장 완료 – {}개 처리", futures.size());
+            log.info("[PreOpen] expected-price preload complete count={}", futures.size());
         } catch (Exception e) {
-            log.error("[PreOpen] 전일종가 사전 저장 실패: {}", e.getMessage());
+            log.error("[PreOpen] expected-price preload failed: {}", e.getMessage());
         }
     }
 
-    /** 08:30 - 장전 뉴스 브리핑 발행 */
-    @Scheduled(cron = "0 30 8 * * MON-FRI")
-    public void preMarketNewsBrief() {
-        log.info("=== 장전 뉴스 브리핑 발행 (08:30) ===");
+    @Scheduled(cron = "0 55 7 * * MON-FRI", zone = "Asia/Seoul")
+    public void captureMorningMarketContext() {
         try {
-            String control    = redis.opsForValue().get("news:trading_control");
-            String sentiment  = redis.opsForValue().get("news:market_sentiment");
-            String sectorsRaw = redis.opsForValue().get("news:sector_recommend");
-            String analysisRaw = redis.opsForValue().get("news:analysis");
-            if (control == null) control = "CONTINUE";
-            if (sentiment == null) sentiment = "NEUTRAL";
-
-            List<String> sectors = List.of();
-            if (sectorsRaw != null && !sectorsRaw.isBlank()) {
-                try { sectors = objectMapper.readValue(sectorsRaw, new TypeReference<List<String>>() {}); }
-                catch (Exception e) { /* ignore */ }
-            }
-            String summary = "";
-            if (analysisRaw != null) {
-                try {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> analysis = objectMapper.readValue(analysisRaw, Map.class);
-                    Object s = analysis.get("summary");
-                    if (s != null && !s.toString().equals("null")) summary = s.toString();
-                } catch (Exception e) { /* ignore */ }
-            }
-
-            String ctrlEmoji = switch (control) {
-                case "PAUSE"    -> "🚨";
-                case "CAUTIOUS" -> "⚠️";
-                default         -> "✅";
-            };
-            String ctrlLabel = switch (control) {
-                case "PAUSE"    -> "매매 중단";
-                case "CAUTIOUS" -> "신중 매매";
-                default         -> "정상 매매";
-            };
-            String sentLabel = "BULLISH".equals(sentiment) ? "강세 📈"
-                    : "BEARISH".equals(sentiment) ? "약세 📉" : "중립 ➡️";
-
-            StringBuilder sb = new StringBuilder("📰 <b>[장전 뉴스 브리핑] 08:30</b>\n\n");
-            sb.append(ctrlEmoji).append(" 매매 상태: <b>").append(ctrlLabel).append("</b>\n");
-            sb.append("시장 심리: ").append(sentLabel).append("\n");
-            if (!sectors.isEmpty()) {
-                sb.append("추천 섹터: ").append(String.join(", ", sectors)).append("\n");
-            }
-            if (!summary.isBlank()) {
-                sb.append("\n").append(summary);
-            } else {
-                sb.append("\n⚠️ 뉴스 분석 데이터 없음 – ai-engine 확인 필요");
-            }
-            String eventLine = buildTodayEventLine();
-            if (!eventLine.isBlank()) sb.append("\n\n📅 오늘 이벤트: ").append(eventLine);
-
-            Map<String, Object> msg = Map.of(
-                    "type",    "PRE_MARKET_BRIEF",
-                    "message", sb.toString().trim()
+            String control = redis.opsForValue().get("news:trading_control");
+            String sentiment = redis.opsForValue().get("news:market_sentiment");
+            saveMarketDailyContextMorning(
+                    sentiment != null ? sentiment : "NEUTRAL",
+                    control != null ? control : "CONTINUE"
             );
-            redisMarketDataService.pushScoredQueue(objectMapper.writeValueAsString(msg));
-            log.info("[PreMarketBrief] 장전 뉴스 브리핑 발행 완료 – control={} sentiment={}", control, sentiment);
-
-            // MarketDailyContext 장전 스냅샷 저장 (당일 행이 없을 때만 INSERT)
-            saveMarketDailyContextMorning(sentiment, control);
         } catch (Exception e) {
-            log.error("[PreMarketBrief] 장전 뉴스 브리핑 실패: {}", e.getMessage());
+            log.error("[MarketCtx] morning snapshot failed: {}", e.getMessage());
         }
     }
 
-    // ─────────────────────────────────────────────
-    // 정규장 진입 (09:00)
-    // ─────────────────────────────────────────────
-
-    /** 09:00 - 정규장 시작 로그 (Python websocket-listener 단독 운영) */
-    @Scheduled(cron = "0 0 9 * * MON-FRI")
+    @Scheduled(cron = "0 0 9 * * MON-FRI", zone = "Asia/Seoul")
     public void startMarketHours() {
-        log.info("=== 정규장 시작 (09:00) – Python websocket-listener 운영 중 ===");
+        log.info("=== market open (09:00) / python websocket-listener owned ===");
     }
 
-    /** 09:01 - 장시작 브리핑 자동 알림 */
-    @Scheduled(cron = "0 1 9 * * MON-FRI")
-    public void marketOpenBrief() {
-        log.info("=== 장시작 브리핑 발행 (09:01) ===");
-        try {
-            List<String> kospi  = candidateService.getCandidates("001");
-            List<String> kosdaq = candidateService.getCandidates("101");
-
-            TradingControl control = newsControlService.getTradingControl();
-            String sentiment  = redis.opsForValue().get("news:market_sentiment");
-            String sectorsRaw = redis.opsForValue().get("news:sector_recommend");
-
-            List<String> sectors = List.of();
-            try {
-                if (sectorsRaw != null && !sectorsRaw.isBlank())
-                    sectors = objectMapper.readValue(sectorsRaw, new TypeReference<List<String>>() {});
-            } catch (Exception e) { /* ignore */ }
-
-            String ctrlLabel = switch (control) {
-                case PAUSE    -> "🚨 매매 중단";
-                case CAUTIOUS -> "⚠️ 신중 매매";
-                default       -> "✅ 정상 매매";
-            };
-            String sentLabel = "BULLISH".equals(sentiment) ? "강세 📈"
-                    : "BEARISH".equals(sentiment) ? "약세 📉" : "중립 ➡️";
-
-            StringBuilder sb = new StringBuilder("📢 <b>[장시작 브리핑] 09:00</b>\n\n");
-            sb.append("매매 상태: ").append(ctrlLabel).append("\n");
-            sb.append("시장 심리: ").append(sentLabel).append("\n");
-            sb.append("후보 종목: 코스피 ").append(kospi.size()).append("개 / 코스닥 ").append(kosdaq.size()).append("개\n");
-            if (!sectors.isEmpty()) {
-                sb.append("추천 섹터: ").append(String.join(", ", sectors)).append("\n");
-            }
-
-            String eventLine = buildTodayEventLine();
-            if (!eventLine.isBlank()) sb.append("오늘 이벤트: ").append(eventLine);
-
-            Map<String, Object> msg = Map.of(
-                    "type",    "MARKET_OPEN_BRIEF",
-                    "message", sb.toString().trim()
-            );
-            redisMarketDataService.pushScoredQueue(objectMapper.writeValueAsString(msg));
-            log.info("[OpenBrief] 장시작 브리핑 발행 완료");
-        } catch (Exception e) {
-            log.error("[OpenBrief] 브리핑 발행 실패: {}", e.getMessage());
-        }
-    }
-
-    // ─────────────────────────────────────────────
-    // 후보 풀 적재 – Python strategy_runner 가 읽음 (09:05~14:30, 15분마다)
-    // ─────────────────────────────────────────────
-
-    /**
-     * 09:05 ~ 14:30 매 15분 – S8~S15 스윙 후보 풀 갱신.
-     * Python strategy_runner 가 언제 실행되더라도 candidates:s*:{market} 풀이
-     * Redis 에 존재하도록 보장. S1/S7 은 startPreMarketSubscription(07:30) 에서 적재.
-     */
-    @Scheduled(cron = "0 5/15 9-14 * * MON-FRI")
+    @Scheduled(cron = "0 5/15 9-14 * * MON-FRI", zone = "Asia/Seoul")
     public void preloadCandidatePools() {
-        LocalTime now = LocalTime.now();
-        if (now.isAfter(LocalTime.of(14, 30))) return;
-        log.debug("[Pool] 후보 풀 사전 적재 시작");
+        LocalTime now = KstClock.nowTime();
+        if (now.isAfter(LocalTime.of(14, 30))) {
+            return;
+        }
+
+        log.debug("[Pool] intraday preload start");
         try {
             PRELOAD_POOL.submit(() -> {
-                for (String mkt : new String[]{"001", "101"}) {
-                    try { candidateService.getS4Candidates(mkt); }  catch (Exception e) { log.warn("[Pool] S4 {} 오류: {}", mkt, e.getMessage()); }
-                    try { candidateService.getS8Candidates(mkt); }  catch (Exception e) { log.warn("[Pool] S8 {} 오류: {}", mkt, e.getMessage()); }
-                    try { candidateService.getS9Candidates(mkt); }  catch (Exception e) { log.warn("[Pool] S9 {} 오류: {}", mkt, e.getMessage()); }
-                    try { candidateService.getS10Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S10 {} 오류: {}", mkt, e.getMessage()); }
-                    try { candidateService.getS11Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S11 {} 오류: {}", mkt, e.getMessage()); }
-                    try { candidateService.getS12Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S12 {} 오류: {}", mkt, e.getMessage()); }
-                    try { candidateService.getS13Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S13 {} 오류: {}", mkt, e.getMessage()); }
-                    try { candidateService.getS14Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S14 {} 오류: {}", mkt, e.getMessage()); }
-                    try { candidateService.getS15Candidates(mkt); } catch (Exception e) { log.warn("[Pool] S15 {} 오류: {}", mkt, e.getMessage()); }
+                for (String market : new String[]{"001", "101"}) {
+                    try { candidateService.getS4Candidates(market); }  catch (Exception e) { log.warn("[Pool] S4 {} error: {}", market, e.getMessage()); }
+                    try { candidateService.getS8Candidates(market); }  catch (Exception e) { log.warn("[Pool] S8 {} error: {}", market, e.getMessage()); }
+                    try { candidateService.getS9Candidates(market); }  catch (Exception e) { log.warn("[Pool] S9 {} error: {}", market, e.getMessage()); }
+                    try { candidateService.getS10Candidates(market); } catch (Exception e) { log.warn("[Pool] S10 {} error: {}", market, e.getMessage()); }
+                    try { candidateService.getS11Candidates(market); } catch (Exception e) { log.warn("[Pool] S11 {} error: {}", market, e.getMessage()); }
+                    try { candidateService.getS12Candidates(market); } catch (Exception e) { log.warn("[Pool] S12 {} error: {}", market, e.getMessage()); }
+                    try { candidateService.getS13Candidates(market); } catch (Exception e) { log.warn("[Pool] S13 {} error: {}", market, e.getMessage()); }
+                    try { candidateService.getS14Candidates(market); } catch (Exception e) { log.warn("[Pool] S14 {} error: {}", market, e.getMessage()); }
+                    try { candidateService.getS15Candidates(market); } catch (Exception e) { log.warn("[Pool] S15 {} error: {}", market, e.getMessage()); }
                 }
-                log.info("[Pool] 후보 풀 사전 적재 완료");
+                log.info("[Pool] intraday preload complete");
             });
         } catch (Exception e) {
-            log.error("[Pool] 사전 적재 오류: {}", e.getMessage());
+            log.error("[Pool] intraday preload failed: {}", e.getMessage());
         }
     }
 
-    // ─────────────────────────────────────────────
-    // 공통 유지보수 스케줄
-    // ─────────────────────────────────────────────
-
-    /** 매 시간 - 오래된 신호 만료 처리 */
-    @Scheduled(cron = "0 0 * * * MON-FRI")
+    @Scheduled(cron = "0 0 * * * MON-FRI", zone = "Asia/Seoul")
     public void expireOldSignals() {
         try {
-            int cnt = signalService.expireOldSignals();
-            if (cnt > 0) log.info("신호 만료 처리: {}건", cnt);
+            int count = signalService.expireOldSignals();
+            if (count > 0) {
+                log.info("expired old signals count={}", count);
+            }
         } catch (Exception e) {
-            log.error("신호 만료 처리 실패: {}", e.getMessage());
+            log.error("expire old signals failed: {}", e.getMessage());
         }
     }
 
-    /** 12:30 – 오전 신호 현황 중간 보고 */
-    @Scheduled(cron = "0 30 12 * * MON-FRI")
-    public void compileMiddayReport() {
-        log.info("=== 오전 중간 보고 (12:30) ===");
-        try {
-            List<Object[]> stats = signalService.getTodayStats();
-            long dailyCount = redisMarketDataService.getDailySignalCount();
-            int maxDaily    = properties.getTrading().getMaxDailySignals();
-            TradingControl control = newsControlService.getTradingControl();
-
-            long totalSignals = stats.stream()
-                    .mapToLong(r -> r[1] instanceof Number ? ((Number) r[1]).longValue() : 0L)
-                    .sum();
-
-            List<org.invest.apiorchestrator.domain.TradingSignal> todaySignals = signalService.getTodaySignals();
-            List<String> topLines = todaySignals.stream()
-                    .filter(s -> s.getSignalScore() != null)
-                    .sorted((a, b) -> Double.compare(
-                            b.getSignalScore() != null ? b.getSignalScore() : 0,
-                            a.getSignalScore()))
-                    .limit(2)
-                    .map(s -> String.format("  %s [%s] %.0f점",
-                            s.getStkNm() != null ? s.getStkNm() : s.getStkCd(),
-                            s.getStrategy(), s.getSignalScore()))
-                    .toList();
-
-            String ctrlLabel = switch (control) {
-                case PAUSE    -> "🚨 매매 중단";
-                case CAUTIOUS -> "⚠️ 신중 매매";
-                default       -> "✅ 정상 매매";
-            };
-
-            StringBuilder sb = new StringBuilder("📊 <b>[오전 신호 현황] 12:30</b>\n\n");
-            sb.append("총 신호: ").append(totalSignals).append("건");
-            sb.append(" (남은 한도: ").append(Math.max(0, maxDaily - dailyCount)).append("건)\n");
-            sb.append("매매 제어: ").append(ctrlLabel).append("\n");
-
-            if (!topLines.isEmpty()) {
-                sb.append("\nTOP 신호:\n").append(String.join("\n", topLines)).append("\n");
-            }
-
-            Map<String, Long> sectorCount = todaySignals.stream()
-                    .filter(s -> s.getThemeName() != null)
-                    .collect(java.util.stream.Collectors.groupingBy(
-                            s -> s.getThemeName().length() > 6 ? s.getThemeName().substring(0, 6) : s.getThemeName(),
-                            java.util.stream.Collectors.counting()))
-                    .entrySet().stream()
-                    .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
-                    .limit(3)
-                    .collect(java.util.stream.Collectors.toMap(
-                            Map.Entry::getKey, Map.Entry::getValue,
-                            (a, b) -> a, java.util.LinkedHashMap::new));
-
-            if (!sectorCount.isEmpty()) {
-                sb.append("\n집중 테마:\n");
-                sectorCount.forEach((k, v) -> sb.append("  ").append(k).append(": ").append(v).append("건\n"));
-            }
-
-            Map<String, Object> msg = Map.of(
-                    "type",    "MIDDAY_REPORT",
-                    "message", sb.toString().trim()
-            );
-            redisMarketDataService.pushScoredQueue(objectMapper.writeValueAsString(msg));
-            log.info("[Midday] 오전 중간 보고 발행 완료 (총 {}건)", totalSignals);
-        } catch (Exception e) {
-            log.error("[Midday] 오전 중간 보고 실패: {}", e.getMessage());
-        }
-    }
-
-    /** 15:30 - 장 종료 처리 */
-    @Scheduled(cron = "0 30 15 * * MON-FRI")
+    @Scheduled(cron = "0 30 15 * * MON-FRI", zone = "Asia/Seoul")
     public void endOfDay() {
-        log.info("=== 장 종료 처리 (15:30) ===");
+        log.info("=== end of day (15:30) ===");
         try {
             signalService.expireOldSignals();
-
-            // 당일 통계 로그
             signalService.getTodayStats().forEach(row ->
-                    log.info("전략별 성과 - strategy={} count={} avgPnl={}",
-                            row[0], row[1], row[2]));
+                    log.info("strategy stat strategy={} count={} avgPnl={}", row[0], row[1], row[2]));
         } catch (Exception e) {
-            log.error("장 종료 처리 실패: {}", e.getMessage());
+            log.error("end-of-day processing failed: {}", e.getMessage());
         }
     }
 
-    /** 15:35 – 당일 신호 통계 집계 후 Redis + ai_scored_queue 발행 */
-    @Scheduled(cron = "0 35 15 * * MON-FRI")
+    @Scheduled(cron = "0 35 15 * * MON-FRI", zone = "Asia/Seoul")
     public void compileDailySummary() {
-        log.info("=== 일별 성과 집계 시작 (15:35) ===");
+        log.info("=== compile daily summary (15:35) ===");
         try {
             List<Object[]> stats = signalService.getTodayStats();
 
             long totalSignals = 0;
             double totalScore = 0;
             int scoreCount = 0;
-            java.util.Map<String, Long> byStrategy = new java.util.LinkedHashMap<>();
+            Map<String, Long> byStrategy = new java.util.LinkedHashMap<>();
 
             for (Object[] row : stats) {
                 String strategy = String.valueOf(row[0]);
@@ -427,144 +220,337 @@ public class TradingScheduler {
             }
             double avgScore = scoreCount > 0 ? totalScore / scoreCount : 0.0;
 
-            String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+            String today = KstClock.today().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
             String summaryKey = "daily_summary:" + today;
 
             redis.opsForHash().put(summaryKey, "total_signals", String.valueOf(totalSignals));
             redis.opsForHash().put(summaryKey, "avg_score", String.format("%.1f", avgScore));
             try {
-                redis.opsForHash().put(summaryKey, "by_strategy",
-                        objectMapper.writeValueAsString(byStrategy));
-            } catch (Exception ex) {
+                redis.opsForHash().put(summaryKey, "by_strategy", objectMapper.writeValueAsString(byStrategy));
+            } catch (Exception e) {
                 redis.opsForHash().put(summaryKey, "by_strategy", byStrategy.toString());
             }
             redis.expire(summaryKey, Duration.ofDays(7));
 
-            long totalWins = 0, totalLosses = 0;
+            long totalWins = 0;
+            long totalLosses = 0;
             double totalPnl = 0.0;
             int pnlCount = 0;
             try {
                 List<Object[]> perfStats = signalService.getPerformanceStats();
                 for (Object[] row : perfStats) {
-                    long wins   = row[2] instanceof Number ? ((Number) row[2]).longValue() : 0L;
+                    long wins = row[2] instanceof Number ? ((Number) row[2]).longValue() : 0L;
                     long losses = row[3] instanceof Number ? ((Number) row[3]).longValue() : 0L;
-                    double pnl  = row[4] instanceof Number ? ((Number) row[4]).doubleValue() : 0.0;
-                    totalWins   += wins;
+                    double pnl = row[4] instanceof Number ? ((Number) row[4]).doubleValue() : 0.0;
+                    totalWins += wins;
                     totalLosses += losses;
-                    if (wins + losses > 0) { totalPnl += pnl; pnlCount++; }
+                    if (wins + losses > 0) {
+                        totalPnl += pnl;
+                        pnlCount++;
+                    }
                 }
-            } catch (Exception ex) {
-                log.debug("[DailySummary] P&L 집계 오류 (무시): {}", ex.getMessage());
+            } catch (Exception e) {
+                log.debug("[DailySummary] performance stat error ignored: {}", e.getMessage());
             }
             double avgPnl = pnlCount > 0 ? totalPnl / pnlCount : 0.0;
 
             try {
-                java.util.Map<String, Object> report = new java.util.LinkedHashMap<>();
+                Map<String, Object> report = new java.util.LinkedHashMap<>();
                 report.put("type", "DAILY_REPORT");
                 report.put("date", today);
                 report.put("total_signals", totalSignals);
                 report.put("avg_score", avgScore);
                 report.put("by_strategy", byStrategy);
-                report.put("total_wins",   totalWins);
+                report.put("total_wins", totalWins);
                 report.put("total_losses", totalLosses);
-                report.put("avg_pnl",      avgPnl);
+                report.put("avg_pnl", avgPnl);
                 redisMarketDataService.pushTelegramQueue(objectMapper.writeValueAsString(report));
-            } catch (Exception ex) {
-                log.warn("[DailySummary] 리포트 큐 발행 실패: {}", ex.getMessage());
+                redis.opsForValue().set("ops:scheduler:daily_summary:last_status", "OK", Duration.ofDays(2));
+                redis.opsForValue().set("ops:scheduler:daily_summary:last_success_at", KstClock.nowOffset().toString(), Duration.ofDays(2));
+            } catch (Exception e) {
+                log.warn("[DailySummary] report publish failed: {}", e.getMessage());
+                redis.opsForValue().set("ops:scheduler:daily_summary:last_status", "ERROR", Duration.ofDays(2));
             }
 
-            // MarketDailyContext 당일 성과 요약 업데이트
             updateMarketDailyContextPerf(totalSignals, totalWins, totalLosses, avgPnl);
-
-            log.info("[DailySummary] 집계 완료 – totalSignals={} avgScore={} wins={} losses={} avgPnl={}",
-                    totalSignals, String.format("%.1f", avgScore), totalWins, totalLosses,
-                    String.format("%.2f", avgPnl));
+            log.info(
+                    "[DailySummary] done totalSignals={} avgScore={} wins={} losses={} avgPnl={}",
+                    totalSignals,
+                    String.format("%.1f", avgScore),
+                    totalWins,
+                    totalLosses,
+                    String.format("%.2f", avgPnl)
+            );
         } catch (Exception e) {
-            log.error("[DailySummary] 집계 실패: {}", e.getMessage());
+            log.error("[DailySummary] failed: {}", e.getMessage());
         }
     }
 
-    /** 08:30 – MarketDailyContext 장전 뉴스 스냅샷 INSERT (중복 방지) */
     private void saveMarketDailyContextMorning(String sentiment, String control) {
         try {
-            LocalDate today = LocalDate.now();
-            if (marketDailyContextRepository.existsByDate(today)) return;
+            LocalDate today = KstClock.today();
+            if (marketDailyContextRepository.existsByDate(today)) {
+                return;
+            }
+
+            MarketProxySnapshot kospi = loadMarketProxy(KOSPI_PROXY_CODE);
+            MarketProxySnapshot kosdaq = loadMarketProxy(KOSDAQ_PROXY_CODE);
+            BreadthSnapshot breadth = loadBreadthSnapshot();
+            NetBuySnapshot kospiNetBuy = loadNetBuySnapshot("001");
+            NetBuySnapshot kosdaqNetBuy = loadNetBuySnapshot("101");
 
             boolean hasEconEvent = false;
-            String econEventNm   = null;
+            String econEventName = null;
             try {
                 List<org.invest.apiorchestrator.domain.EconomicEvent> events = calendarService.getTodayEvents();
                 if (!events.isEmpty()) {
                     hasEconEvent = true;
-                    econEventNm  = events.get(0).getEventName();
+                    econEventName = events.get(0).getEventName();
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
 
-            MarketDailyContext ctx = MarketDailyContext.builder()
+            MarketDailyContext context = MarketDailyContext.builder()
                     .date(today)
+                    .kospiOpen(kospi.open())
+                    .kospiClose(kospi.close())
+                    .kospiChangePct(kospi.changePct())
+                    .kospiVolume(kospi.volume())
+                    .kosdaqOpen(kosdaq.open())
+                    .kosdaqClose(kosdaq.close())
+                    .kosdaqChangePct(kosdaq.changePct())
+                    .kosdaqVolume(kosdaq.volume())
+                    .advancingStocks(breadth.advancing())
+                    .decliningStocks(breadth.declining())
+                    .unchangedStocks(breadth.unchanged())
+                    .advanceDeclineRatio(breadth.ratio())
+                    .frgnNetBuyKospi(kospiNetBuy.foreignNetBuy())
+                    .instNetBuyKospi(kospiNetBuy.instNetBuy())
+                    .frgnNetBuyKosdaq(kosdaqNetBuy.foreignNetBuy())
+                    .instNetBuyKosdaq(kosdaqNetBuy.instNetBuy())
                     .newsSentiment(sentiment)
                     .newsTradingCtrl(control)
+                    .vixEquivalent(breadth.vixEquivalent())
                     .economicEventToday(hasEconEvent)
-                    .economicEventNm(econEventNm)
+                    .economicEventNm(econEventName)
                     .build();
-            marketDailyContextRepository.save(ctx);
-            log.info("[MarketCtx] 장전 스냅샷 저장 – sentiment={} ctrl={}", sentiment, control);
+            marketDailyContextRepository.save(context);
+            log.info("[MarketCtx] morning snapshot saved sentiment={} control={}", sentiment, control);
         } catch (Exception e) {
-            log.warn("[MarketCtx] 장전 스냅샷 저장 실패 (무시): {}", e.getMessage());
+            log.warn("[MarketCtx] morning snapshot save failed: {}", e.getMessage());
         }
     }
 
-    /** 15:35 – MarketDailyContext 당일 성과 요약 업데이트 */
     private void updateMarketDailyContextPerf(long totalSignals, long wins, long losses, double avgPnl) {
         try {
-            LocalDate today = LocalDate.now();
-            MarketDailyContext ctx = marketDailyContextRepository.findByDate(today).orElse(null);
-            if (ctx == null) {
-                ctx = MarketDailyContext.builder().date(today).build();
+            LocalDate today = KstClock.today();
+            MarketDailyContext context = marketDailyContextRepository.findByDate(today).orElse(null);
+            if (context == null) {
+                context = MarketDailyContext.builder().date(today).build();
             }
+
             BigDecimal winRate = (wins + losses) > 0
-                    ? BigDecimal.valueOf((double) wins / (wins + losses) * 100)
-                            .setScale(2, java.math.RoundingMode.HALF_UP)
+                    ? BigDecimal.valueOf((double) wins / (wins + losses) * 100).setScale(2, RoundingMode.HALF_UP)
                     : null;
-            // MarketDailyContext는 setter가 없으므로 새 객체를 저장 (id 유지)
-            ctx = MarketDailyContext.builder()
-                    .id(ctx.getId())
-                    .date(today)
-                    .newsSentiment(ctx.getNewsSentiment())
-                    .newsTradingCtrl(ctx.getNewsTradingCtrl())
-                    .economicEventToday(ctx.getEconomicEventToday())
-                    .economicEventNm(ctx.getEconomicEventNm())
+
+            context = copyContext(context)
                     .totalSignalsToday((int) totalSignals)
                     .signalWinRateToday(winRate)
-                    .avgPnlPctToday(BigDecimal.valueOf(avgPnl).setScale(4, java.math.RoundingMode.HALF_UP))
+                    .avgPnlPctToday(BigDecimal.valueOf(avgPnl).setScale(4, RoundingMode.HALF_UP))
                     .build();
-            marketDailyContextRepository.save(ctx);
-            log.info("[MarketCtx] 성과 업데이트 – signals={} winRate={} avgPnl={}",
-                    totalSignals, winRate, String.format("%.2f", avgPnl));
+            marketDailyContextRepository.save(context);
+            log.info("[MarketCtx] performance updated signals={} winRate={} avgPnl={}", totalSignals, winRate, String.format("%.2f", avgPnl));
         } catch (Exception e) {
-            log.warn("[MarketCtx] 성과 업데이트 실패 (무시): {}", e.getMessage());
+            log.warn("[MarketCtx] performance update failed: {}", e.getMessage());
         }
     }
 
-    /**
-     * 오늘 경제 이벤트 한 줄 요약 (장시작 브리핑용)
-     */
-    private String buildTodayEventLine() {
+    private MarketDailyContext.MarketDailyContextBuilder copyContext(MarketDailyContext ctx) {
+        return MarketDailyContext.builder()
+                .id(ctx.getId())
+                .date(ctx.getDate())
+                .kospiOpen(ctx.getKospiOpen())
+                .kospiClose(ctx.getKospiClose())
+                .kospiChangePct(ctx.getKospiChangePct())
+                .kospiVolume(ctx.getKospiVolume())
+                .kosdaqOpen(ctx.getKosdaqOpen())
+                .kosdaqClose(ctx.getKosdaqClose())
+                .kosdaqChangePct(ctx.getKosdaqChangePct())
+                .kosdaqVolume(ctx.getKosdaqVolume())
+                .advancingStocks(ctx.getAdvancingStocks())
+                .decliningStocks(ctx.getDecliningStocks())
+                .unchangedStocks(ctx.getUnchangedStocks())
+                .advanceDeclineRatio(ctx.getAdvanceDeclineRatio())
+                .frgnNetBuyKospi(ctx.getFrgnNetBuyKospi())
+                .instNetBuyKospi(ctx.getInstNetBuyKospi())
+                .frgnNetBuyKosdaq(ctx.getFrgnNetBuyKosdaq())
+                .instNetBuyKosdaq(ctx.getInstNetBuyKosdaq())
+                .newsSentiment(ctx.getNewsSentiment())
+                .newsTradingCtrl(ctx.getNewsTradingCtrl())
+                .vixEquivalent(ctx.getVixEquivalent())
+                .economicEventToday(ctx.getEconomicEventToday())
+                .economicEventNm(ctx.getEconomicEventNm())
+                .totalSignalsToday(ctx.getTotalSignalsToday())
+                .signalWinRateToday(ctx.getSignalWinRateToday())
+                .avgPnlPctToday(ctx.getAvgPnlPctToday())
+                .recordedAt(ctx.getRecordedAt());
+    }
+
+    private MarketProxySnapshot loadMarketProxy(String stkCd) {
         try {
-            List<org.invest.apiorchestrator.domain.EconomicEvent> events = calendarService.getTodayEvents();
-            if (events.isEmpty()) return "";
-            return events.stream()
-                    .limit(2)
-                    .map(e -> {
-                        String impact = e.getExpectedImpact() ==
-                                org.invest.apiorchestrator.domain.EconomicEvent.ImpactLevel.HIGH ? "🔴" : "🟡";
-                        String time = e.getEventTime() != null
-                                ? e.getEventTime().toString().substring(0, 5) + " " : "";
-                        return impact + " " + time + e.getEventName();
-                    })
-                    .collect(Collectors.joining(" / "));
+            KiwoomApiResponses.StkBasicInfoResponse response = kiwoomApiService.fetchKa10001(stkCd);
+            if (response == null || !response.isSuccess()) {
+                return MarketProxySnapshot.empty();
+            }
+            return new MarketProxySnapshot(
+                    dec(response.getOpenPric(), 2),
+                    dec(response.getCurPrc(), 2),
+                    dec(response.getFluRt(), 3),
+                    lng(response.getTrdeQty())
+            );
         } catch (Exception e) {
-            return "";
+            log.debug("[MarketCtx] proxy load failed [{}]: {}", stkCd, e.getMessage());
+            return MarketProxySnapshot.empty();
         }
+    }
+
+    private BreadthSnapshot loadBreadthSnapshot() {
+        try {
+            java.util.Set<String> codes = new java.util.LinkedHashSet<>();
+            addAllCodes(codes, redis.opsForSet().members("candidates:watchlist"));
+            addAllCodes(codes, redis.opsForSet().members("candidates:watchlist:priority"));
+            signalService.getTodaySignals().stream()
+                    .map(org.invest.apiorchestrator.domain.TradingSignal::getStkCd)
+                    .filter(value -> value != null && !value.isBlank())
+                    .forEach(codes::add);
+
+            int advancing = 0;
+            int declining = 0;
+            int unchanged = 0;
+            double absSum = 0.0;
+            int absCount = 0;
+
+            for (String code : codes) {
+                Map<Object, Object> tick = redisMarketDataService.getTickData(code).orElse(null);
+                if (tick == null) {
+                    continue;
+                }
+                Double fluRt = dbl(tick.get("flu_rt"));
+                if (fluRt == null) {
+                    continue;
+                }
+                if (fluRt > 0) {
+                    advancing++;
+                } else if (fluRt < 0) {
+                    declining++;
+                } else {
+                    unchanged++;
+                }
+                absSum += Math.abs(fluRt);
+                absCount++;
+            }
+
+            BigDecimal ratio = declining > 0
+                    ? BigDecimal.valueOf((double) advancing / declining).setScale(3, RoundingMode.HALF_UP)
+                    : (advancing > 0 ? BigDecimal.valueOf(999.0).setScale(3, RoundingMode.HALF_UP) : null);
+            BigDecimal vixEquivalent = absCount > 0
+                    ? BigDecimal.valueOf((absSum / absCount) * 10.0).setScale(2, RoundingMode.HALF_UP)
+                    : null;
+            return new BreadthSnapshot(advancing, declining, unchanged, ratio, vixEquivalent);
+        } catch (Exception e) {
+            log.debug("[MarketCtx] breadth snapshot failed: {}", e.getMessage());
+            return new BreadthSnapshot(0, 0, 0, null, null);
+        }
+    }
+
+    private NetBuySnapshot loadNetBuySnapshot(String market) {
+        try {
+            KiwoomApiResponses.FrgnInstUpperResponse response = kiwoomApiService.post(
+                    "ka90009",
+                    "/api/dostk/rkinfo",
+                    StrategyRequests.FrgnInstUpperRequest.builder().mrktTp(market).build(),
+                    KiwoomApiResponses.FrgnInstUpperResponse.class
+            );
+            if (response == null || !response.isSuccess() || response.getItems() == null) {
+                return NetBuySnapshot.empty();
+            }
+
+            BigDecimal foreign = response.getItems().stream()
+                    .map(item -> dec(item.getForBuyAmt(), 0))
+                    .filter(java.util.Objects::nonNull)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal institutional = response.getItems().stream()
+                    .map(item -> dec(item.getOrgBuyAmt(), 0))
+                    .filter(java.util.Objects::nonNull)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            return new NetBuySnapshot(
+                    foreign.compareTo(BigDecimal.ZERO) == 0 ? null : foreign,
+                    institutional.compareTo(BigDecimal.ZERO) == 0 ? null : institutional
+            );
+        } catch (Exception e) {
+            log.debug("[MarketCtx] net buy snapshot failed [{}]: {}", market, e.getMessage());
+            return NetBuySnapshot.empty();
+        }
+    }
+
+    private void addAllCodes(java.util.Set<String> target, java.util.Set<String> source) {
+        if (source == null) {
+            return;
+        }
+        source.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .forEach(target::add);
+    }
+
+    private BigDecimal dec(Object value, int scale) {
+        Double parsed = dbl(value);
+        if (parsed == null) {
+            return null;
+        }
+        return BigDecimal.valueOf(parsed).setScale(scale, RoundingMode.HALF_UP);
+    }
+
+    private Double dbl(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(value.toString().replace(",", "").replace("+", "").trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Long lng(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.toString().replace(",", "").replace("+", "").trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private record MarketProxySnapshot(BigDecimal open, BigDecimal close, BigDecimal changePct, Long volume) {
+        private static MarketProxySnapshot empty() {
+            return new MarketProxySnapshot(null, null, null, null);
+        }
+    }
+
+    private record NetBuySnapshot(BigDecimal foreignNetBuy, BigDecimal instNetBuy) {
+        private static NetBuySnapshot empty() {
+            return new NetBuySnapshot(null, null);
+        }
+    }
+
+    private record BreadthSnapshot(
+            int advancing,
+            int declining,
+            int unchanged,
+            BigDecimal ratio,
+            BigDecimal vixEquivalent
+    ) {
     }
 }

@@ -44,7 +44,7 @@ telegram-bot (Node.js) → Telegram 발송
 | S4_BIG_CANDLE | 장대양봉 추격 | 75점 |
 | S5_PROG_FRGN | 프로그램+외인 | 65점 |
 | S6_THEME_LAGGARD | 테마 후발주 | 60점 |
-| S7_AUCTION | 동시호가 | 70점 |
+| S7_ICHIMOKU_BREAKOUT | 일목균형표 구름대 돌파 스윙 | 62점 |
 | S10_NEW_HIGH | 52주 신고가 | 65점 |
 | S11_FRGN_CONT | 외국인 연속 순매수 | 60점 |
 | S12_CLOSING | 종가 강도 확인 | 65점 |

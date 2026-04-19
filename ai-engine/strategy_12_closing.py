@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 12: 종가 강도 확인 매수 (종가매매)
 유형: 종가매매 / 보유기간: 2~5거래일
@@ -149,7 +150,7 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
         cntr_str = float(item.get("cntr_str", "0"))
 
         # 조건 검증: 4% <= 등락률 <= 15% AND 체결강도 >= 110%
-        if not (4.0 <= flu_rt <= 15.0) or cntr_str < 110.0:
+        if not (MIN_FLU_RT <= flu_rt <= 15.0) or cntr_str < MIN_CNTR_STR:
             continue
 
         # 점수 산정: 등락률의 탄력과 체결강도의 밀도를 조합

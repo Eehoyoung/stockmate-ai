@@ -3,6 +3,7 @@ package org.invest.apiorchestrator.dto.req;
 import lombok.Builder;
 import lombok.Getter;
 import org.invest.apiorchestrator.domain.TradingSignal;
+import org.invest.apiorchestrator.util.StockCodeNormalizer;
 
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -83,9 +84,10 @@ public class TradingSignalDto {
      * SignalService 가 이 Map을 직렬화하여 telegram_queue 에 LPUSH 한다.
      */
     public Map<String, Object> toQueuePayload(Long signalId) {
+        String normalizedStkCd = StockCodeNormalizer.normalize(stkCd);
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id",              signalId);
-        m.put("stk_cd",          stkCd);
+        m.put("stk_cd",          normalizedStkCd);
         m.put("stk_nm",          stkNm);
         m.put("strategy",        strategy != null ? strategy.name() : null);
         m.put("entry_type",      entryType);
@@ -129,6 +131,7 @@ public class TradingSignalDto {
             case S5_PROG_FRGN        -> "💻";
             case S6_THEME_LAGGARD    -> "🔥";
             case S7_AUCTION          -> "⚡";
+            case S7_ICHIMOKU_BREAKOUT -> "☁️";
             case S8_GOLDEN_CROSS     -> "📈";
             case S9_PULLBACK_SWING   -> "🔽";
             case S10_NEW_HIGH        -> "🏔";

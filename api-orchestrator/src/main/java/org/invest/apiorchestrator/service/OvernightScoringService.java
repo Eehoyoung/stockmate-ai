@@ -181,14 +181,14 @@ public class OvernightScoringService {
             // 신고가·박스돌파 모멘텀: 돌파 후 추세 지속
             case S10_NEW_HIGH, S13_BOX_BREAKOUT -> 30;
             // 스윙 전략: 다음날도 보유 적합
-            case S8_GOLDEN_CROSS, S9_PULLBACK_SWING -> 25;
+            case S7_ICHIMOKU_BREAKOUT, S8_GOLDEN_CROSS, S9_PULLBACK_SWING -> 25;
             // 다중지표 동조: 추세 지속 가능성 높음
             case S15_MOMENTUM_ALIGN -> 25;
             // 과매도 반등: 추세 불확실 – 중립
             case S14_OVERSOLD_BOUNCE -> 15;
             // 장대양봉·테마후발: 중립 – 상황에 따라 다름
             case S4_BIG_CANDLE, S6_THEME_LAGGARD -> 15;
-            // 갭오픈·VI눌림·동시호가: 단타 전략 – 오버나잇 부적합
+            // 갭오픈·VI눌림·레거시 동시호가(S7_AUCTION): 오버나잇 부적합
             case S1_GAP_OPEN, S2_VI_PULLBACK, S7_AUCTION -> 5;
         };
     }

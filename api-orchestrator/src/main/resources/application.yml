@@ -1,4 +1,11 @@
 spring:
+  jackson:
+    time-zone: Asia/Seoul
+
+  task:
+    scheduling:
+      time-zone: Asia/Seoul
+
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:SMA}
     username: ${POSTGRES_USER}
@@ -44,6 +51,11 @@ kiwoom:
     max-daily-signals: ${MAX_DAILY_SIGNALS:30}
     sector-overheat-threshold: ${SECTOR_OVERHEAT_THRESHOLD:3}
     stock-cooldown-minutes: ${STOCK_COOLDOWN_MINUTES:30}
+
+swing:
+  # 스윙 전략 목록 단일 소스 — 루트 .env SWING_STRATEGIES 환경변수로 오버라이드.
+  # ForceCloseScheduler 가 이 값을 읽어 강제청산 제외 대상을 결정한다.
+  strategies: ${SWING_STRATEGIES:S8_GOLDEN_CROSS,S9_PULLBACK_SWING,S10_NEW_HIGH,S11_FRGN_CONT,S12_CLOSING,S13_BOX_BREAKOUT,S14_OVERSOLD_BOUNCE,S15_MOMENTUM_ALIGN}
 
 claude:
   api-key: ${CLAUDE_API_KEY}

@@ -169,6 +169,19 @@ class TestFetchCntrStrengthErrors:
 
         assert result == 100.0
 
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+class TestFetchStkNameNormalization:
+    def test_fetch_stk_nm_uses_normalized_cache_key(self):
+        rdb = MagicMock()
+        rdb.get = AsyncMock(return_value="테스트종목")
+
+        from http_utils import fetch_stk_nm
+        result = _run(fetch_stk_nm(rdb, "token", "483650_AL"))
+
+        assert result == "테스트종목"
+        rdb.get.assert_awaited_once_with("stk_nm:483650")
+
     def test_timeout_returns_100(self):
         """타임아웃 → 기본값 100.0"""
         import httpx

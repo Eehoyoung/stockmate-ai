@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 news_collector.py
 한국 금융 뉴스를 RSS 피드에서 비동기 수집하는 모듈.

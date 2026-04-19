@@ -1,386 +1,411 @@
-"""
-claude_analyst.py
-/claude {code} 텔레그램 명령어 전용 종목 분석 모듈.
-
-흐름:
-  1. Redis 후보 풀에서 해당 종목이 어떤 전략으로 감지되었는지 확인
-  2. Redis tick data + 일봉 가져와 기술지표 계산
-  3. Claude API 에 종합 프롬프트 전송 → 자유 형식 한국어 분석 수신
-  4. 결과 dict 반환 (engine.py HTTP 엔드포인트에서 JSON 응답)
-"""
-
 from __future__ import annotations
 
+"""
+On-demand Claude analysis for `/claude {stock_code}`.
+
+The response is intentionally portfolio-agnostic. It evaluates only the
+current stock state and returns a structured ENTER/HOLD/SELL opinion.
+"""
+
 import asyncio
+import json
 import logging
 import os
-from datetime import datetime
-from typing import Optional
+from typing import Any
 
 import anthropic
-import httpx
 
-from http_utils import validate_kiwoom_response
-from ma_utils import fetch_daily_candles, _safe_price, _safe_vol
+from http_utils import fetch_cntr_strength_cached, fetch_hoga, fetch_stk_nm
+from indicator_atr import get_atr_daily, get_atr_minute
+from indicator_bollinger import get_bollinger_daily, get_bollinger_minute
+from indicator_macd import get_macd_daily, get_macd_minute
+from indicator_rsi import fetch_minute_candles, get_rsi_daily, get_rsi_minute
+from indicator_stochastic import get_stochastic_minute
+from ma_utils import _safe_price, _safe_vol, fetch_daily_candles
+from utils import normalize_stock_code, safe_float as _sf
 
 logger = logging.getLogger(__name__)
 
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
-CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-_TIMEOUT        = 10.0
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+CLAUDE_TIMEOUT_SEC = int(os.getenv("CLAUDE_ANALYST_TIMEOUT_SEC", "30"))
+MINUTE_SCOPE = os.getenv("CLAUDE_ANALYST_MINUTE_SCOPE", "5")
 
-# 전략 코드 → 한국어 이름
+_claude_client: anthropic.AsyncAnthropic | None = None
+
 _STRATEGY_NAMES: dict[str, str] = {
-    "s1":  "S1 갭 상승 개장",
-    "s2":  "S2 VI 눌림목",
-    "s3":  "S3 기관·외인 매수",
-    "s4":  "S4 장대양봉",
-    "s5":  "S5 프로그램 매수",
-    "s6":  "S6 테마 상승",
-    "s7":  "S7 동시호가",
-    "s8":  "S8 골든크로스",
-    "s9":  "S9 눌림목 반등",
-    "s10": "S10 신고가 돌파",
-    "s11": "S11 외인 지속 매수",
-    "s12": "S12 종가 강도",
-    "s13": "S13 박스권 돌파",
-    "s14": "S14 과매도 반등",
-    "s15": "S15 모멘텀 정렬",
+    "s1": "S1_GAP_OPEN",
+    "s2": "S2_VI_PULLBACK",
+    "s3": "S3_INST_FRGN",
+    "s4": "S4_BIG_CANDLE",
+    "s5": "S5_PROG_FRGN",
+    "s6": "S6_THEME_LAGGARD",
+    "s7": "S7_ICHIMOKU_BREAKOUT",
+    "s8": "S8_GOLDEN_CROSS",
+    "s9": "S9_PULLBACK_SWING",
+    "s10": "S10_NEW_HIGH",
+    "s11": "S11_FRGN_CONT",
+    "s12": "S12_CLOSING",
+    "s13": "S13_BOX_BREAKOUT",
+    "s14": "S14_OVERSOLD_BOUNCE",
+    "s15": "S15_MOMENTUM_ALIGN",
 }
 
-# Claude 클라이언트 싱글턴
-_claude_client: anthropic.AsyncAnthropic | None = None
 
 def _get_client() -> anthropic.AsyncAnthropic:
     global _claude_client
     if _claude_client is None:
         api_key = os.getenv("CLAUDE_API_KEY")
         if not api_key:
-            raise RuntimeError("CLAUDE_API_KEY 환경 변수 미설정")
+            raise RuntimeError("CLAUDE_API_KEY is required")
         _claude_client = anthropic.AsyncAnthropic(api_key=api_key)
     return _claude_client
 
 
-def _sf(v) -> float:
-    """안전한 숫자 변환"""
-    try:
-        return float(str(v).replace(",", "").replace("+", "").replace(" ", "") or "0")
-    except (ValueError, TypeError):
-        return 0.0
+def _extract_json_block(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = [line for line in cleaned.splitlines() if not line.startswith("```")]
+        cleaned = "\n".join(lines).strip()
+
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        return json.loads(cleaned)
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        return json.loads(cleaned[start:end + 1])
+
+    raise json.JSONDecodeError("No JSON object found", cleaned, 0)
 
 
-async def _fetch_stk_nm(token: str, stk_cd: str, rdb) -> str:
-    """종목명 조회 (Redis 캐시 우선)"""
-    if rdb:
-        try:
-            cached = await rdb.get(f"stk_nm:{stk_cd}")
-            if cached:
-                return cached
-        except Exception:
-            pass
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-                headers={"api-id": "ka10001", "authorization": f"Bearer {token}",
-                         "Content-Type": "application/json;charset=UTF-8"},
-                json={"stk_cd": stk_cd},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10001", logger):
-                return stk_cd
-            items = data.get("stk_info", [])
-            nm = str(items[0].get("stk_nm", "")).strip() if items else stk_cd
-        if rdb and nm and nm != stk_cd:
-            try:
-                await rdb.set(f"stk_nm:{stk_cd}", nm, ex=86400)
-            except Exception:
-                pass
-        return nm or stk_cd
-    except Exception as e:
-        logger.debug("[claude_analyst] 종목명 조회 실패 [%s]: %s", stk_cd, e)
-        return stk_cd
+def _normalize_list(value: Any, limit: int = 5) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        source = value
+    else:
+        source = [value]
+    result = [str(item).strip() for item in source if str(item).strip()]
+    return result[:limit]
 
 
-def _calc_rsi(closes: list[float], period: int = 14) -> Optional[float]:
-    if len(closes) < period + 1:
+def _normalize_action_response(raw: dict[str, Any]) -> dict[str, Any]:
+    action = str(raw.get("action", "HOLD") or "HOLD").upper()
+    if action not in {"ENTER", "HOLD", "SELL"}:
+        action = "HOLD"
+
+    confidence = str(raw.get("confidence", "LOW") or "LOW").upper()
+    if confidence not in {"HIGH", "MEDIUM", "LOW"}:
+        confidence = "LOW"
+
+    tp_sl = raw.get("tp_sl") if isinstance(raw.get("tp_sl"), dict) else {}
+
+    return {
+        "action": action,
+        "confidence": confidence,
+        "reasons": _normalize_list(raw.get("reasons")),
+        "risk_factors": _normalize_list(raw.get("risk_factors")),
+        "action_guide": _normalize_list(raw.get("action_guide")),
+        "summary": str(raw.get("summary", "") or "").strip(),
+        "tp_sl": {
+            "take_profit": _sf(tp_sl.get("take_profit", 0)) or None,
+            "stop_loss": _sf(tp_sl.get("stop_loss", 0)) or None,
+        },
+        "portfolio_not_linked": True,
+    }
+
+
+def _safe_round(value: Any, digits: int = 2) -> float | None:
+    numeric = _sf(value)
+    if numeric == 0 and value not in (0, "0", "0.0"):
         return None
-    gains, losses = [], []
-    for i in range(period):
-        d = closes[i] - closes[i + 1]
-        (gains if d > 0 else losses).append(abs(d))
-    avg_gain = sum(gains) / period if gains else 0.0
-    avg_loss = sum(losses) / period if losses else 0.0
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return round(100 - 100 / (1 + rs), 2)
+    return round(numeric, digits)
 
 
-def _calc_bollinger(closes: list[float], period: int = 20) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    """(upper, mid, lower) 볼린저밴드 반환"""
+def _safe_int(value: Any) -> int:
+    return int(_sf(value))
+
+
+def _to_price_list(candles: list[dict[str, Any]], key: str, limit: int | None = None) -> list[float]:
+    rows = candles if limit is None else candles[:limit]
+    values: list[float] = []
+    for candle in rows:
+        price = _safe_price(candle.get(key))
+        if price > 0:
+            values.append(price)
+    return values
+
+
+def _moving_average(closes: list[float], period: int) -> float | None:
     if len(closes) < period:
-        return None, None, None
-    window = closes[:period]
-    mid = sum(window) / period
-    std = (sum((p - mid) ** 2 for p in window) / period) ** 0.5
-    return round(mid + 2 * std, 0), round(mid, 0), round(mid - 2 * std, 0)
+        return None
+    return round(sum(closes[:period]) / period, 2)
 
 
 async def _check_candidate_pools(rdb, stk_cd: str) -> list[str]:
-    """
-    Redis 후보 풀에서 해당 종목이 등록된 전략 목록을 반환.
-    candidates:s{N}:{market} 키를 전수 확인.
-    """
     found: list[str] = []
-    markets = ["001", "101"]
-    for n in range(1, 16):
-        s = f"s{n}"
-        for mkt in markets:
-            key = f"candidates:{s}:{mkt}"
+    for strategy in range(1, 16):
+        key_name = f"s{strategy}"
+        for market in ("001", "101"):
             try:
-                members = await rdb.lrange(key, 0, -1)
-                if stk_cd in members:
-                    found.append(_STRATEGY_NAMES.get(s, s))
+                members = await rdb.lrange(f"candidates:{key_name}:{market}", 0, -1)
             except Exception:
-                pass
-    return found
+                members = []
+            if stk_cd in members:
+                found.append(_STRATEGY_NAMES.get(key_name, key_name))
+    return sorted(set(found))
 
 
-async def analyze_stock_for_user(rdb, stk_cd: str) -> dict:
-    """
-    종목 종합 분석 — /claude {code} 명령어 전용.
-    Returns:
-        {
-          "stk_cd": str,
-          "stk_nm": str,
-          "strategies_in_pool": [str, ...],
-          "cur_prc": float,
-          "flu_rt": float,
-          "ma5": float | None,
-          "ma20": float | None,
-          "ma60": float | None,
-          "rsi14": float | None,
-          "bb_upper": float | None,
-          "bb_lower": float | None,
-          "claude_analysis": str,
-          "error": str | None,
-        }
-    """
-    result: dict = {"stk_cd": stk_cd, "error": None}
+async def _build_market_snapshot(rdb, token: str, stk_cd: str) -> dict[str, Any]:
+    tick = await rdb.hgetall(f"ws:tick:{stk_cd}") if rdb else {}
+    hoga_raw = await rdb.hgetall(f"ws:hoga:{stk_cd}") if rdb else {}
 
-    # 0. 키움 토큰
-    token = ""
+    cur_prc = _sf(tick.get("cur_prc", 0))
+    flu_rt = _safe_round(tick.get("flu_rt", 0), 2) or 0.0
+    acc_vol = _safe_int(tick.get("acc_trde_qty", 0))
+
     try:
-        token = (await rdb.get("kiwoom:token")) or ""
-    except Exception as e:
-        logger.warning("[claude_analyst] 토큰 조회 실패: %s", e)
+        cntr_strength, strength_source = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb, count=5)
+    except Exception:
+        cntr_strength, strength_source = (_sf(tick.get("cntr_str", 0)), "tick")
 
-    # 1. 종목명
-    stk_nm = stk_cd
-    if token:
-        stk_nm = await _fetch_stk_nm(token, stk_cd, rdb)
-    result["stk_nm"] = stk_nm
+    buy_total = _safe_int(hoga_raw.get("total_buy_bid_req", 0))
+    sell_total = _safe_int(hoga_raw.get("total_sel_bid_req", 0))
+    buy_to_sell_ratio = round(buy_total / sell_total, 3) if sell_total > 0 else None
 
-    # 2. 후보 풀 전략 목록
-    strategies_in_pool = await _check_candidate_pools(rdb, stk_cd)
-    result["strategies_in_pool"] = strategies_in_pool
-
-    # 3. Redis tick data
-    cur_prc = 0.0
-    flu_rt  = 0.0
-    cntr_str = 0.0
-    acc_vol  = 0
-    try:
-        tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
-        if tick:
-            cur_prc  = _sf(tick.get("cur_prc", 0))
-            flu_rt   = _sf(tick.get("flu_rt", 0))
-            cntr_str = _sf(tick.get("cntr_str", 0))
-            acc_vol  = int(_sf(tick.get("acc_trde_qty", 0)))
-    except Exception as e:
-        logger.debug("[claude_analyst] tick 조회 실패 [%s]: %s", stk_cd, e)
-    result["cur_prc"]  = cur_prc
-    result["flu_rt"]   = flu_rt
-    result["cntr_str"] = cntr_str
-    result["acc_vol"]  = acc_vol
-
-    # 4. 일봉 + 기술지표
-    candles: list[dict] = []
-    ma5 = ma20 = ma60 = rsi14 = None
-    bb_upper = bb_mid = bb_lower = None
-    vol_ma20 = None
-    recent_high = recent_low = None
-
-    if token:
+    best_bid = _safe_round(tick.get("bid_prc", 0), 0)
+    best_ask = _safe_round(tick.get("ask_prc", 0), 0)
+    if (buy_to_sell_ratio is None or buy_to_sell_ratio == 0) and token:
         try:
-            candles = await asyncio.wait_for(
-                fetch_daily_candles(token, stk_cd, target_count=120), timeout=15.0
-            )
-        except Exception as e:
-            logger.warning("[claude_analyst] 일봉 조회 실패 [%s]: %s", stk_cd, e)
+            ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
+            if ratio:
+                buy_to_sell_ratio = round(float(ratio), 3)
+        except Exception:
+            logger.debug("[claude_analyst] hoga fallback failed for %s", stk_cd)
 
-    if candles:
-        closes = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
-        vols   = [_safe_vol(c.get("trde_qty")) for c in candles[:20]]
-        highs  = [_safe_price(c.get("high_pric")) for c in candles[:20] if _safe_price(c.get("high_pric")) > 0]
-        lows   = [_safe_price(c.get("low_pric")) for c in candles[:20] if _safe_price(c.get("low_pric")) > 0]
+    return {
+        "cur_prc": cur_prc,
+        "flu_rt": flu_rt,
+        "cntr_str": round(float(cntr_strength), 2) if cntr_strength is not None else 0.0,
+        "cntr_strength_source": strength_source,
+        "acc_vol": acc_vol,
+        "cntr_tm": tick.get("cntr_tm", ""),
+        "hoga": {
+            "total_buy_bid_req": buy_total,
+            "total_sel_bid_req": sell_total,
+            "buy_to_sell_ratio": buy_to_sell_ratio,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+        },
+    }
 
-        if closes:
-            if cur_prc == 0:
-                cur_prc = closes[0]
-                result["cur_prc"] = cur_prc
 
-            if len(closes) >= 5:
-                ma5 = round(sum(closes[:5]) / 5, 0)
-            if len(closes) >= 20:
-                ma20    = round(sum(closes[:20]) / 20, 0)
-                vol_ma20 = round(sum(vols[:20]) / 20, 0) if vols else None
-            if len(closes) >= 60:
-                ma60 = round(sum(closes[:60]) / 60, 0)
+async def _build_daily_indicators(token: str, stk_cd: str, fallback_price: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    candles = await fetch_daily_candles(token, stk_cd, target_count=120) if token else []
+    closes = _to_price_list(candles, "cur_prc")
+    highs = _to_price_list(candles, "high_pric", 20)
+    lows = _to_price_list(candles, "low_pric", 20)
+    volumes = [_safe_vol(row.get("trde_qty")) for row in candles[:20]]
+    latest_price = fallback_price or (closes[0] if closes else 0.0)
 
-            rsi14 = _calc_rsi(closes)
-            bb_upper, bb_mid, bb_lower = _calc_bollinger(closes)
+    rsi_daily, macd_daily, bb_daily, atr_daily = await asyncio.gather(
+        get_rsi_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
+        get_macd_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
+        get_bollinger_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
+        get_atr_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
+    )
 
-        if highs:
-            recent_high = round(max(highs), 0)
-        if lows:
-            recent_low  = round(min(lows), 0)
+    result = {
+        "ma5": _moving_average(closes, 5),
+        "ma20": _moving_average(closes, 20),
+        "ma60": _moving_average(closes, 60),
+        "ma120": _moving_average(closes, 120),
+        "rsi14": getattr(rsi_daily, "rsi", None),
+        "macd": getattr(macd_daily, "macd", None),
+        "macd_signal": getattr(macd_daily, "signal", None),
+        "macd_histogram": getattr(macd_daily, "histogram", None),
+        "bb_upper": getattr(bb_daily, "upper", None),
+        "bb_mid": getattr(bb_daily, "middle", None),
+        "bb_lower": getattr(bb_daily, "lower", None),
+        "bb_pct_b": getattr(bb_daily, "pct_b", None),
+        "atr": getattr(atr_daily, "atr", None),
+        "atr_pct": getattr(atr_daily, "atr_pct", None),
+        "vol_ma20": round(sum(volumes) / len(volumes), 2) if volumes else None,
+        "recent_high_20d": round(max(highs), 2) if highs else None,
+        "recent_low_20d": round(min(lows), 2) if lows else None,
+        "cur_prc": latest_price,
+    }
+    return result, candles
 
-    result.update({
-        "ma5": ma5, "ma20": ma20, "ma60": ma60,
-        "rsi14": rsi14,
-        "bb_upper": bb_upper, "bb_mid": bb_mid, "bb_lower": bb_lower,
-        "vol_ma20": vol_ma20,
-        "recent_high_20d": recent_high,
-        "recent_low_20d":  recent_low,
-    })
 
-    # 5. Claude API 호출
-    try:
-        analysis = await asyncio.wait_for(
-            _call_claude(stk_cd, stk_nm, result), timeout=30.0
-        )
-        result["claude_analysis"] = analysis
-    except asyncio.TimeoutError:
-        result["claude_analysis"] = "Claude 응답 타임아웃 (30초 초과)"
-        result["error"] = "timeout"
-    except Exception as e:
-        logger.error("[claude_analyst] Claude 호출 실패 [%s]: %s", stk_cd, e)
-        result["claude_analysis"] = f"Claude 분석 실패: {e}"
-        result["error"] = str(e)
+async def _build_minute_indicators(token: str, stk_cd: str) -> dict[str, Any]:
+    minute_candles = await fetch_minute_candles(token, stk_cd, tic_scope=MINUTE_SCOPE) if token else []
 
+    rsi_min, macd_min, bb_min, stoch_min, atr_min = await asyncio.gather(
+        get_rsi_minute(token, stk_cd, tic_scope=MINUTE_SCOPE) if token else asyncio.sleep(0, result=None),
+        get_macd_minute(token, stk_cd, tic_scope=MINUTE_SCOPE) if token else asyncio.sleep(0, result=None),
+        get_bollinger_minute(token, stk_cd, tic_scope=MINUTE_SCOPE) if token else asyncio.sleep(0, result=None),
+        get_stochastic_minute(token, stk_cd, tic_scope=MINUTE_SCOPE) if token else asyncio.sleep(0, result=None),
+        get_atr_minute(token, stk_cd, tic_scope=MINUTE_SCOPE) if token else asyncio.sleep(0, result=None),
+    )
+
+    closes = _to_price_list(minute_candles, "cur_prc")
+    result = {
+        "tic_scope": MINUTE_SCOPE,
+        "candle_count": len(minute_candles),
+        "last_close": closes[0] if closes else None,
+        "rsi14": getattr(rsi_min, "rsi", None),
+        "macd": getattr(macd_min, "macd", None),
+        "macd_signal": getattr(macd_min, "signal", None),
+        "macd_histogram": getattr(macd_min, "histogram", None),
+        "bb_upper": getattr(bb_min, "upper", None),
+        "bb_mid": getattr(bb_min, "middle", None),
+        "bb_lower": getattr(bb_min, "lower", None),
+        "bb_pct_b": getattr(bb_min, "pct_b", None),
+        "stoch_k": getattr(stoch_min, "k", None),
+        "stoch_d": getattr(stoch_min, "d", None),
+        "atr": getattr(atr_min, "atr", None),
+        "atr_pct": getattr(atr_min, "atr_pct", None),
+    }
     return result
 
 
-async def _call_claude(stk_cd: str, stk_nm: str, ctx: dict) -> str:
-    """Claude API 호출 — 자유 형식 한국어 분석 텍스트 반환"""
+def _build_prompt(stk_cd: str, stk_nm: str, analysis_input: dict[str, Any]) -> str:
+    return (
+        "Analyze the Korean stock below and decide one action.\n"
+        "This analysis is portfolio-agnostic. Do not assume actual holdings.\n"
+        "Interpret HOLD as 'existing-holder perspective still acceptable' and SELL as "
+        "'avoid new entry or reduce/exit bias at this zone'.\n"
+        "Return JSON only with this schema:\n"
+        "{"
+        '"action":"ENTER|HOLD|SELL",'
+        '"confidence":"HIGH|MEDIUM|LOW",'
+        '"reasons":["..."],'
+        '"risk_factors":["..."],'
+        '"action_guide":["..."],'
+        '"tp_sl":{"take_profit":0,"stop_loss":0},'
+        '"summary":"..."'
+        "}\n\n"
+        f"Stock: {stk_nm} ({stk_cd})\n"
+        f"Input JSON:\n{json.dumps(analysis_input, ensure_ascii=False, default=str, indent=2)}"
+    )
 
-    cur_prc  = ctx.get("cur_prc", 0)
-    flu_rt   = ctx.get("flu_rt", 0)
-    ma5      = ctx.get("ma5")
-    ma20     = ctx.get("ma20")
-    ma60     = ctx.get("ma60")
-    rsi14    = ctx.get("rsi14")
-    bb_upper = ctx.get("bb_upper")
-    bb_mid   = ctx.get("bb_mid")
-    bb_lower = ctx.get("bb_lower")
-    vol_ma20 = ctx.get("vol_ma20")
-    acc_vol  = ctx.get("acc_vol", 0)
-    cntr_str = ctx.get("cntr_str", 0)
-    pool_strategies = ctx.get("strategies_in_pool", [])
-    recent_high = ctx.get("recent_high_20d")
-    recent_low  = ctx.get("recent_low_20d")
 
-    # MA 배열 판단
-    alignment = "데이터 부족"
-    if ma5 and ma20 and ma60:
-        if ma5 > ma20 > ma60:
-            alignment = "정배열 (MA5 > MA20 > MA60) ✅"
-        elif ma5 < ma20 < ma60:
-            alignment = "역배열 (MA5 < MA20 < MA60) ❌"
-        else:
-            alignment = "혼조 배열"
-
-    # RSI 상태
-    rsi_status = "N/A"
-    if rsi14 is not None:
-        if rsi14 >= 70:
-            rsi_status = f"{rsi14} (과매수 구간 ⚠️)"
-        elif rsi14 <= 30:
-            rsi_status = f"{rsi14} (과매도 구간 🔻)"
-        else:
-            rsi_status = f"{rsi14} (중립)"
-
-    # Bollinger 위치
-    bb_position = "N/A"
-    if bb_upper and bb_lower and cur_prc:
-        bb_range = bb_upper - bb_lower
-        if bb_range > 0:
-            pct_b = (cur_prc - bb_lower) / bb_range * 100
-            if pct_b >= 80:
-                bb_position = f"%B={pct_b:.0f}% (상단 근접 ⚠️)"
-            elif pct_b <= 20:
-                bb_position = f"%B={pct_b:.0f}% (하단 근접 💡)"
-            else:
-                bb_position = f"%B={pct_b:.0f}%"
-
-    # 거래량 비교
-    vol_comment = "N/A"
-    if vol_ma20 and acc_vol:
-        ratio = acc_vol / vol_ma20 if vol_ma20 > 0 else 0
-        vol_comment = f"오늘 {acc_vol:,}주 / 20일 평균 {vol_ma20:,.0f}주 (비율 {ratio:.1f}x)"
-
-    pool_str = "\n".join(f"  - {s}" for s in pool_strategies) if pool_strategies else "  - (현재 후보 풀에 없음)"
-
-    prompt = f"""
-당신은 한국 주식 전문 트레이더 겸 기술적 분석가입니다.
-아래 데이터를 바탕으로 종목 {stk_nm}({stk_cd})에 대한 **종합 분석 보고서**를 작성하세요.
-
-## 시스템이 감지한 전략 후보 풀
-{pool_str}
-
-## 현재 시세
-- 현재가: {cur_prc:,.0f}원
-- 등락률: {flu_rt:+.2f}%
-- 체결강도: {cntr_str:.1f}
-
-## 이동평균선 (일봉 기준)
-- MA5  : {f"{ma5:,.0f}원" if ma5 else "N/A"}
-- MA20 : {f"{ma20:,.0f}원" if ma20 else "N/A"}
-- MA60 : {f"{ma60:,.0f}원" if ma60 else "N/A"}
-- 정배열 여부: {alignment}
-
-## 기술지표
-- RSI(14): {rsi_status}
-- 볼린저밴드: 상단 {f"{bb_upper:,.0f}" if bb_upper else "N/A"} / 중단 {f"{bb_mid:,.0f}" if bb_mid else "N/A"} / 하단 {f"{bb_lower:,.0f}" if bb_lower else "N/A"}
-- 볼린저 위치: {bb_position}
-
-## 최근 20일 가격 범위
-- 20일 고가: {f"{recent_high:,.0f}원" if recent_high else "N/A"}
-- 20일 저가: {f"{recent_low:,.0f}원" if recent_low else "N/A"}
-
-## 거래량
-- {vol_comment}
-
----
-
-다음 항목을 포함한 분석 보고서를 **한국어**로 작성하세요:
-
-1. **종합 의견** (매수 적합 / 중립 / 주의 중 하나 + 근거 2~3줄)
-2. **현재 기술적 상태** (MA 배열, RSI, 볼린저 기반)
-3. **주목할 리스크** (과매수, 지지선 붕괴 가능성 등)
-4. **매수 시나리오** (어떤 조건이 되면 진입 가능한지)
-5. **TP / SL 제안** (기술적 근거 포함)
-
-마지막에 한 줄 요약: ⭐ 결론: [한 문장]
-""".strip()
-
-    client = _get_client()
-    resp = await client.messages.create(
+async def _call_claude(stk_cd: str, stk_nm: str, analysis_input: dict[str, Any]) -> dict[str, Any]:
+    prompt = _build_prompt(stk_cd, stk_nm, analysis_input)
+    response = await _get_client().messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=1024,
+        max_tokens=900,
+        system=(
+            "You are a top-tier Korean equities analyst. "
+            "Use only the provided data. Be concise, technically grounded, "
+            "and output valid JSON only."
+        ),
         messages=[{"role": "user", "content": prompt}],
     )
-    return resp.content[0].text
+    raw_text = response.content[0].text
+    parsed = _extract_json_block(raw_text)
+    normalized = _normalize_action_response(parsed)
+    normalized["claude_analysis"] = raw_text.strip()
+    return normalized
+
+
+async def analyze_stock_for_user(rdb, stk_cd: str) -> dict[str, Any]:
+    stk_cd = normalize_stock_code(stk_cd)
+    if not stk_cd:
+        return {"error": "invalid stock code"}
+
+    token = ""
+    if rdb:
+        try:
+            token = (await rdb.get("kiwoom:token")) or ""
+        except Exception as exc:
+            logger.warning("[claude_analyst] token fetch failed: %s", exc)
+
+    stk_nm = stk_cd
+    if token:
+        try:
+            stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+        except Exception as exc:
+            logger.debug("[claude_analyst] stock name fetch failed: %s", exc)
+
+    strategies_in_pool = await _check_candidate_pools(rdb, stk_cd)
+    market_snapshot = await _build_market_snapshot(rdb, token, stk_cd)
+    daily_indicators, _ = await _build_daily_indicators(token, stk_cd, market_snapshot["cur_prc"])
+    minute_indicators = await _build_minute_indicators(token, stk_cd)
+
+    result: dict[str, Any] = {
+        "stk_cd": stk_cd,
+        "stk_nm": stk_nm,
+        "strategies_in_pool": strategies_in_pool,
+        "cur_prc": market_snapshot["cur_prc"],
+        "flu_rt": market_snapshot["flu_rt"],
+        "cntr_str": market_snapshot["cntr_str"],
+        "acc_vol": market_snapshot["acc_vol"],
+        "cntr_tm": market_snapshot["cntr_tm"],
+        "hoga": market_snapshot["hoga"],
+        "daily_indicators": daily_indicators,
+        "minute_indicators": minute_indicators,
+        "portfolio_not_linked": True,
+        "error": None,
+    }
+
+    # Legacy compatibility fields still used by some bot output and tests.
+    result.update({
+        "ma5": daily_indicators.get("ma5"),
+        "ma20": daily_indicators.get("ma20"),
+        "ma60": daily_indicators.get("ma60"),
+        "rsi14": daily_indicators.get("rsi14"),
+        "bb_upper": daily_indicators.get("bb_upper"),
+        "bb_lower": daily_indicators.get("bb_lower"),
+        "vol_ma20": daily_indicators.get("vol_ma20"),
+        "recent_high_20d": daily_indicators.get("recent_high_20d"),
+        "recent_low_20d": daily_indicators.get("recent_low_20d"),
+    })
+
+    try:
+        claude_payload = await asyncio.wait_for(
+            _call_claude(
+                stk_cd,
+                stk_nm,
+                {
+                    "market_snapshot": market_snapshot,
+                    "daily_indicators": daily_indicators,
+                    "minute_indicators": minute_indicators,
+                    "strategies_in_pool": strategies_in_pool,
+                    "portfolio_not_linked": True,
+                },
+            ),
+            timeout=CLAUDE_TIMEOUT_SEC,
+        )
+        result.update(claude_payload)
+    except asyncio.TimeoutError:
+        logger.warning("[claude_analyst] Claude timeout for %s", stk_cd)
+        result.update({
+            "action": "HOLD",
+            "confidence": "LOW",
+            "reasons": ["Claude response timed out; do not treat this as a trade signal."],
+            "risk_factors": ["AI timeout", "Need manual review"],
+            "action_guide": ["Re-run /claude later after market data stabilizes."],
+            "tp_sl": {"take_profit": None, "stop_loss": None},
+            "summary": "AI analysis timed out. Manual review required.",
+            "claude_analysis": "Claude timeout",
+            "error": "timeout",
+            "portfolio_not_linked": True,
+        })
+    except Exception as exc:
+        logger.error("[claude_analyst] Claude analysis failed for %s: %s", stk_cd, exc)
+        result.update({
+            "action": "HOLD",
+            "confidence": "LOW",
+            "reasons": ["Claude analysis failed; treat this output as informational only."],
+            "risk_factors": [str(exc)],
+            "action_guide": ["Check AI engine logs and retry the command."],
+            "tp_sl": {"take_profit": None, "stop_loss": None},
+            "summary": "AI analysis failed. Manual review required.",
+            "claude_analysis": f"Claude analysis failed: {exc}",
+            "error": str(exc),
+            "portfolio_not_linked": True,
+        })
+
+    return result

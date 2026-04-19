@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 4: 장대양봉 + 거래량 급증 추격매수
 타이밍: 장중 상시 (10:00~14:30 집중)
@@ -22,7 +23,7 @@ import httpx
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
-from http_utils import fetch_stk_nm, validate_kiwoom_response, kiwoom_client
+from http_utils import fetch_cntr_strength_cached, fetch_stk_nm, validate_kiwoom_response, kiwoom_client
 from indicator_atr import get_atr_minute
 from tp_sl_engine import calc_tp_sl
 
@@ -103,7 +104,7 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
         return None
 
     # 5. 실시간 체결강도 확인 (Redis)
-    avg_strength = 100
+    avg_strength, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb, count=3)
     if rdb:
         # 최근 3분 평균을 위해 List 사용
         strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 2)
@@ -125,7 +126,7 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
         pass
     # candle_low=l(장대양봉 저점→SL 기준), candle_high=h(고점→TP 기준)
     tp_sl = calc_tp_sl("S4_BIG_CANDLE", c, [], [], [], stk_cd=stk_cd, atr=atr_val,
-                        candle_low=l, candle_high=h)
+                        candle_low=l, candle_high=h, min_rr=1.0)
 
     return {
         "stk_cd": stk_cd,

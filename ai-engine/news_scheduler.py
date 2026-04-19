@@ -1,15 +1,11 @@
+from __future__ import annotations
+
 """
 news_scheduler.py
-주기적으로 한국 금융 뉴스를 수집하고 Claude에게 분석을 요청한 후
-결과를 Redis에 저장하는 asyncio 기반 스케쥴러.
 
-Redis 저장 키:
-  news:analysis            – Claude 분석 전체 결과 JSON  (TTL 1h)
-  news:trading_control     – CONTINUE|CAUTIOUS|PAUSE     (TTL 1h)
-  news:sector_recommend    – 추천 섹터 JSON 배열          (TTL 1h)
-  news:market_sentiment    – BULLISH|NEUTRAL|BEARISH      (TTL 1h)
-  news:prev_control        – 이전 trading_control        (TTL 2h)
-  ai_scored_queue          – 텔레그램 알림 큐 (signal과 공유, TTL 12h)
+고정 시각에만 뉴스 수집/분석을 수행하고 Redis 및 텔레그램 브리핑 큐를 갱신한다.
+정규 브리핑 시각:
+  08:00 / 12:30 / 15:40 (평일)
 """
 
 import asyncio
@@ -17,174 +13,478 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
+from news_analyzer import analyze_news
 from news_collector import collect_news
-from news_analyzer  import analyze_news
 
 logger = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
 
-NEWS_INTERVAL_MIN  = int(os.getenv("NEWS_INTERVAL_MIN",  "30"))
-NEWS_ENABLED       = os.getenv("NEWS_ENABLED",       "true").lower()  == "true"
+NEWS_ENABLED = os.getenv("NEWS_ENABLED", "true").lower() == "true"
 
-_KEY_ANALYSIS    = "news:analysis"
-_KEY_CONTROL     = "news:trading_control"
-_KEY_SECTORS     = "news:sector_recommend"
-_KEY_SENTIMENT   = "news:market_sentiment"
-_KEY_PREV_CTRL   = "news:prev_control"
+_SLOTS: list[dict[str, object]] = [
+    {"time": (8, 0), "name": "MORNING"},
+    {"time": (12, 30), "name": "MIDDAY"},
+    {"time": (15, 40), "name": "CLOSE"},
+]
+
+_KEY_ANALYSIS = "news:analysis"
+_KEY_CONTROL = "news:trading_control"
+_KEY_SECTORS = "news:sector_recommend"
+_KEY_SENTIMENT = "news:market_sentiment"
+_KEY_PREV_CTRL = "news:prev_control"
 _KEY_SCORED_QUEUE = "ai_scored_queue"
 
-_TTL_ANALYSIS  = 3600   # 1h
-_TTL_PREV_CTRL = 7200   # 2h
-_TTL_ALERT_Q   = 43200  # 12h
+_TTL_ANALYSIS = 43200
+_TTL_PREV_CTRL = 43200
+_TTL_ALERT_Q = 43200
 
 
-def _is_market_hours() -> bool:
-    """현재 시간이 뉴스 분석 허용 시간대(월~금 08:30~16:00)인지 확인"""
-    from datetime import datetime
-    now = datetime.now()
-    if now.weekday() >= 5:  # 토(5), 일(6) 제외
-        return False
-    return (8, 30) <= (now.hour, now.minute) < (16, 0)
+def _now_kst() -> datetime:
+    return datetime.now(KST)
+
+
+def _ensure_kst(now: datetime | None) -> datetime:
+    if now is None:
+        return _now_kst()
+    if now.tzinfo is None:
+        return now.replace(tzinfo=KST)
+    return now.astimezone(KST)
+
+
+def _is_weekday(now: datetime | None = None) -> bool:
+    current = _ensure_kst(now)
+    return current.weekday() < 5
+
+
+def _next_run_slot(now: datetime | None = None) -> dict[str, object]:
+    current = _ensure_kst(now)
+    today = current.date()
+
+    for slot in _SLOTS:
+        hour, minute = slot["time"]
+        candidate = datetime(today.year, today.month, today.day, hour, minute, tzinfo=KST)
+        if candidate > current:
+            return {"slot": slot, "run_at": candidate}
+
+    next_day = today + timedelta(days=1)
+    while next_day.weekday() >= 5:
+        next_day += timedelta(days=1)
+    first_slot = _SLOTS[0]
+    hour, minute = first_slot["time"]
+    return {
+        "slot": first_slot,
+        "run_at": datetime(next_day.year, next_day.month, next_day.day, hour, minute, tzinfo=KST),
+    }
+
+
+def _slot_from_now(now: datetime | None = None) -> dict[str, object] | None:
+    current = _ensure_kst(now)
+    for slot in _SLOTS:
+        if (current.hour, current.minute) == slot["time"]:
+            return slot
+    return None
+
+
+def _control_label(control: str) -> tuple[str, str]:
+    mapping = {
+        "PAUSE": ("🛑", "매매 보류"),
+        "CAUTIOUS": ("⚠️", "신중 대응"),
+        "CONTINUE": ("✅", "정상 대응"),
+    }
+    return mapping.get(control or "CONTINUE", ("📌", control or "CONTINUE"))
+
+
+def _sentiment_label(sentiment: str) -> str:
+    return {
+        "BULLISH": "강세 우위",
+        "BEARISH": "약세 경계",
+        "NEUTRAL": "중립 혼조",
+    }.get(sentiment or "NEUTRAL", sentiment or "NEUTRAL")
+
+
+def _normalize_lines(values: list[str] | None, limit: int) -> list[str]:
+    if not values:
+        return []
+    return [str(v).strip() for v in values if str(v).strip()][:limit]
+
+
+def _slot_header(slot_name: str) -> str:
+    return {
+        "MORNING": "🧠 <b>[오전 시황 브리핑 08:00]</b>",
+        "MIDDAY": "📊 <b>[장중 시황 브리핑 12:30]</b>",
+        "CLOSE": "📘 <b>[장마감 브리핑 15:40]</b>",
+    }.get(slot_name, "📰 <b>[뉴스 브리핑]</b>")
+
+
+def _persona_line(slot_name: str) -> str:
+    return {
+        "MORNING": "페르소나: 수석 매크로 애널리스트 + 헤드 트레이더",
+        "MIDDAY": "페르소나: 수석 섹터 애널리스트 + 플로어 트레이더",
+        "CLOSE": "페르소나: 탑티어 클로징 애널리스트 + 헤드 트레이더",
+    }.get(slot_name, "페르소나: 탑급 애널리스트")
+
+
+def _build_morning_message(analysis: dict) -> str:
+    ctrl_emoji, ctrl_label = _control_label(str(analysis.get("trading_control", "CONTINUE")))
+    sentiment_label = _sentiment_label(str(analysis.get("market_sentiment", "NEUTRAL")))
+    us_market = _normalize_lines(analysis.get("us_market_points", []), 3)
+    us_sector = _normalize_lines(analysis.get("us_sector_points", []), 3)
+    macro_points = _normalize_lines(analysis.get("macro_points", []), 3)
+    sectors = _normalize_lines(analysis.get("recommended_sectors", []), 4)
+    risk_factors = _normalize_lines(analysis.get("risk_factors", []), 3)
+
+    lines = [
+        _slot_header("MORNING"),
+        _persona_line("MORNING"),
+        "",
+        f"{ctrl_emoji} 오늘 운용 톤: <b>{ctrl_label}</b>",
+        f"시장 온도: <b>{sentiment_label}</b>",
+    ]
+
+    if us_market:
+        lines.extend(["", "<b>1) 전일 미 3대지수</b>"])
+        lines.extend([f"• {item}" for item in us_market])
+
+    if us_sector:
+        lines.extend(["", "<b>2) 미국 주도/부진 섹터</b>"])
+        lines.extend([f"• {item}" for item in us_sector])
+
+    if macro_points:
+        lines.extend(["", "<b>3) 외부 변수</b>"])
+        lines.extend([f"• {item}" for item in macro_points])
+
+    outlook = str(analysis.get("korea_outlook", "") or "").strip()
+    if outlook:
+        lines.extend(["", "<b>4) 오늘 국장 예상 흐름</b>", outlook])
+
+    if sectors:
+        lines.extend(["", f"<b>5) 오늘 볼 섹터</b>\n{', '.join(sectors)}"])
+
+    if risk_factors:
+        lines.extend(["", "<b>체크 리스크</b>"])
+        lines.extend([f"• {item}" for item in risk_factors])
+
+    summary = str(analysis.get("summary", "") or "").strip()
+    if summary:
+        lines.extend(["", f"<b>한 줄 결론</b>\n{summary}"])
+
+    return "\n".join(lines).strip()
+
+
+def _build_midday_message(analysis: dict) -> str:
+    ctrl_emoji, ctrl_label = _control_label(str(analysis.get("trading_control", "CONTINUE")))
+    sentiment_label = _sentiment_label(str(analysis.get("market_sentiment", "NEUTRAL")))
+    midday_sectors = _normalize_lines(analysis.get("midday_sectors", []), 4)
+    sectors = midday_sectors or _normalize_lines(analysis.get("recommended_sectors", []), 4)
+    risk_factors = _normalize_lines(analysis.get("risk_factors", []), 3)
+    index_commentary = str(analysis.get("midday_index_commentary", "") or "").strip()
+    recap = str(analysis.get("midday_recap", "") or "").strip()
+    outlook = str(analysis.get("afternoon_outlook", "") or "").strip()
+
+    lines = [
+        _slot_header("MIDDAY"),
+        _persona_line("MIDDAY"),
+        "",
+        f"{ctrl_emoji} 오후 운용 톤: <b>{ctrl_label}</b>",
+        f"시장 온도: <b>{sentiment_label}</b>",
+    ]
+
+    if sectors:
+        lines.extend(["", f"<b>1) 오전장 주도 섹터</b>\n{', '.join(sectors)}"])
+
+    if index_commentary:
+        lines.extend(["", "<b>2) 코스피 / 코스닥 흐름</b>", index_commentary])
+
+    if recap:
+        lines.extend(["", "<b>3) 오전장 복기</b>", recap])
+
+    if outlook:
+        lines.extend(["", "<b>4) 오후장 예상</b>", outlook])
+
+    if risk_factors:
+        lines.extend(["", "<b>체크 리스크</b>"])
+        lines.extend([f"• {item}" for item in risk_factors])
+
+    summary = str(analysis.get("summary", "") or "").strip()
+    if summary:
+        lines.extend(["", f"<b>한 줄 결론</b>\n{summary}"])
+
+    return "\n".join(lines).strip()
+
+
+def _build_close_message(analysis: dict) -> str:
+    ctrl_emoji, ctrl_label = _control_label(str(analysis.get("trading_control", "CONTINUE")))
+    sentiment_label = _sentiment_label(str(analysis.get("market_sentiment", "NEUTRAL")))
+    leaders = _normalize_lines(analysis.get("close_leaders", []), 4)
+    risk_factors = _normalize_lines(analysis.get("risk_factors", []), 3)
+    close_flow = str(analysis.get("close_flow", "") or "").strip()
+    tomorrow_watch = str(analysis.get("tomorrow_watch", "") or "").strip()
+
+    lines = [
+        _slot_header("CLOSE"),
+        _persona_line("CLOSE"),
+        "",
+        f"{ctrl_emoji} 오늘 마감 톤: <b>{ctrl_label}</b>",
+        f"시장 온도: <b>{sentiment_label}</b>",
+    ]
+
+    if close_flow:
+        lines.extend(["", "<b>1) 마감시황</b>", close_flow])
+
+    if leaders:
+        lines.extend(["", f"<b>2) 오늘 시장 주도 축</b>\n{', '.join(leaders)}"])
+
+    if tomorrow_watch:
+        lines.extend(["", "<b>3) 내일 체크포인트</b>", tomorrow_watch])
+
+    if risk_factors:
+        lines.extend(["", "<b>체크 리스크</b>"])
+        lines.extend([f"• {item}" for item in risk_factors])
+
+    summary = str(analysis.get("summary", "") or "").strip()
+    if summary:
+        lines.extend(["", f"<b>한 줄 결론</b>\n{summary}"])
+
+    return "\n".join(lines).strip()
+
+
+def _build_brief_message(analysis: dict, slot_name: str) -> str:
+    if slot_name == "MORNING":
+        return _build_morning_message(analysis)
+    if slot_name == "MIDDAY":
+        return _build_midday_message(analysis)
+    if slot_name == "CLOSE":
+        return _build_close_message(analysis)
+    return _build_morning_message(analysis)
 
 
 async def _save_to_redis(rdb, analysis: dict) -> None:
-    """분석 결과를 Redis에 저장"""
     try:
-        # Claude 분석 전체
-        await rdb.set(_KEY_ANALYSIS, json.dumps(analysis,  ensure_ascii=False), ex=_TTL_ANALYSIS)
-        # 개별 키
-        await rdb.set(_KEY_CONTROL,   analysis.get("trading_control",     "CONTINUE"), ex=_TTL_ANALYSIS)
-        await rdb.set(_KEY_SENTIMENT, analysis.get("market_sentiment",    "NEUTRAL"),  ex=_TTL_ANALYSIS)
-        await rdb.set(
-            _KEY_SECTORS,
-            json.dumps(analysis.get("recommended_sectors", []), ensure_ascii=False),
-            ex=_TTL_ANALYSIS,
+        await rdb.set(_KEY_ANALYSIS, json.dumps(analysis, ensure_ascii=False), ex=_TTL_ANALYSIS)
+        await rdb.set(_KEY_CONTROL, analysis.get("trading_control", "CONTINUE"), ex=_TTL_ANALYSIS)
+        await rdb.set(_KEY_SENTIMENT, analysis.get("market_sentiment", "NEUTRAL"), ex=_TTL_ANALYSIS)
+        await rdb.set(_KEY_SECTORS, json.dumps(analysis.get("recommended_sectors", []), ensure_ascii=False), ex=_TTL_ANALYSIS)
+        logger.info(
+            "[NewsScheduler] Redis updated control=%s sectors=%s urgent=%s",
+            analysis.get("trading_control"),
+            analysis.get("recommended_sectors"),
+            analysis.get("urgent_news", []),
         )
-        logger.info("[NewsScheduler] Redis 저장 완료 – control=%s sectors=%s",
-                    analysis.get("trading_control"),
-                    analysis.get("recommended_sectors"))
     except Exception as e:
-        logger.error("[NewsScheduler] Redis 저장 실패: %s", e)
+        logger.error("[NewsScheduler] Redis update failed: %s", e)
 
 
-async def _check_and_alert(rdb, new_control: str, analysis: dict) -> None:
-    """
-    trading_control 상태 변경 시 알림 발행.
-    - PAUSE 전환: 사용자 확인이 필요하므로 PAUSE_CONFIRM_REQUEST 를 ai_scored_queue 에 발행.
-      Redis 키는 아직 변경하지 않음 (사용자 컨펌 후 Node.js 봇이 직접 API 호출).
-    - CONTINUE / CAUTIOUS 전환: 기존대로 NEWS_ALERT 를 news_alert_queue 에 발행.
-    """
+async def _load_cached_analysis(rdb) -> dict | None:
+    try:
+        raw = await rdb.get(_KEY_ANALYSIS)
+        if not raw:
+            return None
+        return json.loads(raw)
+    except Exception as e:
+        logger.debug("[NewsScheduler] cached analysis load failed: %s", e)
+        return None
+
+
+def _resolve_slot_name(slot_name: str | None = None, now: datetime | None = None) -> str:
+    normalized = str(slot_name or "").strip().upper()
+    if normalized in {"MORNING", "MIDDAY", "CLOSE"}:
+        return normalized
+
+    current = _ensure_kst(now)
+    current_minutes = current.hour * 60 + current.minute
+    if current_minutes < 12 * 60:
+        return "MORNING"
+    if current_minutes < 15 * 60 + 40:
+        return "MIDDAY"
+    return "CLOSE"
+
+
+async def _emit_scheduled_brief(rdb, analysis: dict, slot_name: str, slot_time: tuple[int, int]) -> None:
+    payload = {
+        "type": "SCHEDULED_NEWS_BRIEF",
+        "slot": f"{slot_time[0]:02d}:{slot_time[1]:02d}",
+        "slot_name": slot_name,
+        "trading_control": analysis.get("trading_control", "CONTINUE"),
+        "market_sentiment": analysis.get("market_sentiment", "NEUTRAL"),
+        "sectors": analysis.get("recommended_sectors", []),
+        "urgent_news": analysis.get("urgent_news", []),
+        "risk_factors": analysis.get("risk_factors", []),
+        "summary": analysis.get("summary", ""),
+        "message": _build_brief_message(analysis, slot_name),
+        "ts": time.time(),
+    }
+    await rdb.lpush(_KEY_SCORED_QUEUE, json.dumps(payload, ensure_ascii=False))
+    await rdb.expire(_KEY_SCORED_QUEUE, _TTL_ALERT_Q)
+    await rdb.set("ops:scheduler:news_scheduler:last_status", "OK", ex=_TTL_ANALYSIS)
+    await rdb.set("ops:scheduler:news_scheduler:last_success_at", _now_kst().isoformat(), ex=_TTL_ANALYSIS)
+    await rdb.set("ops:scheduler:news_scheduler:last_slot", slot_name, ex=_TTL_ANALYSIS)
+    logger.info("[NewsScheduler] scheduled brief published slot=%s", payload["slot"])
+
+
+async def _sync_control_state(rdb, new_control: str, analysis: dict) -> None:
     try:
         prev_control = await rdb.get(_KEY_PREV_CTRL) or "CONTINUE"
-        if prev_control == new_control:
-            return
+        effective_control = new_control
 
-        logger.info("[NewsScheduler] 매매 제어 변경 감지: %s → %s", prev_control, new_control)
-
-        # confidence=LOW 이면 PAUSE → CAUTIOUS 다운그레이드
-        if new_control == "PAUSE" and analysis.get("confidence") == "LOW":
-            logger.info("[NewsScheduler] confidence=LOW → PAUSE를 CAUTIOUS로 다운그레이드")
-            new_control = "CAUTIOUS"
+        if effective_control == "PAUSE" and analysis.get("confidence") == "LOW":
+            effective_control = "CAUTIOUS"
             analysis["trading_control"] = "CAUTIOUS"
             await rdb.set(_KEY_CONTROL, "CAUTIOUS", ex=_TTL_ANALYSIS)
 
-        if new_control == "PAUSE":
-            # PAUSE 는 사용자 컨펌 요청으로 대체 – Redis 키는 변경하지 않음
-            confirm_req = {
-                "type":             "PAUSE_CONFIRM_REQUEST",
-                "prev_control":     prev_control,
-                "market_sentiment": analysis.get("market_sentiment", "NEUTRAL"),
-                "sectors":          analysis.get("recommended_sectors", []),
-                "risk_factors":     analysis.get("risk_factors", []),
-                "summary":          analysis.get("summary", ""),
-                "confidence":       analysis.get("confidence", "LOW"),
-                "ts":               time.time(),
-            }
-            await rdb.lpush(_KEY_SCORED_QUEUE, json.dumps(confirm_req, ensure_ascii=False))
-            await rdb.expire(_KEY_SCORED_QUEUE, _TTL_ALERT_Q)
-            # prev_control 을 PAUSE 로 업데이트하여 30분 뒤 중복 컨펌 요청 방지
-            # (news:trading_control 은 사용자 컨펌 후 Node.js 봇이 API 호출로 변경)
-            await rdb.set(_KEY_PREV_CTRL, "PAUSE", ex=_TTL_PREV_CTRL)
-            logger.info("[NewsScheduler] PAUSE_CONFIRM_REQUEST 발행 (사용자 컨펌 대기 중)")
-        else:
-            # CONTINUE / CAUTIOUS 전환 – 즉시 적용, ai_scored_queue 로 발행 (bot 폴링 대상)
-            alert = {
-                "type":             "NEWS_ALERT",
-                "trading_control":  new_control,
-                "prev_control":     prev_control,
-                "market_sentiment": analysis.get("market_sentiment", "NEUTRAL"),
-                "sectors":          analysis.get("recommended_sectors", []),
-                "risk_factors":     analysis.get("risk_factors", []),
-                "summary":          analysis.get("summary", ""),
-                "confidence":       analysis.get("confidence", "LOW"),
-                "ts":               time.time(),
-            }
-            await rdb.lpush(_KEY_SCORED_QUEUE, json.dumps(alert, ensure_ascii=False))
-            await rdb.expire(_KEY_SCORED_QUEUE, _TTL_ALERT_Q)
-            await rdb.set(_KEY_PREV_CTRL, new_control, ex=_TTL_PREV_CTRL)
-            logger.info("[NewsScheduler] NEWS_ALERT 발행 control=%s", new_control)
-
+        if prev_control != effective_control:
+            logger.info("[NewsScheduler] trading_control changed %s -> %s", prev_control, effective_control)
+        await rdb.set(_KEY_PREV_CTRL, effective_control, ex=_TTL_PREV_CTRL)
     except Exception as e:
-        logger.warning("[NewsScheduler] 알림 발행 실패: %s", e)
+        logger.warning("[NewsScheduler] control sync failed: %s", e)
 
 
-async def run_once(rdb) -> None:
-    """뉴스 수집 → Claude 분석 → Redis 저장을 1회 실행"""
-    start = time.time()
-    logger.info("[NewsScheduler] 뉴스 수집 시작")
+async def build_live_brief(rdb, slot_name: str | None = None, publish_queue: bool = False) -> dict:
+    resolved_slot = _resolve_slot_name(slot_name)
+    slot = next((item for item in _SLOTS if item["name"] == resolved_slot), _SLOTS[0])
+    slot_time = tuple(slot["time"])
 
-    try:
-        # 1. 뉴스 수집
-        news_list = await collect_news(rdb)
-
-        if not news_list:
-            logger.info("[NewsScheduler] 신규 뉴스 없음 – 분석 건너뜀")
-            return
-
-        # 2. Claude 분석
-        analysis = await analyze_news(news_list, rdb)
+    news_list = await collect_news(rdb)
+    if news_list:
+        analysis = await analyze_news(news_list, rdb, slot_name=resolved_slot)
         analysis["news_count"] = len(news_list)
         analysis["analyzed_at"] = time.time()
-
-        # 3. Redis 저장
+        analysis["brief_slot"] = resolved_slot
         await _save_to_redis(rdb, analysis)
+        await _sync_control_state(rdb, analysis.get("trading_control", "CONTINUE"), analysis)
+    else:
+        logger.info("[NewsScheduler] live brief using cached analysis slot=%s", resolved_slot)
+        analysis = await _load_cached_analysis(rdb)
+        if not analysis:
+            analysis = {
+                "trading_control": await rdb.get(_KEY_CONTROL) or "CONTINUE",
+                "market_sentiment": await rdb.get(_KEY_SENTIMENT) or "NEUTRAL",
+                "recommended_sectors": json.loads(await rdb.get(_KEY_SECTORS) or "[]"),
+                "urgent_news": [],
+                "risk_factors": [],
+                "summary": "신규 뉴스가 적어 직전 브리핑과 현재 장 흐름 기준으로 해석합니다.",
+                "confidence": "LOW",
+                "us_market_points": [],
+                "us_sector_points": [],
+                "macro_points": [],
+                "korea_outlook": "",
+                "midday_sectors": [],
+                "midday_index_commentary": "",
+                "midday_recap": "",
+                "afternoon_outlook": "",
+                "close_flow": "",
+                "close_leaders": [],
+                "tomorrow_watch": "",
+            }
 
-        # 4. 상태 변경 알림
-        new_control = analysis.get("trading_control", "CONTINUE")
-        await _check_and_alert(rdb, new_control, analysis)
+        analysis["brief_slot"] = resolved_slot
+        analysis["analyzed_at"] = analysis.get("analyzed_at", time.time())
+        analysis["news_count"] = analysis.get("news_count", 0)
+
+    message = _build_brief_message(analysis, resolved_slot)
+    if publish_queue:
+        await _emit_scheduled_brief(rdb, analysis, resolved_slot, slot_time)
+
+    return {
+        "slot_name": resolved_slot,
+        "slot": f"{slot_time[0]:02d}:{slot_time[1]:02d}",
+        "analysis": analysis,
+        "message": message,
+    }
+
+
+async def run_once(rdb, slot: dict[str, object] | None = None) -> None:
+    start = time.time()
+    slot = slot or _slot_from_now() or _SLOTS[0]
+    slot_name = str(slot["name"])
+    slot_time = tuple(slot["time"])
+    logger.info("[NewsScheduler] collecting news slot=%s", slot_name)
+
+    try:
+        news_list = await collect_news(rdb)
+        if not news_list:
+            logger.info("[NewsScheduler] no fresh news, using cached analysis for scheduled brief")
+            cached = await _load_cached_analysis(rdb)
+            if cached:
+                await _emit_scheduled_brief(rdb, cached, slot_name, slot_time)
+                return
+
+            analysis = {
+                "trading_control": await rdb.get(_KEY_CONTROL) or "CONTINUE",
+                "market_sentiment": await rdb.get(_KEY_SENTIMENT) or "NEUTRAL",
+                "recommended_sectors": json.loads(await rdb.get(_KEY_SECTORS) or "[]"),
+                "urgent_news": [],
+                "risk_factors": [],
+                "summary": "신규 뉴스가 많지 않아 직전 시장 톤을 이어서 해석합니다.",
+                "confidence": "LOW",
+                "us_market_points": [],
+                "us_sector_points": [],
+                "macro_points": [],
+                "korea_outlook": "",
+                "midday_sectors": [],
+                "midday_index_commentary": "",
+                "midday_recap": "",
+                "afternoon_outlook": "",
+                "close_flow": "",
+                "close_leaders": [],
+                "tomorrow_watch": "",
+            }
+            await _emit_scheduled_brief(rdb, analysis, slot_name, slot_time)
+            return
+
+        analysis = await analyze_news(news_list, rdb, slot_name=slot_name)
+        analysis["news_count"] = len(news_list)
+        analysis["analyzed_at"] = time.time()
+        analysis["brief_slot"] = slot_name
+
+        await _save_to_redis(rdb, analysis)
+        await _sync_control_state(rdb, analysis.get("trading_control", "CONTINUE"), analysis)
+        await _emit_scheduled_brief(rdb, analysis, slot_name, slot_time)
 
         elapsed = time.time() - start
-        logger.info("[NewsScheduler] 완료 (%.1fs) – news=%d control=%s sentiment=%s",
-                    elapsed, len(news_list), new_control, analysis.get("market_sentiment"))
-
+        logger.info(
+            "[NewsScheduler] done slot=%s %.1fs news=%d control=%s sentiment=%s",
+            slot_name,
+            elapsed,
+            len(news_list),
+            analysis.get("trading_control", "CONTINUE"),
+            analysis.get("market_sentiment", "NEUTRAL"),
+        )
     except Exception as e:
-        logger.error("[NewsScheduler] 실행 오류: %s", e)
+        logger.error("[NewsScheduler] run error: %s", e)
+        try:
+            await rdb.set("ops:scheduler:news_scheduler:last_status", "ERROR", ex=_TTL_ANALYSIS)
+        except Exception:
+            pass
 
 
 async def run_news_scheduler(rdb) -> None:
-    """
-    뉴스 스케쥴러 메인 루프.
-    NEWS_INTERVAL_MIN 간격으로 뉴스를 수집·분석한다.
-    """
     if not NEWS_ENABLED:
-        logger.info("[NewsScheduler] 비활성화 (NEWS_ENABLED=false)")
+        logger.info("[NewsScheduler] disabled")
         return
 
-    interval_sec = NEWS_INTERVAL_MIN * 60
-    logger.info("[NewsScheduler] 시작 – 주기=%d분 허용시간=월~금 08:30~16:00",
-                NEWS_INTERVAL_MIN)
-
-    # 시작 시 즉시 1회 실행 (허용 시간대인 경우에만)
-    if _is_market_hours():
-        await run_once(rdb)
-    else:
-        logger.info("[NewsScheduler] 장외 시간 – 시작 시 실행 건너뜀")
+    schedule_str = ", ".join(f"{h:02d}:{m:02d}" for h, m in [slot["time"] for slot in _SLOTS])
+    logger.info("[NewsScheduler] started fixed schedule=%s", schedule_str)
 
     while True:
-        await asyncio.sleep(interval_sec)
+        next_info = _next_run_slot()
+        next_slot = next_info["slot"]
+        next_run = next_info["run_at"]
+        delay = (next_run - _now_kst()).total_seconds()
+        if delay > 0:
+            logger.info(
+                "[NewsScheduler] next run %s slot=%s (%.0fs)",
+                next_run.strftime("%Y-%m-%d %H:%M"),
+                next_slot["name"],
+                delay,
+            )
+            await asyncio.sleep(delay)
 
-        if not _is_market_hours():
-            logger.debug("[NewsScheduler] 장외 시간 – 건너뜀")
+        if not _is_weekday():
+            await asyncio.sleep(60)
             continue
 
-        await run_once(rdb)
+        await run_once(rdb, next_slot)
+        await asyncio.sleep(60)

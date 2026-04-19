@@ -25,15 +25,15 @@ public class RedisConfig {
     public LettuceConnectionFactory redisConnectionFactory(
             @Value("${spring.data.redis.host:localhost}") String host,
             @Value("${spring.data.redis.port:6379}") int port,
-            @Value("${spring.data.redis.password:cv93523827}") String password) {
+            @Value("${spring.data.redis.password}") String password) {
 
         RedisStandaloneConfiguration config = new RedisStandaloneConfiguration(host, port);
-        if (password != null && !password.isBlank()) {
-            config.setPassword(password);
-            log.info("Redis 연결 설정 - {}:{}:{} (인증 사용)", host, port,password);
-        } else {
-            log.warn("Redis 연결 설정 - {}:{}:{} (비밀번호 없음 - REDIS_PASSWORD 환경변수 확인 필요)", host, port,password);
+        if (password == null || password.isBlank()) {
+            throw new IllegalStateException("spring.data.redis.password is required");
         }
+
+        config.setPassword(password);
+        log.info("Redis 연결 설정 - {}:{} (auth enabled=true)", host, port);
         return new LettuceConnectionFactory(config);
     }
 

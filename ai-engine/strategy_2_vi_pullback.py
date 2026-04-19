@@ -1,3 +1,4 @@
+from __future__ import annotations
 """전술 2: VI 발동 후 눌림목 재진입
 타이밍: 장중 상시 (VI 발동 이벤트 기반)
 진입 조건 (순서대로):
@@ -14,7 +15,7 @@ import logging
 
 import httpx
 
-from http_utils import fetch_cntr_strength, fetch_stk_nm
+from http_utils import fetch_cntr_strength_cached, fetch_hoga, fetch_stk_nm
 from indicator_atr import get_atr_minute
 from tp_sl_engine import calc_tp_sl
 
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 vi_events = defaultdict(list)  # stk_cd → [vi_event, ...]
+
+def _num(value) -> float:
+    try:
+        return abs(float(str(value).replace("+", "").replace(",", "")))
+    except (TypeError, ValueError):
+        return 0.0
+
 
 async def handle_vi_event(rdb, event: dict):
     """VI 발동/해제 이벤트 처리 (비동기 Redis)"""
@@ -80,7 +88,7 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     if not cur:
         return None
 
-    cur_price = float(cur.get("cur_prc", 0))
+    cur_price = _num(cur.get("cur_prc", 0))
     if cur_price == 0: return None
 
     # [조건 1] 눌림 범위 체크: -1% ~ -3% (가장 먼저 탈락시킴)
@@ -91,9 +99,12 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     # [조건 2] 호가잔량 매수/매도 비율 체크 (ws:hoga — 0D 구독 데이터)
     # ws:tick 에는 hoga 필드가 없음. ws:hoga 해시 별도 조회 필요.
     hoga = await rdb.hgetall(f"ws:hoga:{stk_cd}")
-    bid_qty = float(hoga.get("total_buy_bid_req", 0))
-    ask_qty = float(hoga.get("total_sel_bid_req", 0))
+    bid_qty = _num(hoga.get("total_buy_bid_req", 0))
+    ask_qty = _num(hoga.get("total_sel_bid_req", 0))
     bid_ratio = bid_qty / ask_qty if ask_qty > 0 else 0
+    if bid_ratio <= 0:
+        rest_ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
+        bid_ratio = rest_ratio if rest_ratio is not None else 0
     if bid_ratio < 1.3:
         return None
 
@@ -108,7 +119,7 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
 
         # [조건 4] 체결강도 체크 (가장 무거운 작업 - 외부 API 호출)
     # 위 조건들을 모두 통과한 종목에 대해서만 API를 호출하여 쿼터 절약
-    strength = await fetch_cntr_strength(token, stk_cd)
+    strength, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
     if strength < 110:
         return None
 
@@ -124,7 +135,8 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     # vi_price: VI 발동가 → TP 목표 (VI 레벨 재탈환)
     tp_sl = calc_tp_sl("S2_VI_PULLBACK", cur_price, [], [], [],
                         stk_cd=stk_cd, atr=atr_val,
-                        vi_price=vi_price if vi_price > cur_price else None)
+                        vi_price=vi_price if vi_price > cur_price else None,
+                        min_rr=0.9)
 
     return {
         "stk_cd": stk_cd,

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 13: 거래량 폭발 박스권 돌파 스윙
 유형: 스윙 / 보유기간: 3~7거래일

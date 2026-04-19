@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 전술 10: 52주 신고가 돌파 스윙
 유형: 스윙 / 보유기간: 5~10거래일
@@ -14,7 +15,7 @@ import asyncio
 import logging
 import os
 import httpx
-from http_utils import fetch_cntr_strength, fetch_hoga, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import fetch_cntr_strength_cached, fetch_hoga, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
@@ -179,7 +180,7 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
 
         # [수급 보완] 체결강도 + 호가 비율 조회 (ka10046, ka10004)
         await asyncio.sleep(_API_INTERVAL)
-        cntr_str = await fetch_cntr_strength(token, stk_cd)
+        cntr_str, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
 
         await asyncio.sleep(_API_INTERVAL)
         bid_ratio = await fetch_hoga(token, stk_cd, rdb)

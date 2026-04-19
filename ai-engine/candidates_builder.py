@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 candidates_builder.py
 Python 전담 후보 풀 적재 모듈.
@@ -9,66 +10,25 @@ Java CandidateService 역할을 Python으로 이관.
 import asyncio
 import logging
 import os
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, timezone
 
-import httpx
-
-from http_utils import validate_kiwoom_response, kiwoom_client
+from http_utils import validate_kiwoom_response, kiwoom_post
+from utils import safe_float as _clean, normalize_stock_code
+from config import KIWOOM_BASE_URL, MARKET_LIST as MARKETS
 
 logger = logging.getLogger(__name__)
 
-KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
+KST = timezone(timedelta(hours=9))
+
 CANDIDATE_BUILD_INTERVAL_SEC = int(os.getenv("CANDIDATE_BUILD_INTERVAL_SEC", "600"))
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
-_429_BACKOFF_SEC = 60  # 429 Too Many Requests 시 대기 시간
-
-MARKETS = ["001", "101"]  # KOSPI, KOSDAQ
-
-
-async def _post_with_retry(client: httpx.AsyncClient, url: str, headers: dict, json_body: dict,
-                            api_id: str, max_retries: int = 2) -> httpx.Response | None:
-    """429 오류 시 지수 백오프로 재시도하는 POST 헬퍼.
-
-    Returns None if all retries exhausted or non-retriable error.
-    """
-    for attempt in range(max_retries + 1):
-        try:
-            resp = await client.post(url, headers=headers, json=json_body)
-            if resp.status_code == 429:
-                wait = _429_BACKOFF_SEC * (2 ** attempt)
-                logger.warning("[builder] %s 429 Too Many Requests – %ds 대기 (attempt %d/%d)",
-                               api_id, wait, attempt + 1, max_retries + 1)
-                if attempt < max_retries:
-                    await asyncio.sleep(wait)
-                    continue
-                return None  # 재시도 소진
-            resp.raise_for_status()
-            return resp
-        except httpx.HTTPStatusError as e:
-            if attempt < max_retries:
-                logger.warning("[builder] %s HTTP 오류 %s – 재시도", api_id, e.response.status_code)
-                await asyncio.sleep(_API_INTERVAL)
-                continue
-            logger.error("[builder] %s HTTP 오류 최종 실패: %s", api_id, e)
-            return None
-        except Exception as e:
-            logger.error("[builder] %s 요청 오류: %s", api_id, e)
-            return None
-    return None
 
 
 # ── 공통 유틸 ──────────────────────────────────────────────────────────
 
-def _clean(val) -> float:
-    """콤마·+ 부호 제거, - 부호 보존"""
-    try:
-        return float(str(val).replace("+", "").replace(",", ""))
-    except (TypeError, ValueError):
-        return 0.0
-
-
 async def _lpush_with_ttl(rdb, key: str, codes: list[str], ttl: int) -> None:
-    """기존 키를 삭제하고 새 목록을 LPUSH 한 뒤 EXPIRE 설정"""
+    """기존 키를 삭제하고 새 목록을 RPUSH 한 뒤 EXPIRE 설정"""
+    codes = [code for code in dict.fromkeys(normalize_stock_code(code) for code in codes) if code]
     if not codes:
         logger.debug("[builder] %s 빈 결과 – 기존 키 유지 (TTL 만료 대기)", key)
         return
@@ -80,75 +40,203 @@ async def _lpush_with_ttl(rdb, key: str, codes: list[str], ttl: int) -> None:
     logger.debug("[builder] %s ← %d종목 (TTL %ds)", key, len(codes), ttl)
 
 
+# ── ka10029 예상체결 스냅샷 캐시 ─────────────────────────────────────────────
+
+async def _cache_expected_from_ka10029(rdb, items: list[dict], ttl: int = 1800) -> None:
+    """ka10029 응답을 ws:expected:{stk_cd} 형태로 백필한다.
+
+    장전 WebSocket 0H가 늦게 붙거나 일시적으로 비어 있어도
+    S1/S7 전략이 예상체결가와 예상등락률을 읽을 수 있도록 REST 결과를 동일 키에 적재한다.
+    """
+    if not items:
+        return
+
+    pipe = rdb.pipeline()
+    cached = 0
+
+    for rank, item in enumerate(items, start=1):
+        stk_cd = normalize_stock_code(item.get("stk_cd", ""))
+        exp_cntr_pric = str(item.get("exp_cntr_pric", "")).strip()
+        exp_flu_rt = str(item.get("flu_rt", "")).strip()
+        exp_cntr_qty = str(item.get("exp_cntr_qty", "")).strip()
+
+        if not stk_cd or not exp_cntr_pric or not exp_flu_rt:
+            continue
+
+        mapping = {
+            "exp_cntr_pric": exp_cntr_pric,
+            "exp_flu_rt": exp_flu_rt,
+            "exp_cntr_qty": exp_cntr_qty,
+            "base_pric": str(item.get("base_pric", "")).strip(),
+            "pred_pre_sig": str(item.get("pred_pre_sig", "")).strip(),
+            "pred_pre": str(item.get("pred_pre", "")).strip(),
+            "sel_req": str(item.get("sel_req", "")).strip(),
+            "sel_bid": str(item.get("sel_bid", "")).strip(),
+            "buy_bid": str(item.get("buy_bid", "")).strip(),
+            "buy_req": str(item.get("buy_req", "")).strip(),
+            "ka10029_rank": str(rank),
+        }
+
+        try:
+            pric = float(exp_cntr_pric.replace(",", "").replace("+", "").replace("-", ""))
+            flu = float(exp_flu_rt.replace(",", "").replace("+", ""))
+            if pric > 0 and flu != -100:
+                mapping["pred_pre_pric"] = str(round(pric / (1 + flu / 100)))
+        except Exception:
+            pass
+
+        key = f"ws:expected:{stk_cd}"
+        flat_args: list[str] = []
+        for field, value in mapping.items():
+            if value == "":
+                continue
+            flat_args.extend([field, str(value)])
+        if not flat_args:
+            continue
+        pipe.execute_command("HSET", key, *flat_args)
+        pipe.expire(key, ttl)
+        cached += 1
+
+    if cached:
+        await pipe.execute()
+        logger.debug("[builder] ka10029 예상체결 캐시 백필 %d건", cached)
+
+
 # ── S1 / S7: ka10029 예상체결등락률상위 ────────────────────────────────
+
+def _rank_ka10029_items(items: list[dict]) -> list[dict]:
+    ranked: list[dict] = []
+    seen: set[str] = set()
+    rank = 0
+
+    for item in items:
+        stk_cd = normalize_stock_code(item.get("stk_cd", ""))
+        if not stk_cd or stk_cd in seen:
+            continue
+        rank += 1
+        ranked.append(
+            {
+                "stk_cd": stk_cd,
+                "rank": rank,
+                "flu_rt": _clean(item.get("flu_rt", 0)),
+                "exp_cntr_qty": _clean(item.get("exp_cntr_qty", 0)),
+                "exp_cntr_pric": _clean(item.get("exp_cntr_pric", 0)),
+                "base_pric": _clean(item.get("base_pric", 0)),
+                "buy_req": _clean(item.get("buy_req", 0)),
+                "sel_req": _clean(item.get("sel_req", 0)),
+                "buy_bid": _clean(item.get("buy_bid", 0)),
+                "sel_bid": _clean(item.get("sel_bid", 0)),
+            }
+        )
+        seen.add(stk_cd)
+
+    return ranked
 
 async def _fetch_ka10029(token: str, market: str) -> list[dict]:
     """ka10029 예상체결등락률상위 (POST /api/dostk/rkinfo)"""
     results = []
     next_key = ""
-    async with kiwoom_client() as client:
-        while True:
-            headers = {
-                "api-id": "ka10029",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            }
-            if next_key:
-                headers["cont-yn"] = "Y"
-                headers["next-key"] = next_key
+    while True:
+        headers = {
+            "api-id": "ka10029",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        if next_key:
+            headers["cont-yn"] = "Y"
+            headers["next-key"] = next_key
 
-            resp = await _post_with_retry(
-                client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
-                {
-                    "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "10",
-                    "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "3",
-                },
-                "ka10029",
-            )
-            if resp is None:
-                break
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10029", logger):
-                break
+        resp = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+            {
+                "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "10",
+                "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "3",
+            },
+            "ka10029",
+        )
+        if resp is None:
+            break
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10029", logger):
+            break
 
-            items = data.get("exp_cntr_flu_rt_upper", [])
-            results.extend(items)
+        items = data.get("exp_cntr_flu_rt_upper", [])
+        results.extend(items)
 
-            cont_yn = resp.headers.get("cont-yn", "N")
-            next_key = resp.headers.get("next-key", "").strip()
-            if cont_yn != "Y" or not next_key:
-                break
+        cont_yn = resp.headers.get("cont-yn", "N")
+        next_key = resp.headers.get("next-key", "").strip()
+        if cont_yn != "Y" or not next_key:
+            break
     return results
 
 
 async def _build_s1(token: str, market: str, rdb) -> None:
-    """S1 갭상승 시초가: 3.0% ≤ flu_rt ≤ 15.0%, TTL 180s, 100개"""
+    """S1 갭상승 시초가: 3.0% ≤ flu_rt ≤ 15.0%, TTL 600s, 100개"""
     items = await _fetch_ka10029(token, market)
+    await _cache_expected_from_ka10029(rdb, items)
+    ranked_items = _rank_ka10029_items(items)
     codes = []
-    for x in items:
-        flu_rt = _clean(x.get("flu_rt", 0))
-        if 3.0 <= flu_rt <= 15.0:
-            stk_cd = x.get("stk_cd", "")
-            if stk_cd:
-                codes.append(stk_cd)
+    for item in ranked_items:
+        if 3.0 <= item["flu_rt"] <= 15.0 and item["exp_cntr_pric"] > 0:
+            codes.append(item["stk_cd"])
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, 180)
+    await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, 600)
 
 
 async def _build_s7(token: str, market: str, rdb) -> None:
-    """S7 동시호가: 2.0% ≤ flu_rt ≤ 10.0%, TTL 180s, 100개"""
-    items = await _fetch_ka10029(token, market)
+    """S7 일목균형표 구름대 돌파 스윙: 0.5% ≤ flu_rt ≤ 10.0%, TTL 1200s, 100개"""
+    items = await _fetch_ka10027(token, market, sort_tp="1")
     codes = []
     for x in items:
         flu_rt = _clean(x.get("flu_rt", 0))
-        if 2.0 <= flu_rt <= 10.0:
+        if 0.5 <= flu_rt <= 10.0:
             stk_cd = x.get("stk_cd", "")
             if stk_cd:
                 codes.append(stk_cd)
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s7:{market}", codes, 180)
+    await _lpush_with_ttl(rdb, f"candidates:s7:{market}", codes, 1200)
+
+
+# ── ka10023 거래량급증상위 공통 ────────────────────────────────────────
+
+async def _fetch_ka10023(token: str, market: str) -> list[dict]:
+    """ka10023 거래량급증상위 (POST /api/dostk/rkinfo)"""
+    results = []
+    next_key = ""
+    while True:
+        headers = {
+            "api-id": "ka10023",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        if next_key:
+            headers["cont-yn"] = "Y"
+            headers["next-key"] = next_key
+
+        resp = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+            {
+                "mrkt_tp": market, "sort_tp": "2", "tm_tp": "1",
+                "trde_qty_tp": "10", "stk_cnd": "1", "pric_tp": "8", "stex_tp": "3",
+            },
+            "ka10023",
+        )
+        if resp is None:
+            break
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10023", logger):
+            break
+
+        items = data.get("trde_qty_sdnin", [])
+        results.extend(items)
+
+        cont_yn = resp.headers.get("cont-yn", "N")
+        next_key = resp.headers.get("next-key", "").strip()
+        if cont_yn != "Y" or not next_key:
+            break
+    return results
 
 
 # ── ka10027 전일대비등락률상위 공통 ─────────────────────────────────────
@@ -157,52 +245,52 @@ async def _fetch_ka10027(token: str, market: str, sort_tp: str = "1") -> list[di
     """ka10027 전일대비등락률상위 (POST /api/dostk/rkinfo)"""
     results = []
     next_key = ""
-    async with kiwoom_client() as client:
-        while True:
-            headers = {
-                "api-id": "ka10027",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            }
-            if next_key:
-                headers["cont-yn"] = "Y"
-                headers["next-key"] = next_key
+    while True:
+        headers = {
+            "api-id": "ka10027",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        if next_key:
+            headers["cont-yn"] = "Y"
+            headers["next-key"] = next_key
 
-            resp = await _post_with_retry(
-                client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
-                {
-                    "mrkt_tp": market, "sort_tp": sort_tp, "trde_qty_cnd": "0010",
-                    "stk_cnd": "1", "crd_cnd": "0", "updown_incls": "0",
-                    "pric_cnd": "8", "trde_prica_cnd": "0", "stex_tp": "3",
-                },
-                "ka10027",
-            )
-            if resp is None:
-                break
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10027", logger):
-                break
+        resp = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+            {
+                "mrkt_tp": market, "sort_tp": sort_tp, "trde_qty_cnd": "0010",
+                "stk_cnd": "1", "crd_cnd": "0", "updown_incls": "0",
+                "pric_cnd": "8", "trde_prica_cnd": "0", "stex_tp": "3",
+            },
+            "ka10027",
+        )
+        if resp is None:
+            break
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10027", logger):
+            break
 
-            items = data.get("pred_pre_flu_upper", [])
-            results.extend(items)
+        items = data.get("pred_pre_flu_upper", [])
+        results.extend(items)
 
-            cont_yn = resp.headers.get("cont-yn", "N")
-            next_key = resp.headers.get("next-key", "").strip()
-            if cont_yn != "Y" or not next_key:
-                break
+        cont_yn = resp.headers.get("cont-yn", "N")
+        next_key = resp.headers.get("next-key", "").strip()
+        if cont_yn != "Y" or not next_key:
+            break
     return results
 
 
 async def _build_s4(token: str, market: str, rdb) -> None:
-    """S4 장대양봉 추격: 2.0% ≤ flu_rt ≤ 20.0%, TTL 300s, 100개
-    ws:strength:{stk_cd} ≥ 120 종목 우선 정렬"""
-    items = await _fetch_ka10027(token, market, sort_tp="1")
+    """S4 장대양봉 + 거래량급증: ka10023, sdninRt≥50% & fluRt 3~20%, TTL 300s, 100개
+    ws:strength:{stk_cd} ≥ 120 종목 우선 정렬 (Java CandidateService.getS4Candidates와 동일 소스)"""
+    items = await _fetch_ka10023(token, market)
     strong: list[str] = []
     normal: list[str] = []
 
     for x in items:
-        flu_rt = _clean(x.get("flu_rt", 0))
-        if not (2.0 <= flu_rt <= 20.0):
+        sdnin_rt = _clean(x.get("sdnin_rt", 0))
+        flu_rt   = _clean(x.get("flu_rt", 0))
+        if not (sdnin_rt >= 50.0 and 3.0 <= flu_rt <= 20.0):
             continue
         stk_cd = x.get("stk_cd", "")
         if not stk_cd:
@@ -226,7 +314,7 @@ async def _build_s4(token: str, market: str, rdb) -> None:
 
 
 async def _build_s8(token: str, market: str, rdb) -> None:
-    """S8 골든크로스 스윙: 0.5% ≤ flu_rt ≤ 8.0%, TTL 1200s, 150개"""
+    """S8 골든크로스: 0.5% ≤ flu_rt ≤ 8.0%, TTL 1200s, 150개"""
     items = await _fetch_ka10027(token, market, sort_tp="1")
     codes = []
     for x in items:
@@ -238,21 +326,6 @@ async def _build_s8(token: str, market: str, rdb) -> None:
         if len(codes) >= 150:
             break
     await _lpush_with_ttl(rdb, f"candidates:s8:{market}", codes, 1200)
-
-
-async def _build_s9(token: str, market: str, rdb) -> None:
-    """S9 눌림목 스윙: 0.3% ≤ flu_rt ≤ 5.0%, TTL 1200s, 150개"""
-    items = await _fetch_ka10027(token, market, sort_tp="1")
-    codes = []
-    for x in items:
-        flu_rt = _clean(x.get("flu_rt", 0))
-        if 0.3 <= flu_rt <= 5.0:
-            stk_cd = x.get("stk_cd", "")
-            if stk_cd:
-                codes.append(stk_cd)
-        if len(codes) >= 150:
-            break
-    await _lpush_with_ttl(rdb, f"candidates:s9:{market}", codes, 1200)
 
 
 async def _build_s14(token: str, market: str, rdb) -> None:
@@ -276,41 +349,40 @@ async def _build_s10(token: str, market: str, rdb) -> None:
     """S10 52주 신고가: ka10016, 필터 없음, TTL 1200s, 100개"""
     results = []
     next_key = ""
-    async with kiwoom_client() as client:
-        while True:
-            headers = {
-                "api-id": "ka10016",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            }
-            if next_key:
-                headers["cont-yn"] = "Y"
-                headers["next-key"] = next_key
+    while True:
+        headers = {
+            "api-id": "ka10016",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        if next_key:
+            headers["cont-yn"] = "Y"
+            headers["next-key"] = next_key
 
-            resp = await _post_with_retry(
-                client, f"{KIWOOM_BASE_URL}/api/dostk/stkinfo", headers,
-                {
-                    "mrkt_tp": market, "ntl_tp": "1", "high_low_close_tp": "1",
-                    "stk_cnd": "1", "trde_qty_tp": "00010", "crd_cnd": "0",
-                    "updown_incls": "0", "dt": "250", "stex_tp": "3",
-                },
-                "ka10016",
-            )
-            if resp is None:
-                break
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10016", logger):
-                break
+        resp = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/stkinfo", headers,
+            {
+                "mrkt_tp": market, "ntl_tp": "1", "high_low_close_tp": "1",
+                "stk_cnd": "1", "trde_qty_tp": "00010", "crd_cnd": "0",
+                "updown_incls": "0", "dt": "250", "stex_tp": "3",
+            },
+            "ka10016",
+        )
+        if resp is None:
+            break
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10016", logger):
+            break
 
-            items = data.get("ntl_pric", [])
-            results.extend(items)
+        items = data.get("ntl_pric", [])
+        results.extend(items)
 
-            cont_yn = resp.headers.get("cont-yn", "N")
-            next_key = resp.headers.get("next-key", "").strip()
-            if cont_yn != "Y" or not next_key:
-                break
-            if len(results) >= 100:
-                break
+        cont_yn = resp.headers.get("cont-yn", "N")
+        next_key = resp.headers.get("next-key", "").strip()
+        if cont_yn != "Y" or not next_key:
+            break
+        if len(results) >= 100:
+            break
 
     codes = [x.get("stk_cd") for x in results if x.get("stk_cd")][:100]
     await _lpush_with_ttl(rdb, f"candidates:s10:{market}", codes, 1200)
@@ -322,35 +394,34 @@ async def _build_s11(token: str, market: str, rdb) -> None:
     """S11 외인 연속 순매수: dm1>0, dm2>0, dm3>0, tot>0, TTL 1800s, 80개"""
     results = []
     next_key = ""
-    async with kiwoom_client() as client:
-        while True:
-            headers = {
-                "api-id": "ka10035",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            }
-            if next_key:
-                headers["cont-yn"] = "Y"
-                headers["next-key"] = next_key
+    while True:
+        headers = {
+            "api-id": "ka10035",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        if next_key:
+            headers["cont-yn"] = "Y"
+            headers["next-key"] = next_key
 
-            resp = await _post_with_retry(
-                client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
-                {"mrkt_tp": market, "trde_tp": "2", "base_dt_tp": "1", "stex_tp": "3"},
-                "ka10035",
-            )
-            if resp is None:
-                break
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10035", logger):
-                break
+        resp = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+            {"mrkt_tp": market, "trde_tp": "2", "base_dt_tp": "1", "stex_tp": "3"},
+            "ka10035",
+        )
+        if resp is None:
+            break
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10035", logger):
+            break
 
-            items = data.get("for_cont_nettrde_upper", [])
-            results.extend(items)
+        items = data.get("for_cont_nettrde_upper", [])
+        results.extend(items)
 
-            cont_yn = resp.headers.get("cont-yn", "N")
-            next_key = resp.headers.get("next-key", "").strip()
-            if cont_yn != "Y" or not next_key:
-                break
+        cont_yn = resp.headers.get("cont-yn", "N")
+        next_key = resp.headers.get("next-key", "").strip()
+        if cont_yn != "Y" or not next_key:
+            break
 
     codes = []
     for x in results:
@@ -377,35 +448,34 @@ async def _build_s12(token: str, market: str, rdb) -> None:
     """S12 종가강도: flu_rt > 0, TTL 600s, 50개"""
     results = []
     next_key = ""
-    async with kiwoom_client() as client:
-        while True:
-            headers = {
-                "api-id": "ka10032",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            }
-            if next_key:
-                headers["cont-yn"] = "Y"
-                headers["next-key"] = next_key
+    while True:
+        headers = {
+            "api-id": "ka10032",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        if next_key:
+            headers["cont-yn"] = "Y"
+            headers["next-key"] = next_key
 
-            resp = await _post_with_retry(
-                client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
-                {"mrkt_tp": market, "mang_stk_incls": "0", "stex_tp": "3"},
-                "ka10032",
-            )
-            if resp is None:
-                break
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10032", logger):
-                break
+        resp = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+            {"mrkt_tp": market, "mang_stk_incls": "0", "stex_tp": "3"},
+            "ka10032",
+        )
+        if resp is None:
+            break
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10032", logger):
+            break
 
-            items = data.get("trde_prica_upper", [])
-            results.extend(items)
+        items = data.get("trde_prica_upper", [])
+        results.extend(items)
 
-            cont_yn = resp.headers.get("cont-yn", "N")
-            next_key = resp.headers.get("next-key", "").strip()
-            if cont_yn != "Y" or not next_key:
-                break
+        cont_yn = resp.headers.get("cont-yn", "N")
+        next_key = resp.headers.get("next-key", "").strip()
+        if cont_yn != "Y" or not next_key:
+            break
 
     codes = []
     for x in results:
@@ -423,23 +493,22 @@ async def _build_s12(token: str, market: str, rdb) -> None:
 
 async def _build_s2(token: str, market: str, rdb) -> None:
     """S2 VI 발동 종목: ka10054 상승방향 동적VI, TTL 300s, 50개"""
-    async with kiwoom_client() as client:
-        resp = await _post_with_retry(
-            client, f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-            {
-                "api-id": "ka10054",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            },
-            {
-                "mrkt_tp": market, "bf_mkrt_tp": "1", "stk_cd": "",
-                "motn_tp": "0", "skip_stk": "000000000",
-                "trde_qty_tp": "0", "min_trde_qty": "0", "max_trde_qty": "0",
-                "trde_prica_tp": "0", "min_trde_prica": "0", "max_trde_prica": "0",
-                "motn_drc": "1", "stex_tp": "3",
-            },
-            "ka10054",
-        )
+    resp = await kiwoom_post(
+        f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+        {
+            "api-id": "ka10054",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        },
+        {
+            "mrkt_tp": market, "bf_mkrt_tp": "1", "stk_cd": "",
+            "motn_tp": "0", "skip_stk": "000000000",
+            "trde_qty_tp": "0", "min_trde_qty": "0", "max_trde_qty": "0",
+            "trde_prica_tp": "0", "min_trde_prica": "0", "max_trde_prica": "0",
+            "motn_drc": "1", "stex_tp": "3",
+        },
+        "ka10054",
+    )
     if resp is None:
         return
     data = resp.json()
@@ -467,17 +536,16 @@ async def _build_s2(token: str, market: str, rdb) -> None:
 async def _fetch_ka10065_set(token: str, market: str, orgn_tp: str) -> set:
     """ka10065 장중투자자별매매상위 – 지정 투자자 순매수 종목코드 세트 반환"""
     codes: set = set()
-    async with kiwoom_client() as client:
-        resp = await _post_with_retry(
-            client, f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-            {
-                "api-id": "ka10065",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            },
-            {"trde_tp": "1", "mrkt_tp": market, "orgn_tp": orgn_tp},
-            "ka10065",
-        )
+    resp = await kiwoom_post(
+        f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+        {
+            "api-id": "ka10065",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        },
+        {"trde_tp": "1", "mrkt_tp": market, "orgn_tp": orgn_tp},
+        "ka10065",
+    )
     if resp is None:
         return codes
     data = resp.json()
@@ -508,17 +576,16 @@ _PROG_MRKT_MAP = {"001": "P00101", "101": "P10102"}
 async def _build_s5(token: str, market: str, rdb) -> None:
     """S5 프로그램순매수: ka90003, TTL 600s, 100개"""
     kiwoom_mkt = _PROG_MRKT_MAP.get(market, "P00101")
-    async with kiwoom_client() as client:
-        resp = await _post_with_retry(
-            client, f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-            {
-                "api-id": "ka90003",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            },
-            {"trde_upper_tp": "2", "amt_qty_tp": "1", "mrkt_tp": kiwoom_mkt, "stex_tp": "3"},
-            "ka90003",
-        )
+    resp = await kiwoom_post(
+        f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+        {
+            "api-id": "ka90003",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        },
+        {"trde_upper_tp": "2", "amt_qty_tp": "1", "mrkt_tp": kiwoom_mkt, "stex_tp": "3"},
+        "ka90003",
+    )
     if resp is None:
         return
     data = resp.json()
@@ -545,17 +612,16 @@ async def _build_s6(token: str, rdb) -> None:
     """S6 테마 구성종목: ka90001 상위 5테마→ka90002, TTL 300s, 150개"""
     # 1단계: 상위 5개 테마 코드 추출
     theme_codes: list[str] = []
-    async with kiwoom_client() as client:
-        resp = await _post_with_retry(
-            client, f"{KIWOOM_BASE_URL}/api/dostk/thme",
-            {
-                "api-id": "ka90001",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            },
-            {"qry_tp": "1", "date_tp": "1", "flu_pl_amt_tp": "3", "stex_tp": "3"},
-            "ka90001",
-        )
+    resp = await kiwoom_post(
+        f"{KIWOOM_BASE_URL}/api/dostk/thme",
+        {
+            "api-id": "ka90001",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        },
+        {"qry_tp": "1", "date_tp": "1", "flu_pl_amt_tp": "3", "stex_tp": "3"},
+        "ka90001",
+    )
     if resp is None:
         return
     data = resp.json()
@@ -572,38 +638,37 @@ async def _build_s6(token: str, rdb) -> None:
     # 2단계: 각 테마 구성종목 수집
     all_codes: list[str] = []
     seen: set[str] = set()
-    async with kiwoom_client() as client:
-        for tc in theme_codes:
-            await asyncio.sleep(_API_INTERVAL)
-            resp2 = await _post_with_retry(
-                client, f"{KIWOOM_BASE_URL}/api/dostk/thme",
-                {
-                    "api-id": "ka90002",
-                    "authorization": f"Bearer {token}",
-                    "Content-Type": "application/json;charset=UTF-8",
-                },
-                {"date_tp": "1", "thema_grp_cd": tc, "stex_tp": "3"},
-                "ka90002",
-            )
-            if resp2 is None:
+    for tc in theme_codes:
+        await asyncio.sleep(_API_INTERVAL)
+        resp2 = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/thme",
+            {
+                "api-id": "ka90002",
+                "authorization": f"Bearer {token}",
+                "Content-Type": "application/json;charset=UTF-8",
+            },
+            {"date_tp": "1", "thema_grp_cd": tc, "stex_tp": "3"},
+            "ka90002",
+        )
+        if resp2 is None:
+            continue
+        data2 = resp2.json()
+        if not validate_kiwoom_response(data2, "ka90002", logger):
+            continue
+        for x in data2.get("thema_comp_stk", []):
+            stk_cd = x.get("stk_cd", "")
+            if not stk_cd or stk_cd in seen:
                 continue
-            data2 = resp2.json()
-            if not validate_kiwoom_response(data2, "ka90002", logger):
-                continue
-            for x in data2.get("thema_comp_stk", []):
-                stk_cd = x.get("stk_cd", "")
-                if not stk_cd or stk_cd in seen:
-                    continue
-                try:
-                    flu_rt = _clean(x.get("flu_rt", "0"))
-                except Exception:
-                    flu_rt = 0.0
-                # 선도주 제외: 5% 이상 이미 상승한 종목
-                if flu_rt < 5.0:
-                    all_codes.append(stk_cd)
-                    seen.add(stk_cd)
-            if len(all_codes) >= 150:
-                break
+            try:
+                flu_rt = _clean(x.get("flu_rt", "0"))
+            except Exception:
+                flu_rt = 0.0
+            # 선도주 제외: 5% 이상 이미 상승한 종목
+            if flu_rt < 5.0:
+                all_codes.append(stk_cd)
+                seen.add(stk_cd)
+        if len(all_codes) >= 150:
+            break
 
     codes = all_codes[:150]
     # S6는 테마 기반으로 시장 구분 없이 동일 풀 적재
@@ -611,51 +676,120 @@ async def _build_s6(token: str, rdb) -> None:
         await _lpush_with_ttl(rdb, f"candidates:s6:{market}", codes, 300)
 
 
-# ── S13 / S15: 기존 풀 재활용 ─────────────────────────────────────────
+# ── S13: ka10023 거래량급증 독립 풀 ────────────────────────────────────
 
-async def _build_s13(market: str, rdb) -> None:
-    """S13 박스권 돌파: candidates:s8 ∪ candidates:s10, TTL 1200s, 150개"""
-    try:
-        s8 = await rdb.lrange(f"candidates:s8:{market}", 0, -1)
-        s10 = await rdb.lrange(f"candidates:s10:{market}", 0, -1)
-        # 중복 제거, 순서 유지
-        seen: set[str] = set()
-        codes: list[str] = []
-        for cd in list(s8) + list(s10):
-            if cd not in seen:
-                seen.add(cd)
-                codes.append(cd)
-            if len(codes) >= 150:
-                break
-        await _lpush_with_ttl(rdb, f"candidates:s13:{market}", codes, 1200)
-    except Exception as e:
-        logger.warning("[builder] S13 %s 합산 실패: %s", market, e)
+async def _build_s13(token: str, market: str, rdb) -> None:
+    """S13 박스권 돌파: ka10023, sdninRt≥30% & fluRt 3~8%, TTL 600s, 100개
+    Java CandidateService.getS13Candidates와 동일 소스·필터 (M-2 fix 정렬)"""
+    items = await _fetch_ka10023(token, market)
+    codes: list[str] = []
+    for x in items:
+        sdnin_rt = _clean(x.get("sdnin_rt", 0))
+        flu_rt   = _clean(x.get("flu_rt", 0))
+        if sdnin_rt >= 30.0 and 3.0 <= flu_rt <= 8.0:
+            stk_cd = x.get("stk_cd", "")
+            if stk_cd:
+                codes.append(stk_cd)
+        if len(codes) >= 100:
+            break
+    await _lpush_with_ttl(rdb, f"candidates:s13:{market}", codes, 600)
 
 
-async def _build_s15(market: str, rdb) -> None:
-    """S15 모멘텀 정렬: candidates:s8 재활용, TTL 1200s, 100개"""
-    try:
-        s8 = await rdb.lrange(f"candidates:s8:{market}", 0, 99)
-        codes = list(s8)[:100]
-        await _lpush_with_ttl(rdb, f"candidates:s15:{market}", codes, 1200)
-    except Exception as e:
-        logger.warning("[builder] S15 %s 재활용 실패: %s", market, e)
+# ── S15: ka10032 거래대금상위 독립 풀 ──────────────────────────────────
+
+async def _build_s15(token: str, market: str, rdb) -> None:
+    """S15 모멘텀 정렬: ka10032, fluRt 0.5~8%, TTL 900s, 80개
+    Java CandidateService.getS15Candidates와 동일 소스·필터 (M-2 fix 정렬)"""
+    results = []
+    next_key = ""
+    while True:
+        headers = {
+            "api-id": "ka10032",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        if next_key:
+            headers["cont-yn"] = "Y"
+            headers["next-key"] = next_key
+
+        resp = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
+            {"mrkt_tp": market, "mang_stk_incls": "0", "stex_tp": "3"},
+            "ka10032",
+        )
+        if resp is None:
+            break
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10032", logger):
+            break
+
+        results.extend(data.get("trde_prica_upper", []))
+
+        cont_yn = resp.headers.get("cont-yn", "N")
+        next_key = resp.headers.get("next-key", "").strip()
+        if cont_yn != "Y" or not next_key:
+            break
+
+    codes: list[str] = []
+    for x in results:
+        flu_rt = _clean(x.get("flu_rt", 0))
+        if 0.5 <= flu_rt <= 8.0:
+            stk_cd = x.get("stk_cd", "")
+            if stk_cd:
+                codes.append(stk_cd)
+        if len(codes) >= 80:
+            break
+    await _lpush_with_ttl(rdb, f"candidates:s15:{market}", codes, 900)
+
+
+# ── watchlist 통합 갱신 ─────────────────────────────────────────────────
+
+async def _refresh_watchlist(rdb, ttl: int = 900) -> None:
+    """모든 전략 후보 풀 → candidates:watchlist SET 통합.
+    websocket-listener _watchlist_poller 가 이 SET 을 5초마다 읽어 동적 구독."""
+    all_codes: set[str] = set()
+    priority_codes: set[str] = set()
+    for n in range(1, 16):
+        for mkt in MARKETS:
+            try:
+                codes = await rdb.lrange(f"candidates:s{n}:{mkt}", 0, -1)
+                all_codes.update(c for c in codes if c)
+                if n in (1, 7):
+                    priority_codes.update(c for c in codes if c)
+            except Exception:
+                pass
+    if not all_codes:
+        logger.debug("[builder] watchlist 갱신 건너뜀 (후보 없음)")
+        return
+    pipe = rdb.pipeline()
+    pipe.delete("candidates:watchlist")
+    pipe.sadd("candidates:watchlist", *all_codes)
+    pipe.expire("candidates:watchlist", ttl)
+    pipe.delete("candidates:watchlist:priority")
+    if priority_codes:
+        pipe.sadd("candidates:watchlist:priority", *priority_codes)
+        pipe.expire("candidates:watchlist:priority", ttl)
+    await pipe.execute()
+    logger.info(
+        "[builder] candidates:watchlist 갱신 – %d종목 (priority=%d)",
+        len(all_codes),
+        len(priority_codes),
+    )
 
 
 # ── 배치 빌드 함수 ─────────────────────────────────────────────────────
 
 async def _build_pre_market(token: str, rdb) -> None:
-    """장전 배치: S1, S7 (ka10029), S2 (ka10054)"""
+    """장전 배치: S1 (ka10029), S2 (ka10054)"""
     for market in MARKETS:
         try:
             await _build_s1(token, market, rdb)
-            await asyncio.sleep(_API_INTERVAL)
-            await _build_s7(token, market, rdb)
             await asyncio.sleep(_API_INTERVAL)
             await _build_s2(token, market, rdb)
             await asyncio.sleep(_API_INTERVAL)
         except Exception as e:
             logger.error("[builder] 장전 %s 빌드 오류: %s", market, e)
+    await _refresh_watchlist(rdb)
 
 
 async def _build_intraday(token: str, rdb) -> None:
@@ -669,12 +803,14 @@ async def _build_intraday(token: str, rdb) -> None:
             (_build_s3,  f"S3 {market}"),
             (_build_s4,  f"S4 {market}"),
             (_build_s5,  f"S5 {market}"),
+            (_build_s7,  f"S7 {market}"),
             (_build_s8,  f"S8 {market}"),
-            (_build_s9,  f"S9 {market}"),
             (_build_s10, f"S10 {market}"),
             (_build_s11, f"S11 {market}"),
             (_build_s12, f"S12 {market}"),
+            (_build_s13, f"S13 {market}"),
             (_build_s14, f"S14 {market}"),
+            (_build_s15, f"S15 {market}"),
         ]:
             try:
                 await fn(token, market, rdb)
@@ -682,28 +818,22 @@ async def _build_intraday(token: str, rdb) -> None:
                 logger.error("[builder] 장중 %s 빌드 오류: %s", name, e)
             await asyncio.sleep(_API_INTERVAL)
 
-        # 파생 풀: S8/S10 완료 후 구성
-        for derive_fn, name in [(_build_s13, f"S13 {market}"), (_build_s15, f"S15 {market}")]:
-            try:
-                await derive_fn(market, rdb)
-            except Exception as e:
-                logger.error("[builder] 장중 %s 빌드 오류: %s", name, e)
-
     # S6: 테마는 시장 무관 → 루프 외부에서 1회 호출
     try:
         await _build_s6(token, rdb)
     except Exception as e:
         logger.error("[builder] S6 빌드 오류: %s", e)
+    await _refresh_watchlist(rdb)
 
 
 # ── 메인 루프 ──────────────────────────────────────────────────────────
 
 async def run_candidate_builder(rdb) -> None:
-    """candidates_builder 메인 루프 — engine.py 에서 asyncio.create_task() 로 기동"""
+    """candidates_builder 메인 루프 – engine.py 에서 asyncio.create_task() 로 기동"""
     logger.info("[builder] candidates_builder 시작 (주기=%ds)", CANDIDATE_BUILD_INTERVAL_SEC)
 
     while True:
-        now = datetime.now().time()
+        now = datetime.now(KST).time()
         try:
             token = await rdb.get("kiwoom:token")
         except Exception as e:
@@ -716,10 +846,14 @@ async def run_candidate_builder(rdb) -> None:
             continue
 
         if time(7, 25) <= now <= time(9, 10):
-            # 장전: S1, S7 집중 갱신 (3분 주기)
-            logger.info("[builder] 장전 빌드 시작")
-            await _build_pre_market(token, rdb)
-            await asyncio.sleep(180)
+            if now <= time(8, 25):
+                # 장전 집중 갱신: S1/S2 (3분 주기, 08:25 이전)
+                logger.info("[builder] 장전 빌드 시작")
+                await _build_pre_market(token, rdb)
+                await asyncio.sleep(180)
+            else:
+                # 08:25 이후 S1/S7 풀 동결 – 스캐너가 안정적으로 읽도록 대기
+                await asyncio.sleep(60)
 
         elif time(9, 5) <= now <= time(14, 55):
             # 장중: 전체 전략 갱신

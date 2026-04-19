@@ -16,10 +16,15 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import uuid4
+from zoneinfo import ZoneInfo
+
+from utils import safe_float_opt as _sf, normalize_stock_code
 
 logger = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -133,13 +138,8 @@ async def insert_python_signal(
     Python strategy_runner 가 생성한 신호(Java id 없음)를 trading_signals 에 INSERT.
     성공 시 생성된 id 반환, 실패 시 None.
     """
-    def _sf(v, default=None):
-        try:
-            f = float(str(v).replace(",", "").replace("+", ""))
-            return f if f == f else default  # NaN 방어
-        except (TypeError, ValueError):
-            return default
-
+    signal = dict(signal)
+    signal["stk_cd"] = normalize_stock_code(signal.get("stk_cd", ""))
     now    = datetime.utcnow()  # TIMESTAMP WITHOUT TIME ZONE 컬럼 호환
     status = "SENT" if action == "ENTER" else "CANCELLED"
     try:
@@ -312,6 +312,7 @@ async def insert_overnight_eval(
     stk_cd:          str,
     strategy:        str,
     verdict:         str,         # HOLD / FORCE_CLOSE
+    java_overnight_score: Optional[float],
     final_score:     float,
     confidence:      str,
     reason:          str,
@@ -330,26 +331,26 @@ async def insert_overnight_eval(
     if not signal_id:
         return False
     try:
-        import json as _json
-        sc_json = _json.dumps(score_components) if score_components else None
+        sc_json = json.dumps(score_components) if score_components else None
         await pool.execute(
             """
             INSERT INTO overnight_evaluations
                 (signal_id, position_id, stk_cd, strategy,
-                 verdict, final_score, confidence, reason,
+                 java_overnight_score, verdict, final_score, confidence, reason,
                  pnl_pct, flu_rt, cntr_strength, rsi14,
                  ma_alignment, bid_ratio, entry_price, cur_prc_at_eval,
                  score_components, evaluated_at)
             VALUES
                 ($1,  $2,  $3,  $4,
-                 $5,  $6,  $7,  $8,
-                 $9,  $10, $11, $12,
-                 $13, $14, $15, $16,
-                 $17::jsonb, NOW())
+                 $5,  $6,  $7,  $8,  $9,
+                 $10, $11, $12, $13,
+                 $14, $15, $16, $17,
+                 $18::jsonb, NOW())
             """,
             signal_id, position_id, stk_cd, strategy,
+            round(java_overnight_score, 2) if java_overnight_score is not None else None,
             verdict, round(final_score, 2), confidence, reason,
-            round(pnl_pct, 4)       if pnl_pct       is not None else None,
+            round(pnl_pct, 4)       if pnl_pct        is not None else None,
             round(flu_rt, 4)        if flu_rt         is not None else None,
             round(cntr_strength, 2) if cntr_strength  is not None else None,
             round(rsi14, 2)         if rsi14          is not None else None,
@@ -440,6 +441,228 @@ async def upsert_daily_indicators(pool, stk_cd: str, date_str: str, ind: dict) -
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 5. open_positions — position_monitor.py 전용 읽기/쓰기
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def confirm_open_position(
+    pool,
+    signal_id: int,
+    *,
+    ai_score:  Optional[float],
+    tp1_price: Optional[float] = None,
+    tp2_price: Optional[float] = None,
+    sl_price:  Optional[float] = None,
+) -> bool:
+    """
+    Python AI 분석에서 action=ENTER 확정 시 open_positions 갱신.
+
+    Java SignalService 가 신호 접수 시점에 INSERT한 행(status=ACTIVE)에
+    Claude가 산출한 ai_score 및 Claude 조정 TP/SL 가격을 덮어쓴다.
+    signal_id 에 해당하는 행이 없으면(entryPrice 미설정 등) no-op.
+
+    tp1_price / tp2_price / sl_price 가 None이면 기존 값 유지.
+    """
+    if not signal_id:
+        return False
+    try:
+        await pool.execute(
+            """
+            UPDATE open_positions SET
+                ai_score  = COALESCE($2, ai_score),
+                tp1_price = COALESCE($3::NUMERIC, tp1_price),
+                tp2_price = COALESCE($4::NUMERIC, tp2_price),
+                sl_price  = COALESCE($5::NUMERIC, sl_price)
+            WHERE signal_id = $1
+              AND status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+            """,
+            signal_id,
+            round(ai_score, 2) if ai_score is not None else None,
+            int(tp1_price) if tp1_price else None,
+            int(tp2_price) if tp2_price else None,
+            int(sl_price)  if sl_price  else None,
+        )
+        logger.debug(
+            "[DBWriter] confirm_open_position signal_id=%d ai_score=%s tp1=%s tp2=%s sl=%s",
+            signal_id, ai_score, tp1_price, tp2_price, sl_price,
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] confirm_open_position 오류 signal_id=%s: %s", signal_id, e)
+        return False
+
+
+async def cancel_open_position_by_signal(pool, signal_id: int) -> bool:
+    """
+    Python AI 분석에서 action=CANCEL 결정 시 open_positions 행을 즉시 삭제.
+
+    1. trading_signals signal_status → 'CANCELLED' 업데이트
+    2. open_positions 에서 ACTIVE 행 DELETE
+    signal_id 에 해당하는 행이 없으면 no-op.
+    """
+    if not signal_id:
+        return False
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. trading_signals 히스토리 업데이트
+                await conn.execute(
+                    """
+                    UPDATE trading_signals SET
+                        signal_status = 'CANCELLED'
+                    WHERE id = $1
+                    """,
+                    signal_id,
+                )
+                # 2. open_positions 행 삭제
+                result = await conn.execute(
+                    """
+                    DELETE FROM open_positions
+                    WHERE signal_id = $1
+                      AND status = 'ACTIVE'
+                    """,
+                    signal_id,
+                )
+        deleted = int(result.split()[-1])
+        if deleted:
+            logger.info(
+                "[DBWriter] AI CANCEL → open_position 삭제 signal_id=%d", signal_id
+            )
+        return deleted > 0
+    except Exception as e:
+        logger.error("[DBWriter] cancel_open_position_by_signal 오류 signal_id=%s: %s", signal_id, e)
+        return False
+
+
+async def get_active_positions(pool) -> list[dict]:
+    """
+    ACTIVE / PARTIAL_TP / OVERNIGHT 상태 포지션 전체 반환.
+    monitor_enabled=TRUE 인 것만 가져온다.
+    """
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT
+                id, signal_id, stk_cd, stk_nm, strategy, market,
+                entry_price, tp1_price, tp2_price, sl_price,
+                tp_method, sl_method, rr_ratio,
+                status, tp1_hit_at, peak_price, trailing_pct,
+                entry_at
+            FROM open_positions
+            WHERE status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+              AND monitor_enabled = TRUE
+            ORDER BY entry_at
+            """
+        )
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error("[DBWriter] get_active_positions 오류: %s", e)
+        return []
+
+
+async def mark_tp1_hit(pool, position_id: int, cur_prc: int) -> bool:
+    """
+    TP1 도달 처리: status → PARTIAL_TP, tp1_hit_at 기록, peak_price 초기화.
+    이미 PARTIAL_TP 이상이면 no-op.
+    """
+    try:
+        await pool.execute(
+            """
+            UPDATE open_positions SET
+                status      = 'PARTIAL_TP',
+                tp1_hit_at  = NOW(),
+                peak_price  = $2
+            WHERE id = $1
+              AND status = 'ACTIVE'
+            """,
+            position_id,
+            cur_prc,
+        )
+        logger.info("[DBWriter] TP1 도달 position_id=%d cur_prc=%d", position_id, cur_prc)
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] mark_tp1_hit 오류 position_id=%s: %s", position_id, e)
+        return False
+
+
+async def update_peak_price(pool, position_id: int, peak_price: int) -> bool:
+    """트레일링 스탑 고가 갱신 (PARTIAL_TP 상태에서만)"""
+    try:
+        await pool.execute(
+            """
+            UPDATE open_positions
+            SET peak_price = $2
+            WHERE id = $1
+              AND status = 'PARTIAL_TP'
+              AND (peak_price IS NULL OR peak_price < $2)
+            """,
+            position_id,
+            peak_price,
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] update_peak_price 오류 position_id=%s: %s", position_id, e)
+        return False
+
+
+async def close_open_position(
+    pool,
+    position_id: int,
+    *,
+    signal_id:        int,    # trading_signals UPDATE용 (추가)
+    exit_type:        str,    # SL_HIT / TP1_HIT / TP2_HIT / TRAILING_STOP / TREND_REVERSAL
+    exit_price:       int,
+    realized_pnl_pct: float,
+) -> bool:
+    """
+    포지션 종료:
+      1. realized_pnl_pct 기준으로 trading_signals signal_status (WIN/LOSS) + 청산 컬럼 UPDATE
+      2. open_positions 에서 행 DELETE (CLOSED 행은 존재하지 않음)
+    DB 트랜잭션 원자적 처리 — 중복 처리 방지.
+    """
+    signal_status = "WIN" if realized_pnl_pct >= 0 else "LOSS"
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. trading_signals 히스토리 업데이트
+                await conn.execute(
+                    """
+                    UPDATE trading_signals SET
+                        signal_status = $2,
+                        exit_type     = $3,
+                        exit_price    = $4,
+                        exit_pnl_pct  = $5,
+                        exited_at     = NOW()
+                    WHERE id = $1
+                    """,
+                    signal_id,
+                    signal_status,
+                    exit_type,
+                    exit_price,
+                    round(realized_pnl_pct, 4),
+                )
+                # 2. open_positions 행 삭제 (원자적 — 중복 처리 방지)
+                result = await conn.execute(
+                    """
+                    DELETE FROM open_positions
+                    WHERE id = $1
+                      AND status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+                    """,
+                    position_id,
+                )
+        deleted = int(result.split()[-1])
+        if deleted:
+            logger.info(
+                "[DBWriter] 포지션 종료 position_id=%d signal_id=%d exit_type=%s exit_price=%d pnl=%.2f%% status=%s",
+                position_id, signal_id, exit_type, exit_price, realized_pnl_pct, signal_status,
+            )
+        return deleted > 0
+    except Exception as e:
+        logger.error("[DBWriter] close_open_position 오류 position_id=%s signal_id=%s: %s",
+                     position_id, signal_id, e)
+        return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 헬퍼
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -459,3 +682,128 @@ def _opt_int(v) -> Optional[int]:
         return int(float(str(v).replace(",", "")))
     except (TypeError, ValueError):
         return None
+
+
+def _next_trading_day_preopen_utc(base_dt: Optional[datetime] = None) -> datetime:
+    base = base_dt.astimezone(KST) if base_dt else datetime.now(KST)
+    candidate = base.date() + timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    next_run_kst = datetime.combine(candidate, datetime.min.time(), tzinfo=KST).replace(hour=7)
+    return next_run_kst.astimezone(timezone.utc)
+
+
+async def insert_human_confirm_request(
+    pool,
+    payload: dict,
+    *,
+    rule_score: Optional[float],
+    rr_ratio: Optional[float],
+) -> Optional[dict]:
+    try:
+        payload = dict(payload)
+        payload["stk_cd"] = normalize_stock_code(payload.get("stk_cd", ""))
+        requested_at = datetime.now(timezone.utc)
+        expires_at = _next_trading_day_preopen_utc(requested_at)
+        signal_id = payload.get("id")
+        request_key = f"hc-{signal_id or payload.get('stk_cd', 'unk')}-{uuid4().hex[:8]}"
+        row = await pool.fetchrow(
+            """
+            INSERT INTO human_confirm_requests (
+                request_key, signal_id, stk_cd, stk_nm, strategy,
+                rule_score, rr_ratio, status, payload,
+                requested_at, expires_at, last_enqueued_at
+            ) VALUES (
+                $1, $2, $3, $4, $5,
+                $6, $7, 'PENDING', $8::jsonb,
+                $9, $10, $9
+            )
+            RETURNING request_key, expires_at
+            """,
+            request_key,
+            signal_id,
+            payload.get("stk_cd", ""),
+            payload.get("stk_nm"),
+            payload.get("strategy", ""),
+            round(rule_score, 2) if rule_score is not None else None,
+            round(rr_ratio, 2) if rr_ratio is not None else None,
+            json.dumps(payload, ensure_ascii=False, default=str),
+            requested_at,
+            expires_at,
+        )
+        return dict(row) if row else None
+    except Exception as e:
+        logger.error("[DBWriter] insert_human_confirm_request 오류 [%s %s]: %s",
+                     payload.get("stk_cd"), payload.get("strategy"), e)
+        return None
+
+
+async def update_human_confirm_request_status(
+    pool,
+    request_key: str,
+    *,
+    status: str,
+    decision_chat_id: Optional[int] = None,
+    decision_message_id: Optional[int] = None,
+    ai_score: Optional[float] = None,
+    ai_action: Optional[str] = None,
+    ai_confidence: Optional[str] = None,
+    ai_reason: Optional[str] = None,
+) -> bool:
+    try:
+        await pool.execute(
+            """
+            UPDATE human_confirm_requests
+            SET status = $2,
+                decided_at = CASE
+                    WHEN $2 IN ('APPROVED', 'REJECTED', 'COMPLETED', 'FAILED')
+                    THEN NOW()
+                    ELSE decided_at
+                END,
+                decision_chat_id = COALESCE($3, decision_chat_id),
+                decision_message_id = COALESCE($4, decision_message_id),
+                ai_score = COALESCE($5, ai_score),
+                ai_action = COALESCE($6, ai_action),
+                ai_confidence = COALESCE($7, ai_confidence),
+                ai_reason = COALESCE($8, ai_reason)
+            WHERE request_key = $1
+            """,
+            request_key,
+            status,
+            decision_chat_id,
+            decision_message_id,
+            round(ai_score, 2) if ai_score is not None else None,
+            ai_action,
+            ai_confidence,
+            ai_reason,
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] update_human_confirm_request_status 오류 request_key=%s: %s", request_key, e)
+        return False
+
+
+async def mark_human_confirm_request_sent(
+    pool,
+    request_key: str,
+    *,
+    decision_chat_id: Optional[int] = None,
+    decision_message_id: Optional[int] = None,
+) -> bool:
+    try:
+        await pool.execute(
+            """
+            UPDATE human_confirm_requests
+            SET last_sent_at = NOW(),
+                decision_chat_id = COALESCE($2, decision_chat_id),
+                decision_message_id = COALESCE($3, decision_message_id)
+            WHERE request_key = $1
+            """,
+            request_key,
+            decision_chat_id,
+            decision_message_id,
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] mark_human_confirm_request_sent 오류 request_key=%s: %s", request_key, e)
+        return False

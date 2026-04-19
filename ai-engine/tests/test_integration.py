@@ -303,7 +303,7 @@ class TestScoringAndAnalysisIntegration:
             "S4_BIG_CANDLE": {"vol_ratio": 8.0, "body_ratio": 0.85},
             "S5_PROG_FRGN": {"net_buy_amt": 50_000_000_000},
             "S6_THEME_LAGGARD": {"gap_pct": 2.0, "cntr_strength": 130.0},
-            "S7_AUCTION": {"gap_pct": 3.0, "vol_rank": 5},
+            "S7_ICHIMOKU_BREAKOUT": {"cloud_thickness_pct": 0.8, "chikou_above": True, "vol_ratio": 1.8, "rsi": 55, "cond_count": 3},
         }
 
         ctx = {
@@ -366,7 +366,7 @@ class TestEdgeCasesIntegration:
             {"strategy": "S1_GAP_OPEN", "gap_pct": 100.0},  # 극단적 갭
             {"strategy": "S2_VI_PULLBACK", "pullback_pct": -10.0},  # 극단적 눌림
             {"strategy": "S3_INST_FRGN", "net_buy_amt": -1_000_000_000},  # 음수 순매수
-            {"strategy": "S7_AUCTION", "gap_pct": 0, "vol_rank": 999},  # 최저 조건
+            {"strategy": "S7_ICHIMOKU_BREAKOUT", "cloud_thickness_pct": 4.0, "chikou_above": False, "vol_ratio": 1.0, "rsi": 80, "cond_count": 0},  # ?? ??
         ]
 
         ctx = {"tick": {"flu_rt": "3.0"}, "hoga": {}, "strength": 120.0, "vi": {}}

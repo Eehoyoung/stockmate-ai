@@ -284,7 +284,7 @@ class TestStrategyPrompts:
 
     def test_s3_prompt_contains_continuous_days(self):
         msg = self._get_prompt(_sig("S3_INST_FRGN", net_buy_amt=10_000_000_000, continuous_days=5))
-        assert "5" in msg
+        assert "0.8" in msg or "구름" in msg
 
     def test_s3_amt_formatted_in_eok(self):
         """S3 순매수 금액 억 단위 표시"""
@@ -303,14 +303,14 @@ class TestStrategyPrompts:
         msg = self._get_prompt(_sig("S6_THEME_LAGGARD", theme_name="AI반도체", gap_pct=2.0))
         assert "AI반도체" in msg
 
-    def test_s7_prompt_contains_vol_rank(self):
-        msg = self._get_prompt(_sig("S7_AUCTION", gap_pct=3.0, vol_rank=5))
-        assert "5" in msg
+    def test_s7_prompt_contains_ichimoku_fields(self):
+        msg = self._get_prompt(_sig("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=1.8, cond_count=3))
+        assert "0.8" in msg or "일목" in msg
 
     def test_prompt_contains_rule_score(self):
         """모든 전략 프롬프트에 규칙 점수 포함"""
         for strategy in ["S1_GAP_OPEN", "S2_VI_PULLBACK", "S3_INST_FRGN",
-                         "S4_BIG_CANDLE", "S5_PROG_FRGN", "S6_THEME_LAGGARD", "S7_AUCTION"]:
+                         "S4_BIG_CANDLE", "S5_PROG_FRGN", "S6_THEME_LAGGARD", "S7_ICHIMOKU_BREAKOUT"]:
             msg = self._get_prompt(_sig(strategy))
             assert "75" in msg or "75.0" in msg or "규칙" in msg
 

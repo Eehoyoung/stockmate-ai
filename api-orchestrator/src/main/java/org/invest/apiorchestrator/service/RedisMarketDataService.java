@@ -2,10 +2,12 @@ package org.invest.apiorchestrator.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -47,9 +49,12 @@ public class RedisMarketDataService {
     }
 
     /**
-     * 체결강도 최근 N개 평균.
+     * 체결강도(ws:strength) 최근 N개 평균. 값이 클수록 매수 우위.
      * ws:strength 키가 없으면 100.0(중립) 반환.
      * 실제 데이터 유무는 hasStrengthData() 로 구분하라.
+     *
+     * 주의: Python redis_reader.get_hoga_ratio() 는 매도잔량/매수잔량 비율로
+     * 분자·분모가 반대이다(ratio > 1.0 → 매도 우위). 두 값을 혼용하지 말 것.
      */
     public double getAvgCntrStrength(String stkCd, int count) {
         List<String> list = redis.opsForList().range(KEY_STRENGTH + stkCd, 0, count - 1);
@@ -104,7 +109,7 @@ public class RedisMarketDataService {
      * @return 오늘 발행된 총 신호 수 (증가 후 값)
      */
     public long incrementDailySignalCount() {
-        String key = "signal:daily_count:" + java.time.LocalDate.now();
+        String key = "signal:daily_count:" + KstClock.today();
         Long count = redis.opsForValue().increment(key);
         if (count != null && count == 1) {
             redis.expire(key, Duration.ofHours(25));
@@ -136,7 +141,7 @@ public class RedisMarketDataService {
      * 오늘 일일 신호 카운터 조회
      */
     public long getDailySignalCount() {
-        String key = "signal:daily_count:" + java.time.LocalDate.now();
+        String key = "signal:daily_count:" + KstClock.today();
         String val = redis.opsForValue().get(key);
         return val != null ? Long.parseLong(val) : 0L;
     }
@@ -162,14 +167,6 @@ public class RedisMarketDataService {
      */
     public void pushViWatchBack(String item) {
         redis.opsForList().rightPush("vi_watch_queue", item);
-    }
-
-    /**
-     * 오버나잇 Claude 평가 큐에 푸시 (ForceCloseScheduler → overnight_worker.py)
-     */
-    public void pushOvernightEvalQueue(String message) {
-        redis.opsForList().leftPush("overnight_eval_queue", message);
-        redis.expire("overnight_eval_queue", Duration.ofHours(2));
     }
 
     /**
