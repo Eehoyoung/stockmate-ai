@@ -185,17 +185,6 @@ async function main() {
     const chatIds = getAllowedChatIds();
     startConfirmPoller(bot, chatIds);
 
-    for (const chatId of chatIds) {
-        try {
-            await bot.telegram.sendMessage(
-                chatId,
-                '🚀 <b>StockMate AI Bot started</b>\nType /help for commands.',
-                { parse_mode: 'HTML' }
-            );
-        } catch (e) {
-            logger.warn('[Bot] startup message failed', { chatId, err: e.message });
-        }
-    }
 }
 
 async function shutdown(signal) {

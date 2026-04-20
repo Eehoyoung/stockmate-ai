@@ -113,9 +113,9 @@ public class CandidateService {
     // 전략별 전용 후보 풀  (candidates:s{N}:{market})
     // ─────────────────────────────────────────────────────────────
 
-    /** S1 갭상승 시초가 (ka10029, 3~15%, TTL 3분) */
+    /** S1 갭상승 시초가 (ka10029, 3~15%, TTL 90분 — 08:30 Python 스캔 윈도우 커버) */
     public List<String> getS1Candidates(String market) {
-        return loadCandidates("s1", market, Duration.ofMinutes(3), 3,
+        return loadCandidates("s1", market, Duration.ofMinutes(90), 90,
                 () -> fetchKa10029Codes(market, 3.0, 15.0, 100));
     }
 

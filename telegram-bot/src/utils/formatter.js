@@ -132,40 +132,18 @@ function formatSignal(item) {
         return `${pct.startsWith('-') ? '' : '+'}${pct}%`;
     };
 
-    // ── Claude 확정 TP/SL (human_confirmed=true 일 때 우선 표시) ──
+    // ── Claude TP/SL (우선) / 규칙 기반 TP/SL (폴백) ──
     const claudeTp1 = item.claude_tp1 ? normalizeForDisplay(item.claude_tp1) : null;
     const claudeTp2 = item.claude_tp2 ? normalizeForDisplay(item.claude_tp2) : null;
     const claudeSl  = item.claude_sl  ? normalizeForDisplay(item.claude_sl)  : null;
 
-    if (item.human_confirmed && (claudeTp1 || claudeTp2 || claudeSl)) {
-        lines.push('🤖 <b>Claude 최종 목표가</b>');
-        if (claudeTp1 && curPrc > 0) {
-            const pct = (((claudeTp1 - curPrc) / curPrc) * 100).toFixed(1);
-            lines.push(`  TP1: <b>${claudeTp1.toLocaleString()}원</b>  (+${pct}%)`);
-        }
-        if (claudeTp2 && curPrc > 0) {
-            const pct = (((claudeTp2 - curPrc) / curPrc) * 100).toFixed(1);
-            lines.push(`  TP2: <b>${claudeTp2.toLocaleString()}원</b>  (+${pct}%)`);
-        }
-        if (claudeSl && curPrc > 0) {
-            const pct = (((claudeSl - curPrc) / curPrc) * 100).toFixed(1);
-            lines.push(`  SL:  <b>${claudeSl.toLocaleString()}원</b>  (${pct}%)`);
-        }
-        // R/R (슬리피지 반영 단일 경로)
-        if (claudeTp1 && claudeSl && curPrc > 0 && claudeSl < curPrc) {
-            const effRR = _effectiveRR(item.stk_cd, curPrc, claudeTp1, claudeSl);
-            if (effRR) lines.push(`  ${effRR}`);
-        }
-    }
-
-    // ── 규칙 기반 TP/SL ──
     const tp1 = item.tp1_price ? normalizeForDisplay(item.tp1_price) : null;
     const tp2 = item.tp2_price ? normalizeForDisplay(item.tp2_price) : null;
     const sl  = item.sl_price  ? normalizeForDisplay(item.sl_price)  : null;
 
-    const displayedTp1 = item.human_confirmed && claudeTp1 ? claudeTp1 : tp1;
-    const displayedTp2 = item.human_confirmed && claudeTp2 ? claudeTp2 : tp2;
-    const displayedSl  = item.human_confirmed && claudeSl  ? claudeSl  : sl;
+    const displayedTp1 = claudeTp1 || tp1;
+    const displayedTp2 = claudeTp2 || tp2;
+    const displayedSl  = claudeSl  || sl;
 
     if (item.action === 'ENTER') {
         lines.push('');
@@ -230,16 +208,9 @@ function formatSignal(item) {
         }
     }
 
-    if (!item.human_confirmed && item.action !== 'ENTER') {
-        // 미확정: 규칙 기반을 주 표시
+    if (item.action !== 'ENTER') {
         if (tp1 || tp2 || sl) {
-            // skip_entry 경고 (R:R < 1.3 시 tp_sl_engine이 설정)
-            if (item.skip_entry) {
-                const rrStr = item.rr_ratio != null ? ` (R:R ${Number(item.rr_ratio).toFixed(2)})` : '';
-                lines.push(`⚠️ <b>R:R 미달${rrStr} — 진입 재검토 필요</b>`);
-            }
-            const tpHeader = item.skip_entry ? '📐 <b>목표가 (규칙 기반 — R:R 미달)</b>' : '📐 <b>목표가 (규칙 기반)</b>';
-            lines.push(tpHeader);
+            lines.push('📐 <b>목표가 (규칙 기반)</b>');
             if (tp1 && curPrc > 0) {
                 const pct = (((tp1 - curPrc) / curPrc) * 100).toFixed(1);
                 lines.push(`  TP1: <b>${tp1.toLocaleString()}원</b>  (+${pct}%)`);
@@ -252,38 +223,16 @@ function formatSignal(item) {
                 const pct = (((sl - curPrc) / curPrc) * 100).toFixed(1);
                 lines.push(`  SL:  <b>${sl.toLocaleString()}원</b>  (${pct}%)`);
             }
-            // R:R — tp_sl_engine 계산값 우선, 없으면 슬리피지 반영 단일 경로
-            if (item.rr_ratio != null) {
-                const rrVal = Number(item.rr_ratio);
-                const rrFlag = rrVal < 1.0 ? ' ❌' : (rrVal < 1.3 ? ' ⚠️' : ' ✅');
-                lines.push(`  실질R:R: <b>${rrVal.toFixed(2)}</b>${rrFlag}`);
-            } else if (tp1 && sl && curPrc > 0 && sl < curPrc) {
+            if (tp1 && sl && curPrc > 0 && sl < curPrc) {
                 const effRR = _effectiveRR(item.stk_cd, curPrc, tp1, sl);
                 if (effRR) lines.push(`  ${effRR}`);
             }
-            // 근거 방법론 표시 (sl_method / tp_method)
-            if (item.sl_method || item.tp_method) {
-                const methodParts = [];
-                if (item.tp_method) methodParts.push(`TP근거: ${item.tp_method}`);
-                if (item.sl_method) methodParts.push(`SL근거: ${item.sl_method}`);
-                lines.push(`  <i>${methodParts.join('  |  ')}</i>`);
-            }
         } else {
-            // 절대가 없으면 % 기반 폴백
             const targetPct = item.adjusted_target_pct ?? item.target_pct;
             const stopPct   = item.adjusted_stop_pct   ?? item.stop_pct;
             if (targetPct != null || stopPct != null) {
                 lines.push(`목표: <b>+${targetPct ?? '-'}%</b>  손절: <b>${stopPct ?? '-'}%</b>`);
             }
-        }
-    } else if (item.action !== 'ENTER' && (tp1 || tp2 || sl)) {
-        // Claude 확정 후: 규칙 기반은 참고용
-        const ruleParts = [];
-        if (tp1) ruleParts.push(`TP1: ${tp1.toLocaleString()}원`);
-        if (tp2) ruleParts.push(`TP2: ${tp2.toLocaleString()}원`);
-        if (sl)  ruleParts.push(`SL: ${sl.toLocaleString()}원`);
-        if (ruleParts.length > 0) {
-            lines.push(`📐 규칙 기반(참고): ${ruleParts.join(' / ')}`);
         }
     }
 

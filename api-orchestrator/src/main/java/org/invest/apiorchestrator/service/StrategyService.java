@@ -80,9 +80,9 @@ public class StrategyService {
                         .cntrStrength(round(strength))
                         .bidRatio(round(bidRatio))
                         .entryType("시초가_시장가")
-                        .targetPct(4.0).target2Pct(6.0).stopPct(-2.0)
-                        .tp1Price(round(expPrice * 1.04))
-                        .tp2Price(round(expPrice * 1.06))
+                        .targetPct(5.0).target2Pct(9.0).stopPct(-2.0)
+                        .tp1Price(round(expPrice * 1.05))
+                        .tp2Price(round(expPrice * 1.09))
                         .slPrice(round(expPrice * 0.98))
                         .build());
 
@@ -136,9 +136,9 @@ public class StrategyService {
                     .cntrStrength(round(strength))
                     .bidRatio(round(bidRatio))
                     .entryType("지정가_눌림목")
-                    .targetPct(3.0).target2Pct(4.5).stopPct(-2.0)
-                    .tp1Price(round(curPrice * 1.03))
-                    .tp2Price(round(curPrice * 1.045))
+                    .targetPct(6.5).target2Pct(9.5).stopPct(-2.0)
+                    .tp1Price(round(curPrice * 1.065))
+                    .tp2Price(round(curPrice * 1.095))
                     .slPrice(round(curPrice * 0.98))
                     .build());
         } catch (Exception e) {
@@ -284,10 +284,10 @@ public class StrategyService {
                     .bodyRatio(round(bodyRatio))
                     .isNewHigh(isNewHigh)
                     .entryType("추격_시장가")
-                    .targetPct(4.0).target2Pct(6.0).stopPct(-2.5)
-                    .tp1Price(round(c * 1.04))
-                    .tp2Price(round(c * 1.06))
-                    .slPrice(l > 0 ? round(l * 0.99) : round(c * 0.975))  // 당일 저가 하방
+                    .targetPct(6.0).target2Pct(9.0).stopPct(-3.0)
+                    .tp1Price(round(c * 1.06))
+                    .tp2Price(round(c * 1.09))
+                    .slPrice(l > 0 ? round(Math.max(l * 0.99, c * 0.97)) : round(c * 0.97))  // 저가 하방, 최대 -3% 캡
                     .build());
         } catch (Exception e) {
             log.warn("[S4] {} 처리 오류: {}", stkCd, e.getMessage());
@@ -337,11 +337,11 @@ public class StrategyService {
                         .netBuyAmt(netBuyAmt)
                         .marketType(market)
                         .entryType("지정가_1호가")
-                        .targetPct(3.0)
-                        .target2Pct(4.5)
-                        .stopPct(-2.0)
-                        .tp1Price(curPriceS5 > 0 ? round(curPriceS5 * 1.05) : null)
-                        .tp2Price(curPriceS5 > 0 ? round(curPriceS5 * 1.08) : null)
+                        .targetPct(6.0)
+                        .target2Pct(9.0)
+                        .stopPct(-3.0)
+                        .tp1Price(curPriceS5 > 0 ? round(curPriceS5 * 1.06) : null)
+                        .tp2Price(curPriceS5 > 0 ? round(curPriceS5 * 1.09) : null)
                         .slPrice(curPriceS5 > 0 ? round(curPriceS5 * 0.97) : null)
                         .build());
             }
@@ -405,8 +405,8 @@ public class StrategyService {
 
                     var tickS6 = redisService.getTickData(stk.getStkCd());
                     double curPriceS6 = tickS6.isPresent() ? parseDouble(tickS6.get(), "cur_prc") : 0.0;
-                    double t1Pct = Math.min(themeFluRt * 0.5, 6.0);
-                    double t2Pct = Math.min(themeFluRt * 0.7, 9.0);
+                    double t1Pct = Math.max(Math.min(themeFluRt * 0.5, 8.0), 6.0);  // floor 6% for R:R ≥ 1.3 (KOSDAQ)
+                    double t2Pct = Math.max(Math.min(themeFluRt * 0.7, 11.0), 9.0);
 
                     results.add(TradingSignalDto.builder()
                             .stkCd(stk.getStkCd())
@@ -596,9 +596,9 @@ public class StrategyService {
                     .cntrStrength(round(strength))
                     .bidRatio(round(bidRatio))
                     .entryType("종가_동시호가")
-                    .targetPct(5.0).target2Pct(7.5).stopPct(-3.0)
-                    .tp1Price(round(curPrc * 1.05))
-                    .tp2Price(round(curPrc * 1.075))
+                    .targetPct(6.0).target2Pct(10.0).stopPct(-3.0)
+                    .tp1Price(round(curPrc * 1.06))
+                    .tp2Price(round(curPrc * 1.10))
                     .slPrice(round(curPrc * 0.97))
                     .build());
         } catch (Exception e) {
@@ -663,13 +663,13 @@ public class StrategyService {
                         + Math.max(cntrStr - 100, 0) * 0.2;
 
                 // 기술적 TP/SL 계산
-                // SL: MA20 × 0.98 (정배열 지지선 하방 2%)
-                double slPriceS8 = ma20 > 0 ? round(ma20 * 0.98) : round(closes[0] * 0.95);
-                double stopPct = ma20 > 0 ? Math.max((slPriceS8 - closes[0]) / closes[0] * 100, -7.0) : -5.0;
-                // TP1: 최근 10거래일 고가 (단기 저항선) - 크로스 이전 고가 기준
+                // SL: MA20 × 0.98, 최대 -4% 캡 (슬리피지 포함 R:R ≥ 1.45 확보)
+                double slPriceS8 = ma20 > 0 ? round(Math.max(ma20 * 0.98, closes[0] * 0.96)) : round(closes[0] * 0.96);
+                double stopPct = Math.max((slPriceS8 - closes[0]) / closes[0] * 100, -4.0);
+                // TP1: 최근 10거래일 고가, 최소 +8% 플로어 (R:R 확보)
                 double recentHigh10 = closes[0];
                 for (int i = 1; i <= 10 && i < n; i++) recentHigh10 = Math.max(recentHigh10, parseDoubleStr(raw.get(i).getHighPric()));
-                double tp1S8 = round(Math.max(recentHigh10, closes[0] * 1.05));
+                double tp1S8 = round(Math.max(recentHigh10, closes[0] * 1.08));
                 // TP2: TP1 기준 추가 5% (2파 목표)
                 double tp2S8 = round(tp1S8 * 1.05);
 
@@ -766,13 +766,13 @@ public class StrategyService {
                         + Math.max(cntrStr - 100, 0) * 0.2;
 
                 // 기술적 TP/SL
-                // SL: MA20 × 0.97 (정배열 지지 하방 3%)
-                double slPriceS9 = ma20 > 0 ? round(ma20 * 0.97) : round(closes[0] * 0.95);
-                double stopPct = ma20 > 0 ? Math.max((slPriceS9 - closes[0]) / closes[0] * 100, -7.0) : -5.0;
-                // TP1: 최근 10일 고가 (눌림 이전 고점)
+                // SL: MA20 × 0.97, 최대 -4% 캡 (슬리피지 포함 R:R ≥ 1.45 확보)
+                double slPriceS9 = ma20 > 0 ? round(Math.max(ma20 * 0.97, closes[0] * 0.96)) : round(closes[0] * 0.96);
+                double stopPct = Math.max((slPriceS9 - closes[0]) / closes[0] * 100, -4.0);
+                // TP1: 최근 10일 고가, 최소 +8% 플로어 (R:R 확보)
                 double recentHigh10S9 = closes[0];
                 for (int i = 1; i <= 10 && i < n; i++) recentHigh10S9 = Math.max(recentHigh10S9, highs[i]);
-                double tp1S9 = round(Math.max(recentHigh10S9, closes[0] * 1.05));
+                double tp1S9 = round(Math.max(recentHigh10S9, closes[0] * 1.08));
                 // TP2: 최근 20일 고가 (중기 저항선)
                 double recentHigh20S9 = tp1S9;
                 for (int i = 1; i <= 20 && i < n; i++) recentHigh20S9 = Math.max(recentHigh20S9, highs[i]);
@@ -857,9 +857,9 @@ public class StrategyService {
                         .marketType(market)
                         .entryType("지정가_1호가")
                         .holdingDays("5~10거래일")
-                        .targetPct(8.0).target2Pct(12.0)
+                        .targetPct(9.0).target2Pct(14.0)
                         .stopPct(-5.0)
-                        .tp1Price(curPriceS11 > 0 ? round(curPriceS11 * 1.08) : null)
+                        .tp1Price(curPriceS11 > 0 ? round(curPriceS11 * 1.09) : null)
                         .tp2Price(curPriceS11 > 0 ? round(curPriceS11 * 1.14) : null)
                         .slPrice(curPriceS11 > 0 ? round(curPriceS11 * 0.95) : null)
                         .build());
@@ -1057,15 +1057,15 @@ public class StrategyService {
                         + Math.max(cntrStr - 100, 0) * 0.1;
 
                 // 기술적 TP/SL (ATR 기반)
-                // SL: ATR × 2 하방 (과매도 반등이 실패할 경우 저가 하회)
+                // SL: ATR × 2 하방
                 double slPriceS14   = round(closes[0] - atrNow * 2.0);
-                // TP1: ATR × 3.5 상방 (단기 반등 목표)
-                double tp1PriceS14  = round(closes[0] + atrNow * 3.5);
+                // TP1: ATR × 5.0 상방 — 3.5에서 올림 (슬리피지 포함 R:R ≥ 1.4 확보)
+                double tp1PriceS14  = round(closes[0] + atrNow * 5.0);
                 // TP2: MA20 가격 (중기 저항 = 반등 목표 상단)
                 double ma20forS14   = n >= 20 ? maAvg(closes, 0, 20) : 0;
                 double tp2PriceS14  = ma20forS14 > tp1PriceS14
                         ? round(ma20forS14)
-                        : round(closes[0] + atrNow * 5.0);  // MA20이 TP1 아래이면 ATR×5
+                        : round(closes[0] + atrNow * 7.0);  // MA20이 TP1 아래이면 ATR×7
                 double stopPct_   = round((slPriceS14  - closes[0]) / closes[0] * 100);
                 double targetPct_ = round((tp1PriceS14 - closes[0]) / closes[0] * 100);
 
@@ -1182,12 +1182,12 @@ public class StrategyService {
                         + (rsiPrev > 0 && rsiNow > rsiPrev ? 5 : 0);
 
                 // 기술적 TP/SL
-                // SL: ATR × 2 하방
-                double slPriceS15  = atrNow > 0 ? round(closes[0] - atrNow * 2.0) : round(closes[0] * 0.95);
+                // SL: ATR × 1.5 하방 — 2.0에서 축소 (R:R 개선)
+                double slPriceS15  = atrNow > 0 ? round(closes[0] - atrNow * 1.5) : round(closes[0] * 0.95);
                 double stopPct_    = round((slPriceS15 - closes[0]) / closes[0] * 100);
-                // TP1: 볼린저 상단 (모멘텀 1차 저항)
+                // TP1: 볼린저 상단, 최소 +6% 플로어 (볼린저 상단이 가까울 때 R:R 확보)
                 double bbu         = calcBollingerUpper(closes, 20);
-                double tp1PriceS15 = bbu > closes[0] ? round(bbu) : round(closes[0] * 1.08);
+                double tp1PriceS15 = bbu > closes[0] ? round(Math.max(bbu, closes[0] * 1.06)) : round(closes[0] * 1.08);
                 // TP2: 볼린저 상단 + ATR × 0.5 (돌파 후 추가 모멘텀)
                 double tp2PriceS15 = atrNow > 0
                         ? round(tp1PriceS15 + atrNow * 0.5)

@@ -171,7 +171,8 @@ async def _fetch_ka10029(token: str, market: str) -> list[dict]:
 
 
 async def _build_s1(token: str, market: str, rdb) -> None:
-    """S1 갭상승 시초가: 3.0% ≤ flu_rt ≤ 15.0%, TTL 600s, 100개"""
+    """S1 갭상승 시초가: 3.0% ≤ flu_rt ≤ 15.0%, TTL 3600s, 100개
+    장전 마지막 빌드(~08:22)가 스캐너 종료(09:10)까지 유효해야 하므로 TTL 1시간."""
     items = await _fetch_ka10029(token, market)
     await _cache_expected_from_ka10029(rdb, items)
     ranked_items = _rank_ka10029_items(items)
@@ -181,11 +182,11 @@ async def _build_s1(token: str, market: str, rdb) -> None:
             codes.append(item["stk_cd"])
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, 600)
+    await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, 3600)
 
 
 async def _build_s7(token: str, market: str, rdb) -> None:
-    """S7 일목균형표 구름대 돌파 스윙: 0.5% ≤ flu_rt ≤ 10.0%, TTL 1200s, 100개"""
+    """S7 일목균형표 구름대 돌파 스윙: 0.5% ≤ flu_rt ≤ 10.0%, TTL 1800s, 100개"""
     items = await _fetch_ka10027(token, market, sort_tp="1")
     codes = []
     for x in items:
@@ -196,7 +197,7 @@ async def _build_s7(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s7:{market}", codes, 1200)
+    await _lpush_with_ttl(rdb, f"candidates:s7:{market}", codes, 1800)
 
 
 # ── ka10023 거래량급증상위 공통 ────────────────────────────────────────
@@ -281,7 +282,7 @@ async def _fetch_ka10027(token: str, market: str, sort_tp: str = "1") -> list[di
 
 
 async def _build_s4(token: str, market: str, rdb) -> None:
-    """S4 장대양봉 + 거래량급증: ka10023, sdninRt≥50% & fluRt 3~20%, TTL 300s, 100개
+    """S4 장대양봉 + 거래량급증: ka10023, sdninRt≥50% & fluRt 3~20%, TTL 1200s, 100개
     ws:strength:{stk_cd} ≥ 120 종목 우선 정렬 (Java CandidateService.getS4Candidates와 동일 소스)"""
     items = await _fetch_ka10023(token, market)
     strong: list[str] = []
@@ -310,11 +311,12 @@ async def _build_s4(token: str, market: str, rdb) -> None:
             break
 
     codes = (strong + normal)[:100]
-    await _lpush_with_ttl(rdb, f"candidates:s4:{market}", codes, 300)
+    await _lpush_with_ttl(rdb, f"candidates:s4:{market}", codes, 1200)
 
 
 async def _build_s8(token: str, market: str, rdb) -> None:
-    """S8 골든크로스: 0.5% ≤ flu_rt ≤ 8.0%, TTL 1200s, 150개"""
+    """S8 골든크로스: 0.5% ≤ flu_rt ≤ 8.0%, TTL 1800s, 150개
+    S9(눌림목 반등)도 이 풀을 공유하므로 TTL을 충분히 확보한다."""
     items = await _fetch_ka10027(token, market, sort_tp="1")
     codes = []
     for x in items:
@@ -325,11 +327,11 @@ async def _build_s8(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 150:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s8:{market}", codes, 1200)
+    await _lpush_with_ttl(rdb, f"candidates:s8:{market}", codes, 1800)
 
 
 async def _build_s14(token: str, market: str, rdb) -> None:
-    """S14 과매도 반등: sort_tp=3(하락률), 3.0% ≤ abs(flu_rt) ≤ 10.0%, TTL 1200s, 100개"""
+    """S14 과매도 반등: sort_tp=3(하락률), 3.0% ≤ abs(flu_rt) ≤ 10.0%, TTL 1800s, 100개"""
     items = await _fetch_ka10027(token, market, sort_tp="3")
     codes = []
     for x in items:
@@ -340,7 +342,7 @@ async def _build_s14(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s14:{market}", codes, 1200)
+    await _lpush_with_ttl(rdb, f"candidates:s14:{market}", codes, 1800)
 
 
 # ── S10: ka10016 신고저가요청 ──────────────────────────────────────────
@@ -385,7 +387,7 @@ async def _build_s10(token: str, market: str, rdb) -> None:
             break
 
     codes = [x.get("stk_cd") for x in results if x.get("stk_cd")][:100]
-    await _lpush_with_ttl(rdb, f"candidates:s10:{market}", codes, 1200)
+    await _lpush_with_ttl(rdb, f"candidates:s10:{market}", codes, 1800)
 
 
 # ── S11: ka10035 외인연속순매매상위 ────────────────────────────────────
@@ -439,7 +441,7 @@ async def _build_s11(token: str, market: str, rdb) -> None:
             codes.append(stk_cd)
         if len(codes) >= 80:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s11:{market}", codes, 1800)
+    await _lpush_with_ttl(rdb, f"candidates:s11:{market}", codes, 2400)
 
 
 # ── S12: ka10032 거래대금상위 ──────────────────────────────────────────
@@ -486,7 +488,7 @@ async def _build_s12(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 50:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s12:{market}", codes, 600)
+    await _lpush_with_ttl(rdb, f"candidates:s12:{market}", codes, 1200)
 
 
 # ── S2: ka10054 변동성완화장치발동종목 ───────────────────────────────────
@@ -528,7 +530,7 @@ async def _build_s2(token: str, market: str, rdb) -> None:
             codes.append(stk_cd)
         if len(codes) >= 50:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s2:{market}", codes, 300)
+    await _lpush_with_ttl(rdb, f"candidates:s2:{market}", codes, 1200)
 
 
 # ── S3: ka10065 장중투자자별매매상위 (외인 ∩ 기관계) ────────────────────
@@ -565,7 +567,7 @@ async def _build_s3(token: str, market: str, rdb) -> None:
         _fetch_ka10065_set(token, market, "9999"),
     )
     codes = list(frgn_set & inst_set)[:100]
-    await _lpush_with_ttl(rdb, f"candidates:s3:{market}", codes, 600)
+    await _lpush_with_ttl(rdb, f"candidates:s3:{market}", codes, 1200)
 
 
 # ── S5: ka90003 프로그램순매수상위 ──────────────────────────────────────
@@ -603,7 +605,7 @@ async def _build_s5(token: str, market: str, rdb) -> None:
             codes.append(stk_cd)
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s5:{market}", codes, 600)
+    await _lpush_with_ttl(rdb, f"candidates:s5:{market}", codes, 1200)
 
 
 # ── S6: ka90001→ka90002 테마 구성종목 ────────────────────────────────────
@@ -673,13 +675,13 @@ async def _build_s6(token: str, rdb) -> None:
     codes = all_codes[:150]
     # S6는 테마 기반으로 시장 구분 없이 동일 풀 적재
     for market in MARKETS:
-        await _lpush_with_ttl(rdb, f"candidates:s6:{market}", codes, 300)
+        await _lpush_with_ttl(rdb, f"candidates:s6:{market}", codes, 1200)
 
 
 # ── S13: ka10023 거래량급증 독립 풀 ────────────────────────────────────
 
 async def _build_s13(token: str, market: str, rdb) -> None:
-    """S13 박스권 돌파: ka10023, sdninRt≥30% & fluRt 3~8%, TTL 600s, 100개
+    """S13 박스권 돌파: ka10023, sdninRt≥30% & fluRt 3~8%, TTL 1200s, 100개
     Java CandidateService.getS13Candidates와 동일 소스·필터 (M-2 fix 정렬)"""
     items = await _fetch_ka10023(token, market)
     codes: list[str] = []
@@ -692,7 +694,7 @@ async def _build_s13(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s13:{market}", codes, 600)
+    await _lpush_with_ttl(rdb, f"candidates:s13:{market}", codes, 1200)
 
 
 # ── S15: ka10032 거래대금상위 독립 풀 ──────────────────────────────────
@@ -739,7 +741,7 @@ async def _build_s15(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 80:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s15:{market}", codes, 900)
+    await _lpush_with_ttl(rdb, f"candidates:s15:{market}", codes, 1200)
 
 
 # ── watchlist 통합 갱신 ─────────────────────────────────────────────────

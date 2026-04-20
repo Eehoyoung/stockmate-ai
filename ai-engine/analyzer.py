@@ -315,23 +315,6 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
     반환: {"action": ..., "ai_score": ..., "confidence": ..., "reason": ...,
            "adjusted_target_pct": ..., "adjusted_stop_pct": ...}
     """
-    # ── R:R 사전 필터 (Claude API 호출 전) ──────────────────────
-    # tp_sl_engine이 계산한 rr_ratio (슬리피지 반영 실효값) 기준
-    rr_ratio = signal.get("rr_ratio")
-    if isinstance(rr_ratio, (int, float)) and rr_ratio < 1.0:
-        logger.info(
-            "[Analyzer] R:R %.2f < 1.0 → pre-filter CANCEL [%s %s]",
-            rr_ratio, signal.get("stk_cd"), signal.get("strategy"),
-        )
-        return {
-            "action":              "CANCEL",
-            "ai_score":            round(rule_score * 0.5, 1),  # 페널티 반영
-            "confidence":          "HIGH",
-            "reason":              f"R:R {rr_ratio:.2f} < 1.0 — 슬리피지 반영 후 손익비 미달, Claude 호출 생략",
-            "adjusted_target_pct": None,
-            "adjusted_stop_pct":   None,
-        }
-
     client       = _get_claude_client()
     user_message = _build_user_message(signal, market_ctx, rule_score)
 
