@@ -253,7 +253,13 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         ma20_val = ma20  # 위에서 이미 계산됨
         tp_sl = calc_tp_sl(
             "S15_MOMENTUM_ALIGN", cur_prc, highs, lows, closes,
-            stk_cd=stk_cd, atr=atr_now, ma20=ma20_val, bb_upper=bb_upper_saved
+            stk_cd=stk_cd,
+            atr=atr_now,
+            ma20=ma20_val,
+            bb_upper=bb_upper_saved,
+            macd_line=macd_now,
+            macd_signal=sig_now,
+            macd_hist=hist_now,
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)

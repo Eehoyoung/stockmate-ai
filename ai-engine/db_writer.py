@@ -533,6 +533,82 @@ async def cancel_open_position_by_signal(pool, signal_id: int) -> bool:
         return False
 
 
+async def insert_ai_cancel_signal(
+    pool,
+    *,
+    signal_id: Optional[int],
+    stk_cd: str,
+    strategy: str,
+    ai_score: Optional[float],
+    confidence: Optional[str],
+    reason: Optional[str],
+    cancel_reason: Optional[str],
+    raw_payload: Optional[dict] = None,
+) -> bool:
+    """Claude가 최종 CANCEL한 신호를 ai_cancel_signal 테이블에 기록."""
+    try:
+        await pool.execute(
+            """
+            INSERT INTO ai_cancel_signal (
+                signal_id, stk_cd, strategy, ai_score, confidence,
+                reason, cancel_reason, raw_payload, created_at
+            ) VALUES (
+                $1, $2, $3, $4, $5,
+                $6, $7, $8::jsonb, NOW()
+            )
+            """,
+            signal_id,
+            normalize_stock_code(stk_cd),
+            strategy,
+            round(ai_score, 2) if ai_score is not None else None,
+            confidence,
+            reason,
+            cancel_reason,
+            json.dumps(raw_payload, ensure_ascii=False, default=str) if raw_payload is not None else None,
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] insert_ai_cancel_signal 오류 signal_id=%s: %s", signal_id, e)
+        return False
+
+
+async def insert_rule_cancel_signal(
+    pool,
+    *,
+    signal_id: Optional[int],
+    stk_cd: str,
+    strategy: str,
+    rule_score: Optional[float],
+    cancel_type: str,
+    reason: Optional[str],
+    raw_payload: Optional[dict] = None,
+) -> bool:
+    """규칙/운영상 이유로 취소된 신호를 rule_cancel_signal 테이블에 기록."""
+    try:
+        await pool.execute(
+            """
+            INSERT INTO rule_cancel_signal (
+                signal_id, stk_cd, strategy, rule_score, cancel_type,
+                reason, raw_payload, created_at
+            ) VALUES (
+                $1, $2, $3, $4, $5,
+                $6, $7::jsonb, NOW()
+            )
+            """,
+            signal_id,
+            normalize_stock_code(stk_cd),
+            strategy,
+            round(rule_score, 2) if rule_score is not None else None,
+            cancel_type,
+            reason,
+            json.dumps(raw_payload, ensure_ascii=False, default=str) if raw_payload is not None else None,
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] insert_rule_cancel_signal 오류 signal_id=%s: %s", signal_id, e)
+        return False
+
+
 async def get_active_positions(pool) -> list[dict]:
     """
     ACTIVE / PARTIAL_TP / OVERNIGHT 상태 포지션 전체 반환.

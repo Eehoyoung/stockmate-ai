@@ -31,6 +31,7 @@ from news_scheduler import run_news_scheduler
 from monitor_worker import run_monitor
 from status_report_worker import run_status_report_worker
 from position_monitor import run_position_monitor
+from position_reassessment import run_position_reassessment
 from overnight_worker import run_overnight_worker
 from vi_watch_worker import run_vi_watch_worker
 from candidates_builder import run_candidate_builder
@@ -123,6 +124,7 @@ async def main():
     enable_monitor      = bool_env("ENABLE_MONITOR",            True)
     enable_status_report = bool_env("ENABLE_STATUS_REPORT",     True)
     enable_pos_monitor  = bool_env("ENABLE_POSITION_MONITOR",   True)
+    enable_pos_reassess = bool_env("ENABLE_POSITION_REASSESSMENT", True)
     enable_overnight    = bool_env("ENABLE_OVERNIGHT_WORKER",   True)
     enable_vi_watch     = bool_env("ENABLE_VI_WATCH_WORKER",    True)   # S2 VI 눌림목 감시
     enable_cand_builder = bool_env("ENABLE_CANDIDATE_BUILDER",  True)   # 후보 풀 적재
@@ -171,6 +173,8 @@ async def main():
         tasks.append(asyncio.create_task(run_status_report_worker(rdb)))
     if enable_pos_monitor:
         tasks.append(asyncio.create_task(run_position_monitor(rdb, pg_pool)))
+    if enable_pos_reassess:
+        tasks.append(asyncio.create_task(run_position_reassessment(rdb, pg_pool)))
     if enable_overnight:
         tasks.append(asyncio.create_task(run_overnight_worker(rdb, pg_pool)))
     if enable_vi_watch:

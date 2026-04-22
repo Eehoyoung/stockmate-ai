@@ -15,6 +15,7 @@ import org.invest.apiorchestrator.repository.RiskEventRepository;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.util.KstClock;
 import org.invest.apiorchestrator.util.StockCodeNormalizer;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -80,7 +81,9 @@ public class SignalService {
      */
     @Transactional
     public boolean processSignal(TradingSignalDto dto) {
+
         String stkCd = StockCodeNormalizer.normalize(dto.getStkCd());
+
         String strategy = dto.getStrategy().name();
         MDC.put("strategy", strategy);
         MDC.put("stk_cd", stkCd);
@@ -231,14 +234,22 @@ public class SignalService {
     // ──── 내부 헬퍼 ────────────────────────────────────────────────
 
     private TradingSignal buildSignalEntity(TradingSignalDto dto) {
-        double t1 = dto.calcTarget1Price();
-        double t2 = dto.calcTarget2Price();
-        double sp = dto.calcStopPrice();
+        Double targetPrice = dto.getTp1Price();
+        if ((targetPrice == null || targetPrice <= 0) && dto.getTargetPct() != null) {
+            double fallbackTargetPrice = dto.calcTarget1Price();
+            targetPrice = fallbackTargetPrice > 0 ? fallbackTargetPrice : null;
+        }
+
+        Double stopPrice = dto.getSlPrice();
+        if ((stopPrice == null || stopPrice <= 0) && dto.getStopPct() != null) {
+            double fallbackStopPrice = dto.calcStopPrice();
+            stopPrice = fallbackStopPrice > 0 ? fallbackStopPrice : null;
+        }
 
         // tp1/tp2/sl: 절대가 우선, 없으면 % 기반 calc 값 fallback
-        double rawTp1 = dto.getTp1Price() != null && dto.getTp1Price() > 0 ? dto.getTp1Price() : (t1 > 0 ? t1 : 0);
-        double rawTp2 = dto.getTp2Price() != null && dto.getTp2Price() > 0 ? dto.getTp2Price() : (t2 > 0 ? t2 : 0);
-        double rawSl  = dto.getSlPrice()  != null && dto.getSlPrice()  > 0 ? dto.getSlPrice()  : (sp > 0 ? sp : 0);
+        Double rawTp1 = dto.getTp1Price() != null && dto.getTp1Price() > 0 ? dto.getTp1Price() : null;
+        Double rawTp2 = dto.getTp2Price() != null && dto.getTp2Price() > 0 ? dto.getTp2Price() : null;
+        Double rawSl  = dto.getSlPrice()  != null && dto.getSlPrice()  > 0 ? dto.getSlPrice()  : null;
 
         return TradingSignal.builder()
                 .stkCd(StockCodeNormalizer.normalize(dto.getStkCd()))
@@ -246,13 +257,19 @@ public class SignalService {
                 .strategy(dto.getStrategy())
                 .signalScore(dto.getSignalScore())
                 .entryPrice(dto.getEntryPrice())
-                .targetPrice(t1 > 0 ? t1 : null)
-                .stopPrice(sp > 0 ? sp : null)
-                .tp1Price(rawTp1 > 0 ? rawTp1 : null)
-                .tp2Price(rawTp2 > 0 ? rawTp2 : null)
-                .slPrice(rawSl  > 0 ? rawSl  : null)
+                .targetPrice(targetPrice)
+                .stopPrice(stopPrice)
+                .tp1Price(rawTp1)
+                .tp2Price(rawTp2)
+                .slPrice(rawSl)
                 .targetPct(dto.getTargetPct())
                 .stopPct(dto.getStopPct())
+                .tpMethod(dto.getTpMethod())
+                .slMethod(dto.getSlMethod())
+                .rrRatio(dto.getRrRatio() != null
+                        ? BigDecimal.valueOf(dto.getRrRatio()).setScale(2, java.math.RoundingMode.HALF_UP)
+                        : null)
+                .skipEntry(dto.getSkipEntry() != null ? dto.getSkipEntry() : false)
                 .entryType(dto.getEntryType())
                 .marketType(dto.getMarketType())
                 .gapPct(dto.getGapPct())
@@ -265,32 +282,50 @@ public class SignalService {
                 .build();
     }
 
-    private OpenPosition buildOpenPosition(TradingSignalDto dto, TradingSignal signal) {
+    private OpenPosition buildOpenPosition(@NotNull TradingSignalDto dto, TradingSignal signal) {
         BigDecimal entryPrice = dto.getEntryPrice() != null
                 ? BigDecimal.valueOf(dto.getEntryPrice()).setScale(0, java.math.RoundingMode.HALF_UP)
                 : BigDecimal.ZERO;
 
         // slPrice: 절대가 우선, 없으면 % 기반 계산
-        double slRaw = dto.getSlPrice() != null && dto.getSlPrice() > 0
-                ? dto.getSlPrice()
-                : dto.calcStopPrice();
-        BigDecimal slPrice = slRaw > 0
-                ? BigDecimal.valueOf(slRaw).setScale(0, java.math.RoundingMode.HALF_UP)
-                : entryPrice.multiply(new BigDecimal("0.97")).setScale(0, java.math.RoundingMode.HALF_UP);
+        BigDecimal slPrice = dto.getSlPrice() != null && dto.getSlPrice() > 0
+                ? BigDecimal.valueOf(dto.getSlPrice()).setScale(0, java.math.RoundingMode.HALF_UP)
+                : null;
+        if (slPrice == null && dto.getStopPct() != null) {
+            double calcSl = dto.calcStopPrice();
+            slPrice = calcSl > 0
+                    ? BigDecimal.valueOf(calcSl).setScale(0, java.math.RoundingMode.HALF_UP)
+                    : null;
+        }
+        if (slPrice == null) {
+            slPrice = entryPrice.multiply(new BigDecimal("0.97")).setScale(0, java.math.RoundingMode.HALF_UP);
+        }
 
-        double calcT1 = dto.calcTarget1Price();
         BigDecimal tp1Price = dto.getTp1Price() != null && dto.getTp1Price() > 0
                 ? BigDecimal.valueOf(dto.getTp1Price()).setScale(0, java.math.RoundingMode.HALF_UP)
-                : (calcT1 > 0 ? BigDecimal.valueOf(calcT1).setScale(0, java.math.RoundingMode.HALF_UP) : null);
+                : null;
+        if (tp1Price == null && dto.getTargetPct() != null) {
+            double calcT1 = dto.calcTarget1Price();
+            tp1Price = calcT1 > 0
+                    ? BigDecimal.valueOf(calcT1).setScale(0, java.math.RoundingMode.HALF_UP)
+                    : null;
+        }
 
-        double calcT2 = dto.calcTarget2Price();
         BigDecimal tp2Price = dto.getTp2Price() != null && dto.getTp2Price() > 0
                 ? BigDecimal.valueOf(dto.getTp2Price()).setScale(0, java.math.RoundingMode.HALF_UP)
-                : (calcT2 > 0 ? BigDecimal.valueOf(calcT2).setScale(0, java.math.RoundingMode.HALF_UP) : null);
+                : null;
+        if (tp2Price == null && dto.getTargetPct() != null) {
+            double calcT2 = dto.calcTarget2Price();
+            tp2Price = calcT2 > 0
+                    ? BigDecimal.valueOf(calcT2).setScale(0, java.math.RoundingMode.HALF_UP)
+                    : null;
+        }
 
         // R:R 계산
-        BigDecimal rrRatio = null;
-        if (tp1Price != null && entryPrice.compareTo(BigDecimal.ZERO) > 0
+        BigDecimal rrRatio = dto.getRrRatio() != null
+                ? BigDecimal.valueOf(dto.getRrRatio()).setScale(2, java.math.RoundingMode.HALF_UP)
+                : null;
+        if (rrRatio == null && tp1Price != null && entryPrice.compareTo(BigDecimal.ZERO) > 0
                 && slPrice.compareTo(entryPrice) < 0) {
             BigDecimal reward = tp1Price.subtract(entryPrice);
             BigDecimal risk   = entryPrice.subtract(slPrice);
@@ -310,6 +345,8 @@ public class SignalService {
                 .tp1Price(tp1Price)
                 .tp2Price(tp2Price)
                 .slPrice(slPrice)
+                .tpMethod(dto.getTpMethod())
+                .slMethod(dto.getSlMethod())
                 .rrRatio(rrRatio)
                 .ruleScore(dto.getSignalScore() != null
                         ? BigDecimal.valueOf(dto.getSignalScore()).setScale(2, java.math.RoundingMode.HALF_UP)

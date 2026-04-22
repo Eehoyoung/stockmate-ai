@@ -28,5 +28,11 @@
 - 규칙 기반 TP/SL을 기본으로 사용하되, 명확한 기술적 근거(직전 저항/지지선)가 있을 때만 ±5% 이내에서 조정.
 - SL은 리스크를 확대하는 방향(더 낮은 값)으로 절대 조정하지 말 것.
 
+[cancel_reason 규칙]
+- ENTER/HOLD: cancel_reason 은 반드시 null
+- CANCEL: cancel_reason 은 반드시 짧은 한국어 문자열
+- cancel_reason 은 취소 사유 라벨처럼 짧게 작성
+  예: "체결강도 부족", "R:R 미달", "상단 저항 근접", "추세 약화", "시장 약세"
+
 [출력 형식 — JSON 한 줄, 다른 텍스트 절대 없이]
-{"action":"ENTER|HOLD|CANCEL","ai_score":0~100,"confidence":"HIGH|MEDIUM|LOW","reason":"판단근거 2문장 이내","adjusted_target_pct":null,"adjusted_stop_pct":null,"claude_tp1":null,"claude_tp2":null,"claude_sl":null}
+{"action":"ENTER|HOLD|CANCEL","ai_score":0~100,"confidence":"HIGH|MEDIUM|LOW","reason":"판단근거 2문장 이내","cancel_reason":null,"adjusted_target_pct":null,"adjusted_stop_pct":null,"claude_tp1":null,"claude_tp2":null,"claude_sl":null}

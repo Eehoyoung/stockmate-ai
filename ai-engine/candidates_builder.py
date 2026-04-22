@@ -178,8 +178,9 @@ async def _build_s1(token: str, market: str, rdb) -> None:
     ranked_items = _rank_ka10029_items(items)
     codes = []
     for item in ranked_items:
+        stk_cd = normalize_stock_code(item.get("stk_cd", ""))
         if 3.0 <= item["flu_rt"] <= 15.0 and item["exp_cntr_pric"] > 0:
-            codes.append(item["stk_cd"])
+            codes.append(stk_cd)
         if len(codes) >= 100:
             break
     await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, 3600)
@@ -190,9 +191,10 @@ async def _build_s7(token: str, market: str, rdb) -> None:
     items = await _fetch_ka10027(token, market, sort_tp="1")
     codes = []
     for x in items:
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         flu_rt = _clean(x.get("flu_rt", 0))
         if 0.5 <= flu_rt <= 10.0:
-            stk_cd = x.get("stk_cd", "")
+            stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
         if len(codes) >= 100:
@@ -289,11 +291,12 @@ async def _build_s4(token: str, market: str, rdb) -> None:
     normal: list[str] = []
 
     for x in items:
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         sdnin_rt = _clean(x.get("sdnin_rt", 0))
         flu_rt   = _clean(x.get("flu_rt", 0))
         if not (sdnin_rt >= 50.0 and 3.0 <= flu_rt <= 20.0):
             continue
-        stk_cd = x.get("stk_cd", "")
+        stk_cd =real_stk_cd
         if not stk_cd:
             continue
 
@@ -320,9 +323,10 @@ async def _build_s8(token: str, market: str, rdb) -> None:
     items = await _fetch_ka10027(token, market, sort_tp="1")
     codes = []
     for x in items:
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         flu_rt = _clean(x.get("flu_rt", 0))
         if 0.5 <= flu_rt <= 8.0:
-            stk_cd = x.get("stk_cd", "")
+            stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
         if len(codes) >= 150:
@@ -335,9 +339,10 @@ async def _build_s14(token: str, market: str, rdb) -> None:
     items = await _fetch_ka10027(token, market, sort_tp="3")
     codes = []
     for x in items:
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         flu_rt = abs(_clean(x.get("flu_rt", 0)))
         if 3.0 <= flu_rt <= 10.0:
-            stk_cd = x.get("stk_cd", "")
+            stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
         if len(codes) >= 100:
@@ -386,7 +391,11 @@ async def _build_s10(token: str, market: str, rdb) -> None:
         if len(results) >= 100:
             break
 
-    codes = [x.get("stk_cd") for x in results if x.get("stk_cd")][:100]
+    # [핵심 수정] 리스트 컴프리헨션 내부에서 정규화 함수 호출
+    # 결과가 100개가 넘지 않도록 슬라이싱하고, 정제된 6자리 코드만 codes에 담깁니다.
+    codes = [normalize_stock_code(x.get("stk_cd")) for x in results if x.get("stk_cd")][:100]
+
+    # Redis에 저장할 때 이제 "005930_AL"이 아닌 "005930" 형태로 들어갑니다.
     await _lpush_with_ttl(rdb, f"candidates:s10:{market}", codes, 1800)
 
 
@@ -427,7 +436,8 @@ async def _build_s11(token: str, market: str, rdb) -> None:
 
     codes = []
     for x in results:
-        stk_cd = x.get("stk_cd", "")
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
+        stk_cd = real_stk_cd
         if not stk_cd:
             continue
         try:
@@ -481,9 +491,10 @@ async def _build_s12(token: str, market: str, rdb) -> None:
 
     codes = []
     for x in results:
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         flu_rt = _clean(x.get("flu_rt", 0))
         if flu_rt > 0:
-            stk_cd = x.get("stk_cd", "")
+            stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
         if len(codes) >= 50:
@@ -519,7 +530,8 @@ async def _build_s2(token: str, market: str, rdb) -> None:
 
     codes = []
     for x in data.get("motn_stk", []):
-        stk_cd = x.get("stk_cd", "")
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
+        stk_cd = real_stk_cd
         if not stk_cd:
             continue
         try:
@@ -554,7 +566,8 @@ async def _fetch_ka10065_set(token: str, market: str, orgn_tp: str) -> set:
     if not validate_kiwoom_response(data, "ka10065", logger):
         return codes
     for x in data.get("opmr_invsr_trde_upper", []):
-        stk_cd = x.get("stk_cd", "")
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
+        stk_cd = real_stk_cd
         if stk_cd:
             codes.add(stk_cd)
     return codes
@@ -596,7 +609,8 @@ async def _build_s5(token: str, market: str, rdb) -> None:
 
     codes = []
     for x in data.get("prm_netprps_upper_50", []):
-        stk_cd = x.get("stk_cd", "")
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
+        stk_cd = real_stk_cd
         try:
             net = _clean(x.get("prm_netprps_amt", "0"))
         except Exception:
@@ -658,7 +672,8 @@ async def _build_s6(token: str, rdb) -> None:
         if not validate_kiwoom_response(data2, "ka90002", logger):
             continue
         for x in data2.get("thema_comp_stk", []):
-            stk_cd = x.get("stk_cd", "")
+            real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
+            stk_cd = real_stk_cd
             if not stk_cd or stk_cd in seen:
                 continue
             try:
@@ -686,10 +701,11 @@ async def _build_s13(token: str, market: str, rdb) -> None:
     items = await _fetch_ka10023(token, market)
     codes: list[str] = []
     for x in items:
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         sdnin_rt = _clean(x.get("sdnin_rt", 0))
         flu_rt   = _clean(x.get("flu_rt", 0))
         if sdnin_rt >= 30.0 and 3.0 <= flu_rt <= 8.0:
-            stk_cd = x.get("stk_cd", "")
+            stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
         if len(codes) >= 100:
@@ -734,9 +750,10 @@ async def _build_s15(token: str, market: str, rdb) -> None:
 
     codes: list[str] = []
     for x in results:
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         flu_rt = _clean(x.get("flu_rt", 0))
         if 0.5 <= flu_rt <= 8.0:
-            stk_cd = x.get("stk_cd", "")
+            stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
         if len(codes) >= 80:

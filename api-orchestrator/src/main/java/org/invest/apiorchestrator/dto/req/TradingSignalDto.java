@@ -48,6 +48,16 @@ public class TradingSignalDto {
     private Double tp2Price;     // 2차 목표가
     private Double slPrice;      // 손절가 (기술적 지지 또는 %기반)
 
+    private String tpMethod;
+    private String slMethod;
+    private Double rrRatio;
+    @Builder.Default
+    private Boolean skipEntry = false;
+    private Double trailingPct;
+    private Double trailingActivation;
+    private String trailingBasis;
+    private String strategyVersion;
+
     private Map<String, Object> extra;
     private LocalDateTime signalTime;
 
@@ -115,6 +125,14 @@ public class TradingSignalDto {
         m.put("tp1_price",       tp1Price);
         m.put("tp2_price",       tp2Price);
         m.put("sl_price",        slPrice);
+        m.put("tp_method",       tpMethod);
+        m.put("sl_method",       slMethod);
+        m.put("rr_ratio",        rrRatio);
+        m.put("skip_entry",      skipEntry != null ? skipEntry : false);
+        m.put("trailing_pct",    trailingPct);
+        m.put("trailing_activation", trailingActivation);
+        m.put("trailing_basis",  trailingBasis);
+        m.put("strategy_version", strategyVersion);
         m.put("signal_time",     signalTime != null ? signalTime.toString() : LocalDateTime.now().toString());
         m.put("cur_prc",         entryPrice);  // 진입가 = 현재가 (신호 발생 시점)
         m.put("message",         toTelegramMessage());
@@ -212,6 +230,10 @@ public class TradingSignalDto {
                 .entryPrice(entity.getEntryPrice())
                 .targetPct(entity.getTargetPct())
                 .stopPct(entity.getStopPct())
+                .tpMethod(entity.getTpMethod())
+                .slMethod(entity.getSlMethod())
+                .rrRatio(entity.getRrRatio() != null ? entity.getRrRatio().doubleValue() : null)
+                .skipEntry(entity.getSkipEntry() != null ? entity.getSkipEntry() : false)
                 .entryType(entity.getEntryType())
                 .marketType(entity.getMarketType())
                 .gapPct(entity.getGapPct())

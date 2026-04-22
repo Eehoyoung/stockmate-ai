@@ -30,6 +30,7 @@ from price_utils import round_to_tick
 logger = logging.getLogger(__name__)
 
 MIN_RR_RATIO    = float(os.getenv("MIN_RR_RATIO",   "1.3"))
+TP_SL_STRATEGY_VERSION = os.getenv("TP_SL_STRATEGY_VERSION", "ta_v2_2026_04")
 SLIP_FEE_KOSPI  = float(os.getenv("SLIP_FEE_KOSPI",  "0.0035"))   # 편도 0.35%
 SLIP_FEE_KOSDAQ = float(os.getenv("SLIP_FEE_KOSDAQ", "0.0045"))   # 편도 0.45%
 
@@ -48,6 +49,10 @@ class TpSlResult:
     tp_method:  str            = ""   # 예: "swing_resistance", "bollinger_upper", "fib_1272"
     rr_ratio:   float          = 0.0  # 슬리피지 반영 실효 R:R
     skip_entry: bool           = False  # rr_ratio < MIN_RR_RATIO
+    trailing_pct: Optional[float] = None
+    trailing_activation: Optional[float] = None
+    trailing_basis: str = ""
+    strategy_version: str = TP_SL_STRATEGY_VERSION
 
     def to_signal_fields(self) -> dict:
         """전략 결과 dict에 merge할 TP/SL 필드 반환"""
@@ -58,9 +63,16 @@ class TpSlResult:
             "tp_method":  self.tp_method,
             "rr_ratio":   round(self.rr_ratio, 2),
             "skip_entry": self.skip_entry,
+            "strategy_version": self.strategy_version,
         }
         if self.tp2_price:
             d["tp2_price"] = round_to_tick(self.tp2_price, "nearest")
+        if self.trailing_pct is not None:
+            d["trailing_pct"] = round(float(self.trailing_pct), 2)
+        if self.trailing_activation is not None:
+            d["trailing_activation"] = round_to_tick(self.trailing_activation, "nearest")
+        if self.trailing_basis:
+            d["trailing_basis"] = self.trailing_basis
         return d
 
 
@@ -271,6 +283,53 @@ def compute_rr(
     return _calc_rr(cur_prc, tp_price, sl_price, slip, _min)
 
 
+def _is_macd_weakening(
+    macd_line: Optional[float],
+    macd_signal: Optional[float],
+    macd_hist: Optional[float],
+) -> bool:
+    if macd_hist is not None and macd_hist < 0:
+        return True
+    if macd_line is not None and macd_signal is not None and macd_line < macd_signal:
+        return True
+    return False
+
+
+def _finalize_swing_result(
+    result: TpSlResult,
+    *,
+    cur_prc: float,
+    trailing_pct: float,
+    trailing_basis: str,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
+) -> TpSlResult:
+    result.strategy_version = TP_SL_STRATEGY_VERSION
+    result.trailing_pct = trailing_pct
+    result.trailing_activation = result.tp1_price if result.tp1_price else None
+    result.trailing_basis = trailing_basis
+
+    min_tp1 = int(cur_prc * 1.03)
+    if result.tp1_price <= min_tp1:
+        result.tp1_price = min_tp1
+        result.tp_method = f"{result.tp_method}+min_3pct" if result.tp_method else "min_3pct"
+
+    if result.tp2_price is not None and result.tp2_price <= result.tp1_price:
+        result.tp2_price = int(result.tp1_price * 1.04)
+
+    if _is_macd_weakening(macd_line, macd_signal, macd_hist):
+        result.trailing_pct = max(0.8, trailing_pct - 0.4)
+        if result.tp2_price is not None:
+            tightened_tp2 = max(int(result.tp1_price * 1.02), int((result.tp1_price + result.tp2_price) / 2))
+            result.tp2_price = max(tightened_tp2, result.tp1_price + 1)
+        elif result.tp1_price > cur_prc:
+            result.tp1_price = max(int(cur_prc * 1.03), int((result.tp1_price + cur_prc) / 2))
+        result.tp_method = f"{result.tp_method}+macd_guard" if result.tp_method else "macd_guard"
+
+    return result
+
+
 # ──────────────────────────────────────────────────────────────
 # 메인 함수: 통합 TP/SL 계산
 # ──────────────────────────────────────────────────────────────
@@ -289,6 +348,9 @@ def calc_tp_sl(
     ma120:       Optional[float] = None,
     bb_upper:    Optional[float] = None,
     bb_lower:    Optional[float] = None,
+    macd_line:   Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist:   Optional[float] = None,
     min_rr:      float           = MIN_RR_RATIO,
     # ── 전략별 구조적 가격 (추가) ──────────────────────────────
     prev_close:  Optional[float] = None,   # S1: 전일 종가 (갭 베이스)
@@ -346,34 +408,45 @@ def calc_tp_sl(
 
     # S7은 더 이상 장전/데이트레이딩 전략이 아니라 일목 스윙으로 고정한다.
     if "S7_" in s:
-        return _tp_sl_ichimoku_breakout(cur_prc, highs, lows, closes, atr, slip, min_rr)
+        return _tp_sl_ichimoku_breakout(
+            cur_prc, highs, lows, closes, atr, slip, min_rr,
+            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist,
+        )
 
     # ── 스윙 (S8~S15) ─────────────────────────────────────────
     if "S8_" in s or "GOLDEN" in s:
         return _tp_sl_golden_cross(cur_prc, highs, lows, closes,
-                                   ma5, ma20, ma60, atr, bb_upper, slip, min_rr)
+                                   ma5, ma20, ma60, atr, bb_upper, slip, min_rr,
+                                   macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
     if "S9_" in s or "PULLBACK_SWING" in s:
         return _tp_sl_pullback(cur_prc, highs, lows, closes,
-                               ma5, ma20, ma60, atr, slip, min_rr)
+                               ma5, ma20, ma60, atr, slip, min_rr,
+                               macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
     if "S10_" in s or "NEW_HIGH" in s:
         return _tp_sl_new_high(cur_prc, highs, lows, closes,
-                               ma20, atr, slip, min_rr)
+                               ma20, atr, slip, min_rr,
+                               macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
     if "S11_" in s or "FRGN_CONT" in s:
         return _tp_sl_frgn_cont(cur_prc, highs, lows, closes,
-                                ma20, bb_upper, slip, min_rr)
+                                ma20, bb_upper, slip, min_rr,
+                                macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
     if "S12_" in s or "CLOSING" in s:
         return _tp_sl_closing(cur_prc, highs, lows, closes,
-                              ma5, ma20, atr, slip, min_rr)
+                              ma5, ma20, atr, slip, min_rr,
+                              macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
     if "S13_" in s or "BOX" in s:
         return _tp_sl_box_breakout(cur_prc, highs, lows, closes,
-                                   atr, slip, min_rr)
+                                   atr, slip, min_rr,
+                                   macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
     if "S14_" in s or "OVERSOLD" in s:
         _ma20 = ma20 or (sum(closes[:20]) / 20 if len(closes) >= 20 else None)
         _ma60 = ma60 or (sum(closes[:60]) / 60 if len(closes) >= 60 else None)
-        return _tp_sl_oversold(cur_prc, highs, lows, _ma20, _ma60, atr, slip, min_rr)
+        return _tp_sl_oversold(cur_prc, highs, lows, _ma20, _ma60, atr, slip, min_rr,
+                               macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
     if "S15_" in s or "MOMENTUM" in s:
         return _tp_sl_momentum_align(cur_prc, highs, lows, closes,
-                                     ma20, atr, bb_upper, slip, min_rr)
+                                     ma20, atr, bb_upper, slip, min_rr,
+                                     macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
 
     # 알 수 없는 전략 — ATR 폴백 또는 기본값
     logger.warning("[TP/SL] 알 수 없는 전략: %s → ATR 폴백", strategy)
@@ -738,6 +811,9 @@ def _tp_sl_ichimoku_breakout(
     atr:     Optional[float],
     slip:    float,
     min_rr:  float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S7 일목균형표 구름대 돌파 TP/SL  (3~7거래일 스윙)
@@ -799,9 +875,17 @@ def _tp_sl_ichimoku_breakout(
         tp_method = "fib_1272(ichimoku_swing)"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=2.5,
+        trailing_basis="tp1_or_kijun",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 # ── S8: 골든크로스 ────────────────────────────────────────────
@@ -818,6 +902,9 @@ def _tp_sl_golden_cross(
     bb_upper: Optional[float],
     slip:     float,
     min_rr:   float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S8 골든크로스 TP/SL
@@ -867,9 +954,17 @@ def _tp_sl_golden_cross(
         tp_method = "pct_10%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=2.5,
+        trailing_basis="tp1_hit",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 def _tp_sl_pullback(
@@ -883,6 +978,9 @@ def _tp_sl_pullback(
     atr:     Optional[float],
     slip:    float,
     min_rr:  float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S9 눌림목 반등 TP/SL
@@ -930,9 +1028,17 @@ def _tp_sl_pullback(
         tp_method = "pct_6%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=2.5,
+        trailing_basis="tp1_hit",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 def _tp_sl_box_breakout(
@@ -943,6 +1049,9 @@ def _tp_sl_box_breakout(
     atr:     Optional[float],
     slip:    float,
     min_rr:  float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S13 박스권 돌파 TP/SL
@@ -994,9 +1103,17 @@ def _tp_sl_box_breakout(
         tp_method = "pct_8%_15%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=2.0,
+        trailing_basis="tp1_hit",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 def _tp_sl_momentum_align(
@@ -1009,6 +1126,9 @@ def _tp_sl_momentum_align(
     bb_upper: Optional[float],
     slip:     float,
     min_rr:   float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S15 모멘텀 정렬 TP/SL  (5~10거래일 스윙)
@@ -1107,9 +1227,17 @@ def _tp_sl_momentum_align(
             tp_method += "+pct_10%_min"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=2.5,
+        trailing_basis="tp1_hit",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 def _tp_sl_new_high(
@@ -1121,6 +1249,9 @@ def _tp_sl_new_high(
     atr:     Optional[float],
     slip:    float,
     min_rr:  float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S10 신고가 돌파 TP/SL
@@ -1164,9 +1295,17 @@ def _tp_sl_new_high(
         tp_method = "pct_8%_15%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=2.0,
+        trailing_basis="tp1_hit",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 def _tp_sl_frgn_cont(
@@ -1178,6 +1317,9 @@ def _tp_sl_frgn_cont(
     bb_upper: Optional[float],
     slip:     float,
     min_rr:   float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S11 외인 지속 매수 TP/SL
@@ -1225,9 +1367,17 @@ def _tp_sl_frgn_cont(
             tp_method = "pct_8%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=2.5,
+        trailing_basis="tp1_hit",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 def _tp_sl_closing(
@@ -1240,6 +1390,9 @@ def _tp_sl_closing(
     atr:     Optional[float],
     slip:    float,
     min_rr:  float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S12 종가 강도 TP/SL  (2~5거래일 스윙)
@@ -1321,9 +1474,17 @@ def _tp_sl_closing(
         tp_method = "pct_5%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=1.5,
+        trailing_basis="tp1_hit",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 def _tp_sl_oversold(
@@ -1335,6 +1496,9 @@ def _tp_sl_oversold(
     atr:     Optional[float],
     slip:    float,
     min_rr:  float,
+    macd_line: Optional[float] = None,
+    macd_signal: Optional[float] = None,
+    macd_hist: Optional[float] = None,
 ) -> TpSlResult:
     """
     S14 과매도 반등 TP/SL  (3~5거래일 반등)
@@ -1392,9 +1556,17 @@ def _tp_sl_oversold(
 
     sl_price  = max(sl_price, 1)
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _finalize_swing_result(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        trailing_pct=1.5,
+        trailing_basis="tp1_hit",
+        macd_line=macd_line,
+        macd_signal=macd_signal,
+        macd_hist=macd_hist,
+    )
 
 
 def _tp_sl_day_trading(

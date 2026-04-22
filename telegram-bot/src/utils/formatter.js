@@ -647,6 +647,64 @@ function formatSellSignal(item) {
 /**
  * NEWS_ALERT 메시지 포맷 (Java 측에서 message 필드가 없을 경우 폴백)
  */
+function formatSellRecommendation(item) {
+    const rawKind = String(
+        item.recommendation_type
+        || item.exit_type
+        || item.sell_type
+        || item.trigger_type
+        || ''
+    ).toUpperCase();
+
+    const kind = rawKind.includes('TP1')
+        ? 'TP1'
+        : (rawKind.includes('SL')
+            ? 'SL'
+            : (rawKind.includes('TRAIL') ? 'TRAILING' : 'GENERAL'));
+
+    const labels = {
+        TP1: { title: 'TP1 partial sell', note: 'First target reached. Partial profit taking is recommended.' },
+        SL: { title: 'Stop loss', note: 'The stop-loss condition was hit.' },
+        TRAILING: { title: 'Trailing stop', note: 'Protect profit with a trailing stop.' },
+        GENERAL: { title: 'Sell recommendation', note: 'Position review is recommended.' },
+    };
+
+    const meta = labels[kind] || labels.GENERAL;
+    const stockLabel = item.stk_nm ? `${item.stk_nm} (${item.stk_cd})` : item.stk_cd;
+    const partialLabel = typeof item.partial === 'number'
+        ? `${item.partial}%`
+        : (item.partial == null ? '-' : String(item.partial));
+    const urgentLabel = item.urgent == null ? '-' : (item.urgent ? 'yes' : 'no');
+    const lines = [
+        `<b>[SELL RECOMMENDATION] ${item.strategy || '-'}</b>`,
+        `Stock: <b>${escapeHtml(stockLabel || '')}</b>`,
+        `Type: <b>${meta.title}</b>`,
+        `Partial: <b>${partialLabel}</b>`,
+        `Urgent: <b>${urgentLabel}</b>`,
+        meta.note,
+    ];
+
+    if (item.trigger_price != null) {
+        lines.push(`Trigger: <b>${Number(item.trigger_price).toLocaleString()} KRW</b>`);
+    }
+    if (item.realized_pnl_pct != null) {
+        const pnl = Number(item.realized_pnl_pct);
+        const sign = pnl >= 0 ? '+' : '';
+        lines.push(`Realized PnL: <b>${sign}${pnl.toFixed(2)}%</b>`);
+    }
+    if (item.trailing_pct != null || item.trailing_stop_pct != null) {
+        lines.push(`Trailing: <b>${item.trailing_pct ?? item.trailing_stop_pct}%</b>`);
+    }
+    if (item.reason_summary) {
+        lines.push(`Reason: ${escapeHtml(item.reason_summary)}`);
+    }
+    if (item.ai_reason) {
+        lines.push(`AI Reason: ${escapeHtml(item.ai_reason)}`);
+    }
+
+    return lines.join('\n');
+}
+
 function formatNewsAlert(item) {
     const controlEmoji   = { PAUSE: '🚨', CAUTIOUS: '⚠️', CONTINUE: '✅' };
     const controlLabel   = { PAUSE: '매매 중단', CAUTIOUS: '신중 매매', CONTINUE: '정상 매매' };
@@ -763,5 +821,5 @@ module.exports = {
     formatPerformanceSummary: formatPerformanceSummaryEnhanced, formatNewsStatus, formatSectorAnalysis,
     formatSignalHistory, formatSystemHealth,
     formatDailyReportEnhanced, formatCalendarWeek, formatPerformanceDetail: formatPerformanceDetailEnhanced, formatUserSettings: formatUserSettingsEnhanced,
-    formatStockScore, formatSellSignal, formatNewsAlert,
+    formatStockScore, formatSellSignal, formatSellRecommendation, formatNewsAlert,
 };

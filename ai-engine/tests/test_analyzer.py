@@ -90,6 +90,7 @@ class TestFallback:
         assert "ai_score" in result
         assert "confidence" in result
         assert "reason" in result
+        assert "cancel_reason" in result
         assert "adjusted_target_pct" in result
         assert "adjusted_stop_pct" in result
 
@@ -202,7 +203,8 @@ class TestAnalyzeSignal:
     def test_json_with_markdown_code_block(self):
         """```json ... ``` 형식의 마크다운 코드블록 내 JSON 처리"""
         json_data = {"action": "CANCEL", "ai_score": 40, "confidence": "LOW",
-                     "reason": "약한 신호", "adjusted_target_pct": None, "adjusted_stop_pct": None}
+                     "reason": "약한 신호", "cancel_reason": "체결강도 부족",
+                     "adjusted_target_pct": None, "adjusted_stop_pct": None}
         raw = f"```json\n{json.dumps(json_data)}\n```"
         # 중괄호 추출 로직으로 처리됨
         mock_response = _make_response(raw)
@@ -216,6 +218,28 @@ class TestAnalyzeSignal:
             result = self._run(analyze_signal(_signal(), _ctx(), 40.0))
 
         assert result["action"] == "CANCEL"
+        assert result["cancel_reason"] == "체결강도 부족"
+
+    def test_cancel_reason_defaults_to_reason_when_missing(self):
+        mock_response = _make_response(json.dumps({
+            "action": "CANCEL",
+            "ai_score": 35,
+            "confidence": "LOW",
+            "reason": "상단 저항 근접",
+            "adjusted_target_pct": None,
+            "adjusted_stop_pct": None,
+        }))
+
+        with patch("analyzer._get_claude_client") as mock_client_fn:
+            mock_client = MagicMock()
+            mock_client.messages.create = AsyncMock(return_value=mock_response)
+            mock_client_fn.return_value = mock_client
+
+            from analyzer import analyze_signal
+            result = self._run(analyze_signal(_signal(), _ctx(), 40.0))
+
+        assert result["action"] == "CANCEL"
+        assert result["cancel_reason"] == "상단 저항 근접"
 
     def test_timeout_returns_fallback(self):
         """Claude 타임아웃 시 폴백 반환"""

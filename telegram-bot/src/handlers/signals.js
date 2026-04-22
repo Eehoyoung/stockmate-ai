@@ -6,6 +6,7 @@ const {
     formatForceClose,
     formatDailyReportEnhanced,
     formatSellSignal,
+    formatSellRecommendation,
     formatNewsAlert,
 } = require('../utils/formatter');
 const { getLogger } = require('../utils/logger');
@@ -155,6 +156,19 @@ const BROADCAST_HANDLERS = {
             stk_cd: item.stk_cd,
             strategy: item.strategy,
             exit_type: item.exit_type,
+            pnl: item.realized_pnl_pct,
+        },
+    }),
+
+    SELL_RECOMMENDATION: (item) => ({
+        type: 'SELL_RECOMMENDATION',
+        text: formatSellRecommendation(item),
+        logMeta: {
+            stk_cd: item.stk_cd,
+            strategy: item.strategy,
+            recommendation_type: item.recommendation_type || item.exit_type || item.sell_type,
+            partial: item.partial,
+            urgent: item.urgent,
             pnl: item.realized_pnl_pct,
         },
     }),

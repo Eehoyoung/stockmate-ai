@@ -22,7 +22,7 @@ MAX_TOKENS      = 512   # TP/SL 절대가 출력을 위한 공간 확보
 CLAUDE_TIMEOUT  = 10    # seconds
 
 # 수수료+세금+슬리피지 합산 (왕복 기준, KOSPI 0.35%, KOSDAQ 0.45%)
-SLIP_FEE = {"KOSPI": 0.0035, "KOSDAQ": 0.0045}
+SLIP_FEE = {"KOSPI": 0.0035, "KOSDAQ": 0.0035}
 
 
 def _get_slip_fee(stk_cd: str) -> float:
@@ -51,9 +51,11 @@ except Exception:
         "주어진 지표와 규칙 기반 TP/SL을 참고하여 최종 TP1/TP2/SL을 결정하고 "
         "JSON 형식으로만 답하세요. "
         "claude_tp1/tp2/sl은 절대 원화 가격(정수)으로 반환하세요. "
+        "action이 CANCEL이면 cancel_reason을 짧은 한국어 문자열로 반드시 채우고, "
+        "ENTER/HOLD이면 cancel_reason은 null로 반환하세요. "
         "진입 불가 판단 시 claude_tp1/tp2/sl은 null로 반환하세요: "
         '{"action":"ENTER|HOLD|CANCEL","ai_score":0~100,"confidence":"HIGH|MEDIUM|LOW",'
-        '"reason":"2문장 이내","adjusted_target_pct":null,"adjusted_stop_pct":null,'
+        '"reason":"2문장 이내","cancel_reason":null,"adjusted_target_pct":null,"adjusted_stop_pct":null,'
         '"claude_tp1":null,"claude_tp2":null,"claude_sl":null}'
     )
 
@@ -248,7 +250,11 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
     strategy = signal.get("strategy", "")
     tick     = market_ctx.get("tick", {})
     hoga     = market_ctx.get("hoga", {})
-    strength = market_ctx.get("strength", 0)
+    signal_strength = signal.get("cntr_strength", signal.get("cntr_str"))
+    try:
+        strength = float(signal_strength) if signal_strength is not None else float(market_ctx.get("strength", 0) or 0)
+    except (TypeError, ValueError):
+        strength = market_ctx.get("strength", 0)
 
     bid  = hoga.get("total_buy_bid_req", "0")
     ask  = hoga.get("total_sel_bid_req", "1")
@@ -313,7 +319,7 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
     타임아웃(10s) 또는 오류 시 규칙 스코어 폴백.
     rdb: Redis 클라이언트 (토큰 사용량 추적용, 선택)
     반환: {"action": ..., "ai_score": ..., "confidence": ..., "reason": ...,
-           "adjusted_target_pct": ..., "adjusted_stop_pct": ...}
+           "cancel_reason": ..., "adjusted_target_pct": ..., "adjusted_stop_pct": ...}
     """
     client       = _get_claude_client()
     user_message = _build_user_message(signal, market_ctx, rule_score)
@@ -347,7 +353,7 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
         json_end   = raw_text.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
             raw_text = raw_text[json_start:json_end]
-        result = json.loads(raw_text)
+        result = _normalize_signal_result(json.loads(raw_text))
         logger.info(
             json.dumps({
                 "ts": __import__("time").time(),
@@ -356,6 +362,7 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
                 "stk_cd": signal.get("stk_cd"),
                 "action": result.get("action"),
                 "ai_score": result.get("ai_score"),
+                "cancel_reason": result.get("cancel_reason"),
             })
         )
         return result
@@ -383,8 +390,42 @@ def _fallback(rule_score: float) -> dict:
         "ai_score":            rule_score,
         "confidence":          "LOW",
         "reason":              "AI 분석 실패 – 규칙 스코어 기반 폴백 적용",
+        "cancel_reason":       "AI 분석 실패" if action == "CANCEL" else None,
         "adjusted_target_pct": None,
         "adjusted_stop_pct":   None,
+        "claude_tp1":          None,
+        "claude_tp2":          None,
+        "claude_sl":           None,
+    }
+
+
+def _normalize_signal_result(result: dict) -> dict:
+    """Claude 신호 응답을 후속 파이프라인이 기대하는 형태로 정규화한다."""
+    action = str(result.get("action") or "HOLD").upper()
+    confidence = str(result.get("confidence") or "LOW").upper()
+    reason = str(result.get("reason") or "").strip() or "AI 판단 근거 없음"
+
+    raw_cancel_reason = result.get("cancel_reason")
+    cancel_reason = None
+    if raw_cancel_reason is not None:
+        cancel_reason = str(raw_cancel_reason).strip() or None
+
+    if action == "CANCEL" and not cancel_reason:
+        cancel_reason = reason
+    if action != "CANCEL":
+        cancel_reason = None
+
+    return {
+        "action":              action,
+        "ai_score":            result.get("ai_score"),
+        "confidence":          confidence,
+        "reason":              reason,
+        "cancel_reason":       cancel_reason,
+        "adjusted_target_pct": result.get("adjusted_target_pct"),
+        "adjusted_stop_pct":   result.get("adjusted_stop_pct"),
+        "claude_tp1":          result.get("claude_tp1"),
+        "claude_tp2":          result.get("claude_tp2"),
+        "claude_sl":           result.get("claude_sl"),
     }
 
 

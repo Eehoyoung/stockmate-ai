@@ -29,8 +29,8 @@ public class KiwoomProperties {
     @Getter
     @Setter
     public static class Trading {
-        private String marketOpen = "09:00";
-        private String marketClose = "15:30";
+        private String marketOpen = "07:30";
+        private String marketClose = "20:10";
         private String preMarketStart = "07:30";
         private double commonStopLossPct = -2.0;
         private double commonTargetPct = 3.5;
