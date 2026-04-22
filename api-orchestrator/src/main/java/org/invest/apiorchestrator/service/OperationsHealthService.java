@@ -1,7 +1,7 @@
 package org.invest.apiorchestrator.service;
 
 import lombok.RequiredArgsConstructor;
-import org.invest.apiorchestrator.repository.OpenPositionRepository;
+import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -20,7 +20,7 @@ public class OperationsHealthService {
 
     private final StringRedisTemplate redis;
     private final JdbcTemplate jdbcTemplate;
-    private final OpenPositionRepository openPositionRepository;
+    private final TradingSignalRepository tradingSignalRepository;
     private final NewsControlService newsControlService;
 
     public Map<String, Object> buildHealthSnapshot() {
@@ -143,7 +143,7 @@ public class OperationsHealthService {
 
     private long getActivePositionCount() {
         try {
-            return openPositionRepository.countActivePositions();
+            return tradingSignalRepository.countActivePositions();
         } catch (Exception e) {
             return 0L;
         }

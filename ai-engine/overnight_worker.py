@@ -125,7 +125,7 @@ async def _process_one(rdb, pg_pool=None) -> bool:
                 await insert_overnight_eval(
                     pg_pool,
                     signal_id=signal_id,
-                    position_id=item.get("position_id"),
+                    position_id=None,
                     stk_cd=stk_cd,
                     strategy=strategy,
                     java_overnight_score=item.get("overnight_score"),

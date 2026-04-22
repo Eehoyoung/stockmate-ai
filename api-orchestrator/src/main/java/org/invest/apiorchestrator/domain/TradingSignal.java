@@ -15,7 +15,8 @@ import java.time.LocalDateTime;
         @Index(name = "idx_signal_strategy",   columnList = "strategy"),
         @Index(name = "idx_signal_created_at", columnList = "created_at"),
         @Index(name = "idx_ts_action_created", columnList = "action, created_at"),
-        @Index(name = "idx_ts_stk_action",     columnList = "stk_cd, action, created_at")
+        @Index(name = "idx_ts_stk_action",     columnList = "stk_cd, action, created_at"),
+        @Index(name = "idx_ts_position_status", columnList = "position_status")
 })
 @EntityListeners(AuditingEntityListener.class)
 @Getter
@@ -89,6 +90,21 @@ public class TradingSignal {
 
     @Column(name = "market_type", length = 10)
     private String marketType;
+
+    @Column(name = "position_status", length = 20)
+    private String positionStatus;
+
+    @Column(name = "sector", length = 50)
+    private String sector;
+
+    @Column(name = "entry_qty")
+    private Integer entryQty;
+
+    @Column(name = "entry_amount", precision = 14, scale = 0)
+    private BigDecimal entryAmount;
+
+    @Column(name = "entry_at")
+    private OffsetDateTime entryAt;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "signal_status", length = 20)
@@ -209,6 +225,57 @@ public class TradingSignal {
     @Column(name = "exited_at")
     private OffsetDateTime exitedAt;
 
+    @Column(name = "tp1_hit_at")
+    private OffsetDateTime tp1HitAt;
+
+    @Column(name = "tp1_exit_qty")
+    private Integer tp1ExitQty;
+
+    @Column(name = "remaining_qty")
+    private Integer remainingQty;
+
+    @Column(name = "peak_price", precision = 10, scale = 0)
+    private BigDecimal peakPrice;
+
+    @Column(name = "trailing_pct", precision = 5, scale = 2)
+    private BigDecimal trailingPct;
+
+    @Column(name = "trailing_activation", precision = 10, scale = 0)
+    private BigDecimal trailingActivation;
+
+    @Column(name = "trailing_basis", length = 40)
+    private String trailingBasis;
+
+    @Column(name = "strategy_version", length = 40)
+    private String strategyVersion;
+
+    @Column(name = "time_stop_type", length = 30)
+    private String timeStopType;
+
+    @Column(name = "time_stop_minutes")
+    private Integer timeStopMinutes;
+
+    @Column(name = "time_stop_session", length = 30)
+    private String timeStopSession;
+
+    @Column(name = "monitor_enabled")
+    @Builder.Default
+    private Boolean monitorEnabled = true;
+
+    @Column(name = "is_overnight")
+    @Builder.Default
+    private Boolean isOvernight = false;
+
+    @Column(name = "overnight_verdict", length = 20)
+    private String overnightVerdict;
+
+    @Column(name = "overnight_score", precision = 5, scale = 2)
+    private BigDecimal overnightScore;
+
+    @Column(name = "sl_alert_sent")
+    @Builder.Default
+    private Boolean slAlertSent = false;
+
     // ── 도메인 메서드 ────────────────────────────────────────────────────
     public void updateStatus(SignalStatus status) {
         this.signalStatus = status;
@@ -217,6 +284,7 @@ public class TradingSignal {
     public void closeSignal(double pnl) {
         this.realizedPnl = pnl;
         this.closedAt = LocalDateTime.now();
+        this.positionStatus = "CLOSED";
         this.signalStatus = pnl >= 0 ? SignalStatus.WIN : SignalStatus.LOSS;
     }
 
@@ -231,12 +299,44 @@ public class TradingSignal {
         this.holdDurationMin = holdDurationMin;
         this.exitedAt = OffsetDateTime.now();
         this.closedAt = LocalDateTime.now();
+        this.positionStatus = "CLOSED";
         if (exitType.startsWith("TP")) {
             this.signalStatus = SignalStatus.WIN;
         } else if ("SL_HIT".equals(exitType) || "FORCE_CLOSE".equals(exitType)) {
             this.signalStatus = SignalStatus.LOSS;
         } else {
             this.signalStatus = SignalStatus.EXPIRED;
+        }
+    }
+
+    public boolean isActivePosition() {
+        return "ACTIVE".equals(positionStatus)
+                || "PARTIAL_TP".equals(positionStatus)
+                || "OVERNIGHT".equals(positionStatus);
+    }
+
+    public void activatePosition() {
+        this.positionStatus = "ACTIVE";
+        if (this.entryAt == null) {
+            this.entryAt = OffsetDateTime.now();
+        }
+    }
+
+    public void markTp1Hit(int exitQty, int remainingQty, BigDecimal currentPrice) {
+        this.tp1HitAt = OffsetDateTime.now();
+        this.tp1ExitQty = exitQty;
+        this.remainingQty = remainingQty;
+        this.peakPrice = currentPrice;
+        this.positionStatus = "PARTIAL_TP";
+    }
+
+    public void markOvernight(String verdict, BigDecimal score) {
+        this.overnightVerdict = verdict;
+        this.overnightScore = score;
+        this.isOvernight = true;
+        if ("HOLD".equalsIgnoreCase(verdict)) {
+            this.positionStatus = "OVERNIGHT";
+            this.signalStatus = SignalStatus.OVERNIGHT_HOLD;
         }
     }
 

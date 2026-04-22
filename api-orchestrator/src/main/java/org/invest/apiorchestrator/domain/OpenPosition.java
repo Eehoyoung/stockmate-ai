@@ -75,6 +75,16 @@ public class OpenPosition {
     @Column(name = "tp1_exit_qty") private Integer tp1ExitQty;
     @Column(name = "remaining_qty") private Integer remainingQty;
 
+    @Column(name = "peak_price", precision = 10, scale = 0) private BigDecimal peakPrice;
+    @Column(name = "trailing_pct", precision = 5, scale = 2) private BigDecimal trailingPct;
+    @Column(name = "trailing_activation", precision = 10, scale = 0) private BigDecimal trailingActivation;
+    @Column(name = "trailing_basis", length = 40) private String trailingBasis;
+    @Column(name = "strategy_version", length = 40) private String strategyVersion;
+    @Column(name = "time_stop_type", length = 30) private String timeStopType;
+    @Column(name = "time_stop_minutes") private Integer timeStopMinutes;
+    @Column(name = "time_stop_session", length = 30) private String timeStopSession;
+    @Column(name = "monitor_enabled") @Builder.Default private Boolean monitorEnabled = true;
+
     // ── 오버나잇 ──────────────────────────────────────────────────────────
     @Column(name = "is_overnight") @Builder.Default private Boolean isOvernight = false;
     @Column(name = "overnight_verdict", length = 20) private String overnightVerdict;

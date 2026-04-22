@@ -8,13 +8,13 @@ import org.invest.apiorchestrator.domain.ViEvent;
 import org.invest.apiorchestrator.domain.WsTickData;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.repository.DailyIndicatorsRepository;
-import org.invest.apiorchestrator.repository.OpenPositionRepository;
 import org.invest.apiorchestrator.repository.StockMasterRepository;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.repository.ViEventRepository;
 import org.invest.apiorchestrator.repository.WsTickDataRepository;
 import org.invest.apiorchestrator.service.KiwoomApiService;
 import org.invest.apiorchestrator.util.MarketTimeUtil;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -45,7 +45,6 @@ public class DataPersistenceScheduler {
     private final ViEventRepository viEventRepository;
     private final DailyIndicatorsRepository dailyIndicatorsRepository;
     private final TradingSignalRepository tradingSignalRepository;
-    private final OpenPositionRepository openPositionRepository;
     private final StockMasterRepository stockMasterRepository;
     private final KiwoomApiService kiwoomApiService;
 
@@ -161,7 +160,14 @@ public class DataPersistenceScheduler {
                     .marketType(Optional.ofNullable(vi.get("mrkt_cls")).map(Object::toString).orElse(null))
                     .releasedAt("2".equals(viStatus) ? LocalDateTime.now() : null)
                     .build();
-            viEventRepository.save(entity);
+            try {
+                viEventRepository.save(entity);
+            } catch (DataIntegrityViolationException e) {
+                log.warn("[Persist] vi_events save skipped stkCd={} viStatus={} viType={} viPrice={} cause={}",
+                        stkCd, viStatus, viType, viPrice,
+                        e.getMostSpecificCause() != null ? e.getMostSpecificCause().getMessage() : e.getMessage());
+                continue;
+            }
             redis.opsForValue().set(markerKey, fingerprint, Duration.ofHours(12));
             saved++;
         }
@@ -220,8 +226,8 @@ public class DataPersistenceScheduler {
                 .filter(v -> v != null && !v.isBlank())
                 .forEach(codes::add);
 
-        openPositionRepository.findAll().stream()
-                .map(pos -> pos.getStkCd())
+        tradingSignalRepository.findAllActivePositions().stream()
+                .map(TradingSignal::getStkCd)
                 .filter(v -> v != null && !v.isBlank())
                 .forEach(codes::add);
 

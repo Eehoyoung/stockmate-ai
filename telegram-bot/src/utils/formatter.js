@@ -634,6 +634,10 @@ function formatSellSignal(item) {
         if (item.ai_reason) lines.push(`AI판단: ${escapeHtml(item.ai_reason)}`);
     }
 
+    if (exitType === 'TIME_STOP' && item.time_stop_reason) {
+        lines.push(`Time stop: ${escapeHtml(String(item.time_stop_reason))}`);
+    }
+
     if (item.sl_price  && exitType !== 'SL_HIT') {
         lines.push(`SL기준: ${Number(item.sl_price).toLocaleString()}원`);
     }

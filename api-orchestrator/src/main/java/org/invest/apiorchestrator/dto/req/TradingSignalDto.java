@@ -57,6 +57,9 @@ public class TradingSignalDto {
     private Double trailingActivation;
     private String trailingBasis;
     private String strategyVersion;
+    private String timeStopType;
+    private Integer timeStopMinutes;
+    private String timeStopSession;
 
     private Map<String, Object> extra;
     private LocalDateTime signalTime;
@@ -133,6 +136,9 @@ public class TradingSignalDto {
         m.put("trailing_activation", trailingActivation);
         m.put("trailing_basis",  trailingBasis);
         m.put("strategy_version", strategyVersion);
+        m.put("time_stop_type", timeStopType);
+        m.put("time_stop_minutes", timeStopMinutes);
+        m.put("time_stop_session", timeStopSession);
         m.put("signal_time",     signalTime != null ? signalTime.toString() : LocalDateTime.now().toString());
         m.put("cur_prc",         entryPrice);  // 진입가 = 현재가 (신호 발생 시점)
         m.put("message",         toTelegramMessage());

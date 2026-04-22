@@ -112,7 +112,7 @@ class TestS1GapOpen:
         assert score_overheat < score_normal
 
     def test_penalty_10_to_15pct(self):
-        """flu_rt 10~15% ??二쇱쓽 ?⑤꼸??-10??""
+        """flu_rt 10~15% ??二쇱쓽 ?⑤꼸??-10??"""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0)
         ctx_11 = _ctx(strength=100, flu_rt=11.0, bid_ratio=0.5)
         ctx_4 = _ctx(strength=100, flu_rt=4.0, bid_ratio=0.5)

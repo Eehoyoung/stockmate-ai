@@ -3,27 +3,26 @@ package org.invest.apiorchestrator.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.config.KiwoomProperties;
-import org.invest.apiorchestrator.domain.OpenPosition;
 import org.invest.apiorchestrator.domain.PortfolioConfig;
 import org.invest.apiorchestrator.domain.RiskEvent;
 import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.repository.CandidatePoolHistoryRepository;
-import org.invest.apiorchestrator.repository.OpenPositionRepository;
 import org.invest.apiorchestrator.repository.PortfolioConfigRepository;
 import org.invest.apiorchestrator.repository.RiskEventRepository;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.util.KstClock;
 import org.invest.apiorchestrator.util.StockCodeNormalizer;
-import org.jetbrains.annotations.NotNull;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -36,12 +35,10 @@ public class SignalService {
     private final CandidateService candidateService;
     private final KiwoomProperties properties;
     private final ObjectMapper objectMapper;
-    private final OpenPositionRepository openPositionRepository;
     private final PortfolioConfigRepository portfolioConfigRepository;
     private final RiskEventRepository riskEventRepository;
     private final CandidatePoolHistoryRepository candidatePoolHistoryRepository;
 
-    // 테마명 → 섹터 매핑 (정적)
     private static final Map<String, String> THEME_TO_SECTOR = Map.ofEntries(
             Map.entry("반도체", "반도체"), Map.entry("HBM", "반도체"), Map.entry("AI반도체", "반도체"),
             Map.entry("메모리", "반도체"), Map.entry("시스템반도체", "반도체"),
@@ -61,7 +58,6 @@ public class SignalService {
                          CandidateService candidateService,
                          KiwoomProperties properties,
                          ObjectMapper objectMapper,
-                         OpenPositionRepository openPositionRepository,
                          PortfolioConfigRepository portfolioConfigRepository,
                          RiskEventRepository riskEventRepository,
                          CandidatePoolHistoryRepository candidatePoolHistoryRepository) {
@@ -70,58 +66,46 @@ public class SignalService {
         this.candidateService = candidateService;
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.openPositionRepository = openPositionRepository;
         this.portfolioConfigRepository = portfolioConfigRepository;
         this.riskEventRepository = riskEventRepository;
         this.candidatePoolHistoryRepository = candidatePoolHistoryRepository;
     }
 
-    /**
-     * 신호 저장 + Redis 중복 체크 + 텔레그램 큐 발행
-     */
     @Transactional
     public boolean processSignal(TradingSignalDto dto) {
-
         String stkCd = StockCodeNormalizer.normalize(dto.getStkCd());
-
         String strategy = dto.getStrategy().name();
         MDC.put("strategy", strategy);
         MDC.put("stk_cd", stkCd);
         try {
-            // 1. 중복 신호 체크 – 전략 내 (Redis TTL 기반)
             if (redisService.isSignalDuplicate(stkCd, strategy)) {
                 log.debug("중복 신호 무시 [{} {}]", stkCd, strategy);
                 return false;
             }
 
-            // 2. 종목 크로스-전략 쿨다운 (동일 종목 타 전략 N분 내 재발행 방지)
             int cooldownMin = properties.getTrading().getStockCooldownMinutes();
             if (!redisService.tryAcquireStockCooldown(stkCd, cooldownMin)) {
-                log.debug("종목 쿨다운 중 [{} – 모든전략 {}분]", stkCd, cooldownMin);
+                log.debug("종목 쿨다운 중 [{} 모든전략 {}분]", stkCd, cooldownMin);
                 return false;
             }
 
-            // 3. 일일 전체 신호 상한 체크
             int maxDaily = properties.getTrading().getMaxDailySignals();
             long dailyCount = redisService.incrementDailySignalCount();
             if (dailyCount > maxDaily) {
-                log.warn("[Signal] 일일 신호 상한 도달 ({}/{}), 신호 무시 [{} {}]",
+                log.warn("[Signal] 일일 신호 상한 초과 ({}/{}), 신호 무시 [{} {}]",
                         dailyCount, maxDaily, stkCd, strategy);
                 return false;
             }
 
-            // 4. PortfolioConfig 기반 포지션 한도 · 이중매수 체크
             PortfolioConfig config = portfolioConfigRepository.findSingleton().orElse(null);
             if (config != null) {
-                // 4-1. 동일 종목 오버나잇 포지션 이중매수 방지 (전날 포지션이 아직 ACTIVE 상태)
-                if (openPositionRepository.existsActivePosition(stkCd)) {
+                if (signalRepository.existsActivePosition(stkCd)) {
                     logRiskEvent("DUPLICATE_SIGNAL_BLOCKED", stkCd, strategy, null,
-                            null, null, "이미 활성 포지션 보유 – 오버나잇 포지션 잔존", "신호 무시");
-                    log.warn("[Signal] 이중매수 차단 [{} {}] – 활성 포지션 이미 존재", stkCd, strategy);
+                            null, null, "이미 활성 포지션 보유 중인 종목", "신호 무시");
+                    log.warn("[Signal] 이중매수 차단 [{} {}] 활성 포지션 존재", stkCd, strategy);
                     return false;
                 }
-                // 4-2. 최대 동시 포지션 수 초과 체크
-                long activeCount = openPositionRepository.countActivePositions();
+                long activeCount = signalRepository.countActivePositions();
                 int maxCount = config.getMaxPositionCount();
                 if (activeCount >= maxCount) {
                     logRiskEvent("MAX_POSITION_EXCEEDED", stkCd, strategy, null,
@@ -133,11 +117,9 @@ public class SignalService {
                 }
             }
 
-            // 5. DB 저장
             TradingSignal signal = buildSignalEntity(dto);
             signalRepository.save(signal);
 
-            // 5-1. candidate_pool_history led_to_signal 갱신
             try {
                 candidatePoolHistoryRepository.markLedToSignal(
                         KstClock.today(), strategy, dto.getMarketType(), stkCd, signal.getId());
@@ -145,26 +127,9 @@ public class SignalService {
                 log.debug("[Signal] pool history 갱신 실패 (무시): {}", e.getMessage());
             }
 
-            // 6. OpenPosition 생성 (진입 의도 기록 – ACTIVE 상태로 당일 추적)
-            if (dto.getEntryPrice() == null || dto.getEntryPrice() <= 0) {
-                log.warn("[Signal] OpenPosition 생성 건너뜀 – entryPrice 미설정 [{} {}]", stkCd, strategy);
-            } else {
-                try {
-                    OpenPosition position = buildOpenPosition(dto, signal);
-                    openPositionRepository.save(position);
-                } catch (Exception e) {
-                    log.error("[Signal] OpenPosition 생성 실패 [{} {}] – {}",
-                            stkCd, strategy, e.getMessage(), e);
-                }
-            }
-
-            // 7. 전략 태그 기록 (Redis – 후보 종목 출처 추적)
             candidateService.tagStrategy(stkCd, strategy);
-
-            // 8. 섹터 과열 추적 + 알림
             trackSectorOverheat(dto.getThemeName());
 
-            // 9. 텔레그램 큐 발행 – TradingSignalDto.toQueuePayload() 로 필드 계약 중앙화
             try {
                 String telegramMsg = objectMapper.writeValueAsString(dto.toQueuePayload(signal.getId()));
                 redisService.pushTelegramQueue(telegramMsg);
@@ -180,50 +145,36 @@ public class SignalService {
         }
     }
 
-    /**
-     * 복수 신호 일괄 처리 (전략 내 최대 N개 제한)
-     */
     @Transactional
     public int processSignals(List<TradingSignalDto> signals) {
         int maxPerStrategy = properties.getTrading().getMaxSignalsPerStrategy();
         int count = 0;
-        for (TradingSignalDto dto : signals.stream()
-                .limit(maxPerStrategy).toList()) {
-            if (processSignal(dto)) count++;
+        for (TradingSignalDto dto : signals.stream().limit(maxPerStrategy).toList()) {
+            if (processSignal(dto)) {
+                count++;
+            }
         }
         return count;
     }
 
-    /**
-     * 당일 신호 조회
-     */
     @Transactional(readOnly = true)
     public List<TradingSignal> getTodaySignals() {
         LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         return signalRepository.findTodaySignals(startOfDay);
     }
 
-    /**
-     * 전략별 당일 성과 통계
-     */
     @Transactional(readOnly = true)
     public List<Object[]> getTodayStats() {
         LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         return signalRepository.getStrategyStats(startOfDay);
     }
 
-    /**
-     * 전략별 당일 가상 성과 통계 (WIN/LOSS/SENT 포함)
-     */
     @Transactional(readOnly = true)
     public List<Object[]> getPerformanceStats() {
         LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         return signalRepository.getStrategyPerformanceStats(startOfDay);
     }
 
-    /**
-     * 만료된 신호 상태 업데이트 (배치)
-     */
     @Transactional
     public int expireOldSignals() {
         LocalDateTime expireBefore = KstClock.now()
@@ -231,25 +182,15 @@ public class SignalService {
         return signalRepository.expireOldSignals(expireBefore);
     }
 
-    // ──── 내부 헬퍼 ────────────────────────────────────────────────
-
     private TradingSignal buildSignalEntity(TradingSignalDto dto) {
-        Double targetPrice = dto.getTp1Price();
-        if ((targetPrice == null || targetPrice <= 0) && dto.getTargetPct() != null) {
-            double fallbackTargetPrice = dto.calcTarget1Price();
-            targetPrice = fallbackTargetPrice > 0 ? fallbackTargetPrice : null;
-        }
+        BigDecimal entryPrice = toPrice(dto.getEntryPrice());
+        BigDecimal tp1Price = resolveTargetPrice(dto.getTp1Price(), dto.getTargetPct(), dto::calcTarget1Price);
+        BigDecimal tp2Price = resolveTargetPrice(dto.getTp2Price(), dto.resolvedTarget2Pct(), dto::calcTarget2Price);
+        BigDecimal slPrice = resolveStopPrice(dto.getSlPrice(), dto.getStopPct(), dto::calcStopPrice, entryPrice);
 
-        Double stopPrice = dto.getSlPrice();
-        if ((stopPrice == null || stopPrice <= 0) && dto.getStopPct() != null) {
-            double fallbackStopPrice = dto.calcStopPrice();
-            stopPrice = fallbackStopPrice > 0 ? fallbackStopPrice : null;
-        }
-
-        // tp1/tp2/sl: 절대가 우선, 없으면 % 기반 calc 값 fallback
-        Double rawTp1 = dto.getTp1Price() != null && dto.getTp1Price() > 0 ? dto.getTp1Price() : null;
-        Double rawTp2 = dto.getTp2Price() != null && dto.getTp2Price() > 0 ? dto.getTp2Price() : null;
-        Double rawSl  = dto.getSlPrice()  != null && dto.getSlPrice()  > 0 ? dto.getSlPrice()  : null;
+        BigDecimal rrRatio = dto.getRrRatio() != null
+                ? BigDecimal.valueOf(dto.getRrRatio()).setScale(2, RoundingMode.HALF_UP)
+                : deriveRr(entryPrice, tp1Price, slPrice);
 
         return TradingSignal.builder()
                 .stkCd(StockCodeNormalizer.normalize(dto.getStkCd()))
@@ -257,18 +198,16 @@ public class SignalService {
                 .strategy(dto.getStrategy())
                 .signalScore(dto.getSignalScore())
                 .entryPrice(dto.getEntryPrice())
-                .targetPrice(targetPrice)
-                .stopPrice(stopPrice)
-                .tp1Price(rawTp1)
-                .tp2Price(rawTp2)
-                .slPrice(rawSl)
+                .targetPrice(tp1Price != null ? tp1Price.doubleValue() : null)
+                .stopPrice(slPrice != null ? slPrice.doubleValue() : null)
+                .tp1Price(tp1Price != null ? tp1Price.doubleValue() : null)
+                .tp2Price(tp2Price != null ? tp2Price.doubleValue() : null)
+                .slPrice(slPrice != null ? slPrice.doubleValue() : null)
                 .targetPct(dto.getTargetPct())
                 .stopPct(dto.getStopPct())
                 .tpMethod(dto.getTpMethod())
                 .slMethod(dto.getSlMethod())
-                .rrRatio(dto.getRrRatio() != null
-                        ? BigDecimal.valueOf(dto.getRrRatio()).setScale(2, java.math.RoundingMode.HALF_UP)
-                        : null)
+                .rrRatio(rrRatio)
                 .skipEntry(dto.getSkipEntry() != null ? dto.getSkipEntry() : false)
                 .entryType(dto.getEntryType())
                 .marketType(dto.getMarketType())
@@ -278,85 +217,81 @@ public class SignalService {
                 .volRatio(dto.getVolRatio())
                 .pullbackPct(dto.getPullbackPct())
                 .themeName(dto.getThemeName())
-                .signalStatus(TradingSignal.SignalStatus.SENT)
-                .build();
-    }
-
-    private OpenPosition buildOpenPosition(@NotNull TradingSignalDto dto, TradingSignal signal) {
-        BigDecimal entryPrice = dto.getEntryPrice() != null
-                ? BigDecimal.valueOf(dto.getEntryPrice()).setScale(0, java.math.RoundingMode.HALF_UP)
-                : BigDecimal.ZERO;
-
-        // slPrice: 절대가 우선, 없으면 % 기반 계산
-        BigDecimal slPrice = dto.getSlPrice() != null && dto.getSlPrice() > 0
-                ? BigDecimal.valueOf(dto.getSlPrice()).setScale(0, java.math.RoundingMode.HALF_UP)
-                : null;
-        if (slPrice == null && dto.getStopPct() != null) {
-            double calcSl = dto.calcStopPrice();
-            slPrice = calcSl > 0
-                    ? BigDecimal.valueOf(calcSl).setScale(0, java.math.RoundingMode.HALF_UP)
-                    : null;
-        }
-        if (slPrice == null) {
-            slPrice = entryPrice.multiply(new BigDecimal("0.97")).setScale(0, java.math.RoundingMode.HALF_UP);
-        }
-
-        BigDecimal tp1Price = dto.getTp1Price() != null && dto.getTp1Price() > 0
-                ? BigDecimal.valueOf(dto.getTp1Price()).setScale(0, java.math.RoundingMode.HALF_UP)
-                : null;
-        if (tp1Price == null && dto.getTargetPct() != null) {
-            double calcT1 = dto.calcTarget1Price();
-            tp1Price = calcT1 > 0
-                    ? BigDecimal.valueOf(calcT1).setScale(0, java.math.RoundingMode.HALF_UP)
-                    : null;
-        }
-
-        BigDecimal tp2Price = dto.getTp2Price() != null && dto.getTp2Price() > 0
-                ? BigDecimal.valueOf(dto.getTp2Price()).setScale(0, java.math.RoundingMode.HALF_UP)
-                : null;
-        if (tp2Price == null && dto.getTargetPct() != null) {
-            double calcT2 = dto.calcTarget2Price();
-            tp2Price = calcT2 > 0
-                    ? BigDecimal.valueOf(calcT2).setScale(0, java.math.RoundingMode.HALF_UP)
-                    : null;
-        }
-
-        // R:R 계산
-        BigDecimal rrRatio = dto.getRrRatio() != null
-                ? BigDecimal.valueOf(dto.getRrRatio()).setScale(2, java.math.RoundingMode.HALF_UP)
-                : null;
-        if (rrRatio == null && tp1Price != null && entryPrice.compareTo(BigDecimal.ZERO) > 0
-                && slPrice.compareTo(entryPrice) < 0) {
-            BigDecimal reward = tp1Price.subtract(entryPrice);
-            BigDecimal risk   = entryPrice.subtract(slPrice);
-            if (risk.compareTo(BigDecimal.ZERO) > 0) {
-                rrRatio = reward.divide(risk, 2, java.math.RoundingMode.HALF_UP);
-            }
-        }
-
-        return OpenPosition.builder()
-                .signal(signal)
-                .stkCd(StockCodeNormalizer.normalize(dto.getStkCd()))
-                .stkNm(dto.getStkNm())
-                .strategy(dto.getStrategy().name())
-                .market(dto.getMarketType())
                 .sector(resolveSector(dto.getThemeName()))
-                .entryPrice(entryPrice)
-                .tp1Price(tp1Price)
-                .tp2Price(tp2Price)
-                .slPrice(slPrice)
-                .tpMethod(dto.getTpMethod())
-                .slMethod(dto.getSlMethod())
-                .rrRatio(rrRatio)
+                .signalStatus(TradingSignal.SignalStatus.SENT)
+                .positionStatus(entryPrice != null && entryPrice.compareTo(BigDecimal.ZERO) > 0 ? "ACTIVE" : null)
+                .entryAt(entryPrice != null && entryPrice.compareTo(BigDecimal.ZERO) > 0 ? OffsetDateTime.now() : null)
+                .monitorEnabled(true)
+                .isOvernight(false)
+                .trailingPct(dto.getTrailingPct() != null
+                        ? BigDecimal.valueOf(dto.getTrailingPct()).setScale(2, RoundingMode.HALF_UP)
+                        : null)
+                .trailingActivation(dto.getTrailingActivation() != null
+                        ? BigDecimal.valueOf(dto.getTrailingActivation()).setScale(0, RoundingMode.HALF_UP)
+                        : null)
+                .trailingBasis(dto.getTrailingBasis())
+                .strategyVersion(dto.getStrategyVersion())
+                .timeStopType(dto.getTimeStopType())
+                .timeStopMinutes(dto.getTimeStopMinutes())
+                .timeStopSession(dto.getTimeStopSession())
                 .ruleScore(dto.getSignalScore() != null
-                        ? BigDecimal.valueOf(dto.getSignalScore()).setScale(2, java.math.RoundingMode.HALF_UP)
+                        ? BigDecimal.valueOf(dto.getSignalScore()).setScale(2, RoundingMode.HALF_UP)
                         : null)
                 .build();
     }
 
+    private BigDecimal resolveTargetPrice(Double directPrice, Double targetPct, TargetPriceCalculator fallback) {
+        if (directPrice != null && directPrice > 0) {
+            return BigDecimal.valueOf(directPrice).setScale(0, RoundingMode.HALF_UP);
+        }
+        if (targetPct == null) {
+            return null;
+        }
+        double calculated = fallback.calculate();
+        return calculated > 0 ? BigDecimal.valueOf(calculated).setScale(0, RoundingMode.HALF_UP) : null;
+    }
+
+    private BigDecimal resolveStopPrice(Double directPrice, Double stopPct, TargetPriceCalculator fallback, BigDecimal entryPrice) {
+        if (directPrice != null && directPrice > 0) {
+            return BigDecimal.valueOf(directPrice).setScale(0, RoundingMode.HALF_UP);
+        }
+        if (stopPct != null) {
+            double calculated = fallback.calculate();
+            if (calculated > 0) {
+                return BigDecimal.valueOf(calculated).setScale(0, RoundingMode.HALF_UP);
+            }
+        }
+        if (entryPrice != null && entryPrice.compareTo(BigDecimal.ZERO) > 0) {
+            return entryPrice.multiply(new BigDecimal("0.97")).setScale(0, RoundingMode.HALF_UP);
+        }
+        return null;
+    }
+
+    private BigDecimal deriveRr(BigDecimal entryPrice, BigDecimal tp1Price, BigDecimal slPrice) {
+        if (entryPrice == null || tp1Price == null || slPrice == null) {
+            return null;
+        }
+        if (entryPrice.compareTo(BigDecimal.ZERO) <= 0 || slPrice.compareTo(entryPrice) >= 0) {
+            return null;
+        }
+        BigDecimal reward = tp1Price.subtract(entryPrice);
+        BigDecimal risk = entryPrice.subtract(slPrice);
+        if (risk.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        return reward.divide(risk, 2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal toPrice(Double value) {
+        if (value == null || value <= 0) {
+            return null;
+        }
+        return BigDecimal.valueOf(value).setScale(0, RoundingMode.HALF_UP);
+    }
+
     private void logRiskEvent(String eventType, String stkCd, String strategy,
-                               Long signalId, BigDecimal threshold, BigDecimal actual,
-                               String description, String actionTaken) {
+                              Long signalId, BigDecimal threshold, BigDecimal actual,
+                              String description, String actionTaken) {
         try {
             RiskEvent event = RiskEvent.builder()
                     .eventType(eventType)
@@ -374,19 +309,20 @@ public class SignalService {
         }
     }
 
-    /**
-     * 섹터 과열 추적 – 1시간 내 동일 섹터 N건 이상 시 SECTOR_OVERHEAT 알림 발행
-     */
     private void trackSectorOverheat(String themeName) {
-        if (themeName == null || themeName.isBlank()) return;
+        if (themeName == null || themeName.isBlank()) {
+            return;
+        }
         String sector = resolveSector(themeName);
-        if (sector == null) return;
+        if (sector == null) {
+            return;
+        }
 
         try {
             long count = redisService.incrementSectorSignalCount(sector);
             int threshold = properties.getTrading().getSectorOverheatThreshold();
             if (count >= threshold) {
-                log.warn("[Signal] 섹터 과열 감지 {} {}건 (임계값={})", sector, count, threshold);
+                log.warn("[Signal] 섹터 과열 감지 {} {}건(임계값 {})", sector, count, threshold);
                 publishSectorOverheatAlert(sector, count, threshold);
             }
         } catch (Exception e) {
@@ -395,7 +331,9 @@ public class SignalService {
     }
 
     private String resolveSector(String themeName) {
-        if (themeName == null) return null;
+        if (themeName == null) {
+            return null;
+        }
         return THEME_TO_SECTOR.entrySet().stream()
                 .filter(e -> themeName.contains(e.getKey()))
                 .map(Map.Entry::getValue)
@@ -406,15 +344,20 @@ public class SignalService {
     private void publishSectorOverheatAlert(String sector, long count, int threshold) {
         try {
             String msg = objectMapper.writeValueAsString(Map.of(
-                    "type",      "SECTOR_OVERHEAT",
-                    "sector",    sector,
-                    "count",     count,
+                    "type", "SECTOR_OVERHEAT",
+                    "sector", sector,
+                    "count", count,
                     "threshold", threshold,
-                    "message",   String.format("⚠️ [섹터 과열] %s 섹터에 1시간 내 %d건 신호 발행 (임계값=%d)", sector, count, threshold)
+                    "message", String.format("⚠️ [섹터 과열] %s 섹터에 1시간 내 %d건 신호 발생 (임계값 %d)", sector, count, threshold)
             ));
             redisService.pushScoredQueue(msg);
         } catch (Exception e) {
             log.warn("[Signal] 섹터 과열 알림 발행 실패: {}", e.getMessage());
         }
+    }
+
+    @FunctionalInterface
+    private interface TargetPriceCalculator {
+        double calculate();
     }
 }

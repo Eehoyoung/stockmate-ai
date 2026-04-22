@@ -1,8 +1,6 @@
 """
 db_reader.py
-Python ai-engine → PostgreSQL 읽기 모듈 (asyncpg 기반).
-
-전략 스캐너 및 스코어러가 DB 캐시를 먼저 조회하여 API 호출을 최소화한다.
+Python ai-engine PostgreSQL read helpers (asyncpg based).
 """
 
 from __future__ import annotations
@@ -11,45 +9,43 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
+from position_lifecycle import ACTIVE_POSITION_STATES, ACTIVE_SIGNAL_STATUSES
+
 logger = logging.getLogger(__name__)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 1. daily_indicators — 기술지표 캐시 조회
-# ──────────────────────────────────────────────────────────────────────────────
+def _is_active_signal(signal_status: Optional[str], exit_type: Optional[str]) -> bool:
+    return (signal_status or "PENDING") in ACTIVE_SIGNAL_STATUSES and not exit_type
 
-async def get_daily_indicators(
-    pool,
-    stk_cd: str,
-    target_date: Optional[date] = None,
-) -> Optional[dict]:
-    """
-    daily_indicators 에서 해당 종목·날짜의 기술지표를 조회.
-    target_date 미지정 시 오늘 날짜 기준.
-    당일 데이터 없으면 None 반환 (호출 측에서 API 재호출 후 UPSERT 해야 함).
-    """
+
+def _build_position_row(row) -> dict:
+    data = dict(row)
+    status = str(data.get("position_status") or "ACTIVE")
+    if status not in ACTIVE_POSITION_STATES:
+        status = "ACTIVE"
+    data["status"] = status
+    data["signal_id"] = data["id"]
+    data["entry_at"] = data.get("entry_at") or data.get("executed_at") or data.get("created_at")
+    data["monitor_enabled"] = True if data.get("monitor_enabled") is None else bool(data.get("monitor_enabled"))
+    return data
+
+
+async def get_daily_indicators(pool, stk_cd: str, target_date: Optional[date] = None) -> Optional[dict]:
     if target_date is None:
         target_date = date.today()
     try:
         row = await pool.fetchrow(
             "SELECT * FROM daily_indicators WHERE stk_cd = $1 AND date = $2",
-            stk_cd, target_date,
+            stk_cd,
+            target_date,
         )
         return dict(row) if row else None
     except Exception as e:
-        logger.error("[DBReader] get_daily_indicators 오류 %s: %s", stk_cd, e)
+        logger.error("[DBReader] get_daily_indicators error %s: %s", stk_cd, e)
         return None
 
 
-async def get_daily_indicators_range(
-    pool,
-    stk_cd: str,
-    days: int = 20,
-) -> list[dict]:
-    """
-    최근 N일치 기술지표 목록 반환 (최신순).
-    MA 계산, 스윙포인트 탐색 등에 활용.
-    """
+async def get_daily_indicators_range(pool, stk_cd: str, days: int = 20) -> list[dict]:
     try:
         rows = await pool.fetch(
             """
@@ -64,101 +60,88 @@ async def get_daily_indicators_range(
         )
         return [dict(r) for r in rows]
     except Exception as e:
-        logger.error("[DBReader] get_daily_indicators_range 오류 %s: %s", stk_cd, e)
+        logger.error("[DBReader] get_daily_indicators_range error %s: %s", stk_cd, e)
         return []
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 2. open_positions — 포지션 상태 조회
-# ──────────────────────────────────────────────────────────────────────────────
-
 async def get_active_position(pool, stk_cd: str) -> Optional[dict]:
-    """
-    특정 종목의 활성 포지션 조회 (이중매수 방지 확인용).
-    ACTIVE / PARTIAL_TP / OVERNIGHT 상태만 반환.
-    """
     try:
-        row = await pool.fetchrow(
+        rows = await pool.fetch(
             """
-            SELECT * FROM open_positions
-            WHERE stk_cd = $1 AND status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
-            LIMIT 1
+            SELECT id, stk_cd, stk_nm, strategy, market_type, entry_price, tp1_price, tp2_price, sl_price,
+                   signal_status, exit_type, created_at, executed_at,
+                   position_status, entry_at, tp1_hit_at, peak_price, trailing_pct, trailing_activation,
+                   trailing_basis, strategy_version, time_stop_type, time_stop_minutes, time_stop_session,
+                   monitor_enabled, is_overnight, overnight_verdict, overnight_score
+            FROM trading_signals
+            WHERE stk_cd = $1
+              AND position_status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+              AND COALESCE(monitor_enabled, TRUE) = TRUE
+            ORDER BY COALESCE(entry_at, executed_at, created_at) DESC
             """,
             stk_cd,
         )
-        return dict(row) if row else None
+        for row in rows:
+            pos = _build_position_row(row)
+            if _is_active_signal(row["signal_status"], row["exit_type"]) and pos["monitor_enabled"]:
+                return pos
+        return None
     except Exception as e:
-        logger.error("[DBReader] get_active_position 오류 %s: %s", stk_cd, e)
+        logger.error("[DBReader] get_active_position error %s: %s", stk_cd, e)
         return None
 
 
 async def count_active_positions(pool) -> int:
-    """현재 활성 포지션 수 (최대 포지션 수 제한 체크용)."""
     try:
-        return await pool.fetchval(
-            "SELECT COUNT(*) FROM open_positions WHERE status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')"
-        ) or 0
+        rows = await pool.fetch(
+            """
+            SELECT id, signal_status, exit_type, position_status, monitor_enabled
+            FROM trading_signals
+            WHERE position_status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+            """
+        )
+        count = 0
+        for row in rows:
+            if not _is_active_signal(row["signal_status"], row["exit_type"]):
+                continue
+            if row["position_status"] in ACTIVE_POSITION_STATES and (row["monitor_enabled"] is None or row["monitor_enabled"]):
+                count += 1
+        return count
     except Exception as e:
-        logger.error("[DBReader] count_active_positions 오류: %s", e)
+        logger.error("[DBReader] count_active_positions error: %s", e)
         return 0
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 3. portfolio_config — 설정 조회
-# ──────────────────────────────────────────────────────────────────────────────
-
 async def get_portfolio_state(pool) -> dict:
-    """
-    portfolio_config 싱글턴 행 조회.
-    DB 접근 실패 시 안전한 기본값 반환 (서비스 중단 방지).
-    """
     defaults = {
-        "total_capital":        10_000_000,
-        "max_position_pct":     10.0,
-        "max_position_count":   5,
-        "max_sector_pct":       30.0,
+        "total_capital": 10_000_000,
+        "max_position_pct": 10.0,
+        "max_position_count": 5,
+        "max_sector_pct": 30.0,
         "daily_loss_limit_pct": 3.0,
-        "max_drawdown_pct":     10.0,
-        "sl_mandatory":         True,
-        "min_rr_ratio":         1.0,
-        "sizing_method":        "FIXED_PCT",
+        "max_drawdown_pct": 10.0,
+        "sl_mandatory": True,
+        "min_rr_ratio": 1.0,
+        "sizing_method": "FIXED_PCT",
     }
     try:
         row = await pool.fetchrow("SELECT * FROM portfolio_config WHERE id = 1")
-        if row:
-            return dict(row)
-        return defaults
+        return dict(row) if row else defaults
     except Exception as e:
-        logger.warning("[DBReader] get_portfolio_state 오류, 기본값 사용: %s", e)
+        logger.warning("[DBReader] get_portfolio_state error, using defaults: %s", e)
         return defaults
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 4. daily_pnl — 오늘 손익 상태 (일일 손실 한도 체크용)
-# ──────────────────────────────────────────────────────────────────────────────
 
 async def get_today_pnl(pool) -> Optional[dict]:
-    """오늘 daily_pnl 행 조회. 없으면 None."""
     try:
-        row = await pool.fetchrow(
-            "SELECT * FROM daily_pnl WHERE date = $1",
-            date.today(),
-        )
+        row = await pool.fetchrow("SELECT * FROM daily_pnl WHERE date = $1", date.today())
         return dict(row) if row else None
     except Exception as e:
-        logger.error("[DBReader] get_today_pnl 오류: %s", e)
+        logger.error("[DBReader] get_today_pnl error: %s", e)
         return None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 5. 전략 성과 조회 (임계값 자동 조정 등에 활용)
-# ──────────────────────────────────────────────────────────────────────────────
-
 async def get_strategy_win_rate(pool, strategy: str, days: int = 20) -> Optional[float]:
-    """
-    최근 N일 특정 전략의 승률 조회.
-    청산 완료된 신호 기준: TP_HIT → 승, SL_HIT/FORCE_CLOSE → 패.
-    """
     try:
         row = await pool.fetchrow(
             """
@@ -175,12 +158,12 @@ async def get_strategy_win_rate(pool, strategy: str, days: int = 20) -> Optional
             str(days),
         )
         if row:
-            wins   = row["wins"]   or 0
+            wins = row["wins"] or 0
             losses = row["losses"] or 0
-            total  = wins + losses
+            total = wins + losses
             if total > 0:
                 return round(wins / total * 100, 1)
         return None
     except Exception as e:
-        logger.error("[DBReader] get_strategy_win_rate 오류 %s: %s", strategy, e)
+        logger.error("[DBReader] get_strategy_win_rate error %s: %s", strategy, e)
         return None

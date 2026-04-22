@@ -137,6 +137,14 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
                     tp1_price=enriched.get("claude_tp1") or enriched.get("tp1_price"),
                     tp2_price=enriched.get("claude_tp2") or enriched.get("tp2_price"),
                     sl_price=enriched.get("claude_sl")  or enriched.get("sl_price"),
+                    rr_ratio=enriched.get("rr_ratio"),
+                    trailing_pct=enriched.get("trailing_pct"),
+                    trailing_activation=enriched.get("trailing_activation"),
+                    trailing_basis=enriched.get("trailing_basis"),
+                    strategy_version=enriched.get("strategy_version"),
+                    time_stop_type=enriched.get("time_stop_type"),
+                    time_stop_minutes=enriched.get("time_stop_minutes"),
+                    time_stop_session=enriched.get("time_stop_session"),
                 )
             elif signal_id and action == "CANCEL":
                 if cancel_type:

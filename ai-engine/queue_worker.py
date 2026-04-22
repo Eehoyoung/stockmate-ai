@@ -288,7 +288,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                     db_id,
                     rule_score=r_score,
                     ai_score=ai_score_val,
-                    rr_ratio=None,
+                    rr_ratio=_fv(signal.get("rr_ratio")),
                     action=action,
                     confidence=confidence,
                     ai_reason=display_reason,
@@ -323,6 +323,14 @@ async def process_one(rdb, pg_pool=None) -> bool:
                         tp1_price=_fv(enriched.get("claude_tp1") or enriched.get("tp1_price")),
                         tp2_price=_fv(enriched.get("claude_tp2") or enriched.get("tp2_price")),
                         sl_price=_fv(enriched.get("claude_sl") or enriched.get("sl_price")),
+                        rr_ratio=_fv(enriched.get("rr_ratio")),
+                        trailing_pct=_fv(enriched.get("trailing_pct")),
+                        trailing_activation=_fv(enriched.get("trailing_activation")),
+                        trailing_basis=enriched.get("trailing_basis"),
+                        strategy_version=enriched.get("strategy_version"),
+                        time_stop_type=enriched.get("time_stop_type"),
+                        time_stop_minutes=enriched.get("time_stop_minutes"),
+                        time_stop_session=enriched.get("time_stop_session"),
                     )
                 else:
                     if cancel_type:

@@ -20,7 +20,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from analyzer import analyze_exit
 from db_writer import (
@@ -34,6 +34,7 @@ from http_utils import fetch_stk_nm
 from redis_reader import get_tick_data
 
 logger = logging.getLogger("position_monitor")
+KST = timezone(timedelta(hours=9))
 
 # ── 전략별 트레일링 스탑 비율 (%) ────────────────────────────────
 _TRAILING_PCT_BY_STRATEGY: dict[str, float] = {
@@ -60,10 +61,124 @@ _TRAILING_PCT_BY_STRATEGY: dict[str, float] = {
 
 _TRAILING_PCT_DEFAULT = 1.5   # DB 컬럼 기본값 (이 값일 때만 전략 티어로 덮어씀)
 
+_TIME_STOP_PNL_GUARD: dict[str, float] = {
+    "S1_GAP_OPEN": 1.0,
+    "S2_VI_PULLBACK": 0.8,
+    "S3_INST_FRGN": 2.5,
+    "S4_BIG_CANDLE": 1.0,
+    "S5_PROG_FRGN": 2.5,
+    "S6_THEME_LAGGARD": 1.0,
+    "S7_ICHIMOKU_BREAKOUT": 3.0,
+    "S8_GOLDEN_CROSS": 3.0,
+    "S9_PULLBACK_SWING": 2.5,
+    "S10_NEW_HIGH": 4.0,
+    "S11_FRGN_CONT": 3.0,
+    "S12_CLOSING": 1.5,
+    "S13_BOX_BREAKOUT": 3.0,
+    "S14_OVERSOLD_BOUNCE": 1.5,
+    "S15_MOMENTUM_ALIGN": 3.0,
+}
+
 
 def _get_trailing_pct(strategy: str) -> float:
     """전략 이름 기반 트레일링 스탑 비율(%) 반환. 매핑 없으면 기본값 1.5."""
     return _TRAILING_PCT_BY_STRATEGY.get(strategy.upper(), _TRAILING_PCT_DEFAULT)
+
+
+def _business_days_held(entry_at, now_kst: datetime) -> int:
+    if entry_at is None:
+        return 0
+    if hasattr(entry_at, "tzinfo") and entry_at.tzinfo is not None:
+        cur = entry_at.astimezone(KST).date()
+    else:
+        cur = entry_at.date()
+    end = now_kst.date()
+    days = 0
+    while cur < end:
+        cur += timedelta(days=1)
+        if cur.weekday() < 5:
+            days += 1
+    return days
+
+
+def _resolve_time_stop_policy(pos: dict) -> tuple[str, int | None, str]:
+    strategy = str(pos.get("strategy") or "").upper()
+    stored_type = str(pos.get("time_stop_type") or "").strip()
+    stored_minutes = pos.get("time_stop_minutes")
+    stored_session = str(pos.get("time_stop_session") or "").strip()
+    if stored_type or stored_minutes is not None or stored_session:
+        return stored_type, int(stored_minutes) if stored_minutes is not None else None, stored_session
+
+    defaults: dict[str, tuple[str, int | None, str]] = {
+        "S1_GAP_OPEN": ("intraday_minutes", 60, "same_day_close"),
+        "S2_VI_PULLBACK": ("intraday_minutes", 30, "same_day_close"),
+        "S3_INST_FRGN": ("trading_days", 2, ""),
+        "S4_BIG_CANDLE": ("intraday_minutes", 20, "same_day_close"),
+        "S5_PROG_FRGN": ("trading_days", 2, ""),
+        "S6_THEME_LAGGARD": ("session_close", None, "same_day_close"),
+        "S7_ICHIMOKU_BREAKOUT": ("trading_days", 5, ""),
+        "S8_GOLDEN_CROSS": ("trading_days", 7, ""),
+        "S9_PULLBACK_SWING": ("trading_days", 5, ""),
+        "S10_NEW_HIGH": ("trading_days", 10, ""),
+        "S11_FRGN_CONT": ("trading_days", 7, ""),
+        "S12_CLOSING": ("session_close", None, "next_day_morning"),
+        "S13_BOX_BREAKOUT": ("trading_days", 7, ""),
+        "S14_OVERSOLD_BOUNCE": ("trading_days", 3, ""),
+        "S15_MOMENTUM_ALIGN": ("trading_days", 10, ""),
+    }
+    return defaults.get(strategy, ("", None, ""))
+
+
+def _should_trigger_time_stop(
+    pos: dict,
+    *,
+    cur_prc: int,
+    entry_price: int,
+    tp1_price: int,
+    status: str,
+    now_kst: datetime,
+) -> tuple[bool, str]:
+    if status not in {"ACTIVE", "OVERNIGHT"}:
+        return False, ""
+
+    entry_at = pos.get("entry_at")
+    if entry_at is None or entry_price <= 0:
+        return False, ""
+
+    if hasattr(entry_at, "tzinfo") and entry_at.tzinfo is not None:
+        entry_kst = entry_at.astimezone(KST)
+    else:
+        entry_kst = entry_at.replace(tzinfo=KST)
+
+    hold_min = max(0, int((now_kst - entry_kst).total_seconds() // 60))
+    pnl_pct = _pnl(entry_price, cur_prc)
+    strategy = str(pos.get("strategy") or "").upper()
+    pnl_guard = _TIME_STOP_PNL_GUARD.get(strategy, 2.0)
+    time_stop_type, time_stop_minutes, time_stop_session = _resolve_time_stop_policy(pos)
+
+    if time_stop_type == "intraday_minutes" and time_stop_minutes is not None:
+        if hold_min >= time_stop_minutes and cur_prc < max(tp1_price, entry_price) and pnl_pct < pnl_guard:
+            return True, f"{time_stop_minutes}분 내 follow-through 부재"
+
+    if time_stop_type == "session_close" and time_stop_session == "same_day_close":
+        if entry_kst.date() == now_kst.date() and now_kst.hour == 15 and now_kst.minute >= 18:
+            return True, "당일 전략 장마감 정리"
+
+    if time_stop_type == "session_close" and time_stop_session == "next_day_morning":
+        if now_kst.date() > entry_kst.date():
+            if (now_kst.hour > 10 or (now_kst.hour == 10 and now_kst.minute >= 30)) and pnl_pct < pnl_guard:
+                return True, "익일 오전 continuation 실패"
+
+    if time_stop_type == "trading_days" and time_stop_minutes is not None:
+        days_held = _business_days_held(entry_at, now_kst)
+        if days_held >= time_stop_minutes and cur_prc < max(tp1_price, entry_price) and pnl_pct < pnl_guard:
+            return True, f"{time_stop_minutes}거래일 내 목표 미달"
+
+    if time_stop_session == "same_day_close" and now_kst.hour == 15 and now_kst.minute >= 18:
+        if strategy in {"S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE", "S6_THEME_LAGGARD"}:
+            return True, "당일 전략 장마감 정리"
+
+    return False, ""
 
 
 MONITOR_INTERVAL_SEC    = int(os.getenv("POSITION_MONITOR_INTERVAL_SEC", "30"))
@@ -143,6 +258,7 @@ async def _check_position(rdb, pg_pool, pos: dict):
         trailing_pct = stored_trailing
     peak_price  = int(pos["peak_price"]) if pos.get("peak_price") else None
     status      = pos.get("status", "ACTIVE")
+    now_kst     = datetime.now(KST)
 
     # ── 현재가 읽기 (ws:tick) ─────────────────────────────────
     tick    = await get_tick_data(rdb, stk_cd)
@@ -172,6 +288,42 @@ async def _check_position(rdb, pg_pool, pos: dict):
         )
         if ok:
             await _publish_sell(rdb, pos, cur_prc, "SL_HIT", pnl_pct)
+        return
+
+    # ── 2. TIME_STOP ─────────────────────────────────────────
+    should_stop, time_stop_reason = _should_trigger_time_stop(
+        pos,
+        cur_prc=cur_prc,
+        entry_price=entry_price,
+        tp1_price=tp1_price,
+        status=status,
+        now_kst=now_kst,
+    )
+    if should_stop:
+        pnl_pct = _pnl(entry_price, cur_prc)
+        extra = {
+            "time_stop_reason": time_stop_reason,
+            "time_stop_type": pos.get("time_stop_type"),
+            "time_stop_minutes": pos.get("time_stop_minutes"),
+            "time_stop_session": pos.get("time_stop_session"),
+        }
+        await _publish_sell_recommendation(
+            rdb, pos, cur_prc, "TIME_STOP", pnl_pct,
+            trigger_price=cur_prc,
+            urgent=False,
+            partial=False,
+            reassessment=reassessment,
+            extra=extra,
+        )
+        ok = await close_open_position(
+            pg_pool, position_id,
+            signal_id=signal_id,
+            exit_type="TIME_STOP",
+            exit_price=cur_prc,
+            realized_pnl_pct=pnl_pct,
+        )
+        if ok:
+            await _publish_sell(rdb, pos, cur_prc, "TIME_STOP", pnl_pct, extra=extra)
         return
 
     # ── 2. TP2_HIT ───────────────────────────────────────────
@@ -404,6 +556,7 @@ def _build_recommendation_reason(recommendation_type: str, reassessment: dict, e
         "TP1": "TP1 도달로 부분매도 추천",
         "SL": "손절가 이탈로 즉시 손절 추천",
         "TRAILING": "트레일링 스탑 발동으로 잔여 물량 매도 추천",
+        "TIME_STOP": "시간 손절 기준 도달로 포지션 정리 추천",
     }
     parts = [base_map.get(recommendation_type, recommendation_type)]
     summary = reassessment.get("reason_summary")
@@ -411,6 +564,8 @@ def _build_recommendation_reason(recommendation_type: str, reassessment: dict, e
         parts.append(summary)
     if recommendation_type == "TRAILING" and extra.get("peak_price") and extra.get("trailing_pct") is not None:
         parts.append(f"고점 {int(extra['peak_price']):,}원 대비 {float(extra['trailing_pct']):.1f}% 하락")
+    if recommendation_type == "TIME_STOP" and extra.get("time_stop_reason"):
+        parts.append(str(extra["time_stop_reason"]))
     return " / ".join(parts)
 
 

@@ -52,6 +52,9 @@ class TpSlResult:
     trailing_pct: Optional[float] = None
     trailing_activation: Optional[float] = None
     trailing_basis: str = ""
+    time_stop_type: str = ""
+    time_stop_minutes: Optional[int] = None
+    time_stop_session: str = ""
     strategy_version: str = TP_SL_STRATEGY_VERSION
 
     def to_signal_fields(self) -> dict:
@@ -73,6 +76,12 @@ class TpSlResult:
             d["trailing_activation"] = round_to_tick(self.trailing_activation, "nearest")
         if self.trailing_basis:
             d["trailing_basis"] = self.trailing_basis
+        if self.time_stop_type:
+            d["time_stop_type"] = self.time_stop_type
+        if self.time_stop_minutes is not None:
+            d["time_stop_minutes"] = int(self.time_stop_minutes)
+        if self.time_stop_session:
+            d["time_stop_session"] = self.time_stop_session
         return d
 
 
@@ -261,6 +270,87 @@ def _slip_fee(stk_cd: str) -> float:
     return SLIP_FEE_KOSPI if str(stk_cd).startswith("0") else SLIP_FEE_KOSDAQ
 
 
+def _resolve_strategy_min_rr(strategy: str, requested_min_rr: float) -> float:
+    """
+    전략군별 최소 실효 R:R 하한.
+
+    호출자가 명시적으로 더 큰 값/다른 값을 넘긴 경우는 존중한다.
+    기본값(MIN_RR_RATIO)만 들어온 경우에만 전략군별 하한으로 교체한다.
+    """
+    if requested_min_rr != MIN_RR_RATIO:
+        return requested_min_rr
+
+    s = strategy.upper()
+    if s in {"S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE", "S6_THEME_LAGGARD"}:
+        return 1.6
+    if s in {"S3_INST_FRGN", "S5_PROG_FRGN", "S12_CLOSING", "S14_OVERSOLD_BOUNCE"}:
+        return 1.45
+    if s in {
+        "S7_ICHIMOKU_BREAKOUT", "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING",
+        "S10_NEW_HIGH", "S11_FRGN_CONT", "S13_BOX_BREAKOUT", "S15_MOMENTUM_ALIGN",
+    }:
+        return 1.55
+    return requested_min_rr
+
+
+def _attach_time_stop_policy(strategy: str, result: TpSlResult) -> TpSlResult:
+    """
+    전략별 시간청산 메타데이터 부착.
+
+    실제 판정은 position_monitor.py에서 수행한다.
+    """
+    s = strategy.upper()
+    if s == "S1_GAP_OPEN":
+        result.time_stop_type = "intraday_minutes"
+        result.time_stop_minutes = 60
+        result.time_stop_session = "same_day_close"
+    elif s == "S2_VI_PULLBACK":
+        result.time_stop_type = "intraday_minutes"
+        result.time_stop_minutes = 30
+        result.time_stop_session = "same_day_close"
+    elif s == "S3_INST_FRGN":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 2
+    elif s == "S4_BIG_CANDLE":
+        result.time_stop_type = "intraday_minutes"
+        result.time_stop_minutes = 20
+        result.time_stop_session = "same_day_close"
+    elif s == "S5_PROG_FRGN":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 2
+    elif s == "S6_THEME_LAGGARD":
+        result.time_stop_type = "session_close"
+        result.time_stop_session = "same_day_close"
+    elif s == "S7_ICHIMOKU_BREAKOUT":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 5
+    elif s == "S8_GOLDEN_CROSS":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 7
+    elif s == "S9_PULLBACK_SWING":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 5
+    elif s == "S10_NEW_HIGH":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 10
+    elif s == "S11_FRGN_CONT":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 7
+    elif s == "S12_CLOSING":
+        result.time_stop_type = "session_close"
+        result.time_stop_session = "next_day_morning"
+    elif s == "S13_BOX_BREAKOUT":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 7
+    elif s == "S14_OVERSOLD_BOUNCE":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 3
+    elif s == "S15_MOMENTUM_ALIGN":
+        result.time_stop_type = "trading_days"
+        result.time_stop_minutes = 10
+    return result
+
+
 def compute_rr(
     stk_cd: str,
     cur_prc: float,
@@ -279,6 +369,7 @@ def compute_rr(
     :returns: (rr_ratio, skip_entry) — skip_entry=True 이면 진입 취소 대상
     """
     slip = _slip_fee(stk_cd)
+    min_rr = _resolve_strategy_min_rr(strategy, min_rr)
     _min = min_rr if min_rr is not None else MIN_RR_RATIO
     return _calc_rr(cur_prc, tp_price, sl_price, slip, _min)
 
@@ -386,71 +477,101 @@ def calc_tp_sl(
 
     # ── 데이트레이딩 (S1/S2/S4) ───────────────────────────────
     if "S1_" in s or "GAP_OPEN" in s:
-        return _tp_sl_gap_open(cur_prc, prev_close, atr, slip, min_rr)
+        return _attach_time_stop_policy(strategy, _tp_sl_gap_open(cur_prc, prev_close, atr, slip, min_rr))
 
     if "S2_" in s or "VI_PULLBACK" in s:
-        return _tp_sl_vi_pullback(cur_prc, vi_price, atr, slip, min_rr)
+        return _attach_time_stop_policy(strategy, _tp_sl_vi_pullback(cur_prc, vi_price, atr, slip, min_rr))
 
     if "S3_" in s or "INST_FRGN" in s:
         _ma20 = ma20 or (sum(closes[:20]) / 20 if len(closes) >= 20 else None)
-        return _tp_sl_inst_frgn(cur_prc, highs, lows, closes, _ma20, atr, slip, min_rr)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_inst_frgn(cur_prc, highs, lows, closes, _ma20, atr, slip, min_rr),
+        )
 
     if "S4_" in s or "BIG_CANDLE" in s:
-        return _tp_sl_big_candle(cur_prc, candle_low, candle_high, atr, slip, min_rr)
+        return _attach_time_stop_policy(strategy, _tp_sl_big_candle(cur_prc, candle_low, candle_high, atr, slip, min_rr))
 
     if "S5_" in s or "PROG_FRGN" in s:
         _ma20 = ma20 or (sum(closes[:20]) / 20 if len(closes) >= 20 else None)
-        return _tp_sl_program_buy(cur_prc, highs, lows, closes, _ma20, atr, slip, min_rr)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_program_buy(cur_prc, highs, lows, closes, _ma20, atr, slip, min_rr),
+        )
 
     if "S6_" in s or "THEME" in s:
         _ma5 = ma5 or (sum(closes[:5]) / 5 if len(closes) >= 5 else None)
-        return _tp_sl_theme(cur_prc, highs, lows, closes, _ma5, atr, slip, min_rr)
+        return _attach_time_stop_policy(strategy, _tp_sl_theme(cur_prc, highs, lows, closes, _ma5, atr, slip, min_rr))
 
     # S7은 더 이상 장전/데이트레이딩 전략이 아니라 일목 스윙으로 고정한다.
     if "S7_" in s:
-        return _tp_sl_ichimoku_breakout(
+        return _attach_time_stop_policy(strategy, _tp_sl_ichimoku_breakout(
             cur_prc, highs, lows, closes, atr, slip, min_rr,
             macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist,
-        )
+        ))
 
     # ── 스윙 (S8~S15) ─────────────────────────────────────────
     if "S8_" in s or "GOLDEN" in s:
-        return _tp_sl_golden_cross(cur_prc, highs, lows, closes,
-                                   ma5, ma20, ma60, atr, bb_upper, slip, min_rr,
-                                   macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_golden_cross(cur_prc, highs, lows, closes,
+                                ma5, ma20, ma60, atr, bb_upper, slip, min_rr,
+                                macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
+        )
     if "S9_" in s or "PULLBACK_SWING" in s:
-        return _tp_sl_pullback(cur_prc, highs, lows, closes,
-                               ma5, ma20, ma60, atr, slip, min_rr,
-                               macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_pullback(cur_prc, highs, lows, closes,
+                            ma5, ma20, ma60, atr, slip, min_rr,
+                            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
+        )
     if "S10_" in s or "NEW_HIGH" in s:
-        return _tp_sl_new_high(cur_prc, highs, lows, closes,
-                               ma20, atr, slip, min_rr,
-                               macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_new_high(cur_prc, highs, lows, closes,
+                            ma20, atr, slip, min_rr,
+                            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
+        )
     if "S11_" in s or "FRGN_CONT" in s:
-        return _tp_sl_frgn_cont(cur_prc, highs, lows, closes,
-                                ma20, bb_upper, slip, min_rr,
-                                macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_frgn_cont(cur_prc, highs, lows, closes,
+                             ma20, bb_upper, slip, min_rr,
+                             macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
+        )
     if "S12_" in s or "CLOSING" in s:
-        return _tp_sl_closing(cur_prc, highs, lows, closes,
-                              ma5, ma20, atr, slip, min_rr,
-                              macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_closing(cur_prc, highs, lows, closes,
+                           ma5, ma20, atr, slip, min_rr,
+                           macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
+        )
     if "S13_" in s or "BOX" in s:
-        return _tp_sl_box_breakout(cur_prc, highs, lows, closes,
-                                   atr, slip, min_rr,
-                                   macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_box_breakout(cur_prc, highs, lows, closes,
+                                atr, slip, min_rr,
+                                macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
+        )
     if "S14_" in s or "OVERSOLD" in s:
         _ma20 = ma20 or (sum(closes[:20]) / 20 if len(closes) >= 20 else None)
         _ma60 = ma60 or (sum(closes[:60]) / 60 if len(closes) >= 60 else None)
-        return _tp_sl_oversold(cur_prc, highs, lows, _ma20, _ma60, atr, slip, min_rr,
-                               macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_oversold(cur_prc, highs, lows, _ma20, _ma60, atr, slip, min_rr,
+                            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
+        )
     if "S15_" in s or "MOMENTUM" in s:
-        return _tp_sl_momentum_align(cur_prc, highs, lows, closes,
-                                     ma20, atr, bb_upper, slip, min_rr,
-                                     macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist)
+        return _attach_time_stop_policy(
+            strategy,
+            _tp_sl_momentum_align(cur_prc, highs, lows, closes,
+                                  ma20, atr, bb_upper, slip, min_rr,
+                                  macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
+        )
 
     # 알 수 없는 전략 — ATR 폴백 또는 기본값
     logger.warning("[TP/SL] 알 수 없는 전략: %s → ATR 폴백", strategy)
-    return _tp_sl_atr_fallback(cur_prc, atr, slip, min_rr)
+    return _attach_time_stop_policy(strategy, _tp_sl_atr_fallback(cur_prc, atr, slip, min_rr))
 
 
 # ──────────────────────────────────────────────────────────────

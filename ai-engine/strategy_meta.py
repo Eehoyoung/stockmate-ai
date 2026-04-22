@@ -16,6 +16,7 @@ import os
 # ── 전략 분류 ────────────────────────────────────────────────────────────────
 # 스윙 전략 기본값 (SWING_STRATEGIES 환경변수로 오버라이드 가능)
 _DEFAULT_SWING = (
+    "S3_INST_FRGN,S5_PROG_FRGN,"
     "S7_ICHIMOKU_BREAKOUT,S8_GOLDEN_CROSS,S9_PULLBACK_SWING,S10_NEW_HIGH,"
     "S11_FRGN_CONT,S12_CLOSING,S13_BOX_BREAKOUT,"
     "S14_OVERSOLD_BOUNCE,S15_MOMENTUM_ALIGN"
@@ -30,9 +31,7 @@ SWING_STRATEGIES: frozenset[str] = frozenset(
 DAY_STRATEGIES: frozenset[str] = frozenset({
     "S1_GAP_OPEN",
     "S2_VI_PULLBACK",
-    "S3_INST_FRGN",
     "S4_BIG_CANDLE",
-    "S5_PROG_FRGN",
     "S6_THEME_LAGGARD",
 })
 

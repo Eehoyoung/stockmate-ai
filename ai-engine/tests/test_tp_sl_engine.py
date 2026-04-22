@@ -84,3 +84,37 @@ def test_tp1_has_minimum_distance_and_tp2_stays_above_tp1():
 
     assert result.tp1_price >= 103
     assert result.tp2_price is None or result.tp2_price > result.tp1_price
+
+
+def test_day_strategy_emits_time_stop_policy():
+    result = calc_tp_sl(
+        strategy="S1_GAP_OPEN",
+        cur_prc=100,
+        highs=[],
+        lows=[],
+        closes=[],
+        stk_cd="005930",
+        atr=2.0,
+        prev_close=98.0,
+    )
+
+    payload = result.to_signal_fields()
+    assert payload["time_stop_type"] == "intraday_minutes"
+    assert payload["time_stop_minutes"] == 60
+    assert payload["time_stop_session"] == "same_day_close"
+
+
+def test_strategy_specific_min_rr_is_stricter_for_day_trade():
+    result = calc_tp_sl(
+        strategy="S2_VI_PULLBACK",
+        cur_prc=100,
+        highs=[],
+        lows=[],
+        closes=[],
+        stk_cd="005930",
+        atr=1.5,
+        vi_price=102.0,
+    )
+
+    assert result.rr_ratio < 1.6
+    assert result.skip_entry is True

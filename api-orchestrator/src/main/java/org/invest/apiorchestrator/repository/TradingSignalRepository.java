@@ -78,4 +78,32 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
         GROUP BY s.strategy
         """)
     List<Object[]> getStrategyPerformanceStats(@Param("startAt") LocalDateTime startAt);
+
+    @Query("""
+        SELECT COUNT(s) > 0 FROM TradingSignal s
+        WHERE s.stkCd = :stkCd
+          AND s.positionStatus IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+        """)
+    boolean existsActivePosition(@Param("stkCd") String stkCd);
+
+    @Query("""
+        SELECT COUNT(s) FROM TradingSignal s
+        WHERE s.positionStatus IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+        """)
+    long countActivePositions();
+
+    @Query("""
+        SELECT s FROM TradingSignal s
+        WHERE s.positionStatus IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+        ORDER BY s.entryAt ASC NULLS LAST, s.createdAt ASC
+        """)
+    List<TradingSignal> findAllActivePositions();
+
+    @Query("""
+        SELECT s FROM TradingSignal s
+        WHERE s.positionStatus IN ('ACTIVE', 'PARTIAL_TP')
+          AND COALESCE(s.isOvernight, FALSE) = FALSE
+        ORDER BY s.entryAt ASC NULLS LAST, s.createdAt ASC
+        """)
+    List<TradingSignal> findOvernightCandidates();
 }

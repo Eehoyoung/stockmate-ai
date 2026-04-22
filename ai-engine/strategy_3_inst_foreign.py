@@ -19,6 +19,7 @@ from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
 from ma_utils import fetch_daily_candles, _safe_price, _calc_ma
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
+from utils import normalize_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
+_KA10055_MAX_PAGES = int(os.getenv("S3_KA10055_MAX_PAGES", "50"))
 
 
 async def fetch_intraday_investor(token: str, market_type: str = "000") -> list:
@@ -129,7 +131,7 @@ async def fetch_continuous_netbuy(token: str, market: str) -> dict:
             # 3. 데이터 파싱 및 저장
             items = data.get("orgn_frgnr_cont_trde_prst", [])
             for x in items:
-                stk_cd = x.get("stk_cd")
+                stk_cd = normalize_stock_code(x.get("stk_cd"))
                 if stk_cd:
                     raw_days = x.get("tot_cont_netprps_dys", "0")
                     # 부호(+) 제거 및 정수 변환
@@ -159,21 +161,31 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
     """ka10055 당일전일체결량 - 동시간 거래량 비율"""
 
     # 현재 시간 추출 (HHMMSS 형식) - 전일 데이터의 동시간 필터링을 위함
+    stk_cd = normalize_stock_code(stk_cd)
+    if not stk_cd:
+        return 0.0
+
     current_time = datetime.now().strftime("%H%M%S")
 
     async def get_total_volume(tdy_pred: str) -> int:
         total_qty = 0
         next_key = ""
         page = 0
-        MAX_PAGES = 50  # 안전 상한: 키움 휴장/시간외 empty-loop 방지
-
+        requested_next_keys = set()
+        prev_page_signature = None
+        repeated_page_count = 0
         async with kiwoom_client() as client:
             while True:
                 page += 1
-                if page > MAX_PAGES:
+                if page > _KA10055_MAX_PAGES:
                     logger.warning("[S3] ka10055 %s/%s 페이지 상한(%d) 도달, 루프 강제 종료",
-                                   stk_cd, tdy_pred, MAX_PAGES)
+                                   stk_cd, tdy_pred, _KA10055_MAX_PAGES)
                     break
+                if next_key:
+                    if next_key in requested_next_keys:
+                        logger.warning("[S3] ka10055 %s/%s next-key loop detected: %s", stk_cd, tdy_pred, next_key)
+                        break
+                    requested_next_keys.add(next_key)
 
                 headers = {
                     "api-id": "ka10055",
@@ -203,6 +215,8 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
                 if not items:
                     break
 
+                page_qty = 0
+
                 for x in items:
                     cntr_tm = x.get("cntr_tm", "")
 
@@ -215,8 +229,27 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
                         # 키움 API는 매도(-), 매수(+) 기호가 포함되므로 절대값으로 순수 거래량만 합산
                         clean_qty = abs(int(raw_qty.replace("+", "").replace("-", "").replace(",", "")))
                         total_qty += clean_qty
+                        page_qty += clean_qty
                     except ValueError:
                         pass
+
+                page_signature = (
+                    len(items),
+                    items[0].get("cntr_tm", ""),
+                    items[-1].get("cntr_tm", ""),
+                    items[0].get("cntr_qty", ""),
+                    items[-1].get("cntr_qty", ""),
+                    page_qty,
+                )
+                if page_signature == prev_page_signature:
+                    repeated_page_count += 1
+                    if repeated_page_count >= 2:
+                        logger.warning("[S3] ka10055 %s/%s repeated page payload detected - page=%d next_key=%s",
+                                       stk_cd, tdy_pred, page, next_key or "-")
+                        break
+                else:
+                    repeated_page_count = 0
+                prev_page_signature = page_signature
 
                 cont_yn = resp.headers.get("cont-yn", "N")
                 next_key = resp.headers.get("next-key", "").strip()
@@ -250,8 +283,8 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
 
     # 풀이 있으면 풀 종목만 필터
     if pool_codes:
-        pool_set = set(pool_codes)
-        smtm_list = [it for it in smtm_list if it.get("stk_cd") in pool_set]
+        pool_set = {normalize_stock_code(code) for code in pool_codes if normalize_stock_code(code)}
+        smtm_list = [it for it in smtm_list if normalize_stock_code(it.get("stk_cd")) in pool_set]
         logger.debug("[S3] 풀 필터 후 %d개", len(smtm_list))
     else:
         logger.debug("[S3] 풀 없음 – ka10063 전수 조회")
@@ -261,7 +294,9 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
 
     results = []
     for item in smtm_list[:10]:  # 429 방지: ka10055×2 호출 상한 10종목
-        stk_cd = item.get("stk_cd")
+        stk_cd = normalize_stock_code(item.get("stk_cd"))
+        if not stk_cd:
+            continue
         if stk_cd not in cont_map:
             continue
 

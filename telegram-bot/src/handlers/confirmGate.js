@@ -71,6 +71,14 @@ async function sendConfirmRequest(bot, allowedChatIds, item) {
             tpslLines.push(`R/R: 1:${rr}`);
         }
     }
+    if (item.time_stop_type || item.time_stop_session) {
+        const desc = [
+            item.time_stop_type ? `type=${item.time_stop_type}` : null,
+            item.time_stop_minutes != null ? `window=${item.time_stop_minutes}` : null,
+            item.time_stop_session ? `session=${item.time_stop_session}` : null,
+        ].filter(Boolean).join(', ');
+        tpslLines.push(`Time stop: ${desc}`);
+    }
 
     const text = [
         '<b>[매매 신호 컨펌 요청]</b>',

@@ -20,8 +20,7 @@ import java.time.LocalDateTime;
 public class ViEvent {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "vi_seq")
-    @SequenceGenerator(name = "vi_seq", sequenceName = "vi_events_seq", allocationSize = 50)
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     @Column(name = "stk_cd", nullable = false, length = 20)
