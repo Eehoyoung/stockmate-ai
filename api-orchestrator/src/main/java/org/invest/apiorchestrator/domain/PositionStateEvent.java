@@ -7,6 +7,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * position_state_events — 포지션 상태 변화 이벤트 이력 (V31)
@@ -40,7 +41,7 @@ public class PositionStateEvent {
 
     @Column(name = "event_ts", nullable = false)
     @Builder.Default
-    private OffsetDateTime eventTs = OffsetDateTime.now();
+    private OffsetDateTime eventTs = KstClock.nowOffset();
 
     /** 이벤트 발생 시점의 포지션 상태 (ACTIVE, PARTIAL_TP, OVERNIGHT, CLOSED …) */
     @Column(name = "position_status", length = 20)

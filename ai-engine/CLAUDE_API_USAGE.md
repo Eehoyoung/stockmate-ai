@@ -121,23 +121,18 @@ news_scheduler.py (주기 실행, 기본 30분)
   ↓ collect_news() → 금융 뉴스 수집
   ↓ analyze_news() → Claude API 호출
   ↓ 결과를 Redis에 저장
-      news:trading_control  → "CONTINUE | CAUTIOUS | PAUSE"
+      news:market_sentiment → "BULLISH | NEUTRAL | BEARISH"
+      news:sector_recommend → 추천 섹터 JSON
       news:analysis         → 전체 JSON 결과
 ```
 
 **queue_worker.py에서의 참조:**
-각 신호 처리 시작 시 `news:trading_control` 값을 확인한다.
-값이 `PAUSE`이면 Claude 분석 없이 즉시 `CANCEL` 처리한다.
+뉴스 기반 `trading_control`은 신호 처리에 사용하지 않는다.
+전략 실행 장세 구분은 KOSPI/KOSDAQ 등락률 기반 레짐(`bull/sideways/bear/neutral`)을 사용한다.
 
 ### 시스템 프롬프트 (`prompts/news_analysis.txt`)
 
-**매매 제어 결정 기준:**
-
-| 결정 | 조건 예시 |
-|---|---|
-| `PAUSE` (매매 중단) | 지정학적 긴장, 금리 쇼크, 서킷브레이커, 외국인 1조 이상 순매도, 금융 시스템 리스크 |
-| `CAUTIOUS` (신중 매매) | 혼조 장세, 섹터 순환, 선거/FOMC 불확실성, 코스피 -1.5% 이상 |
-| `CONTINUE` (정상 매매) | 위 조건에 해당하지 않는 일반 장세 |
+뉴스 분석은 시장 심리, 추천 섹터, 리스크 요약만 생성한다. 매매 제어는 뉴스가 아니라 지수 기반 레짐에서 처리한다.
 
 ### API 파라미터
 
@@ -152,7 +147,6 @@ news_scheduler.py (주기 실행, 기본 30분)
 ```json
 {
   "market_sentiment": "BULLISH | NEUTRAL | BEARISH",
-  "trading_control": "CONTINUE | CAUTIOUS | PAUSE",
   "recommended_sectors": ["반도체", "방산"],
   "risk_factors": ["리스크1", "리스크2"],
   "summary": "한국어 2~3줄 시장 상황 요약",
@@ -162,7 +156,7 @@ news_scheduler.py (주기 실행, 기본 30분)
 
 ### 폴백 처리
 
-Claude 호출 실패 시 기본값(`NEUTRAL`, `CONTINUE`)으로 대체하여 매매를 중단하지 않는다.
+Claude 호출 실패 시 시장 심리는 `NEUTRAL`로 대체하고, 매매 제어값은 생성하지 않는다.
 
 ---
 

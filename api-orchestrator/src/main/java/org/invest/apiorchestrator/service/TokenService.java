@@ -16,6 +16,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import org.invest.apiorchestrator.util.KstClock;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
@@ -100,10 +101,10 @@ public class TokenService {
         String expiresDt = resp.getExpiresDt();
         if (expiresDt != null && expiresDt.length() == 14) {
             expiresAt = LocalDateTime.parse(expiresDt, EXPIRES_DT_FMT);
-            redisTtlMinutes = Duration.between(LocalDateTime.now(), expiresAt).toMinutes() - 15;
+            redisTtlMinutes = Duration.between(KstClock.now(), expiresAt).toMinutes() - 15;
         } else {
             int ttlMinutes = properties.getApi().getTokenTtlMinutes();
-            expiresAt = LocalDateTime.now().plusMinutes(ttlMinutes);
+            expiresAt = KstClock.now().plusMinutes(ttlMinutes);
             redisTtlMinutes = ttlMinutes - 15L;
         }
 

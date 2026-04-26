@@ -222,7 +222,7 @@ async def _scan_all(rdb, pg_pool):
 
     trailing_count = sum(1 for p in positions if p.get("peak_price") and p.get("trailing_pct"))
     if trailing_count > 0:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(KST).strftime("%Y-%m-%d")
         try:
             await rdb.hset(f"exit_daily:{today}", "trailing_active", trailing_count)
             await rdb.expire(f"exit_daily:{today}", 86400)
@@ -437,7 +437,7 @@ async def _check_position(rdb, pg_pool, pos: dict):
         return
 
     # Claude 2차 판단
-    _today = datetime.now().strftime("%Y-%m-%d")
+    _today = datetime.now(KST).strftime("%Y-%m-%d")
     try:
         await rdb.hincrby(f"exit_daily:{_today}", "reversal_claude_calls", 1)
         await rdb.expire(f"exit_daily:{_today}", 86400)
@@ -473,7 +473,7 @@ async def _check_position(rdb, pg_pool, pos: dict):
 
 
 async def _record_exit_daily(rdb, exit_type: str, entry_at) -> None:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(KST).strftime("%Y-%m-%d")
     key   = f"exit_daily:{today}"
     try:
         pipe = rdb.pipeline()
@@ -558,7 +558,7 @@ async def _publish_sell_recommendation(
         "trend_state": (reassessment or {}).get("trend_state"),
         "momentum_state": (reassessment or {}).get("momentum_state"),
         "exit_bias": (reassessment or {}).get("exit_bias"),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(KST).isoformat(),
     }
     if extra:
         payload.update(extra)
@@ -630,7 +630,7 @@ async def _publish_sell(
         "tp1_price":  pos.get("tp1_price"),
         "tp2_price":  pos.get("tp2_price"),
         "realized_pnl_pct": round(pnl_pct, 4),
-        "timestamp":  datetime.now().isoformat(),
+        "timestamp":  datetime.now(KST).isoformat(),
     }
     if extra:
         payload.update(extra)

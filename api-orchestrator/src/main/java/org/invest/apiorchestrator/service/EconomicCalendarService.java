@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.*;
 import java.util.List;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * Feature 2 – 경제 캘린더 서비스.
@@ -23,7 +24,7 @@ public class EconomicCalendarService {
     /** 이번 주 이벤트 (월~일) */
     @Transactional(readOnly = true)
     public List<EconomicEvent> getThisWeekEvents() {
-        LocalDate today  = LocalDate.now();
+        LocalDate today  = KstClock.today();
         LocalDate monday = today.with(java.time.DayOfWeek.MONDAY);
         LocalDate sunday = monday.plusDays(6);
         return eventRepository.findByEventDateBetweenOrderByEventDateAsc(monday, sunday);
@@ -32,7 +33,7 @@ public class EconomicCalendarService {
     /** 오늘 이벤트 */
     @Transactional(readOnly = true)
     public List<EconomicEvent> getTodayEvents() {
-        return eventRepository.findByEventDateOrderByEventTimeAsc(LocalDate.now());
+        return eventRepository.findByEventDateOrderByEventTimeAsc(KstClock.today());
     }
 
     /**
@@ -40,8 +41,8 @@ public class EconomicCalendarService {
      */
     @Transactional(readOnly = true)
     public boolean hasHighImpactEventSoon(int withinMinutes) {
-        LocalDate today = LocalDate.now();
-        LocalTime now   = LocalTime.now();
+        LocalDate today = KstClock.today();
+        LocalTime now   = KstClock.nowTime();
         LocalTime limit = now.plusMinutes(withinMinutes);
 
         List<EconomicEvent> todayEvents = eventRepository.findByEventDateOrderByEventTimeAsc(today);

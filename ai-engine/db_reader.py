@@ -6,12 +6,13 @@ Python ai-engine PostgreSQL read helpers (asyncpg based).
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from position_lifecycle import ACTIVE_POSITION_STATES, ACTIVE_SIGNAL_STATUSES
 
 logger = logging.getLogger(__name__)
+KST    = timezone(timedelta(hours=9))
 
 
 def _is_active_signal(signal_status: Optional[str], exit_type: Optional[str]) -> bool:
@@ -32,7 +33,7 @@ def _build_position_row(row) -> dict:
 
 async def get_daily_indicators(pool, stk_cd: str, target_date: Optional[date] = None) -> Optional[dict]:
     if target_date is None:
-        target_date = date.today()
+        target_date = datetime.now(KST).date()
     try:
         row = await pool.fetchrow(
             "SELECT * FROM daily_indicators WHERE stk_cd = $1 AND date = $2",
@@ -55,7 +56,7 @@ async def get_daily_indicators_range(pool, stk_cd: str, days: int = 20) -> list[
             LIMIT $3
             """,
             stk_cd,
-            date.today() - timedelta(days=days + 5),
+            datetime.now(KST).date() - timedelta(days=days + 5),
             days,
         )
         return [dict(r) for r in rows]
@@ -134,7 +135,7 @@ async def get_portfolio_state(pool) -> dict:
 
 async def get_today_pnl(pool) -> Optional[dict]:
     try:
-        row = await pool.fetchrow("SELECT * FROM daily_pnl WHERE date = $1", date.today())
+        row = await pool.fetchrow("SELECT * FROM daily_pnl WHERE date = $1", datetime.now(KST).date())
         return dict(row) if row else None
     except Exception as e:
         logger.error("[DBReader] get_today_pnl error: %s", e)

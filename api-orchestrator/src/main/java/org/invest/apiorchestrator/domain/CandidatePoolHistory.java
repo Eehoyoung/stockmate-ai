@@ -6,6 +6,7 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * candidate_pool_history — 전략별 Redis 후보 풀 스냅샷 이력.
@@ -53,11 +54,11 @@ public class CandidatePoolHistory {
 
     @Column(name = "first_seen", nullable = false)
     @Builder.Default
-    private OffsetDateTime firstSeen = OffsetDateTime.now();
+    private OffsetDateTime firstSeen = KstClock.nowOffset();
 
     @Column(name = "last_seen", nullable = false)
     @Builder.Default
-    private OffsetDateTime lastSeen = OffsetDateTime.now();
+    private OffsetDateTime lastSeen = KstClock.nowOffset();
 
     @Column(name = "led_to_signal")
     @Builder.Default

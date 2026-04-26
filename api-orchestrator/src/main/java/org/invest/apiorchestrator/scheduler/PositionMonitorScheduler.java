@@ -16,6 +16,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
+import org.invest.apiorchestrator.util.KstClock;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -152,6 +153,6 @@ public class PositionMonitorScheduler {
         if (entryAt == null) {
             return 0;
         }
-        return (int) ChronoUnit.MINUTES.between(entryAt, OffsetDateTime.now());
+        return (int) ChronoUnit.MINUTES.between(entryAt, KstClock.nowOffset());
     }
 }

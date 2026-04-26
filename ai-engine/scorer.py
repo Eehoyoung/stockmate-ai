@@ -10,13 +10,14 @@ import json
 import logging
 import os
 import time
-from datetime import date, datetime
+from datetime import datetime, timedelta, timezone
 
 from utils import safe_float as _safe_float
 from strategy_meta import CLAUDE_THRESHOLDS as _META_CLAUDE_THRESHOLDS
 from strategy_meta import get_threshold as _meta_get_threshold
 
 logger    = logging.getLogger(__name__)
+KST       = timezone(timedelta(hours=9))
 MIN_SCORE = float(os.getenv("AI_SCORE_THRESHOLD", "60.0"))
 
 MAX_CLAUDE_CALLS_PER_DAY = int(os.getenv("MAX_CLAUDE_CALLS_PER_DAY", "100"))
@@ -74,7 +75,7 @@ def _time_bonus(strategy: str) -> float:
     시간대별 전략 보너스 점수 (+0~5점).
     장 시간 외에는 0 반환.
     """
-    now = datetime.now()
+    now = datetime.now(KST)
     h, m = now.hour, now.minute
     minute_of_day = h * 60 + m
 
@@ -499,21 +500,56 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
     _tb = _time_bonus(strategy)
     score += _tb
 
-    # 공통 패널티
+    # ── 장세 감지 ────────────────────────────────────────────────────────────
+    # bull(+0.5%↑) / sideways / bear(-0.5%↓) / neutral(데이터 없음)
+    _kospi_flu  = market_ctx.get("kospi_flu_rt")
+    _kosdaq_flu = market_ctx.get("kosdaq_flu_rt")
+    _idx_vals   = [v for v in (_kospi_flu, _kosdaq_flu) if v is not None]
+    if _idx_vals:
+        _idx_avg = sum(_idx_vals) / len(_idx_vals)
+        _regime  = "bull" if _idx_avg >= 0.5 else ("bear" if _idx_avg <= -0.5 else "sideways")
+    else:
+        _regime  = "neutral"
+        _idx_avg = 0.0
+
+    # ── 장세-전략 정합 보너스 (+5pt) ─────────────────────────────────────────
+    # 상승장 ↔ 모멘텀 전략, 하락장 ↔ 반등 전략, 횡보장 ↔ 기술적 돌파 전략
+    _BULL_STRATEGIES     = {"S1_GAP_OPEN", "S4_BIG_CANDLE", "S6_THEME_LAGGARD",
+                            "S8_GOLDEN_CROSS", "S10_NEW_HIGH", "S13_BOX_BREAKOUT"}
+    _BEAR_STRATEGIES     = {"S14_OVERSOLD_BOUNCE", "S9_PULLBACK_SWING", "S11_FRGN_CONT"}
+    _SIDEWAYS_STRATEGIES = {"S7_ICHIMOKU_BREAKOUT", "S13_BOX_BREAKOUT",
+                            "S8_GOLDEN_CROSS", "S11_FRGN_CONT", "S15_MOMENTUM_ALIGN"}
+
+    _regime_bonus = 0.0
+    if _regime == "bull"     and strategy in _BULL_STRATEGIES:
+        _regime_bonus = 5.0
+    elif _regime == "bear"   and strategy in _BEAR_STRATEGIES:
+        _regime_bonus = 5.0
+    elif _regime == "sideways" and strategy in _SIDEWAYS_STRATEGIES:
+        _regime_bonus = 3.0
+    score += _regime_bonus
+    _momentum_score += _regime_bonus
+
+    # ── 공통 패널티 (장세 적응형) ─────────────────────────────────────────────
     flu_rt_for_penalty = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
     _risk_penalty = 0.0
+
+    # 과열 등락률 패널티: 상승장은 고등락이 자연스러우므로 절반 완화
     if flu_rt_for_penalty > 15:
-        _risk_penalty = -20.0
+        _risk_penalty = -10.0 if _regime == "bull" else -20.0
     elif flu_rt_for_penalty > 10:
-        _risk_penalty = -10.0
-    if flu_rt_for_penalty < -5:
+        _risk_penalty = -5.0  if _regime == "bull" else -10.0
+
+    # 하락 패널티: 하락장에서는 -5% 이내 하락을 당연한 노이즈로 취급 → 임계 -8%
+    _bear_flu_threshold = -8.0 if _regime == "bear" else -5.0
+    if flu_rt_for_penalty < _bear_flu_threshold:
         _risk_penalty += -15.0
 
-    # 상한가 인접 패널티: KOSPI/KOSDAQ 상한가 30% 중 25% 초과는 추격 위험
+    # 상한가 인접 패널티: 상승장에서 25% 초과는 기대수익 여전히 있으므로 -10pt만
     if flu_rt_for_penalty > 25:
-        _risk_penalty -= 20.0
+        _risk_penalty -= 10.0 if _regime == "bull" else 20.0
 
-    # 절대 거래대금 패널티: 당일 누적 10억 미만은 유동성 부족
+    # 절대 거래대금 패널티: 당일 누적 10억 미만은 유동성 부족 (장세 무관)
     _acc_prica_raw = tick.get("acc_trde_prica", "")
     try:
         _acc_prica = float(str(_acc_prica_raw).replace(",", "").replace("+", "") or "0")
@@ -522,12 +558,13 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
     if 0 < _acc_prica < 1_000_000_000:
         _risk_penalty -= 10.0
 
-    # 섹터 과열 패널티: 동일 섹터에서 1시간 내 신호 3건 이상 발생
-    _sector_count = market_ctx.get("sector_count", 0)
-    if _sector_count >= 3:
+    # 섹터 과열 패널티: 상승장 테마 모멘텀은 4건까지 허용, 그 외 3건
+    _sector_count    = market_ctx.get("sector_count", 0)
+    _sector_threshold = 4 if _regime == "bull" else 3
+    if _sector_count >= _sector_threshold:
         _risk_penalty -= 15.0
 
-    # 시가총액 패널티
+    # 시가총액 패널티 (장세 무관 — 구조적 유동성 위험)
     _mktcap = market_ctx.get("market_cap_eok")
     if _mktcap is not None:
         if _mktcap < 100:
@@ -545,7 +582,9 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
         "technical_score": round(_technical_score, 2),
         "demand_score":    round(_demand_score, 2),
         "time_bonus":      round(_tb, 2),
+        "regime_bonus":    round(_regime_bonus, 2),
         "risk_penalty":    round(_risk_penalty, 2),
+        "regime":          _regime,
         "acc_trde_prica":  round(_acc_prica, 0),
         "sector_count":    _sector_count,
         "market_cap_eok":  _mktcap,
@@ -576,7 +615,7 @@ async def check_daily_limit(rdb) -> bool:
     일별 Claude 호출 상한 확인.
     반환: True = 한도 내 (호출 가능), False = 한도 초과 (건너뜀)
     """
-    today_str = date.today().strftime("%Y%m%d")
+    today_str = datetime.now(KST).strftime("%Y%m%d")
     key = f"claude:daily_calls:{today_str}"
     try:
         count = await rdb.incr(key)

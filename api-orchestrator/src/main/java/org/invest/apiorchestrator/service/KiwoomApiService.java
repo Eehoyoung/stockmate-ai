@@ -16,6 +16,7 @@ import reactor.util.retry.Retry;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import org.invest.apiorchestrator.util.KstClock;
 
 @Slf4j
 @Service
@@ -245,7 +246,7 @@ public class KiwoomApiService {
     public KiwoomApiResponses.DailyCandleResponse fetchKa10081(String stkCd) {
         stkCd = StockCodeNormalizer.normalize(stkCd);
         return post("ka10081", "/api/dostk/chart",
-                StrategyRequests.DailyCandleRequest.builder().stkCd(stkCd).baseDt(LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))).build(),
+                StrategyRequests.DailyCandleRequest.builder().stkCd(stkCd).baseDt(KstClock.today().format(DateTimeFormatter.ofPattern("yyyyMMdd"))).build(),
                 KiwoomApiResponses.DailyCandleResponse.class);
     }
 

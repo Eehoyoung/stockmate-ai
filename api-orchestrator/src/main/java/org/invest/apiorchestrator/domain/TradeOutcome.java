@@ -5,6 +5,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * trade_outcomes — 신호별 실현 결과 (V31)
@@ -43,7 +44,7 @@ public class TradeOutcome {
 
     @Column(name = "exit_ts", nullable = false)
     @Builder.Default
-    private OffsetDateTime exitTs = OffsetDateTime.now();
+    private OffsetDateTime exitTs = KstClock.nowOffset();
 
     @Column(name = "exit_price", precision = 10, scale = 0)
     private BigDecimal exitPrice;

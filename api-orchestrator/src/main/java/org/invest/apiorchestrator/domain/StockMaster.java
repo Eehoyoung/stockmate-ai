@@ -6,6 +6,7 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * stock_master — 종목 기준 정보.
@@ -63,5 +64,5 @@ public class StockMaster {
 
     @Column(name = "updated_at")
     @Builder.Default
-    private OffsetDateTime updatedAt = OffsetDateTime.now();
+    private OffsetDateTime updatedAt = KstClock.nowOffset();
 }

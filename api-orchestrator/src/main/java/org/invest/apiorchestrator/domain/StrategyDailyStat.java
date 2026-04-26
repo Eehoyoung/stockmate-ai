@@ -5,6 +5,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * strategy_daily_stats — 전략별 일별 집계.
@@ -65,5 +66,5 @@ public class StrategyDailyStat {
 
     @Column(name = "updated_at")
     @Builder.Default
-    private OffsetDateTime updatedAt = OffsetDateTime.now();
+    private OffsetDateTime updatedAt = KstClock.nowOffset();
 }

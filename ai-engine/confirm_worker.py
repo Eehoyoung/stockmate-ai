@@ -26,12 +26,36 @@ from utils import safe_float as _fv
 
 logger = logging.getLogger(__name__)
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
+HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 
 
 def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None) -> str:
     if action == "CANCEL" and cancel_reason:
         return cancel_reason
     return reason
+
+
+def _maybe_promote_hold_to_enter(result: dict) -> dict:
+    """Promote high-score Claude HOLD decisions into actionable ENTER signals."""
+    if str(result.get("action", "")).upper() != "HOLD":
+        return result
+    try:
+        score = float(result.get("ai_score"))
+    except (TypeError, ValueError):
+        return result
+    if score < HOLD_TO_ENTER_MIN_AI_SCORE:
+        return result
+
+    promoted = dict(result)
+    reason = str(promoted.get("reason") or "").strip() or "Claude HOLD"
+    promoted["action"] = "ENTER"
+    promoted["cancel_reason"] = None
+    promoted["confidence"] = promoted.get("confidence") or "HIGH"
+    promoted["reason"] = (
+        f"{reason} | HOLD promoted to ENTER because ai_score "
+        f"{score:.1f} >= {HOLD_TO_ENTER_MIN_AI_SCORE:.1f}"
+    )
+    return promoted
 
 
 def _raw_rr(entry, tp, sl) -> float | None:
@@ -162,6 +186,7 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
                 }
                 cancel_type = "AI_UNAVAILABLE"
 
+        result = _maybe_promote_hold_to_enter(result)
         display_reason = _resolve_display_reason(
             result.get("action", "HOLD"),
             result.get("reason", ""),

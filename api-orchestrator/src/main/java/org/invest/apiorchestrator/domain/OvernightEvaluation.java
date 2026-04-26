@@ -7,6 +7,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * overnight_evaluations — Python overnight_worker 가 INSERT.
@@ -76,5 +77,5 @@ public class OvernightEvaluation {
 
     @Column(name = "evaluated_at", nullable = false)
     @Builder.Default
-    private OffsetDateTime evaluatedAt = OffsetDateTime.now();
+    private OffsetDateTime evaluatedAt = KstClock.nowOffset();
 }

@@ -290,12 +290,6 @@ function formatNewsBriefResponse(brief) {
         CLOSE: '15:40 브리핑',
     }[slotName] || '실시간 브리핑';
 
-    const controlLabel = {
-        CONTINUE: '정상',
-        CAUTIOUS: '주의',
-        PAUSE: '중단',
-    }[String(analysis.trading_control || 'CONTINUE').toUpperCase()] || String(analysis.trading_control || 'CONTINUE');
-
     const sentimentLabel = {
         BULLISH: '강세 우위',
         NEUTRAL: '중립',
@@ -323,7 +317,7 @@ function formatNewsBriefResponse(brief) {
 
     const lines = [
         `📰 <b>${slotLabel}</b>`,
-        `현재 국장: <b>${controlLabel}</b> | 시장 톤: <b>${sentimentLabel}</b>`,
+        `시장 톤: <b>${sentimentLabel}</b>`,
     ];
 
     if (marketLine) {
@@ -889,7 +883,6 @@ const newsStatus = guard(async (ctx) => {
     }
 
     const redis = getClient();
-    const control = await redis.get('news:trading_control') || 'CONTINUE';
     const sentiment = await redis.get('news:market_sentiment') || 'NEUTRAL';
     const sectorsRaw = await redis.get('news:sector_recommend');
     let sectors = [];
@@ -901,7 +894,7 @@ const newsStatus = guard(async (ctx) => {
         if (analysisRaw) analysis = JSON.parse(analysisRaw);
     } catch (_) {}
 
-    await ctx.reply(formatNewsStatus({ analysis, control, sentiment, sectors }), { parse_mode: 'HTML' });
+    await ctx.reply(formatNewsStatus({ analysis, sentiment, sectors }), { parse_mode: 'HTML' });
 });
 
 /** /섹터 – 섹터 분석 현황 */

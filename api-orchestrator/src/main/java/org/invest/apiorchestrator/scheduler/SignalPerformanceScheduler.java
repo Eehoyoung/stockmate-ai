@@ -22,6 +22,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import org.invest.apiorchestrator.util.KstClock;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -54,7 +55,7 @@ public class SignalPerformanceScheduler {
     @Scheduled(cron = "0 0/10 9-15 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void updatePerformance() {
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         List<TradingSignal> sentSignals =
                 signalRepository.findBySignalStatusAndCreatedAtAfter(
                         TradingSignal.SignalStatus.SENT, startOfDay);
@@ -87,7 +88,7 @@ public class SignalPerformanceScheduler {
     @Scheduled(cron = "0 35 15 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void expireSentSignals() {
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         List<TradingSignal> sentSignals =
                 signalRepository.findBySignalStatusAndCreatedAtAfter(
                         TradingSignal.SignalStatus.SENT, startOfDay);
@@ -110,7 +111,7 @@ public class SignalPerformanceScheduler {
     @Transactional
     public void aggregateDailyStats() {
         log.info("=== 일별 성과 집계 시작 (15:45) ===");
-        LocalDate today = LocalDate.now();
+        LocalDate today = KstClock.today();
         LocalDateTime startOfDay = LocalDateTime.of(today, LocalTime.MIDNIGHT);
 
         try {

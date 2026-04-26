@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
+import org.invest.apiorchestrator.util.KstClock;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -127,7 +128,7 @@ public class StockMasterScheduler {
                             .isActive(true)
                             .marketCap(marketCap)
                             .lastPrice(price)
-                            .lastPriceDate(price != null ? LocalDate.now() : null)
+                            .lastPriceDate(price != null ? KstClock.today() : null)
                             .build());
                 } else {
                     // 이름·가격·시총 업데이트 (sector/industry 는 수동 관리)
@@ -143,7 +144,7 @@ public class StockMasterScheduler {
                             .isActive(true)
                             .marketCap(marketCap)
                             .lastPrice(price)
-                            .lastPriceDate(price != null ? LocalDate.now() : null)
+                            .lastPriceDate(price != null ? KstClock.today() : null)
                             .build());
                 }
                 if (marketCap != null) {

@@ -6,6 +6,7 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * market_daily_context — 시장 전체 컨텍스트.
@@ -65,5 +66,5 @@ public class MarketDailyContext {
 
     @Column(name = "recorded_at")
     @Builder.Default
-    private OffsetDateTime recordedAt = OffsetDateTime.now();
+    private OffsetDateTime recordedAt = KstClock.nowOffset();
 }

@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import org.invest.apiorchestrator.util.KstClock;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -227,7 +228,7 @@ public class StrategyService {
         try {
             var resp = apiService.post(
                     "ka10080", "/api/dostk/chart",
-                    StrategyRequests.MinuteCandleRequest.builder().stkCd(stkCd).ticScope("5").baseDt(LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))).build(),
+                    StrategyRequests.MinuteCandleRequest.builder().stkCd(stkCd).ticScope("5").baseDt(KstClock.today().format(DateTimeFormatter.ofPattern("yyyyMMdd"))).build(),
                     KiwoomApiResponses.MinuteCandleResponse.class);
 
             if (resp.getCandles() == null || resp.getCandles().size() < 10)

@@ -8,6 +8,7 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.LocalDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 @Entity
 @Table(name = "trading_signals", indexes = {
@@ -295,7 +296,7 @@ public class TradingSignal {
 
     public void closeSignal(double pnl) {
         this.realizedPnl = pnl;
-        this.closedAt = LocalDateTime.now();
+        this.closedAt = KstClock.now();
         this.positionStatus = "CLOSED";
         this.signalStatus = pnl >= 0 ? SignalStatus.WIN : SignalStatus.LOSS;
     }
@@ -309,8 +310,8 @@ public class TradingSignal {
         this.exitPnlPct = exitPnlPct;
         this.exitPnlAbs = exitPnlAbs;
         this.holdDurationMin = holdDurationMin;
-        this.exitedAt = OffsetDateTime.now();
-        this.closedAt = LocalDateTime.now();
+        this.exitedAt = KstClock.nowOffset();
+        this.closedAt = KstClock.now();
         this.positionStatus = "CLOSED";
         if (exitType.startsWith("TP")) {
             this.signalStatus = SignalStatus.WIN;
@@ -330,12 +331,12 @@ public class TradingSignal {
     public void activatePosition() {
         this.positionStatus = "ACTIVE";
         if (this.entryAt == null) {
-            this.entryAt = OffsetDateTime.now();
+            this.entryAt = KstClock.nowOffset();
         }
     }
 
     public void markTp1Hit(int exitQty, int remainingQty, BigDecimal currentPrice) {
-        this.tp1HitAt = OffsetDateTime.now();
+        this.tp1HitAt = KstClock.nowOffset();
         this.tp1ExitQty = exitQty;
         this.remainingQty = remainingQty;
         this.peakPrice = currentPrice;

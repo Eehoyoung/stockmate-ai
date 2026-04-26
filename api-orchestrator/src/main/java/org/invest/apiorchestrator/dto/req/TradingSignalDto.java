@@ -3,6 +3,7 @@ package org.invest.apiorchestrator.dto.req;
 import lombok.Builder;
 import lombok.Getter;
 import org.invest.apiorchestrator.domain.TradingSignal;
+import org.invest.apiorchestrator.util.KstClock;
 import org.invest.apiorchestrator.util.StockCodeNormalizer;
 
 import java.time.LocalDateTime;
@@ -139,7 +140,7 @@ public class TradingSignalDto {
         m.put("time_stop_type", timeStopType);
         m.put("time_stop_minutes", timeStopMinutes);
         m.put("time_stop_session", timeStopSession);
-        m.put("signal_time",     signalTime != null ? signalTime.toString() : LocalDateTime.now().toString());
+        m.put("signal_time",     signalTime != null ? signalTime.toString() : KstClock.now().toString());
         m.put("cur_prc",         entryPrice);  // 진입가 = 현재가 (신호 발생 시점)
         m.put("message",         toTelegramMessage());
         return m;

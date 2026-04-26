@@ -30,6 +30,7 @@ from redis_reader import (
     get_avg_cntr_strength,
     get_hoga_data,
     get_market_freshness,
+    get_market_index_exp_flu_rt,
     get_market_index_flu_rt,
     get_sector_overheat_count,
     get_stock_market_cap,
@@ -53,17 +54,33 @@ FAILURE_TYPE = "PROCESSING_ERROR"
 _KST = timezone(timedelta(hours=9))
 _PIPELINE_TTL_SEC = 172800
 
+# ── 하드게이트 기준값 (장세 보정 전 기준) ─────────────────────────────────
+# 상승장(bull)에서는 _REGIME_GATE_FACTOR 만큼 임계값 완화.
+# S1/S6/S13은 데이트레이딩 성격상 신규 추가.
 _HARD_GATES = {
-    "S4_BIG_CANDLE": {"strength": 125.0, "bid_ratio": 1.4},
-    "S10_NEW_HIGH": {"strength": 115.0, "bid_ratio": 1.2},
-    "S12_CLOSING": {"strength": 120.0, "bid_ratio": 1.5},
+    "S1_GAP_OPEN":        {"strength": 110.0, "bid_ratio": 1.3},
+    "S4_BIG_CANDLE":      {"strength": 125.0, "bid_ratio": 1.4},
+    "S6_THEME_LAGGARD":   {"strength": 120.0, "bid_ratio": 1.2},
+    "S10_NEW_HIGH":       {"strength": 115.0, "bid_ratio": 1.2},
+    "S12_CLOSING":        {"strength": 120.0, "bid_ratio": 1.5},
+    "S13_BOX_BREAKOUT":   {"strength": 115.0, "bid_ratio": 1.3},
     "S15_MOMENTUM_ALIGN": {"strength": 120.0, "bid_ratio": 1.3},
 }
+
+# bull: 임계값을 12% 완화, bear: 역방향 전략(S9/S14)은 gates 적용 안 함
+_REGIME_GATE_FACTOR = {"bull": 0.88, "sideways": 1.0, "bear": 1.0, "neutral": 1.0}
+# bear 장세에서 반등 전략은 weak momentum이 당연하므로 gate 면제
+_BEAR_GATE_EXEMPT = {"S9_PULLBACK_SWING", "S14_OVERSOLD_BOUNCE", "S11_FRGN_CONT"}
+
+# ── R:R 사전필터 장세별 임계값 ─────────────────────────────────────────────
+# bull: 모멘텀이 슬리피지를 상쇄 → 0.65, bear: 리스크 엄격 → 0.80
+_RR_BY_REGIME = {"bull": 0.65, "sideways": 0.75, "bear": 0.80, "neutral": 0.75}
 
 _S12_START_MINUTE = 14 * 60 + 30
 _S12_END_MINUTE = 15 * 60 + 10
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 RR_CAUTION_THRESHOLD = float(os.getenv("RR_CAUTION_THRESHOLD", "1.2"))
+HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 
 
 async def _incr_pipeline(rdb, strategy: str, field: str) -> None:
@@ -163,10 +180,40 @@ def _resolve_bid_ratio(signal: dict, ctx: dict) -> float | None:
     return None
 
 
+def _detect_market_regime(ctx: dict, strategy: str = "") -> str:
+    """KOSPI/KOSDAQ 지수 등락률 평균으로 장세 판단.
+    bull: ≥+0.5%, bear: ≤-0.5%, sideways: 그 외, neutral: 데이터 없음.
+
+    S1_GAP_OPEN: 08:30~09:00 동시호가 예상 등락률이 있으면 그것을 우선 사용.
+    09:05 이후에는 exp 키 TTL(5분) 만료 → 실제 flu_rt로 자동 전환.
+    """
+    if strategy == "S1_GAP_OPEN":
+        kospi  = ctx.get("kospi_exp_flu_rt")  or ctx.get("kospi_flu_rt")
+        kosdaq = ctx.get("kosdaq_exp_flu_rt") or ctx.get("kosdaq_flu_rt")
+    else:
+        kospi  = ctx.get("kospi_flu_rt")
+        kosdaq = ctx.get("kosdaq_flu_rt")
+    vals = [v for v in (kospi, kosdaq) if v is not None]
+    if not vals:
+        return "neutral"
+    avg = sum(vals) / len(vals)
+    if avg >= 0.5:
+        return "bull"
+    if avg <= -0.5:
+        return "bear"
+    return "sideways"
+
+
 def _hard_gate_failure(signal: dict, ctx: dict) -> str | None:
     strategy = signal.get("strategy", "")
     gate = _HARD_GATES.get(strategy)
     if not gate:
+        return None
+
+    regime = _detect_market_regime(ctx, strategy)
+
+    # 하락장에서 반등 전략은 낮은 체결강도가 당연 — gate 면제
+    if regime == "bear" and strategy in _BEAR_GATE_EXEMPT:
         return None
 
     if strategy == "S12_CLOSING":
@@ -175,15 +222,19 @@ def _hard_gate_failure(signal: dict, ctx: dict) -> str | None:
         if not (_S12_START_MINUTE <= minute < _S12_END_MINUTE):
             return "time window outside 14:30~15:10"
 
-    strength = _resolve_execution_strength(signal, ctx)
+    factor = _REGIME_GATE_FACTOR.get(regime, 1.0)
+    req_strength = gate["strength"] * factor
+    req_bid      = gate["bid_ratio"] * factor
+
+    strength  = _resolve_execution_strength(signal, ctx)
     bid_ratio = _resolve_bid_ratio(signal, ctx)
     failures = []
-    if strength < gate["strength"]:
-        failures.append(f"strength {strength:.1f} < {gate['strength']:.1f}")
+    if strength < req_strength:
+        failures.append(f"strength {strength:.1f} < {req_strength:.1f}({regime})")
     if bid_ratio is None:
-        failures.append(f"bid_ratio missing < {gate['bid_ratio']:.1f}")
-    elif bid_ratio < gate["bid_ratio"]:
-        failures.append(f"bid_ratio {bid_ratio:.2f} < {gate['bid_ratio']:.1f}")
+        failures.append(f"bid_ratio missing < {req_bid:.2f}({regime})")
+    elif bid_ratio < req_bid:
+        failures.append(f"bid_ratio {bid_ratio:.2f} < {req_bid:.2f}({regime})")
     if failures:
         return "; ".join(failures)
     return None
@@ -202,12 +253,19 @@ def _freshness_cancel_reason(ctx: dict) -> str | None:
     return None
 
 
-def _rr_prefilter_reason(signal: dict) -> str | None:
+def _rr_prefilter_reason(signal: dict, ctx: dict | None = None) -> str | None:
     rr = _fv(signal.get("rr_ratio"), None)
     if rr is None:
         return None
-    if rr < RR_HARD_CANCEL_THRESHOLD:
-        return f"R:R {rr:.2f} below {RR_HARD_CANCEL_THRESHOLD:.2f}"
+    strategy = signal.get("strategy", "")
+    regime = _detect_market_regime(ctx, strategy) if ctx else "neutral"
+    # 하락장 반등 전략은 bear 장세가 오히려 진입 근거 → bull 임계값으로 완화
+    if regime == "bear" and strategy in _BEAR_GATE_EXEMPT:
+        threshold = _RR_BY_REGIME["bull"]
+    else:
+        threshold = _RR_BY_REGIME.get(regime, RR_HARD_CANCEL_THRESHOLD)
+    if rr < threshold:
+        return f"R:R {rr:.2f} below {threshold:.2f}({regime})"
     return None
 
 
@@ -221,6 +279,31 @@ def _rr_quality_bucket(rr: float | None) -> str:
     if rr < 1.5:
         return "acceptable"
     return "strong"
+
+
+def _maybe_promote_hold_to_enter(
+    *,
+    action: str,
+    confidence: str,
+    reason: str,
+    cancel_reason: str | None,
+    ai_score: float | None,
+) -> tuple[str, str, str, str | None]:
+    """Promote high-score Claude HOLD decisions into actionable ENTER signals."""
+    if str(action).upper() != "HOLD":
+        return action, confidence, reason, cancel_reason
+    try:
+        score = float(ai_score)
+    except (TypeError, ValueError):
+        return action, confidence, reason, cancel_reason
+    if score < HOLD_TO_ENTER_MIN_AI_SCORE:
+        return action, confidence, reason, cancel_reason
+
+    promoted_reason = (
+        f"{reason} | HOLD promoted to ENTER because ai_score "
+        f"{score:.1f} >= {HOLD_TO_ENTER_MIN_AI_SCORE:.1f}"
+    )
+    return "ENTER", confidence or "HIGH", promoted_reason, None
 
 
 def _compute_signal_quality(signal: dict, ctx: dict, rule_score_value: float) -> dict:
@@ -385,8 +468,9 @@ async def _build_market_ctx(rdb, stk_cd: str, *, sector: str = "", signal: dict 
         get_sector_overheat_count(rdb, sector),
         get_market_index_flu_rt(rdb),
         get_stock_market_cap(rdb, stk_cd),
+        get_market_index_exp_flu_rt(rdb),
     ]
-    tick, hoga, strength, vi, freshness, sector_count, index_flu, market_cap = await asyncio.gather(*tasks)
+    tick, hoga, strength, vi, freshness, sector_count, index_flu, market_cap, exp_flu = await asyncio.gather(*tasks)
     return {
         "tick": tick,
         "hoga": hoga,
@@ -396,6 +480,8 @@ async def _build_market_ctx(rdb, stk_cd: str, *, sector: str = "", signal: dict 
         "sector_count": sector_count,
         "kospi_flu_rt": index_flu.get("kospi_flu_rt"),
         "kosdaq_flu_rt": index_flu.get("kosdaq_flu_rt"),
+        "kospi_exp_flu_rt": exp_flu.get("kospi_exp_flu_rt"),
+        "kosdaq_exp_flu_rt": exp_flu.get("kosdaq_exp_flu_rt"),
         "market_cap_eok": market_cap,
     }
 
@@ -471,7 +557,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             cancel_type = "RULE_THRESHOLD"
             await _incr_pipeline(rdb, strategy, "cancel_score")
         else:
-            rr_prefilter_reason = _rr_prefilter_reason(signal)
+            rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
             hard_gate_reason = _hard_gate_failure(signal, ctx)
             stale_reason = _freshness_cancel_reason(ctx)
             if rr_prefilter_reason:
@@ -506,6 +592,13 @@ async def process_one(rdb, pg_pool=None) -> bool:
                         confidence = ai_result.get("confidence", "HIGH")
                         reason = ai_result.get("reason", f"Rule score {r_score:.1f} passed")
                         cancel_reason = ai_result.get("cancel_reason")
+                        action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
+                            action=action,
+                            confidence=confidence,
+                            reason=reason,
+                            cancel_reason=cancel_reason,
+                            ai_score=ai_score_val,
+                        )
                         if action == "ENTER":
                             await _incr_pipeline(rdb, strategy, "ai_pass")
                         else:

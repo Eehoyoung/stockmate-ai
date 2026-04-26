@@ -6,6 +6,7 @@ import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
 import java.time.LocalDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 @Entity
 @Table(name = "kiwoom_tokens")   // V33: kiwoom_token → kiwoom_tokens 로 RENAME 확정
@@ -39,7 +40,7 @@ public class KiwoomToken {
     private LocalDateTime updatedAt;
 
     public boolean isExpired() {
-        return LocalDateTime.now().isAfter(expiresAt.minusMinutes(10));
+        return KstClock.now().isAfter(expiresAt.minusMinutes(10));
     }
 
     public String getBearerToken() {

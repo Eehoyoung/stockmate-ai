@@ -5,6 +5,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * signal_score_components — Python scorer.py 컴포넌트 상세 기록
@@ -53,5 +54,5 @@ public class SignalScoreComponents {
 
     @Column(name = "computed_at")
     @Builder.Default
-    private OffsetDateTime computedAt = OffsetDateTime.now();
+    private OffsetDateTime computedAt = KstClock.nowOffset();
 }

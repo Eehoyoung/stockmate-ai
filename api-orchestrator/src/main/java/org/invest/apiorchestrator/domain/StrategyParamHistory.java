@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * strategy_param_history — 전략 파라미터 변경 이력.
@@ -36,7 +37,7 @@ public class StrategyParamHistory {
 
     @Column(name = "changed_at", nullable = false)
     @Builder.Default
-    private OffsetDateTime changedAt = OffsetDateTime.now();
+    private OffsetDateTime changedAt = KstClock.nowOffset();
 
     @Column(name = "changed_by", length = 50)
     private String changedBy;

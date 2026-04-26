@@ -14,6 +14,7 @@ import asyncio
 import httpx
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 
 from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
 from ma_utils import fetch_daily_candles, _safe_price, _calc_ma
@@ -22,6 +23,7 @@ from tp_sl_engine import calc_tp_sl
 from utils import normalize_stock_code
 
 logger = logging.getLogger(__name__)
+KST    = timezone(timedelta(hours=9))
 
 # 키움 REST API 초당 약 5회 제한 → 루프 내 0.25s 대기
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -165,7 +167,7 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
     if not stk_cd:
         return 0.0
 
-    current_time = datetime.now().strftime("%H%M%S")
+    current_time = datetime.now(KST).strftime("%H%M%S")
 
     async def get_total_volume(tdy_pred: str) -> int:
         total_qty = 0

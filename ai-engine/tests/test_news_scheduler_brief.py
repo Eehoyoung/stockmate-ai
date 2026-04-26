@@ -36,7 +36,6 @@ def test_next_run_slot_keeps_kst_on_monday_premarket():
 
 def test_build_morning_message_contains_required_sections():
     analysis = {
-        "trading_control": "CAUTIOUS",
         "market_sentiment": "NEUTRAL",
         "recommended_sectors": ["반도체", "방산"],
         "risk_factors": ["환율 변동성", "장초반 변동성"],
@@ -54,7 +53,6 @@ def test_build_morning_message_contains_required_sections():
 
 def test_build_midday_message_contains_required_sections():
     analysis = {
-        "trading_control": "CONTINUE",
         "market_sentiment": "BULLISH",
         "midday_sectors": ["반도체", "로봇"],
         "midday_index_commentary": "코스피는 강보합, 코스닥은 주도 섹터 중심으로 상대 강세입니다.",
@@ -70,7 +68,6 @@ def test_build_midday_message_contains_required_sections():
 
 def test_build_close_message_contains_required_sections():
     analysis = {
-        "trading_control": "CONTINUE",
         "market_sentiment": "BULLISH",
         "close_flow": "마감까지 반도체와 방산이 지수 버팀목 역할을 했습니다.",
         "close_leaders": ["반도체", "방산"],

@@ -12,7 +12,7 @@ MA5/MA20/MA60/MA120 계산, 정배열 판단, 지지/저항 근접도 검사,
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -20,6 +20,7 @@ import httpx
 from http_utils import validate_kiwoom_response, kiwoom_client
 
 logger = logging.getLogger(__name__)
+KST    = timezone(timedelta(hours=9))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _DEFAULT_TIMEOUT = 10.0
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -151,7 +152,7 @@ async def fetch_daily_candles(token: str, stk_cd: str, target_count: int = 120) 
     all_candles = []
     cont_yn = "N"
     next_key = ""
-    base_dt = datetime.now().strftime("%Y%m%d")
+    base_dt = datetime.now(KST).strftime("%Y%m%d")
 
     async with kiwoom_client() as client:
         while len(all_candles) < target_count:

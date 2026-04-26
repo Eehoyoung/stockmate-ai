@@ -26,7 +26,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from http_utils import (
@@ -45,6 +45,7 @@ from tp_sl_engine import calc_tp_sl
 from utils import safe_float as _sf
 
 logger = logging.getLogger(__name__)
+KST    = timezone(timedelta(hours=9))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _API_INTERVAL   = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
@@ -106,12 +107,14 @@ class StockSnapshot:
 
     @property
     def is_opening(self) -> bool:
-        m = datetime.now().hour * 60 + datetime.now().minute
+        _now = datetime.now(KST)
+        m = _now.hour * 60 + _now.minute
         return 540 <= m < 570   # 09:00~09:30
 
     @property
     def is_closing(self) -> bool:
-        m = datetime.now().hour * 60 + datetime.now().minute
+        _now = datetime.now(KST)
+        m = _now.hour * 60 + _now.minute
         return 870 <= m < 910   # 14:30~15:10
 
     @property
@@ -921,7 +924,7 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
         return {
             "stk_cd":       stk_cd,
             "stk_nm":       snap.stk_nm,
-            "checked_at":   datetime.now().isoformat(),
+            "checked_at":   datetime.now(KST).isoformat(),
             "no_match":     True,
             "matched_count": 0,
             "results":      [],
@@ -937,7 +940,7 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
         return {
             "stk_cd":        stk_cd,
             "stk_nm":        snap.stk_nm,
-            "checked_at":    datetime.now().isoformat(),
+            "checked_at":    datetime.now(KST).isoformat(),
             "no_match":      True,
             "matched_count": 0,
             "results":       [],
@@ -981,7 +984,7 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
     return {
         "stk_cd":        stk_cd,
         "stk_nm":        snap.stk_nm,
-        "checked_at":    datetime.now().isoformat(),
+        "checked_at":    datetime.now(KST).isoformat(),
         "no_match":      len(results) == 0,
         "matched_count": len(results),
         "results":       results,

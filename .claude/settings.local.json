@@ -14,7 +14,11 @@
       "Bash(python -c \"import scorer; import queue_worker; import redis_reader; print\\('OK - no import errors'\\)\")",
       "Bash(python -c \"import analyzer; print\\('analyzer OK'\\)\")",
       "Bash(python -m pytest tests/test_scorer_edge_cases.py -x -q)",
-      "Bash(./gradlew compileJava -q)"
+      "Bash(./gradlew compileJava -q)",
+      "Bash(python -m pytest tests/test_scorer_edge_cases.py -q)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import scorer, queue_worker, analyzer, redis_reader; print\\('ALL OK'\\)\")",
+      "Bash(python *)"
     ]
   }
 }

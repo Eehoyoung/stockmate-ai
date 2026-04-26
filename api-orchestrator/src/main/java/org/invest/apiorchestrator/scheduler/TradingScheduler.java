@@ -178,7 +178,33 @@ public class TradingScheduler {
         }
     }
 
-    @Scheduled(cron = "0 */10 9-15 * * MON-FRI", zone = "Asia/Seoul")
+    /**
+     * 08:30~09:00 동시호가: 예상체결가로 지수 예상 등락률 산출 (3분 주기).
+     * S1 갭전략은 시초가 결정 전 동시호가 데이터로 레짐 판단이 더 정확하다.
+     */
+    @Scheduled(cron = "0 30-59/3 8 * * MON-FRI", zone = "Asia/Seoul")
+    public void pollPreMarketIndexExpFluRt() {
+        for (String[] pair : new String[][]{
+                {KOSPI_PROXY_CODE, "market:kospi_exp_flu_rt"},
+                {KOSDAQ_PROXY_CODE, "market:kosdaq_exp_flu_rt"}
+        }) {
+            try {
+                KiwoomApiResponses.StkBasicInfoResponse res = kiwoomApiService.fetchKa10001(pair[0]);
+                if (res == null || !res.isSuccess()) continue;
+                Double expPric  = dbl(res.getExpCntrPric());
+                Double basePric = dbl(res.getBasePric());
+                if (expPric != null && basePric != null && basePric != 0) {
+                    double expFluRt = (expPric - basePric) / basePric * 100.0;
+                    redis.opsForValue().set(pair[1], String.format("%.2f", expFluRt), Duration.ofMinutes(5));
+                    log.debug("[PreMktIdx] {} exp_flu_rt={}", pair[0], String.format("%.2f", expFluRt));
+                }
+            } catch (Exception e) {
+                log.debug("[PreMktIdx] poll failed [{}]: {}", pair[0], e.getMessage());
+            }
+        }
+    }
+
+    @Scheduled(cron = "0 */5 9-15 * * MON-FRI", zone = "Asia/Seoul")
     public void pollMarketIndexFluRt() {
         if (KstClock.nowTime().isAfter(LocalTime.of(15, 10))) {
             return;
@@ -192,7 +218,7 @@ public class TradingScheduler {
                 if (res != null && res.isSuccess()) {
                     Double val = dbl(res.getFluRt());
                     if (val != null) {
-                        redis.opsForValue().set(pair[1], String.valueOf(val), Duration.ofMinutes(12));
+                        redis.opsForValue().set(pair[1], String.valueOf(val), Duration.ofMinutes(7));
                     }
                 }
             } catch (Exception e) {

@@ -220,7 +220,7 @@ public class SignalService {
                 .sector(resolveSector(dto.getThemeName()))
                 .signalStatus(TradingSignal.SignalStatus.SENT)
                 .positionStatus(entryPrice != null && entryPrice.compareTo(BigDecimal.ZERO) > 0 ? "ACTIVE" : null)
-                .entryAt(entryPrice != null && entryPrice.compareTo(BigDecimal.ZERO) > 0 ? OffsetDateTime.now() : null)
+                .entryAt(entryPrice != null && entryPrice.compareTo(BigDecimal.ZERO) > 0 ? KstClock.nowOffset() : null)
                 .monitorEnabled(true)
                 .isOvernight(false)
                 .trailingPct(dto.getTrailingPct() != null

@@ -7,7 +7,7 @@ import asyncio
 import httpx
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import mean
 
 from http_utils import fetch_cntr_strength_cached, fetch_hoga, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
@@ -17,6 +17,7 @@ from tp_sl_engine import calc_tp_sl
 from utils import safe_float as clean_val
 
 logger = logging.getLogger(__name__)
+KST    = timezone(timedelta(hours=9))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
@@ -129,7 +130,7 @@ async def check_extra_conditions(token: str, stk_cd: str, market: str = "001") -
     """전일 기관 순매수 여부 및 5분봉 5이평선 상단 확인"""
     try:
         # 전일 날짜 (단, 장 종료 후 호출 시 로직에 따라 당일/전일 조정 필요)
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+        yesterday = (datetime.now(KST) - timedelta(days=1)).strftime("%Y%m%d")
         mrkt = "001" if market in ["KOSPI", "001", "000"] else "101"
 
         async with kiwoom_client() as client:

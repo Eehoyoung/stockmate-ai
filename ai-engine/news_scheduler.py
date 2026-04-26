@@ -31,14 +31,11 @@ _SLOTS: list[dict[str, object]] = [
 ]
 
 _KEY_ANALYSIS = "news:analysis"
-_KEY_CONTROL = "news:trading_control"
 _KEY_SECTORS = "news:sector_recommend"
 _KEY_SENTIMENT = "news:market_sentiment"
-_KEY_PREV_CTRL = "news:prev_control"
 _KEY_SCORED_QUEUE = "ai_scored_queue"
 
 _TTL_ANALYSIS = 43200
-_TTL_PREV_CTRL = 43200
 _TTL_ALERT_Q = 43200
 
 
@@ -88,15 +85,6 @@ def _slot_from_now(now: datetime | None = None) -> dict[str, object] | None:
     return None
 
 
-def _control_label(control: str) -> tuple[str, str]:
-    mapping = {
-        "PAUSE": ("🛑", "매매 보류"),
-        "CAUTIOUS": ("⚠️", "신중 대응"),
-        "CONTINUE": ("✅", "정상 대응"),
-    }
-    return mapping.get(control or "CONTINUE", ("📌", control or "CONTINUE"))
-
-
 def _sentiment_label(sentiment: str) -> str:
     return {
         "BULLISH": "강세 우위",
@@ -128,7 +116,6 @@ def _persona_line(slot_name: str) -> str:
 
 
 def _build_morning_message(analysis: dict) -> str:
-    ctrl_emoji, ctrl_label = _control_label(str(analysis.get("trading_control", "CONTINUE")))
     sentiment_label = _sentiment_label(str(analysis.get("market_sentiment", "NEUTRAL")))
     us_market = _normalize_lines(analysis.get("us_market_points", []), 3)
     us_sector = _normalize_lines(analysis.get("us_sector_points", []), 3)
@@ -140,7 +127,6 @@ def _build_morning_message(analysis: dict) -> str:
         _slot_header("MORNING"),
         _persona_line("MORNING"),
         "",
-        f"{ctrl_emoji} 오늘 운용 톤: <b>{ctrl_label}</b>",
         f"시장 온도: <b>{sentiment_label}</b>",
     ]
 
@@ -175,7 +161,6 @@ def _build_morning_message(analysis: dict) -> str:
 
 
 def _build_midday_message(analysis: dict) -> str:
-    ctrl_emoji, ctrl_label = _control_label(str(analysis.get("trading_control", "CONTINUE")))
     sentiment_label = _sentiment_label(str(analysis.get("market_sentiment", "NEUTRAL")))
     midday_sectors = _normalize_lines(analysis.get("midday_sectors", []), 4)
     sectors = midday_sectors or _normalize_lines(analysis.get("recommended_sectors", []), 4)
@@ -188,7 +173,6 @@ def _build_midday_message(analysis: dict) -> str:
         _slot_header("MIDDAY"),
         _persona_line("MIDDAY"),
         "",
-        f"{ctrl_emoji} 오후 운용 톤: <b>{ctrl_label}</b>",
         f"시장 온도: <b>{sentiment_label}</b>",
     ]
 
@@ -216,7 +200,6 @@ def _build_midday_message(analysis: dict) -> str:
 
 
 def _build_close_message(analysis: dict) -> str:
-    ctrl_emoji, ctrl_label = _control_label(str(analysis.get("trading_control", "CONTINUE")))
     sentiment_label = _sentiment_label(str(analysis.get("market_sentiment", "NEUTRAL")))
     leaders = _normalize_lines(analysis.get("close_leaders", []), 4)
     risk_factors = _normalize_lines(analysis.get("risk_factors", []), 3)
@@ -227,7 +210,6 @@ def _build_close_message(analysis: dict) -> str:
         _slot_header("CLOSE"),
         _persona_line("CLOSE"),
         "",
-        f"{ctrl_emoji} 오늘 마감 톤: <b>{ctrl_label}</b>",
         f"시장 온도: <b>{sentiment_label}</b>",
     ]
 
@@ -264,12 +246,11 @@ def _build_brief_message(analysis: dict, slot_name: str) -> str:
 async def _save_to_redis(rdb, analysis: dict) -> None:
     try:
         await rdb.set(_KEY_ANALYSIS, json.dumps(analysis, ensure_ascii=False), ex=_TTL_ANALYSIS)
-        await rdb.set(_KEY_CONTROL, analysis.get("trading_control", "CONTINUE"), ex=_TTL_ANALYSIS)
         await rdb.set(_KEY_SENTIMENT, analysis.get("market_sentiment", "NEUTRAL"), ex=_TTL_ANALYSIS)
         await rdb.set(_KEY_SECTORS, json.dumps(analysis.get("recommended_sectors", []), ensure_ascii=False), ex=_TTL_ANALYSIS)
         logger.info(
-            "[NewsScheduler] Redis updated control=%s sectors=%s urgent=%s",
-            analysis.get("trading_control"),
+            "[NewsScheduler] Redis updated sentiment=%s sectors=%s urgent=%s",
+            analysis.get("market_sentiment"),
             analysis.get("recommended_sectors"),
             analysis.get("urgent_news", []),
         )
@@ -307,7 +288,6 @@ async def _emit_scheduled_brief(rdb, analysis: dict, slot_name: str, slot_time: 
         "type": "SCHEDULED_NEWS_BRIEF",
         "slot": f"{slot_time[0]:02d}:{slot_time[1]:02d}",
         "slot_name": slot_name,
-        "trading_control": analysis.get("trading_control", "CONTINUE"),
         "market_sentiment": analysis.get("market_sentiment", "NEUTRAL"),
         "sectors": analysis.get("recommended_sectors", []),
         "urgent_news": analysis.get("urgent_news", []),
@@ -324,23 +304,6 @@ async def _emit_scheduled_brief(rdb, analysis: dict, slot_name: str, slot_time: 
     logger.info("[NewsScheduler] scheduled brief published slot=%s", payload["slot"])
 
 
-async def _sync_control_state(rdb, new_control: str, analysis: dict) -> None:
-    try:
-        prev_control = await rdb.get(_KEY_PREV_CTRL) or "CONTINUE"
-        effective_control = new_control
-
-        if effective_control == "PAUSE" and analysis.get("confidence") == "LOW":
-            effective_control = "CAUTIOUS"
-            analysis["trading_control"] = "CAUTIOUS"
-            await rdb.set(_KEY_CONTROL, "CAUTIOUS", ex=_TTL_ANALYSIS)
-
-        if prev_control != effective_control:
-            logger.info("[NewsScheduler] trading_control changed %s -> %s", prev_control, effective_control)
-        await rdb.set(_KEY_PREV_CTRL, effective_control, ex=_TTL_PREV_CTRL)
-    except Exception as e:
-        logger.warning("[NewsScheduler] control sync failed: %s", e)
-
-
 async def build_live_brief(rdb, slot_name: str | None = None, publish_queue: bool = False) -> dict:
     resolved_slot = _resolve_slot_name(slot_name)
     slot = next((item for item in _SLOTS if item["name"] == resolved_slot), _SLOTS[0])
@@ -353,13 +316,11 @@ async def build_live_brief(rdb, slot_name: str | None = None, publish_queue: boo
         analysis["analyzed_at"] = time.time()
         analysis["brief_slot"] = resolved_slot
         await _save_to_redis(rdb, analysis)
-        await _sync_control_state(rdb, analysis.get("trading_control", "CONTINUE"), analysis)
     else:
         logger.info("[NewsScheduler] live brief using cached analysis slot=%s", resolved_slot)
         analysis = await _load_cached_analysis(rdb)
         if not analysis:
             analysis = {
-                "trading_control": await rdb.get(_KEY_CONTROL) or "CONTINUE",
                 "market_sentiment": await rdb.get(_KEY_SENTIMENT) or "NEUTRAL",
                 "recommended_sectors": json.loads(await rdb.get(_KEY_SECTORS) or "[]"),
                 "urgent_news": [],
@@ -412,7 +373,6 @@ async def run_once(rdb, slot: dict[str, object] | None = None) -> None:
                 return
 
             analysis = {
-                "trading_control": await rdb.get(_KEY_CONTROL) or "CONTINUE",
                 "market_sentiment": await rdb.get(_KEY_SENTIMENT) or "NEUTRAL",
                 "recommended_sectors": json.loads(await rdb.get(_KEY_SECTORS) or "[]"),
                 "urgent_news": [],
@@ -440,16 +400,14 @@ async def run_once(rdb, slot: dict[str, object] | None = None) -> None:
         analysis["brief_slot"] = slot_name
 
         await _save_to_redis(rdb, analysis)
-        await _sync_control_state(rdb, analysis.get("trading_control", "CONTINUE"), analysis)
         await _emit_scheduled_brief(rdb, analysis, slot_name, slot_time)
 
         elapsed = time.time() - start
         logger.info(
-            "[NewsScheduler] done slot=%s %.1fs news=%d control=%s sentiment=%s",
+            "[NewsScheduler] done slot=%s %.1fs news=%d sentiment=%s",
             slot_name,
             elapsed,
             len(news_list),
-            analysis.get("trading_control", "CONTINUE"),
             analysis.get("market_sentiment", "NEUTRAL"),
         )
     except Exception as e:

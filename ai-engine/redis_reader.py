@@ -315,6 +315,19 @@ async def get_market_index_flu_rt(rdb) -> dict:
         return {"kospi_flu_rt": None, "kosdaq_flu_rt": None}
 
 
+async def get_market_index_exp_flu_rt(rdb) -> dict:
+    """동시호가(08:30~09:00) 구간 예상 등락률. TTL 5분이므로 09:05 이후 자동 소멸."""
+    try:
+        kospi = await rdb.get("market:kospi_exp_flu_rt")
+        kosdaq = await rdb.get("market:kosdaq_exp_flu_rt")
+        return {
+            "kospi_exp_flu_rt": float(kospi) if kospi else None,
+            "kosdaq_exp_flu_rt": float(kosdaq) if kosdaq else None,
+        }
+    except Exception:
+        return {"kospi_exp_flu_rt": None, "kosdaq_exp_flu_rt": None}
+
+
 async def get_stock_market_cap(rdb, stk_cd: str) -> int | None:
     """StockMasterScheduler 가 캐시한 시가총액(억 원)을 읽는다."""
     try:

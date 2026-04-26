@@ -315,8 +315,8 @@ function formatSignal(item) {
 
     // 신호 시간
     const signalTime = item.signal_time
-        ? new Date(item.signal_time).toLocaleTimeString('ko-KR')
-        : new Date().toLocaleTimeString('ko-KR');
+        ? new Date(item.signal_time).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })
+        : new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' });
     lines.push(`\n🕐 ${signalTime}`);
 
     return lines.join('\n');
@@ -330,7 +330,7 @@ function formatForceClose(item) {
         `⚠️ <b>[강제청산] ${item.stk_cd} ${item.stk_nm ?? ''}</b>`,
         `전술: ${item.strategy}`,
         `장마감 30분 전 – 전량 시장가 청산`,
-        `\n🕐 ${new Date().toLocaleTimeString('ko-KR')}`,
+        `\n🕐 ${new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })}`,
     ].join('\n');
 }
 
@@ -370,15 +370,11 @@ function formatPerformanceSummary(rows) {
 /**
  * Feature 3 – 뉴스 현황 포맷 (/뉴스)
  */
-function formatNewsStatus({ analysis, control, sentiment, sectors }) {
-    const ctrlEmoji = { PAUSE: '🚨', CAUTIOUS: '⚠️', CONTINUE: '✅' };
-    const ctrlLabel = { PAUSE: '매매 중단', CAUTIOUS: '신중 매매', CONTINUE: '정상 매매' };
+function formatNewsStatus({ analysis, sentiment, sectors }) {
     const sentLabel = { BULLISH: '강세 📈', BEARISH: '약세 📉', NEUTRAL: '중립 ➡️' };
 
-    const ctrl = control || 'CONTINUE';
     const lines = [
-        `${ctrlEmoji[ctrl] ?? '📰'} <b>[뉴스 & 시장 현황]</b>`,
-        `매매 상태: <b>${ctrlLabel[ctrl] || ctrl}</b>`,
+        `📰 <b>[뉴스 & 시장 현황]</b>`,
         `시장심리: ${sentLabel[sentiment] || sentiment || '-'}`,
     ];
     if (sectors && sectors.length > 0) {
@@ -752,15 +748,10 @@ function formatSellRecommendation(item) {
 }
 
 function formatNewsAlert(item) {
-    const controlEmoji   = { PAUSE: '🚨', CAUTIOUS: '⚠️', CONTINUE: '✅' };
-    const controlLabel   = { PAUSE: '매매 중단', CAUTIOUS: '신중 매매', CONTINUE: '정상 매매' };
     const sentimentLabel = { BULLISH: '강세 📈', BEARISH: '약세 📉', NEUTRAL: '중립 ➡️' };
 
-    const ctrl  = item.trading_control || 'CONTINUE';
-    const emoji = controlEmoji[ctrl] || '📰';
     const lines = [
-        `${emoji} <b>[뉴스 기반 매매 제어]</b>`,
-        `상태: <b>${controlLabel[ctrl] || ctrl}</b>`,
+        `📰 <b>[뉴스 브리프]</b>`,
         `시장심리: ${sentimentLabel[item.market_sentiment] || item.market_sentiment || '-'}`,
     ];
     if (item.sectors && item.sectors.length > 0) {

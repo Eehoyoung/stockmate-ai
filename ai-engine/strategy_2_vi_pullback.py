@@ -46,10 +46,11 @@ async def handle_vi_event(rdb, event: dict):
     key = f"vi:{stk_cd}"
 
     if status == "1":  # 발동
-        from datetime import datetime
+        from datetime import datetime, timezone, timedelta
+        _KST = timezone(timedelta(hours=9))
         await rdb.hset(key, mapping={
             "vi_price": str(vi_price),
-            "vi_time": datetime.now().isoformat(),
+            "vi_time": datetime.now(_KST).isoformat(),
             "vi_type": vi_type,
             "vi_volume": str(volume),
             "status": "active"
@@ -57,7 +58,8 @@ async def handle_vi_event(rdb, event: dict):
         await rdb.expire(key, 3600)
 
     elif status == "2":  # 해제 → 눌림목 감시 시작
-        from datetime import datetime
+        from datetime import datetime, timezone, timedelta
+        _KST = timezone(timedelta(hours=9))
         vi_data = await rdb.hgetall(key)
         if not vi_data:
             return

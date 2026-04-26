@@ -31,7 +31,6 @@ except Exception:
     _NEWS_SYS_PROMPT = (
         "Return JSON only. "
         '{"market_sentiment":"BULLISH|NEUTRAL|BEARISH",'
-        '"trading_control":"CONTINUE|CAUTIOUS|PAUSE",'
         '"recommended_sectors":[],"urgent_news":[],"risk_factors":[],'
         '"summary":"","confidence":"HIGH|MEDIUM|LOW"}'
     )
@@ -113,7 +112,6 @@ async def _check_daily_news_limit(rdb) -> bool:
 def _fallback_analysis() -> Dict:
     return {
         "market_sentiment": "NEUTRAL",
-        "trading_control": "CONTINUE",
         "recommended_sectors": [],
         "urgent_news": [],
         "risk_factors": ["AI 뉴스 분석 실패 - 보수적으로 해석 필요"],
@@ -140,8 +138,6 @@ def _normalize_result(result: Dict) -> Dict:
     for key, value in defaults.items():
         result.setdefault(key, value)
 
-    if result["trading_control"] not in ("CONTINUE", "CAUTIOUS", "PAUSE"):
-        result["trading_control"] = "CONTINUE"
     if result["market_sentiment"] not in ("BULLISH", "NEUTRAL", "BEARISH"):
         result["market_sentiment"] = "NEUTRAL"
 
@@ -157,9 +153,6 @@ def _normalize_result(result: Dict) -> Dict:
     result["confidence"] = str(result.get("confidence", "MEDIUM") or "MEDIUM").upper()
     if result["confidence"] not in ("HIGH", "MEDIUM", "LOW"):
         result["confidence"] = "MEDIUM"
-
-    if result["confidence"] == "LOW" and result["trading_control"] == "PAUSE":
-        result["trading_control"] = "CAUTIOUS"
 
     return result
 
@@ -195,9 +188,8 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
 
         result = _normalize_result(json.loads(raw_text))
         logger.info(
-            "[NewsAnalyzer] done slot=%s control=%s sentiment=%s sectors=%s confidence=%s",
+            "[NewsAnalyzer] done slot=%s sentiment=%s sectors=%s confidence=%s",
             slot_name,
-            result["trading_control"],
             result["market_sentiment"],
             result["recommended_sectors"],
             result["confidence"],

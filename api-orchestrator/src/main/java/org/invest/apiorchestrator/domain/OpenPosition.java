@@ -5,6 +5,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * open_positions — 실시간 포지션 원장
@@ -54,7 +55,7 @@ public class OpenPosition {
 
     @Column(name = "entry_at", nullable = false)
     @Builder.Default
-    private OffsetDateTime entryAt = OffsetDateTime.now();
+    private OffsetDateTime entryAt = KstClock.nowOffset();
 
     // ── TP/SL ─────────────────────────────────────────────────────────────
     @Column(name = "tp1_price", precision = 10, scale = 0) private BigDecimal tp1Price;
@@ -104,7 +105,7 @@ public class OpenPosition {
     }
 
     public void markTp1Hit(int exitQty, int remainingQty) {
-        this.tp1HitAt  = OffsetDateTime.now();
+        this.tp1HitAt  = KstClock.nowOffset();
         this.tp1ExitQty = exitQty;
         this.remainingQty = remainingQty;
         this.status = "PARTIAL_TP";

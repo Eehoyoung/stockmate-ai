@@ -5,6 +5,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * trade_plans — 신호별 TP/SL 계획 (V31)
@@ -97,5 +98,5 @@ public class TradePlan {
 
     @Column(name = "created_at", nullable = false)
     @Builder.Default
-    private OffsetDateTime createdAt = OffsetDateTime.now();
+    private OffsetDateTime createdAt = KstClock.nowOffset();
 }

@@ -145,6 +145,40 @@ class TestQueueWorkerHappyPath:
         assert captured[0]["cntr_strength"] == 257.2
         assert "257.2" in captured[0]["ai_reason"]
 
+    def test_high_score_hold_is_promoted_to_enter(self):
+        item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=1.2)
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch(
+                 "queue_worker.analyze_signal",
+                 new_callable=AsyncMock,
+                 return_value={
+                     "action": "HOLD",
+                     "ai_score": 80.0,
+                     "confidence": "HIGH",
+                     "reason": "strong but originally hold",
+                 },
+             ), \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert len(captured) == 1
+        assert captured[0]["action"] == "ENTER"
+        assert captured[0]["ai_score"] == 80.0
+        assert captured[0]["cancel_reason"] is None
+        assert "HOLD promoted to ENTER" in captured[0]["ai_reason"]
+
 
 class TestQueueWorkerFailures:
     def test_processing_exception_publishes_explicit_failed_payload(self):

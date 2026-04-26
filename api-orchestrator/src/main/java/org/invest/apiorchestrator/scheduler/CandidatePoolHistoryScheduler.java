@@ -3,6 +3,7 @@ package org.invest.apiorchestrator.scheduler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.repository.StockMasterRepository;
+import org.invest.apiorchestrator.util.KstClock;
 import org.invest.apiorchestrator.util.MarketTimeUtil;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -74,7 +75,7 @@ public class CandidatePoolHistoryScheduler {
     public void snapshotCandidatePools() {
         if (!MarketTimeUtil.isTradingActive()) return;
 
-        LocalDate today = LocalDate.now();
+        LocalDate today = KstClock.today();
 
         // ── 1. Redis에서 전략별 후보 수집 ────────────────────────
         // row: [strategy, market, stkCd, poolScore]

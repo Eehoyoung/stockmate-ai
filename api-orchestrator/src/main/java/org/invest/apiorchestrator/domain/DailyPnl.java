@@ -6,6 +6,7 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * daily_pnl — 일별 포트폴리오 손익 집계
@@ -64,5 +65,5 @@ public class DailyPnl {
 
     @Column(name = "aggregated_at")
     @Builder.Default
-    private OffsetDateTime aggregatedAt = OffsetDateTime.now();
+    private OffsetDateTime aggregatedAt = KstClock.nowOffset();
 }

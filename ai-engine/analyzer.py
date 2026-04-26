@@ -9,20 +9,21 @@ import asyncio
 import json
 import logging
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import anthropic
 
 logger = logging.getLogger(__name__)
+KST    = timezone(timedelta(hours=9))
 
 CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS      = 512   # TP/SL 절대가 출력을 위한 공간 확보
 CLAUDE_TIMEOUT  = 10    # seconds
 
 # 수수료+세금+슬리피지 합산 (왕복 기준, KOSPI 0.35%, KOSDAQ 0.45%)
-SLIP_FEE = {"KOSPI": 0.0035, "KOSDAQ": 0.0035}
+SLIP_FEE = {"KOSPI": 0.0035, "KOSDAQ": 0.0045}  # KOSDAQ: 거래세 0.15% 포함
 
 
 def _get_slip_fee(stk_cd: str) -> float:
@@ -344,7 +345,7 @@ async def _track_api_usage(rdb, input_tokens: int = 0, output_tokens: int = 0):
     """
     if rdb is None:
         return
-    today_str = date.today().strftime("%Y%m%d")
+    today_str = datetime.now(KST).strftime("%Y%m%d")
     try:
         # 호출 횟수 증분 (check_daily_limit 과 동일 키 – 이미 증분된 경우 중복 방지를 위해
         # scorer.py check_daily_limit 에서 1차 증분하므로 여기서는 토큰만 추적)

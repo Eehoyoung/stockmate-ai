@@ -39,6 +39,13 @@ function getAllowedChatIds() {
         .filter(Boolean);
 }
 
+function getPrimaryChatIds() {
+    return String(process.env.TELEGRAM_PRIMARY_CHAT_ID ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean);
+}
+
 async function isAllowedByFilter(chatId, strategy) {
     try {
         const raw = await getClient().get(`user_filter:${chatId}`);
@@ -63,10 +70,10 @@ async function isAllowedByWatchlist(chatId, stkCd) {
     }
 }
 
-async function _broadcast(bot, { type, text, logLabel, logMeta = {}, extraOpts = {} }) {
-    const chatIds = getAllowedChatIds();
+async function _broadcast(bot, { type, text, logLabel, logMeta = {}, extraOpts = {}, chatIds = null }) {
+    const targetChatIds = chatIds || getAllowedChatIds();
     const options = { parse_mode: 'HTML', disable_web_page_preview: true, ...extraOpts };
-    for (const chatId of chatIds) {
+    for (const chatId of targetChatIds) {
         try {
             await bot.telegram.sendMessage(chatId, text, options);
         } catch (e) {
@@ -80,6 +87,7 @@ function _statusReportPayload(item) {
     const msg = String(item.message || '');
     return {
         type: 'STATUS_REPORT',
+        chatIds: getPrimaryChatIds(),
         text: msg || '전략 상태 브리핑',
     };
 }
@@ -120,7 +128,7 @@ const BROADCAST_HANDLERS = {
     SCHEDULED_NEWS_BRIEF: (item) => ({
         type: 'SCHEDULED_NEWS_BRIEF',
         text: item.message || formatNewsAlert(item),
-        logMeta: { slot: item.slot, control: item.trading_control },
+        logMeta: { slot: item.slot },
     }),
 
     CALENDAR_ALERT: () => null,
@@ -181,6 +189,7 @@ const BROADCAST_HANDLERS = {
 
     DAILY_REPORT: (item) => ({
         type: 'DAILY_REPORT',
+        chatIds: getPrimaryChatIds(),
         text: formatDailyReportEnhanced(item),
     }),
 };

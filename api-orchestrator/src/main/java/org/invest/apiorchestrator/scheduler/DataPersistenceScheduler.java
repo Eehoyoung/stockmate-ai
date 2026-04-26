@@ -13,6 +13,7 @@ import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.repository.ViEventRepository;
 import org.invest.apiorchestrator.repository.WsTickDataRepository;
 import org.invest.apiorchestrator.service.KiwoomApiService;
+import org.invest.apiorchestrator.util.KstClock;
 import org.invest.apiorchestrator.util.MarketTimeUtil;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -158,7 +159,7 @@ public class DataPersistenceScheduler {
                     .viPrice(viPrice)
                     .accVolume(_l(vi.get("vi_volume")))
                     .marketType(Optional.ofNullable(vi.get("mrkt_cls")).map(Object::toString).orElse(null))
-                    .releasedAt("2".equals(viStatus) ? LocalDateTime.now() : null)
+                    .releasedAt("2".equals(viStatus) ? KstClock.now() : null)
                     .build();
             try {
                 viEventRepository.save(entity);
@@ -186,7 +187,7 @@ public class DataPersistenceScheduler {
             return;
         }
 
-        LocalDate today = LocalDate.now();
+        LocalDate today = KstClock.today();
         int saved = 0;
         for (String stkCd : codes) {
             try {
@@ -216,7 +217,7 @@ public class DataPersistenceScheduler {
 
     private Set<String> collectIndicatorCodes() {
         Set<String> codes = new LinkedHashSet<>();
-        LocalDateTime startOfDay = LocalDateTime.of(LocalDate.now(), LocalTime.MIDNIGHT);
+        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
 
         addAll(codes, redis.opsForSet().members("candidates:watchlist"));
         addAll(codes, redis.opsForSet().members("candidates:watchlist:priority"));

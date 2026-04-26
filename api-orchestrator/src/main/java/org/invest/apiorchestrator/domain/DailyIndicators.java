@@ -6,6 +6,7 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * daily_indicators — 기술지표 영속 캐시
@@ -91,5 +92,5 @@ public class DailyIndicators {
 
     @Column(name = "computed_at", nullable = false)
     @Builder.Default
-    private OffsetDateTime computedAt = OffsetDateTime.now();
+    private OffsetDateTime computedAt = KstClock.nowOffset();
 }

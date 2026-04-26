@@ -5,6 +5,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * risk_events — 리스크 한도 위반 로그.
@@ -54,5 +55,5 @@ public class RiskEvent {
 
     @Column(name = "occurred_at", nullable = false)
     @Builder.Default
-    private OffsetDateTime occurredAt = OffsetDateTime.now();
+    private OffsetDateTime occurredAt = KstClock.nowOffset();
 }

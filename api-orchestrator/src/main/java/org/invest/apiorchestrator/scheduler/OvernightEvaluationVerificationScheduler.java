@@ -15,6 +15,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.util.Map;
+import org.invest.apiorchestrator.util.KstClock;
 
 @Slf4j
 @Component
@@ -30,7 +31,7 @@ public class OvernightEvaluationVerificationScheduler {
     public void verifyNextDayOpen() {
         try {
             int updated = 0;
-            for (OvernightEvaluation eval : overnightEvaluationRepository.findPendingVerification(OffsetDateTime.now().minusHours(8))) {
+            for (OvernightEvaluation eval : overnightEvaluationRepository.findPendingVerification(KstClock.nowOffset().minusHours(8))) {
                 BigDecimal nextOpen = resolveNextDayOpen(eval.getStkCd());
                 if (nextOpen == null || eval.getEntryPrice() == null || eval.getEntryPrice().compareTo(BigDecimal.ZERO) <= 0) {
                     continue;

@@ -7,6 +7,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * human_confirm_requests — Telegram 인간 확인 요청 레코드 (V23)
@@ -66,7 +67,7 @@ public class HumanConfirmRequest {
 
     @Column(name = "requested_at", nullable = false)
     @Builder.Default
-    private OffsetDateTime requestedAt = OffsetDateTime.now();
+    private OffsetDateTime requestedAt = KstClock.nowOffset();
 
     @Column(name = "expires_at", nullable = false)
     private OffsetDateTime expiresAt;

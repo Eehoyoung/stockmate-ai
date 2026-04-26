@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 import java.util.List;
 import java.util.Map;
 
@@ -75,7 +76,7 @@ public class NewsAlertScheduler {
             List<String> riskFactors = (List<String>) alert.getOrDefault("risk_factors", List.of());
 
             NewsAnalysis entity = NewsAnalysis.builder()
-                    .analyzedAt(LocalDateTime.now())
+                    .analyzedAt(KstClock.now())
                     .tradingCtrl(control)
                     .sentiment(sentiment)
                     .sectors(objectMapper.writeValueAsString(sectors))

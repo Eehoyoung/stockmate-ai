@@ -7,6 +7,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * portfolio_config — 자본·리스크 설정 (싱글턴 행 테이블)
@@ -80,7 +81,7 @@ public class PortfolioConfig {
 
     @Column(name = "updated_at")
     @Builder.Default
-    private OffsetDateTime updatedAt = OffsetDateTime.now();
+    private OffsetDateTime updatedAt = KstClock.nowOffset();
 
     @Column(name = "updated_by", length = 50)
     private String updatedBy;
@@ -91,7 +92,7 @@ public class PortfolioConfig {
         this.totalCapital = totalCapital;
         this.maxPositionPct = maxPositionPct;
         this.maxPositionCount = maxPositionCount;
-        this.updatedAt = OffsetDateTime.now();
+        this.updatedAt = KstClock.nowOffset();
         this.updatedBy = updatedBy;
     }
 }

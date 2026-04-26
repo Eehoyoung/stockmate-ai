@@ -14,6 +14,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -56,7 +57,7 @@ public class OvernightRiskScheduler {
         log.info("=== 장전 갭다운 경보 스캔 시작 (08:30) ===");
         try {
             // 직전 2거래일 이내 SENT 또는 OVERNIGHT_HOLD 신호 조회
-            LocalDateTime since = LocalDateTime.now().minusDays(2);
+            LocalDateTime since = KstClock.now().minusDays(2);
             List<TradingSignal> candidates = new java.util.ArrayList<>(
                     signalRepository.findBySignalStatusAndCreatedAtAfter(SignalStatus.SENT, since));
             candidates.addAll(

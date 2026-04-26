@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
+import org.invest.apiorchestrator.util.KstClock;
 
 /**
  * Economic calendar scheduler.
@@ -34,7 +35,7 @@ public class EconomicCalendarScheduler {
     @Scheduled(cron = "0 0 * * * MON-FRI", zone = "Asia/Seoul")
     public void checkUpcomingHighImpactEvents() {
         try {
-            List<EconomicEvent> events = eventRepository.findUnnotifiedHighImpactToday(LocalDate.now());
+            List<EconomicEvent> events = eventRepository.findUnnotifiedHighImpactToday(KstClock.today());
             if (events.isEmpty()) {
                 return;
             }

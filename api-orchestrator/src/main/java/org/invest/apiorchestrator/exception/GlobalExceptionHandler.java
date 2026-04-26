@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.time.LocalDateTime;
+import org.invest.apiorchestrator.util.KstClock;
 import java.util.Map;
 
 @Slf4j
@@ -36,7 +37,7 @@ public class GlobalExceptionHandler {
 
     private Map<String, Object> errorBody(String message, String code) {
         return Map.of(
-                "timestamp", LocalDateTime.now().toString(),
+                "timestamp", KstClock.now().toString(),
                 "error_code", code,
                 "message", message
         );
