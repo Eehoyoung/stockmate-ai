@@ -304,6 +304,26 @@ def _compute_signal_quality(signal: dict, ctx: dict, rule_score_value: float) ->
     }
 
 
+def _build_rule_only_alert_payload(item: dict, rule_score_value: float, quality: dict) -> dict:
+    """Build the lightweight alert emitted as soon as the rule gate passes."""
+    payload = {
+        **item,
+        "type": "RULE_ONLY_SIGNAL",
+        "signal_grade": "RULE_ONLY",
+        "validation_stage": "RULE_ONLY",
+        "action": "ENTER",
+        "confidence": "RULE_ONLY",
+        "rule_score": rule_score_value,
+        "ai_score": rule_score_value,
+        "ai_reason": "1차 규칙 통과",
+        "human_confirmed": False,
+        "claude_confirmed": False,
+        **quality,
+    }
+    payload.pop("cancel_reason", None)
+    return payload
+
+
 def _raw_rr(entry: float | None, tp: float | None, sl: float | None) -> float | None:
     entry_f = _fv(entry, None)
     tp_f = _fv(tp, None)
@@ -532,6 +552,13 @@ async def process_one(rdb, pg_pool=None) -> bool:
         normalize_signal_prices(enriched)
         enriched = _apply_claude_rr_override(enriched)
         await push_score_only_queue(rdb, enriched)
+
+        if cancel_type in ("AI_UNAVAILABLE", "AI_DAILY_LIMIT") or (
+            action != "ENTER" and cancel_type is None and not should_skip_ai(r_score, strategy)
+        ):
+            rule_only_payload = _build_rule_only_alert_payload(signal, r_score, quality)
+            normalize_signal_prices(rule_only_payload)
+            await push_score_only_queue(rdb, rule_only_payload)
 
         if action == "ENTER":
             await _incr_pipeline(rdb, strategy, "publish")

@@ -196,8 +196,11 @@ async function processItem(bot, item) {
     }
 
     const { action, ai_score } = item;
+    const isRuleOnly = item.signal_grade === 'RULE_ONLY'
+        || item.validation_stage === 'RULE_ONLY'
+        || item.type === 'RULE_ONLY_SIGNAL';
     if (action === 'CANCEL') return;
-    if (action === 'ENTER' && ai_score < MIN_AI_SCORE) {
+    if (action === 'ENTER' && !isRuleOnly && ai_score < MIN_AI_SCORE) {
         logger.info('below score threshold', { stk_cd: item.stk_cd, strategy: item.strategy, score: ai_score });
         return;
     }

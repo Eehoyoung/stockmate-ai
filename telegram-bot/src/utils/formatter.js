@@ -107,7 +107,44 @@ function _positionSize(aiScore, confidence) {
     return null;
 }
 
+function _formatWon(price) {
+    const value = Number(price ?? 0);
+    if (!value || value <= 0) return null;
+    return `${value.toLocaleString()}원`;
+}
+
+function _formatPriceOrPct(price, pct, suffix) {
+    const won = _formatWon(price);
+    if (won) return `${won} ${suffix}`;
+    if (pct != null) return `${pct}% 기준 ${suffix}`;
+    return `- ${suffix}`;
+}
+
+function formatRuleOnlySignal(item) {
+    const stockLabel = item.stk_nm
+        ? item.stk_nm
+        : (item.stk_cd || '-');
+    const entry = item.cur_prc ?? item.entry_price;
+    const target = item.tp1_price ?? item.display_tp2_price;
+    const stop = item.sl_price;
+    const targetPct = item.adjusted_target_pct ?? item.target_pct;
+    const stopPct = item.adjusted_stop_pct ?? item.stop_pct;
+
+    return [
+        '🚨가라급등열차 점장선생🚨',
+        `종목: ${escapeHtml(stockLabel)}`,
+        `진입가:  ${_formatPriceOrPct(entry, null, '이하 신규매수')}`,
+        `손절가:  ${_formatPriceOrPct(stop, stopPct, '손절')}`,
+        `목표가 : ${_formatPriceOrPct(target, targetPct, '이상 분할 매도 대응')}`,
+        '주의사항: 1. 매수는 필수가 아닙니다. \n 2. 비중은 계좌의 10% 이내를 권고합니다. \n 3. 투자판다은 개인에게 있습니다.'
+    ].join('\n');
+}
+
 function formatSignal(item) {
+    if (item.signal_grade === 'RULE_ONLY' || item.validation_stage === 'RULE_ONLY' || item.type === 'RULE_ONLY_SIGNAL') {
+        return formatRuleOnlySignal(item);
+    }
+
     const emoji    = STRATEGY_EMOJI[item.strategy] ?? '📌';
     const action   = ACTION_LABEL[item.action]     ?? item.action;
     const conf     = CONFIDENCE_LABEL[item.confidence] ?? item.confidence;
@@ -139,17 +176,17 @@ function formatSignal(item) {
 
     const tp1 = item.tp1_price ? normalizeForDisplay(item.tp1_price) : null;
     const tp2 = item.tp2_price ? normalizeForDisplay(item.tp2_price) : null;
+    const displayTp2 = item.display_tp2_price ? normalizeForDisplay(item.display_tp2_price) : null;
     const sl  = item.sl_price  ? normalizeForDisplay(item.sl_price)  : null;
 
-    const displayedTp1 = claudeTp1 || tp1;
-    const displayedTp2 = claudeTp2 || tp2;
+    const displayedTp1 = tp1 || claudeTp1;
+    const displayedTp2 = displayTp2 || claudeTp2 || tp2;
     const displayedSl  = claudeSl  || sl;
 
     if (item.action === 'ENTER') {
         lines.push('');
-        // lines.push('<b>초보자용 매수 가이드</b>');
         lines.push(`종목: <b>${escapeHtml(stockLabel)}</b>`);
-        lines.push(`지금 할 일: <b>매수 후보 확인</b>`);
+        lines.push(`진입 판단: <b>조건부 매수 검토</b>`);
         lines.push(`신뢰도: ${conf}  |  AI 점수: <b>${aiScore}</b>점  |  규칙 점수: ${ruleScore}점`);
 
         if (curPrc > 0) {
@@ -186,13 +223,18 @@ function formatSignal(item) {
         if (item.ai_reason) lines.push(`추천이유: ${escapeHtml(item.ai_reason)}`);
 
         lines.push('');
-        lines.push('<b>실행 순서</b>');
-        lines.push(`1. ${curPrc > 0 ? `<b>${formatWon(curPrc)}</b>` : '매수 기준가'} 근처인지 먼저 확인`);
-        lines.push('2. 한 번에 전액 매수하지 말고 권장 비중만 진입');
-        if (displayedSl) {
-            lines.push(`3. 주가가 <b>${formatWon(displayedSl)}</b> 아래로 밀리면 바로 재검토`);
+        lines.push('<b>진입 체크포인트</b>');
+        lines.push(`1. 기준가: ${curPrc > 0 ? `<b>${formatWon(curPrc)}</b>` : '매수 기준가'} 부근에서 호가와 체결 강도 유지 확인`);
+        lines.push(`2. 비중: ${pos ? `<b>${pos}</b> 이내` : '계획 비중 이내'}로 진입하고 손절 기준 손실폭을 먼저 확정`);
+        if (displayedTp2) {
+            lines.push('3. 목표 관리: TP1은 1차 매도가, TP2는 추세 추종');
         } else {
-            lines.push('3. 손절 기준을 어기면 바로 재검토');
+            lines.push('3. 목표 관리: TP1 도달 전 거래량 둔화와 호가 약화 여부 점검');
+        }
+        if (displayedSl) {
+            lines.push(`4. 무효화 기준: <b>${formatWon(displayedSl)}</b> 이탈 시 전략 전제 훼손으로 대응`);
+        } else {
+            lines.push('4. 무효화 기준: 손절 조건 충족 시 전략 전제 훼손으로 대응');
         }
         if (item.skip_entry) {
             const rrStr = item.rr_ratio != null ? ` (현재 R:R ${Number(item.rr_ratio).toFixed(2)})` : '';
@@ -731,18 +773,7 @@ function formatNewsAlert(item) {
 }
 
 function formatSignalEnhanced(item) {
-    const message = formatSignal(item);
-    if (item?.action !== 'ENTER' || message.includes('초보자용 매수 가이드')) {
-        return message;
-    }
-
-    const lines = message.split('\n');
-    const insertAt = lines.findIndex((line) => line.startsWith('종목:'));
-    if (insertAt === -1) {
-        return message;
-    }
-    lines.splice(insertAt, 0, '<b>초보자용 매수 가이드</b>');
-    return lines.join('\n');
+    return formatSignal(item);
 }
 
 function formatPerformanceSummaryEnhanced(rows) {
@@ -825,5 +856,5 @@ module.exports = {
     formatPerformanceSummary: formatPerformanceSummaryEnhanced, formatNewsStatus, formatSectorAnalysis,
     formatSignalHistory, formatSystemHealth,
     formatDailyReportEnhanced, formatCalendarWeek, formatPerformanceDetail: formatPerformanceDetailEnhanced, formatUserSettings: formatUserSettingsEnhanced,
-    formatStockScore, formatSellSignal, formatSellRecommendation, formatNewsAlert,
+    formatStockScore, formatSellSignal, formatSellRecommendation, formatNewsAlert, formatRuleOnlySignal,
 };

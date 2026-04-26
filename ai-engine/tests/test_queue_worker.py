@@ -87,6 +87,7 @@ class TestQueueWorkerHappyPath:
             result = _run(process_one(rdb))
 
         assert result is True
+        assert len(captured) == 1
         assert captured[0]["rule_score"] == 75.0
         assert captured[0]["ai_score"] == 81.0
         assert captured[0]["action"] == "ENTER"
@@ -233,6 +234,8 @@ class TestQueueWorkerFailures:
         assert result is True
         assert captured[0]["action"] == "CANCEL"
         assert captured[0]["cancel_reason"] == "AI analysis unavailable"
+        assert captured[1]["signal_grade"] == "RULE_ONLY"
+        assert captured[1]["type"] == "RULE_ONLY_SIGNAL"
 
     def test_claude_daily_limit_cancels_instead_of_rule_fallback_enter(self):
         item = _signal()
@@ -255,7 +258,46 @@ class TestQueueWorkerFailures:
         assert result is True
         assert captured[0]["action"] == "CANCEL"
         assert captured[0]["cancel_reason"] == "AI daily limit reached"
+        assert captured[1]["signal_grade"] == "RULE_ONLY"
+        assert captured[1]["type"] == "RULE_ONLY_SIGNAL"
         mock_analyze.assert_not_awaited()
+
+    def test_claude_cancel_publishes_rule_only_signal(self):
+        item = _signal(cur_prc=18880, tp1_price=20070, sl_price=17480)
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch(
+                 "queue_worker.analyze_signal",
+                 new_callable=AsyncMock,
+                 return_value={
+                     "action": "CANCEL",
+                     "ai_score": 55.0,
+                     "confidence": "LOW",
+                     "reason": "Claude rejected setup",
+                     "cancel_reason": "weak follow-through",
+                 },
+             ), \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert captured[0]["action"] == "CANCEL"
+        assert captured[0]["cancel_reason"] == "weak follow-through"
+        assert captured[1]["type"] == "RULE_ONLY_SIGNAL"
+        assert captured[1]["signal_grade"] == "RULE_ONLY"
+        assert captured[1]["cur_prc"] == 18880
+        assert captured[1]["tp1_price"] == 20050
+        assert captured[1]["sl_price"] == 17480
 
     def test_s4_hard_gate_failure_cancels_before_ai(self):
         item = _signal(strategy="S4_BIG_CANDLE", cntr_strength=124.9, bid_ratio=1.39)
@@ -360,6 +402,7 @@ class TestQueueWorkerFailures:
             result = _run(process_one(rdb))
 
         assert result is True
+        assert len(captured) == 1
         payload = captured[0]
         assert payload["action"] == "ENTER"
         assert payload["claude_tp1"] == 10600

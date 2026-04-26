@@ -8,6 +8,7 @@ const {
     formatForceClose,
     formatDailySummary,
     formatSellRecommendation,
+    formatRuleOnlySignal,
     escapeHtml,
 } = require(path.join(__dirname, '../src/utils/formatter'));
 
@@ -75,13 +76,60 @@ test('formatSignal includes basic trade context', () => {
     assert.ok(msg.includes('S1_GAP_OPEN'));
     assert.ok(msg.includes('005930'));
     assert.ok(msg.includes('삼성전자'));
+    assert.ok(!msg.includes('초보자용 매수 가이드'));
+    assert.ok(!msg.includes('지금 할 일'));
+    assert.ok(msg.includes('진입 체크포인트'));
     assert.ok(msg.includes('&lt;') || !msg.includes('<script>'));
+});
+
+test('formatSignal renders short rule-only buy form', () => {
+    const msg = formatSignal(makeSignal({
+        type: 'RULE_ONLY_SIGNAL',
+        signal_grade: 'RULE_ONLY',
+        cur_prc: 18880,
+        tp1_price: 20070,
+        sl_price: 17480,
+        stk_nm: 'BNK금융지주',
+    }));
+    assert.ok(msg.includes('가라급등열차 점장선생'));
+    assert.ok(msg.includes('종목: BNK금융지주'));
+    assert.ok(msg.includes('18,900원 이하 신규매수') || msg.includes('18,880원 이하 신규매수'));
+    assert.ok(msg.includes('20,070원 이상 분할 매도 대응'));
+    assert.ok(msg.includes('손절'));
+    assert.ok(msg.includes('분할 매도 대응'));
+    assert.strictEqual(msg, formatRuleOnlySignal({
+        stk_nm: 'BNK금융지주',
+        cur_prc: 18880,
+        tp1_price: 20070,
+        sl_price: 17480,
+    }));
 });
 
 test('formatSignal falls back to target and stop percentages', () => {
     const msg = formatSignal(makeSignal({ tp1_price: undefined, tp2_price: undefined, sl_price: undefined }));
     assert.ok(msg.includes('4.0') || msg.includes('+4') || msg.includes('target'));
     assert.ok(msg.includes('-2.0') || msg.includes('-2') || msg.includes('stop'));
+});
+
+test('formatSignal shows display TP2 while execution TP2 is absent', () => {
+    const msg = formatSignal(makeSignal({
+        tp1_price: 88000,
+        tp2_price: undefined,
+        display_tp2_price: 92000,
+        sl_price: 82000,
+        rr_ratio: 1.7,
+    }));
+    assert.ok(msg.includes('92,000'));
+});
+
+test('formatSignal shows integrated TP1 before Claude TP1', () => {
+    const msg = formatSignal(makeSignal({
+        tp1_price: 88000,
+        claude_tp1: 90000,
+        display_tp2_price: 92000,
+        sl_price: 82000,
+    }));
+    assert.ok(msg.includes('88,000'));
 });
 
 test('formatForceClose renders stock code and strategy', () => {

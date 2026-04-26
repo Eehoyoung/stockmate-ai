@@ -85,6 +85,8 @@ def test_tp1_has_minimum_distance_and_tp2_is_consolidated():
 
     assert result.tp1_price >= 103
     assert result.tp2_price is None
+    payload = result.to_signal_fields()
+    assert payload["display_tp2_price"] > payload["tp1_price"]
     assert "single_tp_avg" in result.tp_method
 
 

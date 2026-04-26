@@ -172,6 +172,8 @@ class TpSlResult:
     exit_policy_version: str = TP_SL_STRATEGY_VERSION
     allow_overnight: Optional[bool] = None
     allow_reentry: Optional[bool] = None
+    display_tp1_price: Optional[int] = None
+    display_tp2_price: Optional[int] = None
 
     def to_signal_fields(self) -> dict:
         """전략 결과 dict에 merge할 TP/SL 필드 반환"""
@@ -206,6 +208,10 @@ class TpSlResult:
             d["allow_overnight"] = bool(self.allow_overnight)
         if self.allow_reentry is not None:
             d["allow_reentry"] = bool(self.allow_reentry)
+        if self.display_tp1_price:
+            d["display_tp1_price"] = round_to_tick(self.display_tp1_price, "nearest")
+        if self.display_tp2_price:
+            d["display_tp2_price"] = round_to_tick(self.display_tp2_price, "nearest")
         if self.tp2_price:
             d["tp2_price"] = round_to_tick(self.tp2_price, "nearest")
         if self.trailing_pct is not None:
@@ -459,13 +465,15 @@ def _consolidate_single_tp(
     represented by partial exits. Monitoring and R:R then use a single target.
     """
     if result.tp2_price is not None and result.tp2_price > result.tp1_price > 0:
+        old_tp1 = result.tp1_price
+        old_tp2 = result.tp2_price
+        result.display_tp1_price = result.display_tp1_price or old_tp1
+        result.display_tp2_price = result.display_tp2_price or old_tp2
         if _is_day_trade_strategy(strategy):
             result.tp2_price = None
             result.tp_method = f"{result.tp_method}+single_tp_primary"
             result.rr_ratio, result.skip_entry = _calc_rr(cur_prc, result.tp1_price, result.sl_price, slip, min_rr)
             return result
-        old_tp1 = result.tp1_price
-        old_tp2 = result.tp2_price
         result.tp1_price = int((old_tp1 + old_tp2) / 2)
         result.tp2_price = None
         result.tp_method = f"{result.tp_method}+single_tp_avg({old_tp1}/{old_tp2})"

@@ -49,7 +49,7 @@ def normalize_signal_prices(signal: dict[str, Any]) -> dict[str, Any]:
             signal[field] = round_to_tick(signal.get(field), "nearest")
 
     if entry_ref:
-        for field in ("tp1_price", "tp2_price", "target_price", "claude_tp1", "claude_tp2"):
+        for field in ("tp1_price", "tp2_price", "display_tp1_price", "display_tp2_price", "target_price", "claude_tp1", "claude_tp2"):
             value = signal.get(field)
             if value is None:
                 continue
@@ -67,7 +67,7 @@ def normalize_signal_prices(signal: dict[str, Any]) -> dict[str, Any]:
                 rounded = round_to_tick(value, "down")
             signal[field] = rounded
     else:
-        for field in ("tp1_price", "tp2_price", "sl_price", "claude_tp1", "claude_tp2", "claude_sl"):
+        for field in ("tp1_price", "tp2_price", "display_tp1_price", "display_tp2_price", "sl_price", "claude_tp1", "claude_tp2", "claude_sl"):
             if field in signal and signal.get(field) is not None:
                 signal[field] = round_to_tick(signal.get(field), "nearest")
 
