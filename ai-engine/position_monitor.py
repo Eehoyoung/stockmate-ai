@@ -23,9 +23,8 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from analyzer import analyze_exit
+from db_reader import get_active_positions
 from db_writer import (
-    get_active_positions,
-    mark_tp1_hit,
     update_peak_price,
     close_open_position,
 )
@@ -110,8 +109,8 @@ def _resolve_time_stop_policy(pos: dict) -> tuple[str, int | None, str]:
         return stored_type, int(stored_minutes) if stored_minutes is not None else None, stored_session
 
     defaults: dict[str, tuple[str, int | None, str]] = {
-        "S1_GAP_OPEN": ("intraday_minutes", 60, "same_day_close"),
-        "S2_VI_PULLBACK": ("intraday_minutes", 30, "same_day_close"),
+        "S1_GAP_OPEN": ("intraday_minutes", 30, "same_day_close"),
+        "S2_VI_PULLBACK": ("intraday_minutes", 15, "same_day_close"),
         "S3_INST_FRGN": ("trading_days", 2, ""),
         "S4_BIG_CANDLE": ("intraday_minutes", 20, "same_day_close"),
         "S5_PROG_FRGN": ("trading_days", 2, ""),
@@ -221,7 +220,7 @@ async def _scan_all(rdb, pg_pool):
         return
     logger.debug("[PosMon] 활성 포지션 %d건 스캔", len(positions))
 
-    trailing_count = sum(1 for p in positions if p.get("status") == "PARTIAL_TP")
+    trailing_count = sum(1 for p in positions if p.get("peak_price") and p.get("trailing_pct"))
     if trailing_count > 0:
         today = datetime.now().strftime("%Y-%m-%d")
         try:
@@ -241,6 +240,7 @@ async def _check_position(rdb, pg_pool, pos: dict):
     sl_price    = int(pos["sl_price"]    or 0)
     tp1_price   = int(pos["tp1_price"]   or 0) if pos.get("tp1_price") else 0
     tp2_price   = int(pos["tp2_price"]   or 0) if pos.get("tp2_price") else 0
+    trailing_activation = int(pos["trailing_activation"] or 0) if pos.get("trailing_activation") else 0
     stored_trailing = float(pos.get("trailing_pct") or _TRAILING_PCT_DEFAULT)
     strategy_name   = pos.get("strategy", "")
     reassessment = await _load_reassessment(rdb, position_id)
@@ -326,36 +326,58 @@ async def _check_position(rdb, pg_pool, pos: dict):
             await _publish_sell(rdb, pos, cur_prc, "TIME_STOP", pnl_pct, extra=extra)
         return
 
-    # ── 2. TP2_HIT ───────────────────────────────────────────
-    if tp2_price > 0 and cur_prc >= tp2_price:
+    # ── 3. TRAILING_STOP (ACTIVE/OVERNIGHT after activation) ───
+    if status in {"ACTIVE", "OVERNIGHT"} and trailing_activation > 0 and trailing_pct > 0:
+        if cur_prc >= trailing_activation:
+            if peak_price is None or cur_prc > peak_price:
+                await update_peak_price(pg_pool, position_id, cur_prc)
+                peak_price = cur_prc
+            if peak_price is not None:
+                trailing_threshold = int(peak_price * (1.0 - trailing_pct / 100.0))
+                if cur_prc <= trailing_threshold:
+                    pnl_pct = _pnl(entry_price, cur_prc)
+                    await _publish_sell_recommendation(
+                        rdb, pos, cur_prc, "TRAILING", pnl_pct,
+                        trigger_price=trailing_threshold,
+                        urgent=True,
+                        partial=False,
+                        reassessment=reassessment,
+                        extra={"peak_price": peak_price, "trailing_pct": trailing_pct},
+                    )
+                    ok = await close_open_position(
+                        pg_pool, position_id,
+                        signal_id=signal_id,
+                        exit_type="TRAILING_STOP",
+                        exit_price=cur_prc,
+                        realized_pnl_pct=pnl_pct,
+                    )
+                    if ok:
+                        await _publish_sell(rdb, pos, cur_prc, "TRAILING_STOP", pnl_pct,
+                                            extra={"peak_price": peak_price, "trailing_pct": trailing_pct})
+                    return
+
+    # ── 4. TP_HIT (single target, full close) ───────
+    if status == "ACTIVE" and tp1_price > 0 and cur_prc >= tp1_price:
         pnl_pct = _pnl(entry_price, cur_prc)
         ok = await close_open_position(
             pg_pool, position_id,
             signal_id=signal_id,
-            exit_type="TP2_HIT",
+            exit_type="TP1_HIT",
             exit_price=cur_prc,
             realized_pnl_pct=pnl_pct,
         )
         if ok:
-            await _publish_sell(rdb, pos, cur_prc, "TP2_HIT", pnl_pct)
-        return
-
-    # ── 3. TP1_HIT (처음 한 번만, ACTIVE → PARTIAL_TP) ───────
-    if status == "ACTIVE" and tp1_price > 0 and cur_prc >= tp1_price:
-        ok = await mark_tp1_hit(pg_pool, position_id, cur_prc)
-        if ok:
             await _publish_sell_recommendation(
-                rdb, pos, cur_prc, "TP1", _pnl(entry_price, cur_prc),
+                rdb, pos, cur_prc, "TP", pnl_pct,
                 trigger_price=tp1_price,
                 urgent=False,
-                partial=True,
+                partial=False,
                 reassessment=reassessment,
             )
-            await _publish_sell(rdb, pos, cur_prc, "TP1_HIT", _pnl(entry_price, cur_prc),
-                                partial=True)
+            await _publish_sell(rdb, pos, cur_prc, "TP1_HIT", pnl_pct, partial=False)
         return
 
-    # ── 4. TRAILING_STOP (PARTIAL_TP 상태에서) ───────────────
+    # ── 5. legacy PARTIAL_TP trailing compatibility ───────────
     if status == "PARTIAL_TP":
         # peak_price 갱신
         if peak_price is None or cur_prc > peak_price:

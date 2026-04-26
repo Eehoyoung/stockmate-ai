@@ -69,13 +69,8 @@ public class PositionMonitorScheduler {
 
         if ("ACTIVE".equals(signal.getPositionStatus()) && signal.getTp1Price() != null
                 && curPrc.compareTo(BigDecimal.valueOf(signal.getTp1Price()).setScale(0, RoundingMode.HALF_UP)) >= 0) {
-            markTp1Hit(signal, curPrc);
+            closePosition(signal, "TP1_HIT", curPrc, TradingSignal.SignalStatus.WIN);
             return;
-        }
-
-        if ("PARTIAL_TP".equals(signal.getPositionStatus()) && signal.getTp2Price() != null
-                && curPrc.compareTo(BigDecimal.valueOf(signal.getTp2Price()).setScale(0, RoundingMode.HALF_UP)) >= 0) {
-            closePosition(signal, "TP2_HIT", curPrc, TradingSignal.SignalStatus.WIN);
         }
     }
 
@@ -87,11 +82,6 @@ public class PositionMonitorScheduler {
         signal.recordExit(exitType, curPrc, pnlPct, BigDecimal.ZERO, holdMin);
         signal.updateStatus(signalStatus);
         pushCloseNotification(signal, exitType, curPrc, pnlPct);
-    }
-
-    private void markTp1Hit(TradingSignal signal, BigDecimal curPrc) {
-        signal.markTp1Hit(0, 0, curPrc);
-        pushCloseNotification(signal, "TP1_HIT", curPrc, calculatePnlPct(signal.getEntryPrice(), curPrc));
     }
 
     private BigDecimal calculatePnlPct(Double entryPrice, BigDecimal curPrc) {

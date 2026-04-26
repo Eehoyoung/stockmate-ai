@@ -2,6 +2,17 @@
 
 require('dotenv').config();
 
+const dns = require('node:dns');
+const originalLookup = dns.lookup.bind(dns);
+
+dns.setDefaultResultOrder('ipv4first');
+dns.lookup = (hostname, options, callback) => {
+    if (typeof options === 'function') {
+        return originalLookup(hostname, { family: 4 }, options);
+    }
+    return originalLookup(hostname, { ...(options || {}), family: 4 }, callback);
+};
+
 const { Telegraf } = require('telegraf');
 const { close: closeRedis, getClient: getRedis } = require('./services/redis');
 const {
@@ -10,6 +21,7 @@ const {
     rejectConfirmRequest,
 } = require('./services/confirmStore');
 const { getLogger } = require('./utils/logger');
+const health = require('./health');
 
 const logger = getLogger('index');
 
@@ -185,11 +197,15 @@ async function main() {
     const chatIds = getAllowedChatIds();
     startConfirmPoller(bot, chatIds);
 
+    const healthPort = parseInt(process.env.HEALTH_PORT || '3001', 10);
+    health.start(healthPort);
+    logger.info('[Bot] health server started', { port: healthPort });
 }
 
 async function shutdown(signal) {
     logger.info('[Bot] shutdown signal', { signal });
     try { bot.stop(signal); } catch (_) {}
+    try { health.stop(); } catch (_) {}
     try { await closeRedis(); } catch (_) {}
     try { await closeConfirmStore(); } catch (_) {}
     process.exit(0);

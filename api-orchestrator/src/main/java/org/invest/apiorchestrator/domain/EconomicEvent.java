@@ -13,6 +13,9 @@ import java.time.LocalTime;
  * Feature 2 – 경제 이벤트 엔티티.
  * FOMC, 한은 금통위, CPI 등 주요 발표일을 저장한다.
  * INSERT 경로 없음 — 테이블은 유지하되 스케줄러는 비활성화(EconomicCalendarScheduler).
+ *
+ * V33: 구형 컬럼 title, importance, country 제거됨 (V1 baseline 잔재, 엔티티에 없음).
+ *      event_name, event_type, event_time, expected_impact, description, notified 는 V22에서 추가됨.
  */
 @Entity
 @Table(name = "economic_events", indexes = {

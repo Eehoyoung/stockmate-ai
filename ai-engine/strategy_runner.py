@@ -377,7 +377,7 @@ _SCHEDULE: list[tuple[str, time, time, callable]] = [
     ("S13", time(9, 30), time(14, 0), _scan_s13),
     ("S14", time(9, 30), time(14, 0), _scan_s14),
     ("S15", time(10, 0), time(14, 30), _scan_s15),
-    ("S12", time(14, 30), time(14, 50), _scan_s12),
+    ("S12", time(14, 30), time(15, 10), _scan_s12),
 ]
 
 

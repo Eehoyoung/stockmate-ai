@@ -16,6 +16,10 @@ WORKDIR /app
 
 ENV TZ=Asia/Seoul
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /build/build/libs/*.jar app.jar
 
 RUN mkdir -p logs
@@ -23,5 +27,4 @@ RUN mkdir -p logs
 EXPOSE 8080
 
 ENTRYPOINT ["java", "-Duser.timezone=Asia/Seoul", "--enable-native-access=ALL-UNNAMED", "-jar", "app.jar"]
-
 

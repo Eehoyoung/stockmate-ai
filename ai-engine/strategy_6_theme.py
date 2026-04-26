@@ -18,17 +18,12 @@ from http_utils import fetch_cntr_strength_cached, validate_kiwoom_response, fet
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
+from utils import safe_float as clean_num
 
 logger = logging.getLogger(__name__)
 
-# API 호출 제한 속도 (초당 5회 기준)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
-
-def clean_num(val) -> float:
-    """부호(+) 및 콤마 제거 유틸리티. '-'는 음수 등락률에 사용되므로 보존."""
-    if not val: return 0.0
-    return float(str(val).replace("+", "").replace(",", ""))
 
 async def fetch_theme_groups(token: str) -> list:
     """ka90001 테마그룹별 상위 수익률 (연속조회 포함)"""

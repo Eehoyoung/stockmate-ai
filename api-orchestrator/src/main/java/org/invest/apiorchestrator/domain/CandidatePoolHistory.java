@@ -51,16 +51,23 @@ public class CandidatePoolHistory {
     @Builder.Default
     private Integer appearCount = 1;
 
-    @Column(name = "first_seen")
-    private OffsetDateTime firstSeen;
+    @Column(name = "first_seen", nullable = false)
+    @Builder.Default
+    private OffsetDateTime firstSeen = OffsetDateTime.now();
 
-    @Column(name = "last_seen")
-    private OffsetDateTime lastSeen;
+    @Column(name = "last_seen", nullable = false)
+    @Builder.Default
+    private OffsetDateTime lastSeen = OffsetDateTime.now();
 
     @Column(name = "led_to_signal")
     @Builder.Default
     private Boolean ledToSignal = false;
 
+    /**
+     * 연결된 trading_signals.id.
+     * V33에서 FK fk_cph_stk_cd (stk_cd → stock_master) 추가됨.
+     * signal_id 는 ON DELETE SET NULL (V13 정의).
+     */
     @Column(name = "signal_id")
     private Long signalId;
 }

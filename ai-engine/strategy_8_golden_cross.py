@@ -29,6 +29,7 @@ from indicator_bollinger import calc_bollinger
 from indicator_atr import calc_atr
 from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
 from tp_sl_engine import calc_tp_sl
+from utils import safe_float as clean_num
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -170,9 +171,3 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
 
-def clean_num(val):
-    try:
-        # '+' 부호만 제거, '-'는 음수 부호이므로 보존
-        return float(str(val).replace("+", "").replace(",", ""))
-    except:
-        return 0.0

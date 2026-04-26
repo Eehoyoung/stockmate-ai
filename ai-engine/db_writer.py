@@ -37,6 +37,60 @@ def _opt_int(v) -> Optional[int]:
         return None
 
 
+def _opt_bool(v) -> Optional[bool]:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    s = str(v).strip().lower()
+    if s in {"true", "1", "y", "yes"}:
+        return True
+    if s in {"false", "0", "n", "no"}:
+        return False
+    return None
+
+
+def _add_business_days(start_dt: datetime, days: int) -> datetime:
+    cur = start_dt
+    remaining = max(days, 0)
+    while remaining > 0:
+        cur += timedelta(days=1)
+        if cur.weekday() < 5:
+            remaining -= 1
+    return cur
+
+
+def _resolve_time_stop_deadline_utc(
+    *,
+    created_at_utc: datetime,
+    time_stop_type: Optional[str],
+    time_stop_minutes: Optional[int],
+    time_stop_session: Optional[str],
+) -> Optional[datetime]:
+    if not time_stop_type and not time_stop_session:
+        return None
+    base_kst = created_at_utc.astimezone(KST)
+    stop_type = str(time_stop_type or "").strip()
+    stop_session = str(time_stop_session or "").strip()
+    minutes = _opt_int(time_stop_minutes)
+
+    if stop_type == "intraday_minutes" and minutes is not None:
+        return (created_at_utc + timedelta(minutes=minutes)).astimezone(timezone.utc)
+    if stop_type == "trading_days" and minutes is not None:
+        deadline_kst = _add_business_days(base_kst, minutes).replace(hour=15, minute=18, second=0, microsecond=0)
+        return deadline_kst.astimezone(timezone.utc)
+    if stop_type == "session_close" and stop_session == "same_day_close":
+        return base_kst.replace(hour=15, minute=18, second=0, microsecond=0).astimezone(timezone.utc)
+    if stop_type == "session_close" and stop_session == "next_day_morning":
+        next_kst = _add_business_days(base_kst, 1).replace(hour=10, minute=30, second=0, microsecond=0)
+        return next_kst.astimezone(timezone.utc)
+    if stop_session == "same_day_close":
+        return base_kst.replace(hour=15, minute=18, second=0, microsecond=0).astimezone(timezone.utc)
+    return None
+
+
 def _next_trading_day_preopen_utc(base_dt: Optional[datetime] = None) -> datetime:
     base = base_dt.astimezone(KST) if base_dt else datetime.now(KST)
     candidate = base.date() + timedelta(days=1)
@@ -103,6 +157,183 @@ def _build_position_row(row) -> dict:
     }
 
 
+def _calc_realized_rr(entry_price: Optional[float], sl_price: Optional[float], exit_price: Optional[float]) -> Optional[float]:
+    entry = _opt_num(entry_price)
+    sl = _opt_num(sl_price)
+    exit_p = _opt_num(exit_price)
+    if entry is None or sl is None or exit_p is None:
+        return None
+    risk = entry - sl
+    if risk <= 0:
+        return None
+    return round((exit_p - entry) / risk, 3)
+
+
+async def _insert_position_state_event(
+    conn,
+    *,
+    signal_id: int,
+    event_type: str,
+    position_status: Optional[str] = None,
+    peak_price: Optional[float] = None,
+    trailing_stop_price: Optional[float] = None,
+    payload: Optional[dict] = None,
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO position_state_events (
+            signal_id, event_type, position_status, peak_price, trailing_stop_price, payload
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6::jsonb
+        )
+        """,
+        signal_id,
+        event_type,
+        position_status,
+        _opt_int(peak_price),
+        _opt_int(trailing_stop_price),
+        json.dumps(payload, ensure_ascii=False, default=str) if payload else None,
+    )
+
+
+async def _upsert_primary_trade_plan(
+    conn,
+    *,
+    signal_id: int,
+    strategy_code: Optional[str],
+    strategy_version: Optional[str],
+    entry_price: Optional[float],
+    tp_price: Optional[float],
+    sl_price: Optional[float],
+    planned_rr: Optional[float],
+    effective_rr: Optional[float],
+    tp_model: Optional[str],
+    sl_model: Optional[str],
+    time_stop_type: Optional[str],
+    time_stop_minutes: Optional[int],
+    time_stop_session: Optional[str],
+    trailing_basis: Optional[str],
+    trailing_pct: Optional[float],
+) -> None:
+    strategy_code = (strategy_code or "").strip() or "UNKNOWN"
+    entry = _opt_num(entry_price)
+    tp = _opt_num(tp_price)
+    sl = _opt_num(sl_price)
+    tp_pct = round((tp - entry) / entry * 100, 3) if entry and tp and tp > 0 else None
+    sl_pct = round((entry - sl) / entry * 100, 3) if entry and sl and sl > 0 else None
+    trailing_rule = None
+    if trailing_pct is not None:
+        basis = str(trailing_basis or "single_tp")
+        trailing_rule = f"{basis}:{round(float(trailing_pct), 2)}%"
+
+    updated = await conn.execute(
+        """
+        UPDATE trade_plans
+        SET strategy_code = $2,
+            strategy_version = $3,
+            tp_model = $4,
+            sl_model = $5,
+            tp_price = $6,
+            sl_price = $7,
+            tp_pct = $8,
+            sl_pct = $9,
+            planned_rr = $10,
+            effective_rr = $11,
+            time_stop_type = $12,
+            time_stop_minutes = $13,
+            time_stop_session = $14,
+            trailing_rule = $15,
+            partial_tp_rule = 'single_tp',
+            planned_exit_priority = 'tp_then_trailing_then_sl_then_time'
+        WHERE signal_id = $1
+          AND variant_rank = 1
+        """,
+        signal_id,
+        strategy_code,
+        strategy_version,
+        tp_model,
+        sl_model,
+        _opt_int(tp),
+        _opt_int(sl),
+        _opt_num(tp_pct),
+        _opt_num(sl_pct),
+        _opt_num(planned_rr),
+        _opt_num(effective_rr),
+        time_stop_type,
+        _opt_int(time_stop_minutes),
+        time_stop_session,
+        trailing_rule,
+    )
+    if updated != "UPDATE 1":
+        await conn.execute(
+            """
+            INSERT INTO trade_plans (
+                signal_id, strategy_code, strategy_version, plan_name,
+                tp_model, sl_model, tp_price, sl_price, tp_pct, sl_pct,
+                planned_rr, effective_rr, time_stop_type, time_stop_minutes, time_stop_session,
+                trailing_rule, partial_tp_rule, planned_exit_priority, variant_rank
+            ) VALUES (
+                $1, $2, $3, 'primary',
+                $4, $5, $6, $7, $8, $9,
+                $10, $11, $12, $13, $14,
+                $15, 'single_tp', 'tp_then_trailing_then_sl_then_time', 1
+            )
+            """,
+            signal_id,
+            strategy_code,
+            strategy_version,
+            tp_model,
+            sl_model,
+            _opt_int(tp),
+            _opt_int(sl),
+            _opt_num(tp_pct),
+            _opt_num(sl_pct),
+            _opt_num(planned_rr),
+            _opt_num(effective_rr),
+            time_stop_type,
+            _opt_int(time_stop_minutes),
+            time_stop_session,
+            trailing_rule,
+        )
+
+
+async def _insert_trade_outcome(
+    conn,
+    *,
+    signal_id: int,
+    row,
+    exit_reason: str,
+    exit_price: float,
+    realized_pnl_pct: float,
+) -> None:
+    row_data = dict(row)
+    realized_rr = _calc_realized_rr(row_data.get("entry_price"), row_data.get("sl_price"), exit_price)
+    tp_hit = bool(row_data.get("tp1_hit_at")) or exit_reason == "TP1_HIT"
+    timeout = exit_reason == "TIME_STOP"
+    await conn.execute(
+        """
+        INSERT INTO trade_outcomes (
+            signal_id, plan_id, exit_reason, exit_price,
+            realized_rr_gross, realized_rr_net, realized_pnl,
+            tp_hit_before_sl_flag, tp_reached_within_horizon_flag,
+            timeout_flag, touch_mode, execution_quality_flag
+        ) VALUES (
+            $1,
+            (SELECT id FROM trade_plans WHERE signal_id = $1 ORDER BY variant_rank ASC, id ASC LIMIT 1),
+            $2, $3, $4, $5, NULL, $6, $7, $8, 'close_signal', NULL
+        )
+        """,
+        signal_id,
+        exit_reason,
+        _opt_int(exit_price),
+        _opt_num(realized_rr),
+        _opt_num(realized_rr),
+        tp_hit,
+        tp_hit,
+        timeout,
+    )
+
+
 async def update_signal_score(
     pool,
     signal_id: int,
@@ -126,6 +357,18 @@ async def update_signal_score(
     market_flu_rt: Optional[float] = None,
     news_sentiment: Optional[str] = None,
     news_ctrl: Optional[str] = None,
+    raw_rr: Optional[float] = None,
+    single_tp_rr: Optional[float] = None,
+    effective_rr: Optional[float] = None,
+    min_rr_ratio: Optional[float] = None,
+    rr_skip_reason: Optional[str] = None,
+    stop_max_pct: Optional[float] = None,
+    tp_policy_version: Optional[str] = None,
+    sl_policy_version: Optional[str] = None,
+    exit_policy_version: Optional[str] = None,
+    allow_overnight: Optional[bool] = None,
+    allow_reentry: Optional[bool] = None,
+    time_stop_deadline_at: Optional[datetime] = None,
 ) -> bool:
     if not signal_id:
         return False
@@ -153,7 +396,19 @@ async def update_signal_score(
                 atr_at_signal    = $18,
                 market_flu_rt    = $19,
                 news_sentiment   = $20,
-                news_ctrl        = $21
+                news_ctrl        = $21,
+                raw_rr           = COALESCE($22, raw_rr),
+                single_tp_rr     = COALESCE($23, single_tp_rr),
+                effective_rr     = COALESCE($24, effective_rr),
+                min_rr_ratio     = COALESCE($25, min_rr_ratio),
+                rr_skip_reason   = COALESCE($26, rr_skip_reason),
+                stop_max_pct     = COALESCE($27, stop_max_pct),
+                tp_policy_version = COALESCE($28, tp_policy_version),
+                sl_policy_version = COALESCE($29, sl_policy_version),
+                exit_policy_version = COALESCE($30, exit_policy_version),
+                allow_overnight  = COALESCE($31, allow_overnight),
+                allow_reentry    = COALESCE($32, allow_reentry),
+                time_stop_deadline_at = COALESCE($33, time_stop_deadline_at)
             WHERE id = $1
             """,
             signal_id,
@@ -177,6 +432,18 @@ async def update_signal_score(
             round(market_flu_rt, 3) if market_flu_rt is not None else None,
             news_sentiment,
             news_ctrl,
+            _opt_num(raw_rr),
+            _opt_num(single_tp_rr),
+            _opt_num(effective_rr),
+            _opt_num(min_rr_ratio),
+            rr_skip_reason,
+            _opt_num(stop_max_pct),
+            tp_policy_version,
+            sl_policy_version,
+            exit_policy_version,
+            _opt_bool(allow_overnight),
+            _opt_bool(allow_reentry),
+            time_stop_deadline_at,
         )
         return True
     except Exception as e:
@@ -197,57 +464,136 @@ async def insert_python_signal(
 ) -> Optional[int]:
     signal = dict(signal)
     signal["stk_cd"] = normalize_stock_code(signal.get("stk_cd", ""))
-    now = datetime.utcnow()
+    if not signal["stk_cd"]:
+        logger.error("[DBWriter] insert_python_signal aborted: stk_cd is empty (strategy=%s)", signal.get("strategy"))
+        return None
+    if not signal.get("strategy"):
+        logger.error("[DBWriter] insert_python_signal aborted: strategy is empty (stk_cd=%s)", signal["stk_cd"])
+        return None
+    now = datetime.now(timezone.utc)
     status = "SENT" if action == "ENTER" else "CANCELLED"
+    time_stop_deadline_at = _resolve_time_stop_deadline_utc(
+        created_at_utc=now.replace(tzinfo=timezone.utc),
+        time_stop_type=signal.get("time_stop_type"),
+        time_stop_minutes=signal.get("time_stop_minutes"),
+        time_stop_session=signal.get("time_stop_session"),
+    )
     try:
-        row = await pool.fetchrow(
-            """
-            INSERT INTO trading_signals (
-                stk_cd, strategy, signal_status, action, confidence,
-                rule_score, ai_score, signal_score, ai_reason, skip_entry,
-                entry_price, target_price, stop_price,
-                tp1_price, tp2_price, sl_price,
-                gap_pct, vol_ratio, cntr_strength, bid_ratio, pullback_pct,
-                entry_type, theme_name, market_type,
-                created_at, scored_at
-            ) VALUES (
-                $1,$2,$3,$4,$5,
-                $6,$7,$8,$9,$10,
-                $11,$12,$13,
-                $14,$15,$16,
-                $17,$18,$19,$20,$21,
-                $22,$23,$24,
-                $25,$26
-            ) RETURNING id
-            """,
-            signal.get("stk_cd", ""),
-            signal.get("strategy", ""),
-            status,
-            action,
-            confidence,
-            round(rule_score, 2),
-            round(ai_score, 2),
-            round(ai_score, 2),
-            ai_reason,
-            skip_entry,
-            _sf(signal.get("entry_price") or signal.get("cur_prc")),
-            _sf(signal.get("target_price") or signal.get("tp1_price")),
-            _sf(signal.get("stop_price") or signal.get("sl_price")),
-            _sf(signal.get("tp1_price")),
-            _sf(signal.get("tp2_price")),
-            _sf(signal.get("sl_price")),
-            _sf(signal.get("gap_pct")),
-            _sf(signal.get("vol_ratio")),
-            _sf(signal.get("cntr_strength") or signal.get("cntr_str")),
-            _sf(signal.get("bid_ratio")),
-            _sf(signal.get("pullback_pct")),
-            signal.get("entry_type"),
-            signal.get("theme_name"),
-            signal.get("market_type"),
-            now,
-            now,
-        )
-        return row["id"] if row else None
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO trading_signals (
+                        stk_cd, strategy, signal_status, action, confidence,
+                        rule_score, ai_score, signal_score, ai_reason, skip_entry,
+                        entry_price, target_price, stop_price,
+                        tp1_price, tp2_price, sl_price,
+                        tp_method, sl_method, rr_ratio,
+                        raw_rr, single_tp_rr, effective_rr, min_rr_ratio, rr_skip_reason, stop_max_pct,
+                        gap_pct, vol_ratio, cntr_strength, bid_ratio, pullback_pct,
+                        entry_type, theme_name, market_type,
+                        trailing_pct, trailing_activation, trailing_basis,
+                        strategy_version, time_stop_type, time_stop_minutes, time_stop_session,
+                        tp_policy_version, sl_policy_version, exit_policy_version,
+                        allow_overnight, allow_reentry, time_stop_deadline_at,
+                        created_at, scored_at
+                    ) VALUES (
+                        $1,$2,$3,$4,$5,
+                        $6,$7,$8,$9,$10,
+                        $11,$12,$13,
+                        $14,$15,$16,
+                        $17,$18,$19,
+                        $20,$21,$22,$23,$24,$25,
+                        $26,$27,$28,$29,$30,
+                        $31,$32,$33,
+                        $34,$35,$36,
+                        $37,$38,$39,$40,
+                        $41,$42,$43,
+                        $44,$45,$46,$47,$48
+                    ) RETURNING id
+                    """,
+                    signal.get("stk_cd", ""),
+                    signal.get("strategy", ""),
+                    status,
+                    action,
+                    confidence,
+                    round(rule_score, 2),
+                    round(ai_score, 2),
+                    round(ai_score, 2),
+                    ai_reason,
+                    skip_entry,
+                    _sf(signal.get("entry_price") or signal.get("cur_prc")),
+                    _sf(signal.get("target_price") or signal.get("tp1_price")),
+                    _sf(signal.get("stop_price") or signal.get("sl_price")),
+                    _sf(signal.get("tp1_price")),
+                    _sf(signal.get("tp2_price")),
+                    _sf(signal.get("sl_price")),
+                    signal.get("tp_method"),
+                    signal.get("sl_method"),
+                    _sf(signal.get("rr_ratio")),
+                    _sf(signal.get("raw_rr")),
+                    _sf(signal.get("single_tp_rr")),
+                    _sf(signal.get("effective_rr")),
+                    _sf(signal.get("min_rr_ratio")),
+                    signal.get("rr_skip_reason"),
+                    _sf(signal.get("stop_max_pct")),
+                    _sf(signal.get("gap_pct")),
+                    _sf(signal.get("vol_ratio")),
+                    _sf(signal.get("cntr_strength") or signal.get("cntr_str")),
+                    _sf(signal.get("bid_ratio")),
+                    _sf(signal.get("pullback_pct")),
+                    signal.get("entry_type"),
+                    signal.get("theme_name"),
+                    signal.get("market_type"),
+                    _sf(signal.get("trailing_pct")),
+                    _sf(signal.get("trailing_activation")),
+                    signal.get("trailing_basis"),
+                    signal.get("strategy_version"),
+                    signal.get("time_stop_type"),
+                    _opt_int(signal.get("time_stop_minutes")),
+                    signal.get("time_stop_session"),
+                    signal.get("tp_policy_version"),
+                    signal.get("sl_policy_version"),
+                    signal.get("exit_policy_version"),
+                    _opt_bool(signal.get("allow_overnight")),
+                    _opt_bool(signal.get("allow_reentry")),
+                    time_stop_deadline_at,
+                    now,
+                    now,
+                )
+                if row:
+                    signal_id = row["id"]
+                    await _upsert_primary_trade_plan(
+                        conn,
+                        signal_id=signal_id,
+                        strategy_code=signal.get("strategy"),
+                        strategy_version=signal.get("strategy_version"),
+                        entry_price=signal.get("entry_price") or signal.get("cur_prc"),
+                        tp_price=signal.get("target_price") or signal.get("tp1_price"),
+                        sl_price=signal.get("stop_price") or signal.get("sl_price"),
+                        planned_rr=signal.get("single_tp_rr") or signal.get("raw_rr") or signal.get("rr_ratio"),
+                        effective_rr=signal.get("effective_rr") or signal.get("rr_ratio"),
+                        tp_model=signal.get("tp_method"),
+                        sl_model=signal.get("sl_method"),
+                        time_stop_type=signal.get("time_stop_type"),
+                        time_stop_minutes=signal.get("time_stop_minutes"),
+                        time_stop_session=signal.get("time_stop_session"),
+                        trailing_basis=signal.get("trailing_basis"),
+                        trailing_pct=signal.get("trailing_pct"),
+                    )
+                    await _insert_position_state_event(
+                        conn,
+                        signal_id=signal_id,
+                        event_type="SIGNAL_CREATED",
+                        position_status="PENDING" if action == "ENTER" else "CLOSED",
+                        payload={
+                            "action": action,
+                            "skip_entry": bool(skip_entry),
+                            "rr_ratio": _sf(signal.get("rr_ratio")),
+                            "effective_rr": _sf(signal.get("effective_rr")),
+                        },
+                    )
+                return row["id"] if row else None
     except Exception as e:
         logger.error("[DBWriter] insert_python_signal error [%s %s]: %s", signal.get("stk_cd"), signal.get("strategy"), e)
         return None
@@ -328,6 +674,13 @@ async def record_overnight_eval(
                     signal_id,
                     verdict,
                     round(overnight_score, 2),
+                )
+                await _insert_position_state_event(
+                    conn,
+                    signal_id=signal_id,
+                    event_type="OVERNIGHT_EVAL",
+                    position_status="OVERNIGHT" if verdict == "HOLD" else row["position_status"],
+                    payload={"verdict": verdict, "overnight_score": round(overnight_score, 2)},
                 )
         return True
     except Exception as e:
@@ -481,6 +834,17 @@ async def confirm_open_position(
     time_stop_type: Optional[str] = None,
     time_stop_minutes: Optional[int] = None,
     time_stop_session: Optional[str] = None,
+    raw_rr: Optional[float] = None,
+    single_tp_rr: Optional[float] = None,
+    effective_rr: Optional[float] = None,
+    min_rr_ratio: Optional[float] = None,
+    rr_skip_reason: Optional[str] = None,
+    stop_max_pct: Optional[float] = None,
+    tp_policy_version: Optional[str] = None,
+    sl_policy_version: Optional[str] = None,
+    exit_policy_version: Optional[str] = None,
+    allow_overnight: Optional[bool] = None,
+    allow_reentry: Optional[bool] = None,
 ) -> bool:
     if not signal_id:
         return False
@@ -491,6 +855,13 @@ async def confirm_open_position(
                 if not row or row["signal_status"] in TERMINAL_SIGNAL_STATUSES:
                     return False
 
+                base_ts = row["entry_at"] or row["executed_at"] or row["created_at"] or datetime.now(timezone.utc)
+                deadline_at = _resolve_time_stop_deadline_utc(
+                    created_at_utc=base_ts if getattr(base_ts, "tzinfo", None) else base_ts.replace(tzinfo=timezone.utc),
+                    time_stop_type=time_stop_type or row["time_stop_type"],
+                    time_stop_minutes=time_stop_minutes if time_stop_minutes is not None else row["time_stop_minutes"],
+                    time_stop_session=time_stop_session or row["time_stop_session"],
+                )
                 await conn.execute(
                     """
                     UPDATE trading_signals
@@ -518,7 +889,19 @@ async def confirm_open_position(
                         strategy_version = COALESCE($10, strategy_version),
                         time_stop_type = COALESCE($11, time_stop_type),
                         time_stop_minutes = COALESCE($12, time_stop_minutes),
-                        time_stop_session = COALESCE($13, time_stop_session)
+                        time_stop_session = COALESCE($13, time_stop_session),
+                        raw_rr = COALESCE($14::NUMERIC, raw_rr),
+                        single_tp_rr = COALESCE($15::NUMERIC, single_tp_rr),
+                        effective_rr = COALESCE($16::NUMERIC, effective_rr),
+                        min_rr_ratio = COALESCE($17::NUMERIC, min_rr_ratio),
+                        rr_skip_reason = COALESCE($18, rr_skip_reason),
+                        stop_max_pct = COALESCE($19::NUMERIC, stop_max_pct),
+                        tp_policy_version = COALESCE($20, tp_policy_version),
+                        sl_policy_version = COALESCE($21, sl_policy_version),
+                        exit_policy_version = COALESCE($22, exit_policy_version),
+                        allow_overnight = COALESCE($23, allow_overnight),
+                        allow_reentry = COALESCE($24, allow_reentry),
+                        time_stop_deadline_at = COALESCE($25, time_stop_deadline_at)
                     WHERE id = $1
                     """,
                     signal_id,
@@ -534,6 +917,47 @@ async def confirm_open_position(
                     time_stop_type,
                     int(time_stop_minutes) if time_stop_minutes is not None else None,
                     time_stop_session,
+                    _opt_num(raw_rr),
+                    _opt_num(single_tp_rr),
+                    _opt_num(effective_rr),
+                    _opt_num(min_rr_ratio),
+                    rr_skip_reason,
+                    _opt_num(stop_max_pct),
+                    tp_policy_version,
+                    sl_policy_version,
+                    exit_policy_version,
+                    _opt_bool(allow_overnight),
+                    _opt_bool(allow_reentry),
+                    deadline_at,
+                )
+                await _upsert_primary_trade_plan(
+                    conn,
+                    signal_id=signal_id,
+                    strategy_code=row["strategy"],
+                    strategy_version=strategy_version or row["strategy_version"],
+                    entry_price=row["entry_price"],
+                    tp_price=tp1_price or row["tp1_price"],
+                    sl_price=sl_price or row["sl_price"],
+                    planned_rr=single_tp_rr or raw_rr or rr_ratio or row["rr_ratio"],
+                    effective_rr=effective_rr or rr_ratio or row["rr_ratio"],
+                    tp_model=row["tp_method"],
+                    sl_model=row["sl_method"],
+                    time_stop_type=time_stop_type or row["time_stop_type"],
+                    time_stop_minutes=time_stop_minutes if time_stop_minutes is not None else row["time_stop_minutes"],
+                    time_stop_session=time_stop_session or row["time_stop_session"],
+                    trailing_basis=trailing_basis or row["trailing_basis"],
+                    trailing_pct=trailing_pct if trailing_pct is not None else row["trailing_pct"],
+                )
+                await _insert_position_state_event(
+                    conn,
+                    signal_id=signal_id,
+                    event_type="POSITION_OPENED",
+                    position_status="ACTIVE",
+                    payload={
+                        "rr_ratio": round(rr_ratio, 3) if rr_ratio is not None else None,
+                        "effective_rr": _opt_num(effective_rr or rr_ratio),
+                        "time_stop_deadline_at": deadline_at,
+                    },
                 )
         return True
     except Exception as e:
@@ -562,6 +986,14 @@ async def cancel_open_position_by_signal(pool, signal_id: int) -> bool:
                     """,
                     signal_id,
                 )
+                if row:
+                    await _insert_position_state_event(
+                        conn,
+                        signal_id=signal_id,
+                        event_type="SIGNAL_CANCELLED",
+                        position_status="CLOSED",
+                        payload={"previous_status": row["signal_status"]},
+                    )
         return True
     except Exception as e:
         logger.error("[DBWriter] cancel_open_position_by_signal error signal_id=%s: %s", signal_id, e)
@@ -642,33 +1074,6 @@ async def insert_rule_cancel_signal(
         return False
 
 
-async def get_active_positions(pool) -> list[dict]:
-    try:
-        rows = await pool.fetch(
-            """
-            SELECT
-                id, stk_cd, stk_nm, strategy, market_type,
-                entry_price, tp1_price, tp2_price, sl_price,
-                tp_method, sl_method, rr_ratio,
-                signal_status, exit_type, created_at, executed_at,
-                position_status, entry_at, tp1_hit_at, peak_price, trailing_pct, trailing_activation,
-                trailing_basis, strategy_version, time_stop_type, time_stop_minutes, time_stop_session,
-                monitor_enabled, is_overnight, overnight_verdict, overnight_score
-            FROM trading_signals
-            WHERE position_status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
-              AND COALESCE(monitor_enabled, TRUE) = TRUE
-            ORDER BY COALESCE(entry_at, executed_at, created_at)
-            """
-        )
-        positions = []
-        for row in rows:
-            pos = _build_position_row(row)
-            if pos["status"] in ACTIVE_POSITION_STATES and pos["monitor_enabled"]:
-                positions.append(pos)
-        return positions
-    except Exception as e:
-        logger.error("[DBWriter] get_active_positions error: %s", e)
-        return []
 
 
 async def mark_tp1_hit(pool, position_id: int, cur_prc: int) -> bool:
@@ -691,6 +1096,15 @@ async def mark_tp1_hit(pool, position_id: int, cur_prc: int) -> bool:
                     position_id,
                     int(cur_prc),
                 )
+                await _insert_position_state_event(
+                    conn,
+                    signal_id=position_id,
+                    event_type="TP1_REACHED",
+                    position_status="PARTIAL_TP",
+                    peak_price=cur_prc,
+                    trailing_stop_price=cur_prc,
+                    payload={"tp1_price": _opt_int(row["tp1_price"]), "trigger_price": int(cur_prc)},
+                )
         return True
     except Exception as e:
         logger.error("[DBWriter] mark_tp1_hit error position_id=%s: %s", position_id, e)
@@ -704,15 +1118,25 @@ async def update_peak_price(pool, position_id: int, peak_price: int) -> bool:
                 row = await _load_signal_for_update(conn, position_id)
                 if not row or not _is_active_signal(row["signal_status"], row["exit_type"]):
                     return False
-                if str(row["position_status"] or "ACTIVE") != "PARTIAL_TP":
+                if str(row["position_status"] or "ACTIVE") not in {"ACTIVE", "PARTIAL_TP", "OVERNIGHT"}:
                     return False
                 current_peak = _opt_int(row["peak_price"])
                 if current_peak is not None and current_peak >= peak_price:
                     return True
                 await conn.execute(
-                    "UPDATE trading_signals SET peak_price = $2 WHERE id = $1",
+                    "UPDATE trading_signals SET peak_price = $2, trailing_stop_price = $3 WHERE id = $1",
                     position_id,
                     int(peak_price),
+                    int(peak_price),
+                )
+                await _insert_position_state_event(
+                    conn,
+                    signal_id=position_id,
+                    event_type="PEAK_UPDATED",
+                    position_status=row["position_status"],
+                    peak_price=peak_price,
+                    trailing_stop_price=peak_price,
+                    payload={"previous_peak": current_peak, "new_peak": int(peak_price)},
                 )
         return True
     except Exception as e:
@@ -754,6 +1178,27 @@ async def close_open_position(
                     exit_price,
                     round(realized_pnl_pct, 4),
                 )
+                await _insert_trade_outcome(
+                    conn,
+                    signal_id=signal_id,
+                    row=row,
+                    exit_reason=exit_type,
+                    exit_price=exit_price,
+                    realized_pnl_pct=realized_pnl_pct,
+                )
+                await _insert_position_state_event(
+                    conn,
+                    signal_id=signal_id,
+                    event_type="POSITION_CLOSED",
+                    position_status="CLOSED",
+                    peak_price=dict(row).get("peak_price"),
+                    trailing_stop_price=dict(row).get("peak_price"),
+                    payload={
+                        "exit_type": exit_type,
+                        "exit_price": int(exit_price),
+                        "realized_pnl_pct": round(realized_pnl_pct, 4),
+                    },
+                )
         return True
     except Exception as e:
         logger.error("[DBWriter] close_open_position error position_id=%s signal_id=%s: %s", position_id, signal_id, e)
@@ -770,6 +1215,12 @@ async def insert_human_confirm_request(
     try:
         payload = dict(payload)
         payload["stk_cd"] = normalize_stock_code(payload.get("stk_cd", ""))
+        if not payload["stk_cd"]:
+            logger.error("[DBWriter] insert_human_confirm_request aborted: stk_cd is empty (strategy=%s)", payload.get("strategy"))
+            return None
+        if not payload.get("strategy"):
+            logger.error("[DBWriter] insert_human_confirm_request aborted: strategy is empty (stk_cd=%s)", payload["stk_cd"])
+            return None
         requested_at = datetime.now(timezone.utc)
         expires_at = _next_trading_day_preopen_utc(requested_at)
         signal_id = payload.get("id")

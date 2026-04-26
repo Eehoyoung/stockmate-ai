@@ -13,6 +13,7 @@ import time
 from datetime import date, datetime
 
 from utils import safe_float as _safe_float
+from strategy_meta import CLAUDE_THRESHOLDS as _META_CLAUDE_THRESHOLDS
 from strategy_meta import get_threshold as _meta_get_threshold
 
 logger    = logging.getLogger(__name__)
@@ -22,26 +23,10 @@ MAX_CLAUDE_CALLS_PER_DAY = int(os.getenv("MAX_CLAUDE_CALLS_PER_DAY", "100"))
 
 # scorer.py 가 외부에 노출하는 Claude threshold 계약은 테스트/워크플로우 기준으로 고정한다.
 # strategy_meta 의 기본값과 다를 수 있지만, 이 모듈의 계약을 안정화하는 것이 우선이다.
-_CLAUDE_THRESHOLD_OVERRIDES = {
-    "S1_GAP_OPEN": 70,
-    "S2_VI_PULLBACK": 65,
-    "S3_INST_FRGN": 60,
-    "S4_BIG_CANDLE": 75,
-    "S5_PROG_FRGN": 65,
-    "S6_THEME_LAGGARD": 60,
-    "S7_ICHIMOKU_BREAKOUT": 62,
-    "S8_GOLDEN_CROSS": 50,
-    "S9_PULLBACK_SWING": 45,
-    "S10_NEW_HIGH": 48,
-    "S11_FRGN_CONT": 58,
-    "S12_CLOSING": 60,
-    "S13_BOX_BREAKOUT": 55,
-    "S14_OVERSOLD_BOUNCE": 50,
-    "S15_MOMENTUM_ALIGN": 65,
-}
+_CLAUDE_THRESHOLD_OVERRIDES = _META_CLAUDE_THRESHOLDS
 
 # 외부 모듈이 scorer.CLAUDE_THRESHOLDS 를 직접 참조하는 경우를 위해 공개 심볼 유지.
-CLAUDE_THRESHOLDS = dict(_CLAUDE_THRESHOLD_OVERRIDES)
+CLAUDE_THRESHOLDS = _META_CLAUDE_THRESHOLDS
 
 
 class ScoreResult(tuple):
@@ -81,8 +66,6 @@ class ScoreResult(tuple):
 
 def get_claude_threshold(strategy: str) -> float:
     """scorer 계약 기준 Claude 호출 임계값을 반환한다."""
-    if strategy in _CLAUDE_THRESHOLD_OVERRIDES:
-        return float(_CLAUDE_THRESHOLD_OVERRIDES[strategy])
     return float(_meta_get_threshold(strategy))
 
 
@@ -120,8 +103,8 @@ def _time_bonus(strategy: str) -> float:
         if strategy in ("S10_NEW_HIGH", "S11_FRGN_CONT"):
             return 5.0
 
-    # 14:30~15:30: 종가강도 전략 최적 시간대
-    if 870 <= minute_of_day < 930:
+    # 14:30~15:10: 종가강도 전략 최적 시간대
+    if 870 <= minute_of_day < 910:
         if strategy == "S12_CLOSING":
             return 5.0
 
@@ -228,16 +211,24 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             cont_days = int(signal.get("continuous_days", 0) or 0)
             vol_ratio = _safe_float(signal.get("vol_ratio", 0))
             flu_rt_s3 = _safe_float(signal.get("flu_rt", 0))
+            buy_conc  = _safe_float(signal.get("buy_concentration_pct", 0))
             # net_buy_amt: 원(KRW) 기준. 10억(1B) 이상에서 만점(25pt)
             _net_sc  = min(25, net_amt / 1_000_000_000 * 25)
             _cont_sc = 30 if cont_days >= 5 else (20 if cont_days >= 3 else (10 if cont_days >= 1 else 0))
             _vol_sc  = 25 if vol_ratio >= 3 else (20 if vol_ratio >= 2 else (10 if vol_ratio >= 1.5 else 0))
             _flu_sc  = 10 if 1 <= flu_rt_s3 < 5 else (5 if 0 < flu_rt_s3 < 1 else 0)
-            score += _net_sc + _cont_sc + _vol_sc + _flu_sc
-            _demand_score += _net_sc + _cont_sc
+            # 외인+기관 동시 순매수 확인 + 순매수 집중도 보너스
+            _smtm_sc = 10 if bool(signal.get("inst_frgn_smtm")) else 0
+            _conc_sc = 5 if buy_conc >= 15 else 0
+            score += _net_sc + _cont_sc + _vol_sc + _flu_sc + _smtm_sc + _conc_sc
+            _demand_score += _net_sc + _cont_sc + _smtm_sc + _conc_sc
             _vol_score    += _vol_sc
             _momentum_score += _flu_sc
-            _strategy_data = {"net_buy_amt": net_amt, "continuous_days": cont_days, "vol_ratio": vol_ratio, "flu_rt": flu_rt_s3}
+            _strategy_data = {
+                "net_buy_amt": net_amt, "continuous_days": cont_days,
+                "vol_ratio": vol_ratio, "flu_rt": flu_rt_s3,
+                "buy_concentration_pct": buy_conc, "inst_frgn_smtm": bool(signal.get("inst_frgn_smtm")),
+            }
 
         case "S4_BIG_CANDLE":
             vol_ratio  = _safe_float(signal.get("vol_ratio", 0))
@@ -508,7 +499,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
     _tb = _time_bonus(strategy)
     score += _tb
 
-    # 공통 페널티
+    # 공통 패널티
     flu_rt_for_penalty = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
     _risk_penalty = 0.0
     if flu_rt_for_penalty > 15:
@@ -517,6 +508,33 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
         _risk_penalty = -10.0
     if flu_rt_for_penalty < -5:
         _risk_penalty += -15.0
+
+    # 상한가 인접 패널티: KOSPI/KOSDAQ 상한가 30% 중 25% 초과는 추격 위험
+    if flu_rt_for_penalty > 25:
+        _risk_penalty -= 20.0
+
+    # 절대 거래대금 패널티: 당일 누적 10억 미만은 유동성 부족
+    _acc_prica_raw = tick.get("acc_trde_prica", "")
+    try:
+        _acc_prica = float(str(_acc_prica_raw).replace(",", "").replace("+", "") or "0")
+    except (TypeError, ValueError):
+        _acc_prica = 0.0
+    if 0 < _acc_prica < 1_000_000_000:
+        _risk_penalty -= 10.0
+
+    # 섹터 과열 패널티: 동일 섹터에서 1시간 내 신호 3건 이상 발생
+    _sector_count = market_ctx.get("sector_count", 0)
+    if _sector_count >= 3:
+        _risk_penalty -= 15.0
+
+    # 시가총액 패널티
+    _mktcap = market_ctx.get("market_cap_eok")
+    if _mktcap is not None:
+        if _mktcap < 100:
+            _risk_penalty -= 25.0
+        elif _mktcap < 500:
+            _risk_penalty -= 15.0
+
     score += _risk_penalty
 
     score = round(max(0.0, min(100.0, score)), 1)
@@ -528,6 +546,9 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
         "demand_score":    round(_demand_score, 2),
         "time_bonus":      round(_tb, 2),
         "risk_penalty":    round(_risk_penalty, 2),
+        "acc_trde_prica":  round(_acc_prica, 0),
+        "sector_count":    _sector_count,
+        "market_cap_eok":  _mktcap,
         "strategy_specific": _strategy_data,
     }
 

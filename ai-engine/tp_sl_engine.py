@@ -34,6 +34,111 @@ TP_SL_STRATEGY_VERSION = os.getenv("TP_SL_STRATEGY_VERSION", "ta_v2_2026_04")
 SLIP_FEE_KOSPI  = float(os.getenv("SLIP_FEE_KOSPI",  "0.0035"))   # 편도 0.35%
 SLIP_FEE_KOSDAQ = float(os.getenv("SLIP_FEE_KOSDAQ", "0.0045"))   # 편도 0.45%
 
+_DAY_TRADE_STRATEGIES = {
+    "S1_GAP_OPEN",
+    "S2_VI_PULLBACK",
+    "S4_BIG_CANDLE",
+    "S6_THEME_LAGGARD",
+}
+
+_SWING_TRAILING_DEFAULT = {
+    "trail_activation_r": 1.0,
+    "allow_overnight": True,
+    "allow_reentry": True,
+}
+
+_STRATEGY_POLICY: dict[str, dict[str, object]] = {
+    "S1_GAP_OPEN": {
+        "min_rr": 1.8,
+        "stop_max_pct": 2.2,
+        "time_stop_type": "intraday_minutes",
+        "time_stop_minutes": 30,
+        "time_stop_session": "same_day_close",
+        "tp_policy_version": TP_SL_STRATEGY_VERSION,
+        "sl_policy_version": TP_SL_STRATEGY_VERSION,
+        "exit_policy_version": TP_SL_STRATEGY_VERSION,
+        "allow_overnight": False,
+        "allow_reentry": False,
+        "trail_activation_r": None,
+    },
+    "S2_VI_PULLBACK": {
+        "min_rr": 1.8,
+        "stop_max_pct": 2.0,
+        "time_stop_type": "intraday_minutes",
+        "time_stop_minutes": 15,
+        "time_stop_session": "same_day_close",
+        "tp_policy_version": TP_SL_STRATEGY_VERSION,
+        "sl_policy_version": TP_SL_STRATEGY_VERSION,
+        "exit_policy_version": TP_SL_STRATEGY_VERSION,
+        "allow_overnight": False,
+        "allow_reentry": False,
+        "trail_activation_r": None,
+    },
+    "S3_INST_FRGN": {"min_rr": 1.45, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
+    "S4_BIG_CANDLE": {
+        "min_rr": 1.7,
+        "stop_max_pct": 2.5,
+        "time_stop_type": "intraday_minutes",
+        "time_stop_minutes": 20,
+        "time_stop_session": "same_day_close",
+        "tp_policy_version": TP_SL_STRATEGY_VERSION,
+        "sl_policy_version": TP_SL_STRATEGY_VERSION,
+        "exit_policy_version": TP_SL_STRATEGY_VERSION,
+        "allow_overnight": False,
+        "allow_reentry": False,
+        "trail_activation_r": None,
+    },
+    "S5_PROG_FRGN": {"min_rr": 1.45, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
+    "S6_THEME_LAGGARD": {
+        "min_rr": 1.6,
+        "stop_max_pct": 3.0,
+        "time_stop_type": "session_close",
+        "time_stop_session": "same_day_close",
+        "tp_policy_version": TP_SL_STRATEGY_VERSION,
+        "sl_policy_version": TP_SL_STRATEGY_VERSION,
+        "exit_policy_version": TP_SL_STRATEGY_VERSION,
+        "allow_overnight": False,
+        "allow_reentry": False,
+        "trail_activation_r": None,
+    },
+    "S7_ICHIMOKU_BREAKOUT": {"min_rr": 1.55, "trail_activation_r": 1.5, "allow_overnight": True, "allow_reentry": True},
+    "S8_GOLDEN_CROSS": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
+    "S9_PULLBACK_SWING": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
+    "S10_NEW_HIGH": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
+    "S11_FRGN_CONT": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
+    "S12_CLOSING": {
+        "min_rr": 1.45,
+        "time_stop_type": "session_close",
+        "time_stop_session": "next_day_morning",
+        "allow_overnight": True,
+        "allow_reentry": False,
+        "trail_activation_r": 1.0,
+    },
+    "S13_BOX_BREAKOUT": {"min_rr": 1.55, "trail_activation_r": 1.5, "allow_overnight": True, "allow_reentry": True},
+    "S14_OVERSOLD_BOUNCE": {"min_rr": 1.45, "trail_activation_r": 1.2, "allow_overnight": True, "allow_reentry": True},
+    "S15_MOMENTUM_ALIGN": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
+}
+
+
+def _is_day_trade_strategy(strategy: str) -> bool:
+    return strategy.upper() in _DAY_TRADE_STRATEGIES
+
+
+def _strategy_policy(strategy: str) -> dict[str, object]:
+    base = {
+        "min_rr": MIN_RR_RATIO,
+        "stop_max_pct": None,
+        "time_stop_type": "",
+        "time_stop_minutes": None,
+        "time_stop_session": "",
+        "tp_policy_version": TP_SL_STRATEGY_VERSION,
+        "sl_policy_version": TP_SL_STRATEGY_VERSION,
+        "exit_policy_version": TP_SL_STRATEGY_VERSION,
+        **_SWING_TRAILING_DEFAULT,
+    }
+    base.update(_STRATEGY_POLICY.get(strategy.upper(), {}))
+    return base
+
 
 # ──────────────────────────────────────────────────────────────
 # 결과 데이터클래스
@@ -56,6 +161,17 @@ class TpSlResult:
     time_stop_minutes: Optional[int] = None
     time_stop_session: str = ""
     strategy_version: str = TP_SL_STRATEGY_VERSION
+    raw_rr: Optional[float] = None
+    single_tp_rr: Optional[float] = None
+    effective_rr: Optional[float] = None
+    min_rr_ratio: Optional[float] = None
+    rr_skip_reason: str = ""
+    stop_max_pct: Optional[float] = None
+    tp_policy_version: str = TP_SL_STRATEGY_VERSION
+    sl_policy_version: str = TP_SL_STRATEGY_VERSION
+    exit_policy_version: str = TP_SL_STRATEGY_VERSION
+    allow_overnight: Optional[bool] = None
+    allow_reentry: Optional[bool] = None
 
     def to_signal_fields(self) -> dict:
         """전략 결과 dict에 merge할 TP/SL 필드 반환"""
@@ -68,6 +184,28 @@ class TpSlResult:
             "skip_entry": self.skip_entry,
             "strategy_version": self.strategy_version,
         }
+        if self.raw_rr is not None:
+            d["raw_rr"] = round(float(self.raw_rr), 3)
+        if self.single_tp_rr is not None:
+            d["single_tp_rr"] = round(float(self.single_tp_rr), 3)
+        if self.effective_rr is not None:
+            d["effective_rr"] = round(float(self.effective_rr), 3)
+        if self.min_rr_ratio is not None:
+            d["min_rr_ratio"] = round(float(self.min_rr_ratio), 2)
+        if self.rr_skip_reason:
+            d["rr_skip_reason"] = self.rr_skip_reason
+        if self.stop_max_pct is not None:
+            d["stop_max_pct"] = round(float(self.stop_max_pct), 2)
+        if self.tp_policy_version:
+            d["tp_policy_version"] = self.tp_policy_version
+        if self.sl_policy_version:
+            d["sl_policy_version"] = self.sl_policy_version
+        if self.exit_policy_version:
+            d["exit_policy_version"] = self.exit_policy_version
+        if self.allow_overnight is not None:
+            d["allow_overnight"] = bool(self.allow_overnight)
+        if self.allow_reentry is not None:
+            d["allow_reentry"] = bool(self.allow_reentry)
         if self.tp2_price:
             d["tp2_price"] = round_to_tick(self.tp2_price, "nearest")
         if self.trailing_pct is not None:
@@ -265,6 +403,30 @@ def _calc_rr(
     return round(rr, 3), rr < min_rr
 
 
+def _calc_raw_rr(cur_prc: float, tp_price: float, sl_price: float) -> float | None:
+    if cur_prc <= 0 or tp_price <= cur_prc or sl_price >= cur_prc:
+        return None
+    risk = cur_prc - sl_price
+    if risk <= 0:
+        return None
+    return round((tp_price - cur_prc) / risk, 3)
+
+
+def _bounded_distance(cur_prc: float, *, min_pct: float, max_pct: float, atr: Optional[float], atr_mult: float) -> int:
+    atr_dist = atr * atr_mult if atr else cur_prc * min_pct
+    min_dist = cur_prc * min_pct
+    max_dist = cur_prc * max_pct
+    return int(min(max(atr_dist, min_dist), max_dist))
+
+
+def _nearest_resistance(highs: list[float], cur_prc: float, *, lookback: int, min_pct: float = 0.0) -> int | None:
+    swing_highs = find_swing_highs(highs, cur_prc, lookback=lookback)
+    for level in swing_highs:
+        if level > cur_prc * (1.0 + min_pct):
+            return int(level)
+    return None
+
+
 def _slip_fee(stk_cd: str) -> float:
     """종목코드 기반 슬리피지+수수료 비율 (편도)"""
     return SLIP_FEE_KOSPI if str(stk_cd).startswith("0") else SLIP_FEE_KOSDAQ
@@ -279,18 +441,44 @@ def _resolve_strategy_min_rr(strategy: str, requested_min_rr: float) -> float:
     """
     if requested_min_rr != MIN_RR_RATIO:
         return requested_min_rr
+    return float(_strategy_policy(strategy).get("min_rr", requested_min_rr))
 
-    s = strategy.upper()
-    if s in {"S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE", "S6_THEME_LAGGARD"}:
-        return 1.6
-    if s in {"S3_INST_FRGN", "S5_PROG_FRGN", "S12_CLOSING", "S14_OVERSOLD_BOUNCE"}:
-        return 1.45
-    if s in {
-        "S7_ICHIMOKU_BREAKOUT", "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING",
-        "S10_NEW_HIGH", "S11_FRGN_CONT", "S13_BOX_BREAKOUT", "S15_MOMENTUM_ALIGN",
-    }:
-        return 1.55
-    return requested_min_rr
+
+def _consolidate_single_tp(
+    result: TpSlResult,
+    *,
+    strategy: str,
+    cur_prc: float,
+    slip: float,
+    min_rr: float,
+) -> TpSlResult:
+    """
+    Collapse TP1/TP2 into one executable TP.
+
+    When TP2 exists, the unified TP is the 50/50 expected target that used to be
+    represented by partial exits. Monitoring and R:R then use a single target.
+    """
+    if result.tp2_price is not None and result.tp2_price > result.tp1_price > 0:
+        if _is_day_trade_strategy(strategy):
+            result.tp2_price = None
+            result.tp_method = f"{result.tp_method}+single_tp_primary"
+            result.rr_ratio, result.skip_entry = _calc_rr(cur_prc, result.tp1_price, result.sl_price, slip, min_rr)
+            return result
+        old_tp1 = result.tp1_price
+        old_tp2 = result.tp2_price
+        result.tp1_price = int((old_tp1 + old_tp2) / 2)
+        result.tp2_price = None
+        result.tp_method = f"{result.tp_method}+single_tp_avg({old_tp1}/{old_tp2})"
+        result.rr_ratio, result.skip_entry = _calc_rr(
+            cur_prc,
+            result.tp1_price,
+            result.sl_price,
+            slip,
+            min_rr,
+        )
+        if result.trailing_activation is not None:
+            result.trailing_activation = result.tp1_price
+    return result
 
 
 def _attach_time_stop_policy(strategy: str, result: TpSlResult) -> TpSlResult:
@@ -299,55 +487,43 @@ def _attach_time_stop_policy(strategy: str, result: TpSlResult) -> TpSlResult:
 
     실제 판정은 position_monitor.py에서 수행한다.
     """
-    s = strategy.upper()
-    if s == "S1_GAP_OPEN":
-        result.time_stop_type = "intraday_minutes"
-        result.time_stop_minutes = 60
-        result.time_stop_session = "same_day_close"
-    elif s == "S2_VI_PULLBACK":
-        result.time_stop_type = "intraday_minutes"
-        result.time_stop_minutes = 30
-        result.time_stop_session = "same_day_close"
-    elif s == "S3_INST_FRGN":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 2
-    elif s == "S4_BIG_CANDLE":
-        result.time_stop_type = "intraday_minutes"
-        result.time_stop_minutes = 20
-        result.time_stop_session = "same_day_close"
-    elif s == "S5_PROG_FRGN":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 2
-    elif s == "S6_THEME_LAGGARD":
-        result.time_stop_type = "session_close"
-        result.time_stop_session = "same_day_close"
-    elif s == "S7_ICHIMOKU_BREAKOUT":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 5
-    elif s == "S8_GOLDEN_CROSS":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 7
-    elif s == "S9_PULLBACK_SWING":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 5
-    elif s == "S10_NEW_HIGH":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 10
-    elif s == "S11_FRGN_CONT":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 7
-    elif s == "S12_CLOSING":
-        result.time_stop_type = "session_close"
-        result.time_stop_session = "next_day_morning"
-    elif s == "S13_BOX_BREAKOUT":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 7
-    elif s == "S14_OVERSOLD_BOUNCE":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 3
-    elif s == "S15_MOMENTUM_ALIGN":
-        result.time_stop_type = "trading_days"
-        result.time_stop_minutes = 10
+    policy = _strategy_policy(strategy)
+    result.time_stop_type = str(policy.get("time_stop_type") or result.time_stop_type or "")
+    result.time_stop_minutes = (
+        int(policy["time_stop_minutes"])
+        if policy.get("time_stop_minutes") is not None
+        else result.time_stop_minutes
+    )
+    result.time_stop_session = str(policy.get("time_stop_session") or result.time_stop_session or "")
+    return result
+
+
+def _apply_policy_metadata(strategy: str, result: TpSlResult, *, cur_prc: float, min_rr: float) -> TpSlResult:
+    policy = _strategy_policy(strategy)
+    raw_rr = _calc_raw_rr(cur_prc, result.tp1_price, result.sl_price)
+    result.raw_rr = raw_rr
+    result.single_tp_rr = raw_rr
+    result.effective_rr = result.rr_ratio
+    result.min_rr_ratio = min_rr
+    result.stop_max_pct = policy.get("stop_max_pct")
+    result.tp_policy_version = str(policy.get("tp_policy_version") or TP_SL_STRATEGY_VERSION)
+    result.sl_policy_version = str(policy.get("sl_policy_version") or TP_SL_STRATEGY_VERSION)
+    result.exit_policy_version = str(policy.get("exit_policy_version") or TP_SL_STRATEGY_VERSION)
+    result.allow_overnight = bool(policy.get("allow_overnight", not _is_day_trade_strategy(strategy)))
+    result.allow_reentry = bool(policy.get("allow_reentry", not _is_day_trade_strategy(strategy)))
+    if result.trailing_pct is not None and not _is_day_trade_strategy(strategy):
+        activation_r = policy.get("trail_activation_r")
+        if activation_r is not None:
+            risk = max(cur_prc - result.sl_price, 1)
+            activation = int(cur_prc + risk * float(activation_r))
+            result.trailing_activation = min(result.tp1_price, activation) if result.tp1_price > cur_prc else activation
+    if result.stop_max_pct is not None:
+        stop_pct = (cur_prc - result.sl_price) / cur_prc * 100 if cur_prc > 0 else 0.0
+        if stop_pct > float(result.stop_max_pct):
+            result.skip_entry = True
+            result.rr_skip_reason = f"stop_pct {stop_pct:.2f}% > {float(result.stop_max_pct):.2f}%"
+    if result.skip_entry and not result.rr_skip_reason:
+        result.rr_skip_reason = f"effective_rr {result.rr_ratio:.2f} < min_rr {min_rr:.2f}"
     return result
 
 
@@ -369,7 +545,6 @@ def compute_rr(
     :returns: (rr_ratio, skip_entry) — skip_entry=True 이면 진입 취소 대상
     """
     slip = _slip_fee(stk_cd)
-    min_rr = _resolve_strategy_min_rr(strategy, min_rr)
     _min = min_rr if min_rr is not None else MIN_RR_RATIO
     return _calc_rr(cur_prc, tp_price, sl_price, slip, _min)
 
@@ -398,7 +573,8 @@ def _finalize_swing_result(
 ) -> TpSlResult:
     result.strategy_version = TP_SL_STRATEGY_VERSION
     result.trailing_pct = trailing_pct
-    result.trailing_activation = result.tp1_price if result.tp1_price else None
+    risk = max(cur_prc - result.sl_price, 1)
+    result.trailing_activation = int(cur_prc + risk)
     result.trailing_basis = trailing_basis
 
     min_tp1 = int(cur_prc * 1.03)
@@ -474,104 +650,80 @@ def calc_tp_sl(
 
     # 전략별 디스패치 (번호 오름차순)
     s = strategy.upper()
+    min_rr = _resolve_strategy_min_rr(s, min_rr)
+
+    def finalize(result: TpSlResult) -> TpSlResult:
+        result = _consolidate_single_tp(result, strategy=s, cur_prc=cur_prc, slip=slip, min_rr=min_rr)
+        result = _attach_time_stop_policy(strategy, result)
+        return _apply_policy_metadata(strategy, result, cur_prc=cur_prc, min_rr=min_rr)
 
     # ── 데이트레이딩 (S1/S2/S4) ───────────────────────────────
     if "S1_" in s or "GAP_OPEN" in s:
-        return _attach_time_stop_policy(strategy, _tp_sl_gap_open(cur_prc, prev_close, atr, slip, min_rr))
+        return finalize(_tp_sl_gap_open(cur_prc, highs, prev_close, atr, slip, min_rr))
 
     if "S2_" in s or "VI_PULLBACK" in s:
-        return _attach_time_stop_policy(strategy, _tp_sl_vi_pullback(cur_prc, vi_price, atr, slip, min_rr))
+        return finalize(_tp_sl_vi_pullback(cur_prc, highs, vi_price, atr, slip, min_rr))
 
     if "S3_" in s or "INST_FRGN" in s:
         _ma20 = ma20 or (sum(closes[:20]) / 20 if len(closes) >= 20 else None)
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_inst_frgn(cur_prc, highs, lows, closes, _ma20, atr, slip, min_rr),
-        )
+        return finalize(_tp_sl_inst_frgn(cur_prc, highs, lows, closes, _ma20, atr, slip, min_rr))
 
     if "S4_" in s or "BIG_CANDLE" in s:
-        return _attach_time_stop_policy(strategy, _tp_sl_big_candle(cur_prc, candle_low, candle_high, atr, slip, min_rr))
+        return finalize(_tp_sl_big_candle(cur_prc, candle_low, candle_high, atr, slip, min_rr))
 
     if "S5_" in s or "PROG_FRGN" in s:
         _ma20 = ma20 or (sum(closes[:20]) / 20 if len(closes) >= 20 else None)
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_program_buy(cur_prc, highs, lows, closes, _ma20, atr, slip, min_rr),
-        )
+        return finalize(_tp_sl_program_buy(cur_prc, highs, lows, closes, _ma20, atr, slip, min_rr))
 
     if "S6_" in s or "THEME" in s:
         _ma5 = ma5 or (sum(closes[:5]) / 5 if len(closes) >= 5 else None)
-        return _attach_time_stop_policy(strategy, _tp_sl_theme(cur_prc, highs, lows, closes, _ma5, atr, slip, min_rr))
+        return finalize(_tp_sl_theme(cur_prc, highs, lows, closes, _ma5, atr, slip, min_rr))
 
     # S7은 더 이상 장전/데이트레이딩 전략이 아니라 일목 스윙으로 고정한다.
     if "S7_" in s:
-        return _attach_time_stop_policy(strategy, _tp_sl_ichimoku_breakout(
+        return finalize(_tp_sl_ichimoku_breakout(
             cur_prc, highs, lows, closes, atr, slip, min_rr,
             macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist,
         ))
 
     # ── 스윙 (S8~S15) ─────────────────────────────────────────
     if "S8_" in s or "GOLDEN" in s:
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_golden_cross(cur_prc, highs, lows, closes,
-                                ma5, ma20, ma60, atr, bb_upper, slip, min_rr,
-                                macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
-        )
+        return finalize(_tp_sl_golden_cross(cur_prc, highs, lows, closes,
+                                            ma5, ma20, ma60, atr, bb_upper, slip, min_rr,
+                                            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist))
     if "S9_" in s or "PULLBACK_SWING" in s:
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_pullback(cur_prc, highs, lows, closes,
-                            ma5, ma20, ma60, atr, slip, min_rr,
-                            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
-        )
+        return finalize(_tp_sl_pullback(cur_prc, highs, lows, closes,
+                                        ma5, ma20, ma60, atr, slip, min_rr,
+                                        macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist))
     if "S10_" in s or "NEW_HIGH" in s:
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_new_high(cur_prc, highs, lows, closes,
-                            ma20, atr, slip, min_rr,
-                            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
-        )
+        return finalize(_tp_sl_new_high(cur_prc, highs, lows, closes,
+                                        ma20, atr, slip, min_rr,
+                                        macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist))
     if "S11_" in s or "FRGN_CONT" in s:
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_frgn_cont(cur_prc, highs, lows, closes,
-                             ma20, bb_upper, slip, min_rr,
-                             macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
-        )
+        return finalize(_tp_sl_frgn_cont(cur_prc, highs, lows, closes,
+                                         ma20, bb_upper, slip, min_rr,
+                                         macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist))
     if "S12_" in s or "CLOSING" in s:
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_closing(cur_prc, highs, lows, closes,
-                           ma5, ma20, atr, slip, min_rr,
-                           macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
-        )
+        return finalize(_tp_sl_closing(cur_prc, highs, lows, closes,
+                                       ma5, ma20, atr, slip, min_rr,
+                                       macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist))
     if "S13_" in s or "BOX" in s:
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_box_breakout(cur_prc, highs, lows, closes,
-                                atr, slip, min_rr,
-                                macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
-        )
+        return finalize(_tp_sl_box_breakout(cur_prc, highs, lows, closes,
+                                            atr, slip, min_rr,
+                                            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist))
     if "S14_" in s or "OVERSOLD" in s:
         _ma20 = ma20 or (sum(closes[:20]) / 20 if len(closes) >= 20 else None)
         _ma60 = ma60 or (sum(closes[:60]) / 60 if len(closes) >= 60 else None)
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_oversold(cur_prc, highs, lows, _ma20, _ma60, atr, slip, min_rr,
-                            macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
-        )
+        return finalize(_tp_sl_oversold(cur_prc, highs, lows, _ma20, _ma60, atr, slip, min_rr,
+                                        macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist))
     if "S15_" in s or "MOMENTUM" in s:
-        return _attach_time_stop_policy(
-            strategy,
-            _tp_sl_momentum_align(cur_prc, highs, lows, closes,
-                                  ma20, atr, bb_upper, slip, min_rr,
-                                  macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist),
-        )
+        return finalize(_tp_sl_momentum_align(cur_prc, highs, lows, closes,
+                                              ma20, atr, bb_upper, slip, min_rr,
+                                              macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist))
 
     # 알 수 없는 전략 — ATR 폴백 또는 기본값
     logger.warning("[TP/SL] 알 수 없는 전략: %s → ATR 폴백", strategy)
-    return _attach_time_stop_policy(strategy, _tp_sl_atr_fallback(cur_prc, atr, slip, min_rr))
+    return finalize(_tp_sl_atr_fallback(cur_prc, atr, slip, min_rr))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -582,6 +734,7 @@ def calc_tp_sl(
 
 def _tp_sl_gap_open(
     cur_prc:    float,
+    highs:      list[float],
     prev_close: Optional[float],
     atr:        Optional[float],
     slip:       float,
@@ -599,27 +752,27 @@ def _tp_sl_gap_open(
     근거: 갭 상승 후 갭 필은 당일 추가 상승 기대 소멸 신호.
     갭 베이스(전일 종가) 이탈 즉시 청산이 데이트레이더 원칙.
     """
+    stop_dist = _bounded_distance(cur_prc, min_pct=0.012, max_pct=0.018, atr=atr, atr_mult=0.9)
+    sl_price = int(cur_prc - stop_dist)
+    sl_method = "intraday_invalidation(cap_1.8%)"
     if prev_close and 0 < prev_close < cur_prc:
-        sl_price  = int(prev_close * 0.995)
-        sl_method = f"gap_base(prev_close×0.995)={int(prev_close)}"
-    elif atr:
-        sl_price  = int(cur_prc - atr * 1.5)
-        sl_method = "ATR_5m×1.5"
-    else:
-        sl_price  = int(cur_prc * 0.97)
-        sl_method = "pct_3%_fallback"
+        prev_close_stop = int(prev_close * 0.999)
+        if prev_close_stop < cur_prc and (cur_prc - prev_close_stop) / cur_prc * 100 <= 2.2:
+            sl_price = max(sl_price, prev_close_stop)
+            sl_method = f"gap_support(prev_close)={int(prev_close)}"
 
     sl_price = max(sl_price, 1)
     if sl_price >= cur_prc:
-        sl_price  = int(cur_prc * 0.97)
-        sl_method = "pct_3%_fallback"
-
-    if atr:
-        tp1_price = int(cur_prc + atr * 3.0)
-        tp_method = "ATR_5m×3.0(gap_momentum)"
+        sl_price  = int(cur_prc * 0.982)
+        sl_method = "intraday_hard_cap_1.8%"
+    resistance_tp = _nearest_resistance(highs, cur_prc, lookback=15, min_pct=0.008)
+    if resistance_tp:
+        tp1_price = resistance_tp
+        tp_method = "first_resistance_intraday"
     else:
-        tp1_price = int(cur_prc * 1.04)
-        tp_method = "pct_4%_fallback"
+        target_dist = _bounded_distance(cur_prc, min_pct=0.025, max_pct=0.045, atr=atr, atr_mult=2.0)
+        tp1_price = int(cur_prc + target_dist)
+        tp_method = "intraday_gap_target(2.5~4.5%)"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
     return TpSlResult(sl_price=sl_price, tp1_price=tp1_price,
@@ -631,6 +784,7 @@ def _tp_sl_gap_open(
 
 def _tp_sl_vi_pullback(
     cur_prc:  float,
+    highs:    list[float],
     vi_price: Optional[float],
     atr:      Optional[float],
     slip:     float,
@@ -649,27 +803,28 @@ def _tp_sl_vi_pullback(
     TP = VI 발동가 재탈환 (심리적 저항선 돌파 목표).
     SL = 눌림목 저점 이탈 = 반등 실패 확인 (빠른 손절 필수).
     """
-    if atr:
-        sl_price  = int(cur_prc - atr * 1.0)
-        sl_method = "ATR_5m×1.0(VI_tight)"
-    else:
-        sl_price  = int(cur_prc * 0.98)
-        sl_method = "pct_2%_fallback"
+    stop_dist = _bounded_distance(cur_prc, min_pct=0.01, max_pct=0.015, atr=atr, atr_mult=0.75)
+    sl_price = int(cur_prc - stop_dist)
+    sl_method = "vi_reclaim_stop(1.0~1.5%)"
 
     sl_price = max(sl_price, 1)
     if sl_price >= cur_prc:
-        sl_price  = int(cur_prc * 0.98)
-        sl_method = "pct_2%_fallback"
+        sl_price  = int(cur_prc * 0.985)
+        sl_method = "vi_reclaim_cap_1.5%"
 
+    resistance_tp = _nearest_resistance(highs, cur_prc, lookback=12, min_pct=0.005)
     if vi_price and vi_price > cur_prc:
-        tp1_price = int(vi_price * 1.005)
-        tp_method = f"VI_trigger(×1.005)={int(vi_price)}"
+        tp1_price = int(min(max(vi_price * 1.002, cur_prc * 1.02), cur_prc * 1.035))
+        tp_method = f"vi_reclaim_target={int(vi_price)}"
+    elif resistance_tp:
+        tp1_price = resistance_tp
+        tp_method = "first_resistance_vi"
     elif atr:
-        tp1_price = int(cur_prc + atr * 2.0)
-        tp_method = "ATR_5m×2.0"
+        tp1_price = int(cur_prc + _bounded_distance(cur_prc, min_pct=0.02, max_pct=0.035, atr=atr, atr_mult=1.5))
+        tp_method = "vi_rebound_target(2.0~3.5%)"
     else:
-        tp1_price = int(cur_prc * 1.03)
-        tp_method = "pct_3%_fallback"
+        tp1_price = int(cur_prc * 1.025)
+        tp_method = "pct_2.5%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
     return TpSlResult(sl_price=sl_price, tp1_price=tp1_price,
@@ -769,30 +924,29 @@ def _tp_sl_big_candle(
     근거: 장대양봉의 저점 = 당일 강력 지지선 (세력 매수 단가 근방).
     TP = 고점 돌파 후 추가 상승 (모멘텀 연속성).
     """
-    if candle_low and 0 < candle_low < cur_prc:
-        sl_price  = int(candle_low * 0.995)
-        sl_method = f"candle_low(×0.995)={int(candle_low)}"
-    elif atr:
-        sl_price  = int(cur_prc - atr * 1.5)
-        sl_method = "ATR_5m×1.5"
+    if candle_low and 0 < candle_low < cur_prc and (cur_prc - candle_low) / cur_prc * 100 <= 2.5:
+        sl_price  = int(max(candle_low * 0.999, cur_prc * 0.98))
+        sl_method = f"candle_low_follow_through={int(candle_low)}"
     else:
-        sl_price  = int(cur_prc * 0.97)
-        sl_method = "pct_3%_fallback"
+        stop_dist = _bounded_distance(cur_prc, min_pct=0.015, max_pct=0.02, atr=atr, atr_mult=1.0)
+        sl_price  = int(cur_prc - stop_dist)
+        sl_method = "big_candle_cap(1.5~2.0%)"
 
     sl_price = max(sl_price, 1)
     if sl_price >= cur_prc:
-        sl_price  = int(cur_prc * 0.97)
-        sl_method = "pct_3%_fallback"
-
-    if candle_high and candle_high > cur_prc and atr:
-        tp1_price = int(candle_high + atr * 1.5)
-        tp_method = f"candle_high+ATR×1.5(={int(candle_high)}+{int(atr*1.5)})"
+        sl_price  = int(cur_prc * 0.98)
+        sl_method = "big_candle_cap_2.0%"
+    if candle_high and candle_high > cur_prc and candle_low and candle_high > candle_low:
+        candle_range = candle_high - candle_low
+        tp1_price = int(max(candle_high + candle_range * 0.8, cur_prc * 1.035))
+        tp1_price = min(tp1_price, int(cur_prc * 1.055))
+        tp_method = f"measured_move_0.8x={int(candle_high)}"
     elif candle_high and candle_high > cur_prc:
-        tp1_price = int(candle_high * 1.02)
-        tp_method = f"candle_high×1.02={int(candle_high)}"
+        tp1_price = int(min(max(candle_high * 1.01, cur_prc * 1.035), cur_prc * 1.055))
+        tp_method = f"candle_high_follow_through={int(candle_high)}"
     elif atr:
-        tp1_price = int(cur_prc + atr * 2.5)
-        tp_method = "ATR_5m×2.5"
+        tp1_price = int(cur_prc + _bounded_distance(cur_prc, min_pct=0.035, max_pct=0.055, atr=atr, atr_mult=2.0))
+        tp_method = "big_candle_target(3.5~5.5%)"
     else:
         tp1_price = int(cur_prc * 1.04)
         tp_method = "pct_4%_fallback"
@@ -883,38 +1037,30 @@ def _tp_sl_theme(
     근거: 테마는 빠르게 식음. MA5 이탈 = 단기 모멘텀 소멸.
     TP = 가장 가까운 저항 (다음 저항에서 익절, 욕심 금지).
     """
-    if ma5 and ma5 > 0 and ma5 < cur_prc:
-        sl_price  = int(ma5 * 0.99)
-        sl_method = "MA5(×0.99)"
+    if ma5 and ma5 > 0 and ma5 < cur_prc and (cur_prc - ma5) / cur_prc * 100 <= 2.5:
+        sl_price  = int(ma5 * 0.995)
+        sl_method = "MA5_theme_support"
     else:
-        swing_lows = find_swing_lows(lows, cur_prc, lookback=5)
-        if swing_lows and swing_lows[0] > cur_prc * 0.95:
-            sl_price  = int(swing_lows[0] * 0.995)
-            sl_method = "swing_low_D5(×0.995)"
-        elif atr:
-            sl_price  = int(cur_prc - atr * 1.2)
-            sl_method = "ATR×1.2(theme_tight)"
-        else:
-            sl_price  = int(cur_prc * 0.97)
-            sl_method = "pct_3%_fallback"
+        stop_dist = _bounded_distance(cur_prc, min_pct=0.02, max_pct=0.025, atr=atr, atr_mult=1.2)
+        sl_price  = int(cur_prc - stop_dist)
+        sl_method = "theme_laggard_cap(2.0~2.5%)"
 
     sl_price = max(sl_price, 1)
     if sl_price >= cur_prc:
-        sl_price  = int(cur_prc * 0.97)
-        sl_method = "pct_3%_fallback"
+        sl_price  = int(cur_prc * 0.975)
+        sl_method = "theme_laggard_cap_2.5%"
 
-    swing_highs = find_swing_highs(highs, cur_prc, lookback=20)
+    resistance_tp = _nearest_resistance(highs, cur_prc, lookback=20, min_pct=0.015)
     tp2_price   = None
-    if swing_highs and swing_highs[0] > cur_prc * 1.02:
-        tp1_price = int(swing_highs[0])
-        tp2_price = int(swing_highs[1]) if len(swing_highs) > 1 else None
-        tp_method = "swing_resistance(D20)"
+    if resistance_tp:
+        tp1_price = min(resistance_tp, int(cur_prc * 1.06))
+        tp_method = "theme_first_resistance"
     elif atr:
-        tp1_price = int(cur_prc + atr * 2.5)
-        tp_method = "ATR×2.5(theme_short)"
+        tp1_price = int(cur_prc + _bounded_distance(cur_prc, min_pct=0.04, max_pct=0.06, atr=atr, atr_mult=2.5))
+        tp_method = "theme_laggard_target(4.0~6.0%)"
     else:
-        tp1_price = int(cur_prc * 1.035)
-        tp_method = "pct_3.5%_fallback"
+        tp1_price = int(cur_prc * 1.045)
+        tp_method = "pct_4.5%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
     return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,

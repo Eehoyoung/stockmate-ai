@@ -14,16 +14,11 @@ from http_utils import fetch_cntr_strength_cached, fetch_hoga, validate_kiwoom_r
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
+from utils import safe_float as clean_val
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
-
-# 부호 및 콤마 제거 유틸리티
-def clean_val(val) -> float:
-    if not val: return 0.0
-    # '+' 부호만 제거, '-'는 음수 부호이므로 보존
-    return float(str(val).replace("+", "").replace(",", ""))
 
 async def fetch_progra_netbuy(token: str, market: str) -> dict:
     """ka90003 프로그램순매수상위50 조회 (연속조회 포함)"""

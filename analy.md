@@ -1,1073 +1,972 @@
-`[2026-04-17 19:36] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 316회 연속 미복구. redis/postgres Up ~8h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 19:33] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 8h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 8h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 48분 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 19:30] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 314회 연속 미복구. redis/postgres Up ~8h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 19:27] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 8h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 8h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 42분 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 19:24] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 312회 연속 미복구. redis/postgres Up ~8h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 19:21] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 8h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 8h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 36분 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 19:18] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 310회 연속 미복구. redis/postgres Up ~8h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 19:15] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 8h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 8h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 30분 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 19:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 308회 연속 미복구. redis/postgres Up ~8h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 19:09] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 8h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 8h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 19:06] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 306회 연속 미복구. redis/postgres Up ~8h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 19:03] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 8h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 8h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 19:00] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 304회 연속 미복구. redis/postgres Up ~8h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:57] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:54] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 302회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:51] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:48] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 300회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:45] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 298회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:39] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 19시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:36] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 296회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:33] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 18시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:30] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 294회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:27] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 18시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:24] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 292회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:21] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 18시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:18] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 290회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:15] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 18시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 288회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-## [2026-04-17 18:09] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 존재하지 않음 | `No such container: stockmate-ai-telegram-bot-1` |
-| OK | redis | 정상 (Up 7h, healthy, 로그 없음) | — |
-| OK | postgres | 정상 (Up 7h, healthy, 로그 없음) | — |
-
-### 권고 조치
-- `docker compose up -d` 실행하여 4개 서비스 컨테이너 재기동 필요
-- 약 18시간 이상 서비스 다운 상태 지속 중 (최초 소멸: 2026-04-16 23:45 KST 추정)
-- redis·postgres는 정상이므로 재기동 즉시 서비스 복구 가능
-
-`[2026-04-17 18:06] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 286회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 18:03] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 285회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 18:00] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 284회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:57] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 283회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:54] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 282회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:51] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 281회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:48] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 280회 연속 미복구. redis/postgres Up ~7h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:45] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 279회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 278회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:39] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 277회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:36] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 276회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:33] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 275회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:30] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 274회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:27] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 273회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:24] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 272회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:21] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 271회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:18] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 270회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:15] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 269회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 268회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:09] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 267회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:06] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 266회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:03] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 265회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 17:00] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 264회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:57] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 263회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:54] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 262회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:51] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 261회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:48] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 260회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:45] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 259회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 258회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:39] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 257회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:36] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 256회 연속 미복구. redis/postgres Up ~6h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:33] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 255회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:30] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 254회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:27] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 253회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:24] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 252회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:21] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 251회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 250회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:14] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 249회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:11] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 248회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:08] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 247회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:05] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 246회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 16:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 245회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:59] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 244회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:56] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 243회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:53] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 242회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:50] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 241회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 240회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:44] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 239회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:41] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 238회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:38] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 237회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:35] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 236회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 235회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:29] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 234회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:26] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 233회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:23] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 232회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:20] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 231회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 230회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:14] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 229회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:11] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 228회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:08] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 227회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:05] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 226회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 15:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 225회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:59] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 224회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:56] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 223회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:53] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 222회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:50] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 221회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 220회 연속 미복구. redis/postgres Up ~5h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:44] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 219회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:41] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 218회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:38] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 217회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:35] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 216회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 215회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:29] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 214회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:26] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 213회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:23] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 212회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:20] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 211회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 210회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:14] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 209회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:11] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 208회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:08] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 207회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:05] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 206회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 14:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 205회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:59] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 204회 연속 미복구. redis/postgres Up ~4h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:56] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 203회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:53] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 202회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:50] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 201회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 200회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:44] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 199회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:41] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 198회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:38] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 197회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:35] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 196회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 195회 연속 미복구. redis/postgres Up ~3h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:29] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 194회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:26] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 193회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:23] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 192회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:20] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 191회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 190회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:14] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 189회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:11] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 188회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:08] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 187회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:05] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 186회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 13:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 185회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:59] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 184회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:56] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 183회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:53] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 182회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:50] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 181회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 180회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:44] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 179회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:41] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 178회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:38] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 177회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:35] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 176회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 175회 연속 미복구. redis/postgres Up ~2h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:29] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 174회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:26] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 173회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:23] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 172회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:20] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 171회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 170회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:14] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 169회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:11] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 168회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:08] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 167회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:05] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 166회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 12:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 165회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:59] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 164회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:56] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 163회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:53] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 162회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:50] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 161회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 160회 연속 미복구. redis/postgres Up ~1h 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:44] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 159회 연속 미복구. redis/postgres Up 59m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:41] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 158회 연속 미복구. redis/postgres Up 58m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:38] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 157회 연속 미복구. redis/postgres Up 54m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:35] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 156회 연속 미복구. redis/postgres Up 53m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 155회 연속 미복구. redis/postgres Up 49m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:29] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 154회 연속 미복구. redis/postgres Up 48m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:26] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 153회 연속 미복구. redis/postgres Up 44m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:23] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 152회 연속 미복구. redis/postgres Up 43m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:20] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 151회 연속 미복구. redis/postgres Up 43m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 150회 연속 미복구. redis/postgres Up 39m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:14] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 149회 연속 미복구. redis/postgres Up 39m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:11] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 148회 연속 미복구. redis/postgres Up 38m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:08] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 147회 연속 미복구. redis/postgres Up 34m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:05] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 146회 연속 미복구. redis/postgres Up 34m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 11:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 145회 연속 미복구. redis/postgres Up 33m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:59] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 144회 연속 미복구. redis/postgres Up 29m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:56] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 143회 연속 미복구. redis/postgres Up 29m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:53] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 142회 연속 미복구. redis/postgres Up 28m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:50] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 141회 연속 미복구. redis/postgres Up 26m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 140회 연속 미복구. redis/postgres Up 27m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:44] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 139회 연속 미복구. redis/postgres Up 24m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:41] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 138회 연속 미복구. redis/postgres Up 22m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:38] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 137회 연속 미복구. redis/postgres Up 20m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:35] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 136회 연속 미복구. redis/postgres Up 19m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 135회 연속 미복구. redis/postgres Up 18m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:29] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 134회 연속 미복구. redis/postgres Up 14m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:26] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 133회 연속 미복구. redis/postgres Up 13m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:23] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 132회 연속 미복구. redis/postgres Up 9m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:20] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 131회 연속 미복구. redis/postgres Up 8m 안정. 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 130회 연속 미복구. redis/postgres Up 4m (재기동 후 안정). 서비스 컨테이너 여전히 부재.`
-
-`[2026-04-17 10:14] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 129회 연속 미복구. redis/postgres 10:02 KST SIGTERM 수신 후 정상 재기동 (Up 3m, RDB 404 keys 복구). 데이터 손실 없음.`
-
-`[2026-04-17 10:11] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 128회 연속 미복구 (23:45 KST 이후 ~626분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 10:08] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 127회 연속 미복구 (23:45 KST 이후 ~623분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 10:05] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 126회 연속 미복구 (23:45 KST 이후 ~620분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 10:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 125회 연속 미복구 (23:45 KST 이후 ~617분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 09:59] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 124회 연속 미복구 (23:45 KST 이후 ~614분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 09:56] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 123회 연속 미복구 (23:45 KST 이후 ~611분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 09:53] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 122회 연속 미복구 (23:45 KST 이후 ~608분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 09:50] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 121회 연속 미복구 (23:45 KST 이후 ~605분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 09:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 120회 연속 미복구 (23:45 KST 이후 ~602분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 09:44] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 119회 연속 미복구 (23:45 KST 이후 ~599분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 09:40] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 118회 연속 미복구 (23:45 KST 이후 ~595분). redis/postgres 정상 (Up 9h).`
-
-`[2026-04-17 09:37] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 117회 연속 미복구 (23:45 KST 이후 ~592분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:34] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 116회 연속 미복구 (23:45 KST 이후 ~589분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:30] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 115회 연속 미복구 (23:45 KST 이후 ~585분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:24] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 114회 연속 미복구 (23:45 KST 이후 ~579분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:21] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 113회 연속 미복구 (23:45 KST 이후 ~576분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:20] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 112회 연속 미복구 (23:45 KST 이후 ~575분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:16] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 111회 연속 미복구 (23:45 KST 이후 ~571분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:15] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 110회 연속 미복구 (23:45 KST 이후 ~570분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:11] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 109회 연속 미복구 (23:45 KST 이후 ~566분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:10] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 108회 연속 미복구 (23:45 KST 이후 ~565분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:06] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 107회 연속 미복구 (23:45 KST 이후 ~561분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 09:01] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 106회 연속 미복구 (23:45 KST 이후 ~556분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:57] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 105회 연속 미복구 (23:45 KST 이후 ~552분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:54] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 104회 연속 미복구 (23:45 KST 이후 ~549분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:51] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 103회 연속 미복구 (23:45 KST 이후 ~546분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:48] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 102회 연속 미복구 (23:45 KST 이후 ~543분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:45] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 101회 연속 미복구 (23:45 KST 이후 ~540분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 100회 연속 미복구 (23:45 KST 이후 ~537분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:39] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 99회 연속 미복구 (23:45 KST 이후 ~534분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:36] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 98회 연속 미복구 (23:45 KST 이후 ~531분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:33] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 97회 연속 미복구 (23:45 KST 이후 ~528분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:30] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 96회 연속 미복구 (23:45 KST 이후 ~525분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:27] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 95회 연속 미복구 (23:45 KST 이후 ~522분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:24] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 94회 연속 미복구 (23:45 KST 이후 ~519분). redis/postgres 정상 (Up 8h).`
-
-`[2026-04-17 08:21] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 93회 연속 미복구 (23:45 KST 이후 ~516분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 08:21] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 92회 연속 미복구 (23:45 KST 이후 ~516분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 08:18] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 91회 연속 미복구 (23:45 KST 이후 ~513분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 08:15] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 90회 연속 미복구 (23:45 KST 이후 ~510분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 08:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 89회 연속 미복구 (23:45 KST 이후 ~507분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 08:09] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 88회 연속 미복구 (23:45 KST 이후 ~504분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 08:06] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 87회 연속 미복구 (23:45 KST 이후 ~501분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 08:03] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 86회 연속 미복구 (23:45 KST 이후 ~498분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 08:00] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 85회 연속 미복구 (23:45 KST 이후 ~495분). redis/postgres 정상 (Up 7h).`
-
-`[2026-04-17 07:48] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 84회 연속 미복구 (23:45 KST 이후 ~483분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:45] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 83회 연속 미복구 (23:45 KST 이후 ~480분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 82회 연속 미복구 (23:45 KST 이후 ~477분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:39] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 81회 연속 미복구 (23:45 KST 이후 ~474분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:36] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 80회 연속 미복구 (23:45 KST 이후 ~471분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:33] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 79회 연속 미복구 (23:45 KST 이후 ~468분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:30] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 78회 연속 미복구 (23:45 KST 이후 ~465분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:27] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 77회 연속 미복구 (23:45 KST 이후 ~462분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:24] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 76회 연속 미복구 (23:45 KST 이후 ~459분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:21] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 75회 연속 미복구 (23:45 KST 이후 ~456분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:18] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 74회 연속 미복구 (23:45 KST 이후 ~453분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:15] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 73회 연속 미복구 (23:45 KST 이후 ~450분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 72회 연속 미복구 (23:45 KST 이후 ~447분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:09] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 71회 연속 미복구 (23:45 KST 이후 ~444분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:06] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 70회 연속 미복구 (23:45 KST 이후 ~441분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:03] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 69회 연속 미복구 (23:45 KST 이후 ~438분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 07:00] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 68회 연속 미복구 (23:45 KST 이후 ~435분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 06:57] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 67회 연속 미복구 (23:45 KST 이후 ~432분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 06:54] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 66회 연속 미복구 (23:45 KST 이후 ~429분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 06:51] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 65회 연속 미복구 (23:45 KST 이후 ~426분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 06:48] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 64회 연속 미복구 (23:45 KST 이후 ~423분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 06:45] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 63회 연속 미복구 (23:45 KST 이후 ~420분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 06:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 62회 연속 미복구 (23:45 KST 이후 ~417분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 06:38] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 61회 연속 미복구 (23:45 KST 이후 ~420분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 04:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 60회 연속 미복구 (23:45 KST 이후 297분). redis/postgres 정상 (Up 6h).`
-
-`[2026-04-17 04:37] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 59회 연속 미복구 (23:45 KST 이후 292분). redis/postgres 정상.`
-
-`[2026-04-17 04:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 58회 연속 미복구 (23:45 KST 이후 287분). redis/postgres 정상.`
-
-`[2026-04-17 04:27] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 57회 연속 미복구 (23:45 KST 이후 282분). redis/postgres 정상.`
-
-`[2026-04-17 04:22] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 56회 연속 미복구 (23:45 KST 이후 277분). redis/postgres 정상.`
-
-`[2026-04-17 04:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 55회 연속 미복구 (23:45 KST 이후 272분). redis/postgres 정상.`
-
-`[2026-04-17 04:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 54회 연속 미복구 (23:45 KST 이후 267분). redis/postgres 정상.`
-
-`[2026-04-17 04:07] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 53회 연속 미복구 (23:45 KST 이후 262분). redis/postgres 정상.`
-
-`[2026-04-17 04:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 52회 연속 미복구 (23:45 KST 이후 257분). redis/postgres 정상.`
-
-`[2026-04-17 03:57] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 51회 연속 미복구 (23:45 KST 이후 252분). redis/postgres 정상.`
-
-`[2026-04-17 03:52] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 50회 연속 미복구 (23:45 KST 이후 247분). redis/postgres 정상.`
-
-`[2026-04-17 03:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 49회 연속 미복구 (23:45 KST 이후 242분). redis/postgres 정상.`
-
-`[2026-04-17 03:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 48회 연속 미복구 (23:45 KST 이후 237분). redis/postgres 정상.`
-
-`[2026-04-17 03:37] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 47회 연속 미복구 (23:45 KST 이후 232분). redis/postgres 정상.`
-
-`[2026-04-17 03:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 46회 연속 미복구 (23:45 KST 이후 227분). redis/postgres 정상.`
-
-`[2026-04-17 03:27] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 45회 연속 미복구 (23:45 KST 이후 222분). redis/postgres 정상.`
-
-`[2026-04-17 03:22] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 44회 연속 미복구 (23:45 KST 이후 217분). redis/postgres 정상.`
-
-`[2026-04-17 03:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 43회 연속 미복구 (23:45 KST 이후 212분). redis/postgres 정상.`
-
-`[2026-04-17 03:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 42회 연속 미복구 (23:45 KST 이후 207분). redis/postgres 정상.`
-
-`[2026-04-17 03:07] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 41회 연속 미복구 (23:45 KST 이후 202분). redis/postgres 정상.`
-
-`[2026-04-17 03:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 40회 연속 미복구 (23:45 KST 이후 197분). redis/postgres 정상.`
-
-`[2026-04-17 02:57] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 39회 연속 미복구 (23:45 KST 이후 192분). redis/postgres 정상.`
-
-`[2026-04-17 02:52] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 38회 연속 미복구 (23:45 KST 이후 187분). redis/postgres 정상.`
-
-`[2026-04-17 02:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 37회 연속 미복구 (23:45 KST 이후 182분). redis/postgres 정상.`
-
-`[2026-04-17 02:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 36회 연속 미복구 (23:45 KST 이후 177분). redis/postgres 정상.`
-
-`[2026-04-17 02:37] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 35회 연속 미복구 (23:45 KST 이후 172분). redis/postgres 정상.`
-
-`[2026-04-17 02:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 34회 연속 미복구 (23:45 KST 이후 167분). redis/postgres 정상.`
-
-`[2026-04-17 02:27] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 33회 연속 미복구 (23:45 KST 이후 162분). redis/postgres 정상.`
-
-`[2026-04-17 02:22] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 32회 연속 미복구 (23:45 KST 이후 157분). redis/postgres 정상.`
-
-`[2026-04-17 02:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 31회 연속 미복구 (23:45 KST 이후 152분). redis/postgres 정상.`
-
-`[2026-04-17 02:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 30회 연속 미복구 (23:45 KST 이후 147분). redis/postgres 정상.`
-
-`[2026-04-17 02:07] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 29회 연속 미복구 (23:45 KST 이후 142분). redis/postgres 정상.`
-
-`[2026-04-17 02:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 28회 연속 미복구 (23:45 KST 이후 137분). redis/postgres 정상.`
-
-`[2026-04-17 01:57] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 27회 연속 미복구 (23:45 KST 이후 132분). redis/postgres 정상.`
-
-`[2026-04-17 01:52] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 26회 연속 미복구 (23:45 KST 이후 127분). redis/postgres 정상.`
-
-`[2026-04-17 01:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 25회 연속 미복구 (23:45 KST 이후 122분). redis/postgres 정상.`
-
-`[2026-04-17 01:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 24회 연속 미복구 (23:45 KST 이후 117분). redis/postgres 정상.`
-
-`[2026-04-17 01:37] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 23회 연속 미복구 (23:45 KST 이후 112분). redis/postgres 정상.`
-
-`[2026-04-17 01:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 22회 연속 미복구 (23:45 KST 이후 107분). redis/postgres 정상.`
-
-`[2026-04-17 01:27] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 21회 연속 미복구 (23:45 KST 이후 102분). redis/postgres 정상.`
-
-`[2026-04-17 01:22] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 20회 연속 미복구 (23:45 KST 이후 97분). redis/postgres 정상.`
-
-`[2026-04-17 01:17] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 19회 연속 미복구 (23:45 KST 이후 92분). redis/postgres 정상.`
-
-`[2026-04-17 01:12] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 18회 연속 미복구 (23:45 KST 이후 87분). redis/postgres 정상.`
-
-`[2026-04-17 01:07] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 17회 연속 미복구 (23:45 KST 이후 82분). redis/postgres 정상.`
-
-`[2026-04-17 01:02] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 16회 연속 미복구 (23:45 KST 이후 77분). redis/postgres 정상.`
-
-`[2026-04-17 00:57] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 15회 연속 미복구 (23:45 KST 이후 72분). redis/postgres 정상.`
-
-`[2026-04-17 00:52] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 14회 연속 미복구 (23:45 KST 이후 67분). redis/postgres 정상.`
-
-`[2026-04-17 00:47] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 13회 연속 미복구 (23:45 KST 이후 62분). redis/postgres 정상.`
-
-`[2026-04-17 00:42] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 12회 연속 미복구 (23:45 KST 이후 57분). redis/postgres 정상.`
-
-`[2026-04-17 00:37] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 11회 연속 미복구 (23:45 KST 이후 52분). redis/postgres 정상.`
-
-`[2026-04-17 00:32] CRITICAL 지속 — 4개 서비스 컨테이너 소멸 10회 연속 미복구 (23:45 KST 이후 47분). redis/postgres 정상.`
-
-`[2026-04-17 00:27] CRITICAL 지속 — 4개 서비스(api-orchestrator, websocket-listener, ai-engine, telegram-bot) 컨테이너 소멸 9회 연속 미복구 (23:45 KST 이후 42분). redis/postgres 정상.`
-
-`[2026-04-17 00:22] CRITICAL 지속 — 4개 서비스(api-orchestrator, websocket-listener, ai-engine, telegram-bot) 컨테이너 소멸 8회 연속 미복구 (23:45 KST 이후 37분). redis/postgres 정상.`
-
-`[2026-04-17 00:17] CRITICAL 지속 — 4개 서비스(api-orchestrator, websocket-listener, ai-engine, telegram-bot) 컨테이너 소멸 7회 연속 미복구 (23:45 KST 이후 32분). redis/postgres 정상.`
-
-## [2026-04-17 00:12] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 소멸 지속 (23:45 KST 이후 약 27분째 미복구) | `Error response from daemon: No such container` |
-| CRITICAL | websocket-listener | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | ai-engine | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | telegram-bot | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| INFO | redis | 정상 — Up 26분, healthy, 3분 내 신규 로그 없음 | — |
-| INFO | postgres | 정상 — Up 26분, healthy, 3분 내 신규 로그 없음 | — |
-
-### 권고 조치
-- **즉시**: `docker compose up -d` (6회 연속 CRITICAL 미복구)
-
-## [2026-04-17 00:07] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 소멸 지속 (23:45 이후 약 22분째 미복구) | `Error response from daemon: No such container` |
-| CRITICAL | websocket-listener | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | ai-engine | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | telegram-bot | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| INFO | redis | 정상 — Up 20분, healthy, 신규 로그 없음 | — |
-| INFO | postgres | 정상 — Up 20분, healthy, 신규 로그 없음 | — |
-
-### 권고 조치
-- **즉시**: `docker compose up -d` (5회 연속 CRITICAL — 장 시작 09:00 KST까지 약 9시간)
-
-## [2026-04-17 00:02] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 소멸 지속 (23:45 이후 약 17분째 미복구) | `Error response from daemon: No such container` |
-| CRITICAL | websocket-listener | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | ai-engine | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | telegram-bot | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| INFO | redis | 정상 — Up 16분, healthy, 3분 내 신규 로그 없음 | — |
-| INFO | postgres | 정상 — Up 16분, healthy, 3분 내 신규 로그 없음 | — |
-
-### 권고 조치
-- **즉시**: `docker compose up -d` 실행 (4회 연속 CRITICAL 미복구 — 장 시작 09:00 KST까지 약 9시간)
-- `restart: unless-stopped` 정책 미적용으로 인해 호스트 재시작 시 자동 복구 불가 상태
-
-## [2026-04-16 23:57] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 소멸 지속 (23:45 이후 약 12분째 미복구) | `Error response from daemon: No such container` |
-| CRITICAL | websocket-listener | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | ai-engine | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | telegram-bot | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| INFO | redis | 정상 — Up 11분, healthy, 3분 내 신규 로그 없음 | — |
-| INFO | postgres | 정상 — Up 11분, healthy, 3분 내 신규 로그 없음 | — |
-
-### 권고 조치
-- **즉시**: `docker compose up -d` 실행하여 4개 서비스 복구 (3회 연속 CRITICAL, 수동 개입 필요)
-- **미이행 시 영향**: 장 시작(09:00 KST) 전 미복구 시 당일 신호 전체 누락
-
-## [2026-04-16 23:52] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 소멸 지속 (23:47 이후 미복구) | `Error response from daemon: No such container` |
-| CRITICAL | websocket-listener | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | ai-engine | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| CRITICAL | telegram-bot | 컨테이너 소멸 지속 | `Error response from daemon: No such container` |
-| INFO | redis | 정상 — Up 6분, healthy, 3분 내 신규 로그 없음 | — |
-| INFO | postgres | 정상 — checkpoint 완료 (write=0.004s, 정상 범위) | `checkpoint complete: wrote 3 buffers` |
-
-### 권고 조치
-- **즉시**: `docker compose up -d` 로 4개 서비스 복구 (이미지 변경 없으면 --build 불필요)
-- **확인**: 기동 후 Redis `telegram_queue` / `ai_scored_queue` depth 점검
-- **근본 대책**: `docker-compose.yml`에 앱 서비스 4종 `restart: unless-stopped` 추가
-
-## [2026-04-16 23:47] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 컨테이너 소멸 — `docker ps -a`에서 존재하지 않음 | `Error response from daemon: No such container: stockmate-ai-api-orchestrator-1` |
-| CRITICAL | websocket-listener | 컨테이너 소멸 — `docker ps -a`에서 존재하지 않음 | `Error response from daemon: No such container: stockmate-ai-websocket-listener-1` |
-| CRITICAL | ai-engine | 컨테이너 소멸 — `docker ps -a`에서 존재하지 않음 | `Error response from daemon: No such container: stockmate-ai-ai-engine-1` |
-| CRITICAL | telegram-bot | 컨테이너 소멸 — `docker ps -a`에서 존재하지 않음 | `Error response from daemon: No such container: stockmate-ai-telegram-bot-1` |
-| WARN | redis | 약 1분 전 재시작 (14:46:29 UTC) — RDB 복구 688 keys | `Redis is starting … Done loading RDB, keys loaded: 688` |
-| WARN | postgres | 약 1분 전 재시작 (14:46:29 UTC) — 정상 셧다운 후 재기동 | `database system was shut down at 2026-04-16 14:45:58 UTC` |
-
-### 근본 원인 추정
-`docker compose down` (또는 호스트 재시작)으로 전체 스택이 중단됨. redis/postgres만 재기동 (`docker compose up -d redis postgres` 또는 `restart: always` 정책 차이). 나머지 4개 서비스 컨테이너는 미기동 상태로 존재하지 않음.
-
-### 권고 조치
-- **즉시**: 전체 스택 재기동 — `docker compose up -d --build`
-- **확인**: 기동 후 각 서비스 헬스체크 및 Redis 큐 (`telegram_queue`, `ai_scored_queue`) depth 확인
-- **중기**: `docker-compose.yml`에 api-orchestrator/ai-engine/websocket-listener/telegram-bot에 `restart: unless-stopped` 정책 추가하여 자동 복구 보장
-
-`[2026-04-16 23:45] 정상 — 이상 없음`
-
-`[2026-04-16 23:38] 정상 — 이상 없음`
-
-`[2026-04-16 23:30] 정상 — 이상 없음`
-
-`[2026-04-16 11:34] CRITICAL — api-orchestrator 반복 재시작 지속(11:31 재기동, 43초 uptime). postgres FATAL: role "sma_user" does not exist. S8/S9 풀 없음 지속.`
-
-`[2026-04-16 11:32] ERROR 신규 — score_components ON CONFLICT 제약 누락(signal 3건 실패). S8/S9 풀 없음 지속.`
-
-`[2026-04-16 11:27] 준정상 — DB INSERT 오류 전수 해소(V19+V20). api-orchestrator 안정(2분 유지). Claude API 401 미재현(신규 호출 미발생). Redis 큐 정상(depth 0).`
-
-`[2026-04-16 11:24] 정상 — vi_events 오류 6건은 V20 적용(11:22:59) 이전 잔존 로그. 현재 신규 오류 없음.`
-
-`[2026-04-16 11:23] RESOLVED — V19(ws_tick_data·trading_signals), V20(vi_events) 마이그레이션 적용 완료. candidates_builder kiwoom_post() 시그니처 수정 완료. INSERT 오류 전수 해소 확인.`
-
-`[2026-04-16 11:22] CRITICAL 신규 2건 — api-orchestrator 재시작(11:20), Claude API 401(invalid x-api-key). ws_tick_data·trading_signals id 미복구 지속.`
-
-`[2026-04-16 11:17] CRITICAL 지속 — ws_tick_data id 미복구. S5 폴백 반복 지속. 신규 이슈 없음.`
-
-`[2026-04-16 11:12] CRITICAL 지속 — ws_tick_data id 미복구. S5 ka90003 전수 조회 폴백 반복(3회/3분). 신규 이슈 없음.`
-
-`[2026-04-16 11:11] CRITICAL 지속 — ws_tick_data·trading_signals id 미복구(S3 신호 INSERT 실패 확인). S5 풀 없음. 신규 이슈 없음.`
-
-`[2026-04-16 11:08] CRITICAL 지속 — ws_tick_data id 미복구. DataQuality tick missing 87% 지속. S6/S15 kiwoom_post() 오류 확인. S8/S9 풀 없음.`
-
-`[2026-04-16 11:06] CRITICAL 지속 — ws_tick_data id 미복구. DataQuality tick missing 87%(174/200). candidates_builder S5 kiwoom_post() 오류 추가. S8/S9 풀 없음.`
-
-`[2026-04-16 11:03] CRITICAL 지속 — ws_tick_data·trading_signals id 시퀀스 미복구. S5/S8/S9 후보 풀 없음. V19 마이그레이션 미이행.`
-
-`[2026-04-16 11:02] CRITICAL 지속 — ws_tick_data·trading_signals id 시퀀스 미복구. candidates_builder S6/S15 kiwoom_post() 오류 지속. V19 미이행. 신규 이슈 없음.`
-
-`[2026-04-16 10:58] CRITICAL 지속 — ws_tick_data·trading_signals id 시퀀스 미복구. S8/S9 후보 풀 없음 추가 확인. V19 마이그레이션 미이행.`
-
-`[2026-04-16 10:53] CRITICAL 지속 — ws_tick_data id 시퀀스 미복구. 권고 조치 미이행. 매초 수십 건 INSERT 실패 반복 중.`
-
-## [2026-04-16 10:47] 수집 결과
-
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | websocket-listener | `ws_tick_data.id` NOT NULL 위반 — 모든 틱 INSERT 실패 (0B, 0D 타입) | `[DB] ws_tick_data insert failed [0D 0010F0_AL]: null value in column "id" of relation "ws_tick_data" violates not-null constraint` |
-| CRITICAL | postgres | 동일 원인 — 매초 수십 건 ERROR 발생 | `DETAIL: Failing row contains (3.98..., null, null, null, null, 0D, null, null, 2026-04-16 01:47:11.78289, null, 4184, 16666, 0010F0_AL)` |
-
-### 근본 원인
-Hibernate `ddl-auto: update`가 V1 마이그레이션의 `id BIGSERIAL PRIMARY KEY` 컬럼을 재생성하면서 `BIGSERIAL` 시퀀스(DEFAULT)를 제거함.  
-현재 테이블 상태: `id bigint NOT NULL` (DEFAULT 없음) → 모든 INSERT 실패.
-
-### 권고 조치
-- **즉시**: Flyway V19 마이그레이션으로 시퀀스 복구  
-  ```sql
-  CREATE SEQUENCE IF NOT EXISTS ws_tick_data_id_seq;
-  ALTER TABLE ws_tick_data ALTER COLUMN id SET DEFAULT nextval('ws_tick_data_id_seq');
-  SELECT setval('ws_tick_data_id_seq', COALESCE((SELECT MAX(id) FROM ws_tick_data), 0) + 1, false);
-  ```
-- **중기**: `ddl-auto: validate` 또는 `none`으로 전환하여 Hibernate 스키마 자동 변경 방지
+# StockMate AI 모니터링 로그
+
+---
+### [2026-04-24 10:18 KST] 점검 회차 1
+**컨테이너 상태**: 정상 (6/6 Running)
+- stockmate-ai-api-orchestrator-1: Up 15분
+- stockmate-ai-ai-engine-1: Up 17분
+- stockmate-ai-websocket-listener-1: Up 17분
+- stockmate-ai-postgres-1: Up 17분 (healthy)
+- stockmate-ai-telegram-bot-1: Up 33분
+- stockmate-ai-redis-1: Up 9시간 (healthy)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=44
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [경보] vi_watch_queue 44건 적체 — S2 VI 이벤트가 소비되지 않고 누적 중. api-orchestrator의 ViWatchService 처리 여부 확인 필요
+- [WARNING] S8 골든크로스 후보 풀 없음 (candidates:s8:001/101) — candidates_builder 미기동 또는 풀 미적재
+- [WARNING] S9 눌림목 후보 풀 없음 (candidates:s8:001/101 참조) — S9가 S8 풀 키를 잘못 참조하는 버그 가능성
+- [신호 없음 경보] 최근 10분 trading_signals 0건 — 장 중(10:18 KST)임에도 신호 미발생
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_8_golden_cross – [S8] candidates:s8:001/101 풀 없음 – candidates_builder 기동 확인 필요
+ai-engine | [WARNING] strategy_9_pullback – [S9] candidates:s8:001/101 풀 없음 – candidates_builder 기동 확인 필요
+```
+---
+
+---
+### [2026-04-24 10:22 KST] 점검 회차 2
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=43
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [CRITICAL] db_writer INSERT 오류 — `[000250 S2_VI_PULLBACK]: INSERT has more target columns than expressions` → S2 신호가 DB에 저장되지 않음. trading_signals 테이블 컬럼 수와 INSERT 쿼리 불일치. 스키마 변경 후 db_writer.py 미동기화 의심
+- [경보] vi_watch_queue 43건 적체 — 전 회차(44건) 대비 1건 감소에 불과. S2 DB 오류로 처리 차단 가능성
+- [WARNING] S3 기관/외인 페이지 상한 반복 도달 — ka10055 API 50페이지 상한 강제 종료 (074600, 330860, 394280 다수)
+- [WARNING] S3 느린 실행 감지 — 235.1초 소요 (timeout=300s 임박)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 — S2 DB 오류 영향 가능성
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [000250 S2_VI_PULLBACK]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 330860/1 페이지 상한(50) 도달, 루프 강제 종료
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 394280/2 페이지 상한(50) 도달, 루프 강제 종료
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (235.1s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 10:26 KST] 점검 회차 3
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=42
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [경보] vi_watch_queue 42건 적체 — 회차별 추이: 44→43→42, 사실상 소비 정지 상태
+- [WARNING] S3 느린 실행 악화 — 291.7초 소요 (timeout=300s), 전 회차 235.1s → 악화 추세, 거의 타임아웃 수준
+- [WARNING] S3 페이지 상한 반복 — 074600/330860/394280 동일 종목 반복 도달
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (3회 연속)
+- 전 회차 CRITICAL(db_writer INSERT 오류) 재발 여부: 이번 3분 창에서는 미관측 (vi_watch_queue 적체 지속으로 근본 원인 미해결 추정)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 074600/1 페이지 상한(50) 도달, 루프 강제 종료
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 330860/2 페이지 상한(50) 도달, 루프 강제 종료
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 394280/2 페이지 상한(50) 도달, 루프 강제 종료
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (291.7s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 10:31 KST] 점검 회차 4
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=44
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [경보] vi_watch_queue 44건 — 추이: 44→43→42→44, 소비보다 유입이 많아 큐 증가 반전. S2 INSERT 오류로 소비 차단 확정
+- [WARNING] S3 느린 실행 지속 — 237.3s (3·4회차 모두 ~235-292s 범위, 구조적 문제)
+- [WARNING] S3 페이지 상한 — 000210/014620/074600/330860/394280 (종목 다양화, 매 사이클 동일 패턴)
+- [WARNING] S5 프로그램매수 느린 실행 신규 — 84.9s 감지 (S3 장기 선점에 따른 연쇄 지연 의심)
+- [WARNING] S15 모멘텀정렬 느린 실행 신규 — 30.8s 감지
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (4회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (84.9s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (30.8s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 394280/2 페이지 상한(50) 도달, 루프 강제 종료
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (237.3s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 10:36 KST] 점검 회차 5
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=4
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [개선] vi_watch_queue 44→4 급감 — api-orchestrator 10:35 intraday preload 타이밍에 소비된 것으로 추정. 근본 원인(db_writer 오류)은 미해결
+- [CRITICAL] db_writer INSERT 오류 확산 — 2회차 S2_VI_PULLBACK에 이어 이번엔 S3_INST_FRGN도 동일 오류. `trading_signals` INSERT 컬럼 불일치가 전략 전반에 걸친 구조적 버그로 확인
+- [WARNING] S3 느린 실행 지속 — 247.6s (매 사이클 235~292s, 5회 연속)
+- [WARNING] S5 느린 실행 지속 — 84.5s (2회 연속)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (5회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [000210 S3_INST_FRGN]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (84.5s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 394280/2 페이지 상한(50) 도달, 루프 강제 종료
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (247.6s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 10:41 KST] 점검 회차 6
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=37
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [CRITICAL] db_writer INSERT 오류 3개 전략으로 확산 확정 — S2_VI_PULLBACK(2회차) + S3_INST_FRGN(5회차) + **S15_MOMENTUM_ALIGN(6회차)** → insert_python_signal()이 모든 전략 공통 실패. trading_signals 테이블에 컬럼 추가 후 INSERT 쿼리 미동기화
+- [경보] vi_watch_queue 4→37 재증가 — 5회차 일시 감소는 vi 이벤트 유입 공백이었던 것으로 확인. 근본 원인 미해결
+- [WARNING] S3 느린 실행 6회 연속 (~235~292s 구조적 반복)
+- [WARNING] S5 느린 실행 3회 연속 — 85.9s
+- [WARNING] S15 느린 실행 2회 연속 — 30.4s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (6회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [092220 S15_MOMENTUM_ALIGN]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (85.9s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (30.4s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 330860/2 페이지 상한(50) 도달, 루프 강제 종료
+```
+---
+
+---
+### [2026-04-24 10:45 KST] 점검 회차 7
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=41
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [경보] vi_watch_queue 37→41 재증가 — 계속 유입 중, 소비 차단 지속
+- [WARNING] S8 골든크로스 / S9 눌림목 후보 풀 없음 재등장 — candidates:s8:001/101 미적재 (1회차 이후 반복 패턴)
+- [WARNING] S3 느린 실행 7회 연속 — 이번 창에서도 5개 종목 페이지 상한 도달, 사이클 점유 지속
+- [WARNING] S5 느린 실행 4회 연속 — 84.5s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (7회 연속)
+- db_writer INSERT 오류: 이번 4분 창에서는 미관측 (S3 사이클 진행 중으로 아직 INSERT 단계 미도달 추정)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_8_golden_cross – [S8] candidates:s8:001/101 풀 없음 – candidates_builder 기동 확인 필요
+ai-engine | [WARNING] strategy_9_pullback – [S9] candidates:s8:001/101 풀 없음 – candidates_builder 기동 확인 필요
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (84.5s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 330860/2 페이지 상한(50) 도달, 루프 강제 종료
+```
+---
+
+---
+### [2026-04-24 10:50 KST] 점검 회차 8
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=4
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [패턴 확인] vi_watch_queue 급감 원인 규명 — 10:35·10:50 두 차례 api-orchestrator `[Pool] intraday preload complete` 직후 →4 패턴. preload가 약 15분 주기로 큐를 부분 소비하나 완전 소화 못함(잔여 ~4건). 근본 원인(db_writer INSERT 오류) 여전히 미해결
+- [WARNING] S3 느린 실행 8회 연속 — 238.0s
+- [WARNING] S5 느린 실행 악화 — 113.2s (전 회차 84.5s 대비 33% 증가)
+- [WARNING] S15 느린 실행 3회 연속 — 37.8s
+- [WARNING] S8/S9 후보 풀 없음 지속
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (8회 연속)
+
+**관련 로그 발췌**:
+```
+api-orchestrator | [Pool] intraday preload complete (10:50:02 KST) → vi_watch_queue 41→4
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (238.0s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (113.2s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (37.8s, timeout=300s)
+ai-engine | [WARNING] strategy_8_golden_cross – [S8] candidates:s8:001/101 풀 없음
+ai-engine | [WARNING] strategy_9_pullback – [S9] candidates:s8:001/101 풀 없음
+```
+---
+
+---
+### [2026-04-24 10:55 KST] 점검 회차 9
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=35
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [CRITICAL] db_writer INSERT 오류 4번째 전략 확산 — S8_GOLDEN_CROSS [090430] 신규 추가. 누적 확인: S2·S3·S8·S15 → insert_python_signal() 전략 무관 공통 실패 확정
+- [경보] vi_watch_queue 4→35 재증가 — preload 직후 ~15분 만에 31건 유입, 사이클 반복
+- [WARNING] S3 느린 실행 9회 연속 — 265.6s (전 회차 238.0s 대비 재증가)
+- [WARNING] S5 느린 실행 5회 연속 — 90.2s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (9회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [090430 S8_GOLDEN_CROSS]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (265.6s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (90.2s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 394280/2 페이지 상한(50) 도달, 루프 강제 종료
+```
+---
+
+---
+### [2026-04-24 11:00 KST] 점검 회차 10
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=34
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [CRITICAL] db_writer INSERT 오류 재발 — S2_VI_PULLBACK [014620] (2회차 000250에 이어 동일 전략 다른 종목). 전략·종목 무관 공통 실패 재확인
+- [경보] vi_watch_queue 34건 — preload 후 계속 재적체 중 (다음 preload까지 ~5분 남음)
+- [WARNING] S3 느린 실행 10회 연속 — 247.0s
+- [WARNING] S5 느린 실행 6회 연속 — 96.6s (84→85→84→113→90→96, 증가 추세)
+- [WARNING] S15 느린 실행 4회 연속 — 33.7s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (10회 연속)
+- [INFO] api-orchestrator expired old signals count=1 — 만료 신호 1건 정리 (정상 동작)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [014620 S2_VI_PULLBACK]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (247.0s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (96.6s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (33.7s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 11:04 KST] 점검 회차 11
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=30
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [CRITICAL] db_writer INSERT 오류 재발 — S2_VI_PULLBACK [003030] (S2 세 번째 종목: 000250→014620→003030). 매 사이클 반복
+- [경고] S3 느린 실행 역대 최고 — 289.4s (타임아웃 300s까지 10.6s 남음, 11회 연속)
+- [경보] vi_watch_queue 30건 — 11:05:00 preload 완료 직전 측정. 이전 preload 후 잔여량(30건)은 이전 패턴(4건 잔여)보다 많음
+- [INFO] api-orchestrator 토큰 갱신 완료 (11:02:17, 만료 2026-04-25 07:19:56) — 정상
+- [INFO] intraday preload complete (11:05:00) — 15분 주기 정상 동작
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (11회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [003030 S2_VI_PULLBACK]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (289.4s, timeout=300s) ← 역대 최고
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 394280/2 페이지 상한(50) 도달, 루프 강제 종료
+api-orchestrator | 토큰 갱신 완료 - 만료: 2026-04-25T07:19:56
+```
+---
+
+---
+### [2026-04-24 11:09 KST] 점검 회차 12
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=30
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [CRITICAL] db_writer INSERT 오류 2건 연속 발생 — S3_INST_FRGN [000210] 11:05:48 + [394280] 11:08:29. 한 사이클 내 2건 오류, 신호 생성 자체는 되고 있으나 저장 전부 실패
+- [경보] vi_watch_queue 30건 — 11:05:00 preload 후에도 30건 유지. 이전 패턴(→4건) 대비 처리량 감소 또는 VI 유입 급증
+- [WARNING] S14 과매도반등 느린 실행 신규 — 41.8s (처음 감지. S3 연쇄 지연이 더 많은 전략으로 확산)
+- [WARNING] S3 느린 실행 12회 연속 — 267.0s
+- [WARNING] S5 느린 실행 7회 연속 — 99.6s (증가 추세: 84→99.6s)
+- [WARNING] S15 느린 실행 5회 연속 — 40.8s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (12회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [000210 S3_INST_FRGN]: INSERT has more target columns than expressions
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [394280 S3_INST_FRGN]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (267.0s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (99.6s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S14] 느린 실행 감지 (41.8s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (40.8s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 11:14 KST] 점검 회차 13
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=29
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [CRITICAL] db_writer INSERT 오류 — S2_VI_PULLBACK [023160] (S2 4번째 종목). 매 사이클 반복
+- [경고] S3 292.4s — 타임아웃(300s)까지 7.6초. 역대 두 번째 최고값 (최고: 11회차 289.4s와 근사)
+- [경보] vi_watch_queue 29건 — 거의 변화 없음 (30→29). 다음 preload는 11:20 예상
+- [WARNING] S9 후보 풀 없음 재등장
+- [WARNING] S5 느린 실행 8회 연속 — 91.6s
+- [WARNING] S15 느린 실행 6회 연속 — 31.7s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (13회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [023160 S2_VI_PULLBACK]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_runner – [Runner] [S3] 느린 실행 감지 (292.4s, timeout=300s) ← 타임아웃 7.6초 전
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (91.6s, timeout=300s)
+ai-engine | [WARNING] strategy_9_pullback – [S9] candidates:s8:001/101 풀 없음
+```
+---
+
+---
+### [2026-04-24 11:19 KST] 점검 회차 14
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=27
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [주목] S3 후보 종목 교체 확인 — 이전 고정 5종목(000210/074600/330860/394280/014620)에서 005440/008770/034020/014620/027360/036540으로 변경. 11:05 intraday preload 후 후보 풀 갱신. 페이지 상한 패턴 동일, 종목 수는 6개로 증가
+- [WARNING] S3 느린 실행 14회 연속 — 이번 사이클 진행 중 (6종목 진행, 이전 5종목보다 1개 추가)
+- [WARNING] S8/S9 후보 풀 없음 반복
+- [WARNING] S5 느린 실행 9회 연속 — 87.6s
+- [WARNING] S15 느린 실행 7회 연속 — 30.1s
+- db_writer INSERT 오류: 이번 5분 창 미관측 (S3 사이클 아직 INSERT 단계 미도달)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (14회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_8_golden_cross – [S8] candidates:s8:001/101 풀 없음
+ai-engine | [WARNING] strategy_9_pullback – [S9] candidates:s8:001/101 풀 없음
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (87.6s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (30.1s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 036540/1 페이지 상한(50) 도달 (신규 6번째 종목)
+```
+---
+
+---
+### [2026-04-24 11:23 KST] 점검 회차 15
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=27
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 최초 발생 — `[Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s` (11:20:17). 14회차 예상대로 종목 6개로 증가 후 300s 초과. 타임아웃 후 즉시 다음 사이클에서 S3 재시작 중
+- [경보] vi_watch_queue 27건 — 11:20:02 preload 후에도 27건 유지 (이전 패턴과 달리 preload가 큐 미소비). vi_watch_queue 처리 방식 변화 또는 유입량 급증
+- [WARNING] S3 15회 연속 — 타임아웃 후 재시작, 현재 진행 중
+- [WARNING] S5 느린 실행 10회 연속 — 91.9s
+- [WARNING] S15 느린 실행 8회 연속 — 31.5s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (15회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s ← 최초 타임아웃
+api-orchestrator | [Pool] intraday preload complete (11:20:02 KST)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (91.9s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (31.5s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 11:28 KST] 점검 회차 16
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=25
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 2회 연속 — 11:26:17 `전략 실행 타임아웃 (300s) - 강제 취소`. 15·16회차 연속 타임아웃, 매 사이클 반복 확정
+- [주목] S3 타임아웃 후 INSERT 오류 미발생 — 타임아웃 시 INSERT 단계 미도달. 역설적으로 INSERT 오류가 안 보이는 것은 S3가 신호를 생성조차 못하고 있음을 의미
+- [경보] vi_watch_queue 25건 — 완만 감소 (27→25). 자연 소비 중이나 근본 원인 미해결
+- [WARNING] S5 느린 실행 11회 연속 — 88.9s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (16회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (11:26:17 - 2회 연속)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (88.9s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 036540/1 페이지 상한(50) 도달, 루프 강제 종료 (6번째 종목)
+```
+---
+
+---
+### [2026-04-24 11:33 KST] 점검 회차 17
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=1(측정시) / vi_watch_queue=30
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 3회 연속 — 11:32:17 `전략 실행 타임아웃 (300s) - 강제 취소`. 15·16·17회차 매 사이클 타임아웃 확정
+- [주목] ai_scored_queue 최초 1건 감지 — 측정 시 1건 존재, LRANGE 확인 시 이미 소비됨. telegram-bot이 신호를 수신했으나 trading_signals DB에는 0건 → db_writer INSERT 오류로 DB 저장 실패 확인
+- [CRITICAL] db_writer INSERT 오류 재발 — S2_VI_PULLBACK [010060] 11:33:25 (S2 5번째 종목). S3 타임아웃 후 S2가 처리되어 신호 생성됐으나 저장 실패
+- [경보] vi_watch_queue 25→30 재증가 — 새 VI 이벤트 유입 중
+- [WARNING] S5 느린 실행 12회 연속 — 88.9s (전 회차와 동일)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (17회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (11:32:17 - 3회 연속)
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [010060 S2_VI_PULLBACK]: INSERT has more target columns than expressions
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (88.9s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 11:38 KST] 점검 회차 18
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=8
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 4회 연속 — 11:38:17 `전략 실행 타임아웃 (300s) - 강제 취소`. 15~18회차 매 사이클 타임아웃 확정
+- [확인] vi_watch_queue 30→8 — 11:35:00 preload(5번째: 10:35/10:50/11:05/11:20/11:35) 직후 소비. 15분 주기 정확 확정
+- [WARNING] S3 INSERT 오류: 이번 창 미관측 (타임아웃으로 INSERT 미도달)
+- [WARNING] S5 느린 실행 13회 연속 — 96.6s
+- [WARNING] S15 느린 실행 9회 연속 — 36.6s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (18회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (11:38:17 - 4회 연속)
+api-orchestrator | [Pool] intraday preload complete (11:35:00 KST) → vi_watch_queue 30→8
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (96.6s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (36.6s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 11:42 KST] 점검 회차 19
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=2
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 5회 연속 진행 중 — 11:38:17 4회차 완료, 현 사이클 11:40:28~진행 중 (027360/2 완료, 036540/061970/074600 잔여. ~11:44:30 타임아웃 예상)
+- [확인] vi_watch_queue 8→2 — 11:35 preload 이후 자연 감소. 거의 소진 (다음 preload 11:50 예정)
+- [WARNING] S5 느린 실행 14회 연속 — 92.9s
+- db_writer INSERT 오류: 이번 창 미관측 (S3 타임아웃으로 INSERT 미도달)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (19회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (11:38:17)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (92.9s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 027360/2 페이지 상한(50) 도달, 루프 강제 종료 (5번째 종목 완료, 타임아웃 진행 중)
+```
+---
+
+---
+### [2026-04-24 11:47 KST] 점검 회차 20
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=16
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 5회 연속 완료 — 11:44:17 타임아웃 (15~19회차 연속). 현 사이클 재시작 중 (~11:50:30 6번째 타임아웃 예상)
+- [경보] vi_watch_queue 2→16 재증가 — 11:44 이후 새 VI 이벤트 유입. 다음 preload(11:50) 전 누적 중
+- [WARNING] S8/S9 후보 풀 없음 반복
+- [WARNING] S5 느린 실행 15회 연속 — 98.6s
+- [WARNING] S15 느린 실행 10회 연속 — 31.1s
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (20회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (11:44:17 - 5회 연속)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (98.6s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (31.1s, timeout=300s)
+ai-engine | [WARNING] strategy_8_golden_cross – [S8] candidates:s8:001/101 풀 없음
+```
+---
 
 ---
 
-## [2026-04-16 10:57] 수집 결과
+---
+### [2026-04-24 11:52 KST] 점검 회차 21
+**컨테이너 상태**: 정상 (6/6 Running)
 
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | websocket-listener | `ws_tick_data.id` NOT NULL 위반 지속 — V19 미적용 | `[DB] ws_tick_data insert failed [0B 011790]: null value in column "id"...` |
-| CRITICAL | ai-engine / postgres | `trading_signals.id` NOT NULL 위반 추가 발견 — 영향 테이블 확대 | `[DBWriter] insert_python_signal 오류 [000020_AL S3_INST_FRGN]: null value in column "id" of relation "trading_signals"` |
-| ERROR | ai-engine | `candidates_builder` S15/S6 빌드 실패 — `kiwoom_post()` 시그니처 불일치 | `[builder] 장중 S15 101 빌드 오류: kiwoom_post() missing 4 required positional arguments: 'url', 'headers', 'json_body', and 'api_id'` |
-| WARN | ai-engine | S3 ka10055 페이지 상한(50) 도달 — 루프 강제 종료 | `[S3] ka10055 000150_AL/2 페이지 상한(50) 도달, 루프 강제 종료` |
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=16
 
-### 신규 근본 원인
-1. **trading_signals.id 시퀀스 소실**: `ws_tick_data`와 동일하게 Hibernate `ddl-auto: update`로 인해 `trading_signals.id`의 BIGSERIAL DEFAULT 제거 → ai-engine 신호 INSERT 전체 실패.
-2. **kiwoom_post() 시그니처 불일치**: M-8 리팩토링 후 `candidates_builder.py`가 구형 호출 방식 유지 → S6/S15 후보 풀 미적재.
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
 
-### 권고 조치
-- **즉시 (1)**: V19 마이그레이션에 `trading_signals` 시퀀스 복구 구문 추가 후 api-orchestrator 재기동
-  ```sql
-  CREATE SEQUENCE IF NOT EXISTS trading_signals_id_seq;
-  ALTER TABLE trading_signals ALTER COLUMN id SET DEFAULT nextval('trading_signals_id_seq');
-  SELECT setval('trading_signals_id_seq', COALESCE((SELECT MAX(id) FROM trading_signals WHERE id IS NOT NULL), 0) + 1, false);
-  ```
-- **즉시 (2)**: `candidates_builder.py` 내 `kiwoom_post()` 호출부를 신규 시그니처로 수정
-- **확인 필요**: Hibernate 영향받은 테이블 전수 점검 — 모든 `id` 컬럼 DEFAULT 확인
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 6회 연속 — 11:50:17 타임아웃. 15~20회차 연속
+- [CRITICAL] db_writer INSERT 오류 재발 — S8_GOLDEN_CROSS [092220] 11:52:13. 타임아웃 틈새에 S8 신호 생성됐으나 저장 실패
+- [경보] vi_watch_queue 16건 — 11:50:02 preload 후에도 16건 유지 (이번 preload는 큐 미소비)
+- [WARNING] S3 6번째 사이클 재시작 중 — 11:52:26 005440/2부터 진행
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (21회 연속)
 
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (11:50:17 - 6회 연속)
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [092220 S8_GOLDEN_CROSS]: INSERT has more target columns than expressions
+api-orchestrator | [Pool] intraday preload complete (11:50:02 KST) — vi_watch_queue 미소비(16건 유지)
+```
 ---
 
-## [2026-04-16 11:22] 수집 결과
+---
+### [2026-04-24 11:57 KST] 점검 회차 22
+**컨테이너 상태**: 정상 (6/6 Running)
 
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | ai-engine | Claude API 401 — `invalid x-api-key`. news_analyzer 비기능, confirm_worker 영향 미확인 | `[NewsAnalyzer] Claude API 오류: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}}` |
-| CRITICAL | api-orchestrator | 11:20:53 재시작 확인 — JpaBaseConfiguration WARN, ApplicationStartupRunner `=== Startup Complete ===` 출력, 신규 Kiwoom 토큰 발급(만료: 2026-04-17T06:49:56). 재시작 원인 미특정 | `[Startup] === Startup Complete === [2026-04-16 11:20:55]` |
-| CRITICAL | websocket-listener / postgres | `ws_tick_data.id` NOT NULL 위반 지속 — V19 미적용 (35분 이상 지속) | `[DB] ws_tick_data insert failed: null value in column "id"` |
-| CRITICAL | ai-engine / postgres | `trading_signals.id` NOT NULL 위반 지속 — V19 미적용 | `[DBWriter] insert_python_signal 오류: null value in column "id" of relation "trading_signals"` |
-| ERROR | ai-engine | S5 `ka90003` 전수 조회 폴백 반복 — 후보 풀 미적재 지속 | `[S5] 후보 풀 없음, ka90003 전수 조회 폴백` |
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=15
 
-### 신규 근본 원인
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
 
-1. **Claude API 401**: `ai-engine/.env`의 `CLAUDE_API_KEY`가 무효(만료·교체·오기입). request-id: `req_011Ca6emB5oHDYXePWY7ZhiQ`, model: `claude-sonnet-4-20250514`.
-2. **api-orchestrator 재시작**: OOM, 수동 재시작, 또는 헬스체크 실패에 의한 Docker 재시작 추정. 직전 ERROR 로그 없음.
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 7회 연속 — 11:56:17 타임아웃. 15~21회차 연속. 이번 사이클 종목 순서: 005440→008770→034020→014620→027360→036540→061970→074600(타임아웃)
+- [확인] vi_watch_queue 15건 — 16→15, 자연 감소 중. 다음 preload 12:05 예정
+- [WARNING] S5 느린 실행 16회 연속 — 88.5s
+- db_writer INSERT 오류: 이번 창 미관측 (타임아웃으로 INSERT 미도달)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (22회 연속)
 
-### 권고 조치
-
-- **즉시 (1)**: `ai-engine/.env`의 `CLAUDE_API_KEY` 확인 및 유효한 키로 교체 후 `docker compose up -d --build ai-engine`
-- **즉시 (2)**: api-orchestrator 재시작 원인 파악 — `docker compose logs --since 11:19 api-orchestrator` 로 직전 로그 확인, OOM이면 메모리 제한 상향
-- **긴급 미해결**: V19 Flyway 마이그레이션 (`ws_tick_data` + `trading_signals` 시퀀스 복구) 미적용 상태 35분 이상 지속 — 즉시 적용 필요
-
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (11:56:17 - 7회 연속)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (88.5s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 074600/1 페이지 상한(50) 도달, 루프 강제 종료 (타임아웃)
+```
 ---
 
-## [2026-04-16 11:32] 수집 결과
+---
+### [2026-04-24 12:02 KST] 점검 회차 23
+**컨테이너 상태**: 정상 (6/6 Running)
 
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| ERROR | ai-engine / postgres | `score_components` ON CONFLICT 제약 누락 — signal 3건 INSERT 실패 | `[DBWriter] insert_score_components 오류 signal_id=1: there is no unique or exclusion constraint matching the ON CONFLICT specification` |
-| WARN | ai-engine | S8/S9 후보 풀 없음 — `candidates:s8:001/101`, `candidates:s9:001/101` 미적재 | `[S8] candidates:s8:001/101 풀 없음 – candidates_builder 기동 확인 필요` |
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=15
 
-### 근본 원인
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
 
-1. **score_components ON CONFLICT 실패**: `score_components` 테이블에 `ON CONFLICT (signal_id, ...)` 절이 참조하는 UNIQUE 제약이 존재하지 않음. Hibernate `ddl-auto: update`가 이전 마이그레이션이 생성한 UNIQUE 제약을 제거했을 가능성 높음. 또는 해당 제약을 생성한 마이그레이션이 미적용 상태.
-2. **S8/S9 풀 없음**: `candidates_builder`가 S8/S9 풀을 아직 적재하지 못했거나, api-orchestrator 재시작 후 풀 재빌드 주기 미도달.
+**감지된 이슈**:
+- [ERROR] S3 8회 연속 타임아웃 진행 중 — 036540/1 진행 중, ~12:03:30 타임아웃 예상
+- [WARNING] S5 느린 실행 악화 — 103.6s (전 회차 88.5s에서 급증, 100s 돌파)
+- [WARNING] S15 느린 실행 11회 연속 — 34.1s
+- [확인] vi_watch_queue 15건 — 변화 없음. 다음 preload 12:05 예정
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (23회 연속)
 
-### 권고 조치
-
-- **즉시**: Flyway V21 마이그레이션 생성 — `score_components` 테이블에 UNIQUE 제약 복구
-  ```sql
-  -- score_components 테이블 UNIQUE 제약 확인 후 필요 시 추가
-  -- 예: ON CONFLICT (signal_id) 를 사용한다면:
-  ALTER TABLE score_components ADD CONSTRAINT uq_score_components_signal_id UNIQUE (signal_id);
-  ```
-- **확인**: `db_writer.py`의 `insert_score_components` ON CONFLICT 절 컬럼 확인 후 대상 컬럼에 UNIQUE 제약 추가
-- **모니터링**: S8/S9 풀 — 다음 전략 주기(~5분) 이후에도 미적재 시 `candidates_builder.py` S8/S9 빌드 로직 점검
-
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (103.6s, timeout=300s) ← 100s 돌파
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (34.1s, timeout=300s)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 036540/1 페이지 상한(50) 도달, 루프 강제 종료 (8번째 타임아웃 진행 중)
+```
 ---
 
-## [2026-04-16 11:34] 수집 결과
+---
+### [2026-04-24 12:06 KST] 점검 회차 24
+**컨테이너 상태**: 정상 (6/6 Running)
 
-| 심각도 | 서비스 | 문제 요약 | 로그 발췌 |
-|--------|--------|-----------|-----------|
-| CRITICAL | api-orchestrator | 반복 재시작 지속 — 11:31 재기동, uptime 43초. 재시작 원인 ERROR 로그 없음(OOM 또는 헬스체크 실패 추정) | `StartedAt: 2026-04-16T02:31:06Z, RestartCount: 0(수동 재기동)` |
-| ERROR | postgres | `role "sma_user" does not exist` FATAL — 미등록 역할로 DB 접속 시도 | `FATAL: role "sma_user" does not exist` |
-| WARN | ai-engine | S8/S9 후보 풀 없음 지속 — 전략 주기 초과에도 미적재 | `[S8] candidates:s8:001/101 풀 없음`, `[S9] candidates:s9:001/101 풀 없음` |
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=17
 
-### 근본 원인
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
 
-1. **api-orchestrator 반복 재시작**: 11:20, 11:22, 11:31 세 차례 재시작. ERROR 로그 없이 종료 → JVM OOM 또는 Docker 헬스체크 실패(Kiwoom 토큰 발급 지연 등)로 추정. `docker inspect` RestartCount=0 은 `docker compose up` 수동 재기동으로 리셋된 것.
-2. **`sma_user` 역할 미존재**: PostgreSQL에 `sma_user` 역할이 없음. Docker Compose healthcheck가 `pg_isready -U sma_user` 형태로 설정되어 있거나, 외부 모니터링 도구가 해당 역할로 접속 시도. postgres 자체는 `(healthy)` 상태이므로 핵심 기능 차단은 없으나 healthcheck 설정 오류.
-3. **S8/S9 풀 미적재**: api-orchestrator 재시작으로 인해 candidates_builder 주기가 초기화되어 S8/S9 풀 재빌드 지연.
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 8회 연속 완료 — 12:02:17 타임아웃. 15~22회차 연속. 9번째 사이클 027360/2까지 진행 중
+- [경보] vi_watch_queue 15→17 증가 — 12:05:00 preload 후에도 증가. 새 VI 이벤트 유입이 preload 소비를 초과
+- [WARNING] S5 느린 실행 17회 연속 — 86.6s (전 회차 103.6s에서 감소)
+- [INFO] 12:05:00 intraday preload complete (7번째, 정상)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (24회 연속)
 
-### 권고 조치
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (12:02:17 - 8회 연속)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (86.6s, timeout=300s)
+api-orchestrator | [Pool] intraday preload complete (12:05:00 KST) — vi_watch_queue 미소비(15→17 증가)
+```
+---
 
-- **즉시 (1)**: api-orchestrator 재시작 원인 확정 — `docker stats stockmate-ai-api-orchestrator-1` 로 메모리 사용량 모니터링, OOM이면 `docker-compose.yml` 메모리 제한 상향 또는 JVM 힙 축소
-- **즉시 (2)**: docker-compose.yml healthcheck 확인 — postgres healthcheck의 `-U` 옵션을 실제 존재하는 역할(예: `postgres`)로 교정
-- **모니터링**: S8/S9 풀 — api-orchestrator 안정화 후 다음 전략 주기(~5분) 에 자동 적재 예상, 미적재 시 `candidates_builder.py` 직접 확인
+---
+### [2026-04-24 12:11 KST] 점검 회차 25
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=17
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 9회 연속 — 12:08:17 타임아웃. 15~23회차 연속. 10번째 사이클 진행 중
+- [경고] S5 느린 실행 악화 — 114.9s (역대 최고치. 직전 최고: 113.2s 8회차)
+- [경고] S15 느린 실행 급등 — 64.1s (기존 30~40s에서 거의 2배 급등, 심각한 연쇄 지연)
+- [WARNING] S9 후보 풀 없음 재등장
+- [경보] vi_watch_queue 17건 — 유지, preload 미소비 패턴 지속
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (25회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (12:08:17 - 9회 연속)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (114.9s, timeout=300s) ← 역대 최고
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (64.1s, timeout=300s) ← 급등
+```
+---
+
+---
+### [2026-04-24 12:16 KST] 점검 회차 26
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=2
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 10회 연속 — 12:14:17 타임아웃. 15~24회차 연속. 11번째 사이클 005440/2~진행 중
+- [확인] vi_watch_queue 17→2 자연 감소 — preload 없이 15→2 감소. VI 이벤트 유입 감소 또는 자연 소진
+- [개선] S15 느린 실행 완화 — 64.1s(25회차)→33.1s(회복). 일시적 변동
+- [WARNING] S8/S9 후보 풀 없음 반복
+- db_writer INSERT 오류: 이번 창 미관측 (타임아웃으로 INSERT 미도달)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (26회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (12:14:17 - 10회 연속)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (33.1s, timeout=300s)
+ai-engine | [WARNING] strategy_8_golden_cross – [S8] candidates:s8:001/101 풀 없음
+ai-engine | [WARNING] strategy_9_pullback – [S9] candidates:s8:001/101 풀 없음
+```
+---
+
+---
+### [2026-04-24 12:18 KST] 점검 회차 27
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=10
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 11회 연속 — 12:14:17 타임아웃 후 재시작. 014620/2 페이지 상한 도달 중(12:18:22). 11번째 사이클 진행 중
+- [WARNING] S5 느린 실행 — 87.6s (12:16:44)
+- [WARNING] S15 느린 실행 — 33.1s (12:16:16)
+- [WARNING] S8/S9 후보 풀 없음 반복 (12:15:43)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (27회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (12:14:17 - 11회 연속)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 014620/2 페이지 상한(50) 도달 (12:18:22)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (87.6s, timeout=300s)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (33.1s, timeout=300s)
+```
+---
+
+---
+### [2026-04-24 12:21 KST] 점검 회차 28
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=10
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 12회 연속 — 12:20:17 타임아웃. 74600 종목 1페이지 상한 도달 후 300s 초과
+- [WARNING] S8/S9 후보 풀 없음 지속
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (28회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (12:20:17 - 12회 연속)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 074600/1 페이지 상한(50) 도달 (12:20:12)
+```
+---
+
+---
+### [2026-04-24 12:25 KST] 점검 회차 29
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=10
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 13회 연속 진행 중 — 12:20:17 타임아웃 후 재시작, 008770→034020→014620→027360 순회 중 (12:25:44 현재)
+- [WARNING] S5 느린 실행 — 106.3s (12:23:03, 악화 추세)
+- [WARNING] S14 느린 실행 — 50.2s (12:23:12)
+- [WARNING] S15 느린 실행 — 32.8s (12:23:36)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (29회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (106.3s, timeout=300s) (12:23:03)
+ai-engine | [WARNING] strategy_runner – [Runner] [S14] 느린 실행 감지 (50.2s, timeout=300s) (12:23:12)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (32.8s, timeout=300s) (12:23:36)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 027360/1 페이지 상한(50) 도달 (12:25:44)
+```
+---
+
+---
+### [2026-04-24 12:30 KST] 점검 회차 30
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=13
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 13회 연속 진행 중 — 재시작 후 005440→008770→034020→014620→027360 순회 중 (12:30:40 현재)
+- [WARNING] S5 느린 실행 — 87.9s (12:28:45, 전회 106.3s → 완화)
+- [WARNING] S15 느린 실행 — 30.4s (12:28:48)
+- [경보] vi_watch_queue 10→13 소폭 증가 — 새 VI 이벤트 유입
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (30회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (87.9s, timeout=300s) (12:28:45)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (30.4s, timeout=300s) (12:28:48)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 027360/1 페이지 상한(50) 도달 (12:30:40)
+```
+---
+
+---
+### [2026-04-24 12:35 KST] 점검 회차 31
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=13
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 14회 연속 진행 중 — 재시작 후 005440→008770 순회 중 (12:35:13 현재)
+- [WARNING] S5 느린 실행 — 94.2s (12:34:51)
+- [WARNING] S15 느린 실행 — 35.4s (12:34:51)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (31회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (94.2s, timeout=300s) (12:34:51)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (35.4s, timeout=300s) (12:34:51)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 008770/1 페이지 상한(50) 도달 (12:35:13)
+```
+---
+
+---
+### [2026-04-24 12:40 KST] 점검 회차 32
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=10
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 14회 연속 확정 — 12:38:17 타임아웃 (036540/1 페이지 상한 후 300s 초과)
+- [경보] vi_watch_queue 13→10 소폭 감소
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (32회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (12:38:17 - 14회 연속)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 036540/1 페이지 상한(50) 도달 (12:38:05)
+```
+---
+
+---
+### [2026-04-24 12:44 KST] 점검 회차 33
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=10
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 15회 연속 확정 — 12:44:17 타임아웃 (061970/1 페이지 상한 후 300s 초과)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (33회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (12:44:17 - 15회 연속)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 061970/1 페이지 상한(50) 도달 (12:44:00)
+```
+---
+
+---
+### [2026-04-24 12:49 KST] 점검 회차 34
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=9
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 16회 연속 진행 중 — 재시작 후 008770→034020→014620→027360 순회 중 (12:49:27 현재)
+- [WARNING] S5 느린 실행 — 94.9s (12:46:52)
+- [경보] vi_watch_queue 10→9 소폭 감소
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (34회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (94.9s, timeout=300s) (12:46:52)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 027360/1 페이지 상한(50) 도달 (12:49:27)
+```
+---
+
+---
+### [2026-04-24 12:54 KST] 점검 회차 35
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=13
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 16회 연속 진행 중 — 재시작 후 005440→008770→034020→014620 순회 중 (12:54:27 현재)
+- [WARNING] S5 느린 실행 — 89.2s (12:52:46)
+- [경보] vi_watch_queue 9→13 소폭 증가 — 새 VI 이벤트 유입
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (35회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (89.2s, timeout=300s) (12:52:46)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 014620/2 페이지 상한(50) 도달 (12:54:27)
+```
+---
+
+---
+### [2026-04-24 12:59 KST] 점검 회차 36
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=4
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 17회 연속 확정 — 12:56:17 타임아웃
+- [ERROR] db_writer INSERT 오류 재관측 — 12:57:57 S8_GOLDEN_CROSS 090430 종목: "INSERT has more target columns than expressions"
+- [WARNING] S5 느린 실행 — 99.9s (12:58:57)
+- [WARNING] S15 느린 실행 — 31.8s (12:58:47)
+- [주목] vi_watch_queue 13→4 대폭 감소 — preload 또는 S2 처리로 드레인
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (36회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (12:56:17 - 17회 연속)
+ai-engine | [ERROR] db_writer – [DBWriter] insert_python_signal error [090430 S8_GOLDEN_CROSS]: INSERT has more target columns than expressions (12:57:57)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (99.9s, timeout=300s) (12:58:57)
+ai-engine | [WARNING] strategy_runner – [Runner] [S15] 느린 실행 감지 (31.8s, timeout=300s) (12:58:47)
+```
+---
+
+---
+### [2026-04-24 13:03 KST] 점검 회차 37
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=13
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 18회 연속 확정 — 13:02:17 타임아웃 (036540/1 페이지 상한 후 300s 초과)
+- [경보] vi_watch_queue 4→13 재증가 — 새 VI 이벤트 유입
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (37회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (13:02:17 - 18회 연속)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 036540/1 페이지 상한(50) 도달 (13:02:04)
+```
+---
+
+---
+### [2026-04-24 13:08 KST] 점검 회차 38
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=13
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 19회 연속 확정 — 13:08:17 타임아웃 (074600/1 페이지 상한 후 300s 초과)
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (38회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] strategy_runner – [Runner] [S3] 전략 실행 타임아웃 (300s) - 강제 취소 elapsed=300.0s (13:08:17 - 19회 연속)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 074600/1 페이지 상한(50) 도달 (13:08:14)
+```
+---
+
+---
+### [2026-04-24 13:13 KST] 점검 회차 39
+**컨테이너 상태**: 정상 (6/6 Running)
+
+**Redis 큐**: telegram_queue=0 / ai_scored_queue=0 / vi_watch_queue=20
+
+**DB**: 최근10분 신호=0건 / open_positions=20건 / ai_cancel=0건
+
+**감지된 이슈**:
+- [ERROR] S3 타임아웃 20회 연속 진행 중 — 재시작 후 005440→008770→034020→014620→027360 순회 중 (13:13:20 현재)
+- [ERROR] http_utils ka10032 서버 연결 끊김 — 13:11:07 "Server disconnected without sending a response." (Kiwoom API 일시 불안정)
+- [WARNING] S5 느린 실행 — 97.2s (13:10:54)
+- [경보] vi_watch_queue 13→20 증가 — 새 VI 이벤트 다수 유입
+- [신호 없음 경보] 최근 10분 trading_signals 0건 (39회 연속)
+
+**관련 로그 발췌**:
+```
+ai-engine | [ERROR] http_utils – [http_utils] ka10032 요청 오류: Server disconnected without sending a response. (13:11:07)
+ai-engine | [WARNING] strategy_runner – [Runner] [S5] 느린 실행 감지 (97.2s, timeout=300s) (13:10:54)
+ai-engine | [WARNING] strategy_3_inst_foreign – [S3] ka10055 027360/1 페이지 상한(50) 도달 (13:13:20)
+```
+---
+
+---
+## 모니터링 세션 종료: [2026-04-24 13:18 KST] (사용자 요청)
+총 39회차 점검 완료 (10:18 ~ 13:18 KST, 약 3시간).
+
+### 주요 이슈 요약:
+
+**[CRITICAL] S3 전략 타임아웃 연속 발생 — 전 세션 미해결**
+- 회차 15 (약 10:50)부터 회차 39 (13:18)까지 **매 사이클 300s 타임아웃** 반복
+- 원인: `strategy_3_inst_foreign.py` ka10055 API 페이지 상한(50) 반복 도달 → 종목당 ~17s × 최대 8종목 × 2페이지 = 300s 초과
+- 영향: S5(프로그램 매수) 80~106s 지연, S14(과매도 반등) 50s 지연, S15(모멘텀 정렬) 30~35s 지연 유발
+
+**[CRITICAL] db_writer INSERT 컬럼 불일치 — 전 세션 미해결**
+- 모든 전략 신호의 DB 저장 실패: "INSERT has more target columns than expressions"
+- 확인 전략: S2_VI_PULLBACK, S3_INST_FRGN, S8_GOLDEN_CROSS, S15_MOMENTUM_ALIGN
+- 결과: trading_signals 0건 **39회 연속** (10:18~13:18 전 기간)
+
+**[HIGH] S8/S9 후보 풀 공백 — 전 세션 미해결**
+- `candidates:s8:001`, `candidates:s8:101` 키 지속 미적재
+- S8(골든크로스), S9(눌림목) 전략 스킵 반복
+
+**[MEDIUM] vi_watch_queue 진동 — 10~44건 반복 증감**
+- websocket-listener 신규 VI 이벤트 지속 유입
+- TradingScheduler 15분 preload 시 부분 드레인 반복
+
+**[MEDIUM] Kiwoom API 서버 연결 끊김 1회**
+- 13:11:07 ka10032 "Server disconnected without sending a response" (1회, 자동 복구)
+---
+
+---
+### [2026-04-25 00:02 KST] 점검 회차 40
+**컨테이너 상태**: 이상 — 전체 6개 컨테이너 Exited
+- stockmate-ai-api-orchestrator-1: Exited (143)
+- stockmate-ai-ai-engine-1: Exited (0)
+- stockmate-ai-websocket-listener-1: Exited (0)
+- stockmate-ai-postgres-1: Exited (0)
+- stockmate-ai-telegram-bot-1: Exited (1)
+- stockmate-ai-redis-1: Exited (0)
+**Redis 큐**: 측정 불가 (컨테이너 중지)
+**DB**: 측정 불가 (컨테이너 중지)
+**감지된 이슈**:
+- 전체 스택 다운 — 코드 수정 후 재기동 대기 상태
+- 마지막 정상 운영: 2026-04-24 23:45 KST (api-orchestrator 종료 시각 기준)
+- 장 외 시간대 (00:02 KST) — 오전 장 전 재기동 필요
+---

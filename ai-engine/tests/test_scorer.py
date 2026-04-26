@@ -640,18 +640,21 @@ class TestS7IchimokuBreakout:
 
 class TestThresholdAndSkipAi:
     def test_known_strategy_thresholds(self):
-        assert get_claude_threshold("S1_GAP_OPEN") == 70
+        assert get_claude_threshold("S1_GAP_OPEN") == 55
         assert get_claude_threshold("S2_VI_PULLBACK") == 65
         assert get_claude_threshold("S3_INST_FRGN") == 60
-        assert get_claude_threshold("S4_BIG_CANDLE") == 75
+        assert get_claude_threshold("S4_BIG_CANDLE") == 65
         assert get_claude_threshold("S5_PROG_FRGN") == 65
         assert get_claude_threshold("S6_THEME_LAGGARD") == 60
         assert get_claude_threshold("S7_ICHIMOKU_BREAKOUT") == 62
         assert get_claude_threshold("S8_GOLDEN_CROSS") == 50
         assert get_claude_threshold("S9_PULLBACK_SWING") == 45
         assert get_claude_threshold("S10_NEW_HIGH") == 48
+        assert get_claude_threshold("S11_FRGN_CONT") == 58
+        assert get_claude_threshold("S12_CLOSING") == 60
         assert get_claude_threshold("S13_BOX_BREAKOUT") == 55
         assert get_claude_threshold("S14_OVERSOLD_BOUNCE") == 50
+        assert get_claude_threshold("S15_MOMENTUM_ALIGN") == 65
 
     def test_unknown_strategy_default_threshold(self):
         threshold = get_claude_threshold("UNKNOWN")

@@ -337,6 +337,7 @@ public class KiwoomApiResponses {
         @JsonProperty("cur_prc")  private String curPrc;
         @JsonProperty("flu_rt")   private String fluRt;
         @JsonProperty("trde_qty") private String trdeQty;
+        @JsonProperty("mac")      private String mac;         // 시가총액 (억 원)
     }
 
     /* ───────────── 전일대비등락률상위 (ka10027) ───────────── */

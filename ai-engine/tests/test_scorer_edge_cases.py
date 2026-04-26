@@ -494,12 +494,12 @@ class TestScoreClipping:
 class TestShouldSkipAi:
     def test_skip_when_score_below_strategy_threshold(self):
         """점수가 전략별 임계값 미달 시 True"""
-        # S1 임계값 = 70
-        assert should_skip_ai(69.9, "S1_GAP_OPEN") is True
+        # S1 임계값 = 55
+        assert should_skip_ai(54.9, "S1_GAP_OPEN") is True
 
     def test_no_skip_when_score_at_threshold(self):
         """점수가 임계값 이상 → False (건너뛰지 않음)"""
-        assert should_skip_ai(70.0, "S1_GAP_OPEN") is False
+        assert should_skip_ai(55.0, "S1_GAP_OPEN") is False
 
     def test_no_skip_when_above_threshold(self):
         """점수가 임계값 초과 → False"""
@@ -515,10 +515,10 @@ class TestShouldSkipAi:
         assert should_skip_ai(59.9, "S3_INST_FRGN") is True
         assert should_skip_ai(60.0, "S3_INST_FRGN") is False
 
-    def test_s4_threshold_75(self):
-        """S4 임계값 = 75 (가장 높음)"""
-        assert should_skip_ai(74.9, "S4_BIG_CANDLE") is True
-        assert should_skip_ai(75.0, "S4_BIG_CANDLE") is False
+    def test_s4_threshold_65(self):
+        """S4 임계값 = 65"""
+        assert should_skip_ai(64.9, "S4_BIG_CANDLE") is True
+        assert should_skip_ai(65.0, "S4_BIG_CANDLE") is False
 
     def test_unknown_strategy_uses_default(self):
         """알 수 없는 전략 → 기본 임계값 65 사용"""

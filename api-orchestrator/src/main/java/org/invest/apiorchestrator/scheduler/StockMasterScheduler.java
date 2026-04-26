@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -87,6 +88,16 @@ public class StockMasterScheduler {
         return codes;
     }
 
+    /** ka10001 mac 필드(시가총액, 억 단위 문자열)를 Long 으로 파싱. */
+    private Long parseMac(String mac) {
+        if (mac == null || mac.isBlank()) return null;
+        try {
+            return Long.parseLong(mac.replace(",", "").replace("+", "").trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     /** 종목코드 배치에 대해 ka10001 호출 후 UPSERT */
     private int upsertBatch(Set<String> codes, String market) {
         int count = 0;
@@ -95,7 +106,8 @@ public class StockMasterScheduler {
                 KiwoomApiResponses.StkBasicInfoResponse info = kiwoomApiService.fetchKa10001(stkCd);
                 if (info == null || !info.isSuccess()) continue;
 
-                String stkNm    = info.getStkNm() != null ? info.getStkNm() : stkCd;
+                String rawNm    = info.getStkNm();
+                String stkNm    = (rawNm != null && !rawNm.isBlank()) ? rawNm.trim() : stkCd;
                 BigDecimal price = null;
                 if (info.getCurPrc() != null) {
                     try {
@@ -105,17 +117,20 @@ public class StockMasterScheduler {
                 }
 
                 StockMaster existing = stockMasterRepository.findByStkCd(stkCd).orElse(null);
+                Long marketCap = parseMac(info.getMac());
+
                 if (existing == null) {
                     stockMasterRepository.save(StockMaster.builder()
                             .stkCd(stkCd)
                             .stkNm(stkNm)
                             .market(market)
                             .isActive(true)
+                            .marketCap(marketCap)
                             .lastPrice(price)
                             .lastPriceDate(price != null ? LocalDate.now() : null)
                             .build());
                 } else {
-                    // 이름·가격만 업데이트 (sector/industry 는 수동 관리)
+                    // 이름·가격·시총 업데이트 (sector/industry 는 수동 관리)
                     stockMasterRepository.save(StockMaster.builder()
                             .stkCd(stkCd)
                             .stkNm(stkNm)
@@ -126,9 +141,13 @@ public class StockMasterScheduler {
                             .parValue(existing.getParValue())
                             .listedShares(existing.getListedShares())
                             .isActive(true)
+                            .marketCap(marketCap)
                             .lastPrice(price)
                             .lastPriceDate(price != null ? LocalDate.now() : null)
                             .build());
+                }
+                if (marketCap != null) {
+                    redis.opsForValue().set("stock:mktcap:" + stkCd, String.valueOf(marketCap), Duration.ofDays(1));
                 }
                 count++;
             } catch (Exception e) {

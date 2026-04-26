@@ -26,6 +26,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from indicator_rsi import calc_rsi as _calc_rsi_list
+from ma_utils import _safe_price
 from utils import safe_float as _sf
 
 logger = logging.getLogger(__name__)
@@ -60,19 +62,10 @@ def _get_cached_candles(stk_cd: str) -> list[dict] | None:
 
 def _calc_rsi_from_candles(candles: list[dict], period: int = 14) -> Optional[float]:
     try:
-        from ma_utils import _safe_price
         closes = [_safe_price(c.get("cur_prc")) for c in candles if _safe_price(c.get("cur_prc")) > 0]
-        if len(closes) < period + 1:
-            return None
-        gains, losses = [], []
-        for i in range(period):
-            d = closes[i] - closes[i + 1]
-            (gains if d > 0 else losses).append(abs(d))
-        avg_gain = sum(gains) / period if gains else 0.0
-        avg_loss = sum(losses) / period if losses else 0.0
-        if avg_loss == 0:
-            return 100.0
-        return round(100 - 100 / (1 + avg_gain / avg_loss), 1)
+        vals = _calc_rsi_list(closes, period)
+        v = vals[0] if vals else 0.0
+        return round(v, 1) if v != 0.0 else None
     except Exception:
         return None
 

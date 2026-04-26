@@ -82,7 +82,7 @@ public class StrategyParamSnapshotService {
         scheduleWindows.put("S9_PULLBACK_SWING", "09:30-13:00");
         scheduleWindows.put("S10_NEW_HIGH", "09:30-14:30");
         scheduleWindows.put("S11_FRGN_CONT", "09:30-14:30");
-        scheduleWindows.put("S12_CLOSING", "14:30-14:50");
+        scheduleWindows.put("S12_CLOSING", "14:30-15:10");
         scheduleWindows.put("S13_BOX_BREAKOUT", "09:30-14:00");
         scheduleWindows.put("S14_OVERSOLD_BOUNCE", "09:30-14:00");
         scheduleWindows.put("S15_MOMENTUM_ALIGN", "10:00-14:30");
@@ -99,7 +99,7 @@ public class StrategyParamSnapshotService {
         candidateTtlMinutes.put("S9_PULLBACK_SWING", 20);
         candidateTtlMinutes.put("S10_NEW_HIGH", 20);
         candidateTtlMinutes.put("S11_FRGN_CONT", 30);
-        candidateTtlMinutes.put("S12_CLOSING", 10);
+        candidateTtlMinutes.put("S12_CLOSING", 15);
         candidateTtlMinutes.put("S13_BOX_BREAKOUT", 10);
         candidateTtlMinutes.put("S14_OVERSOLD_BOUNCE", 20);
         candidateTtlMinutes.put("S15_MOMENTUM_ALIGN", 15);

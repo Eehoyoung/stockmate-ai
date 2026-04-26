@@ -2,6 +2,7 @@ package org.invest.apiorchestrator.repository;
 
 import org.invest.apiorchestrator.domain.OvernightEvaluation;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -16,4 +17,8 @@ public interface OvernightEvaluationRepository extends JpaRepository<OvernightEv
     /** 익일 검증이 아직 안 된 HOLD 결정 목록 (next_day_open IS NULL) */
     @Query("SELECT e FROM OvernightEvaluation e WHERE e.nextDayOpen IS NULL AND e.evaluatedAt < :cutoff")
     List<OvernightEvaluation> findPendingVerification(@Param("cutoff") OffsetDateTime cutoff);
+
+    @Modifying
+    @Query("DELETE FROM OvernightEvaluation o WHERE o.evaluatedAt < :before")
+    int deleteOldEvaluations(@Param("before") OffsetDateTime before);
 }

@@ -10,7 +10,7 @@ from __future__ import annotations
   ka10063: 당일 기관 순매수 확인 (수급 뒷받침)
   당일 등락률 ≤ 15% (과도한 급등 제외)
 
-타이밍: 14:30~14:50 체크 → 14:50~15:00 동시호가 시장가 진입
+타이밍: 14:30~15:10 체크 → 15:10 이후 동시호가 전 진입 검토
 
 API 실제 스펙 (docs/api_new/ka10027.md 기준):
   - 파라미터: mrkt_tp, sort_tp, trde_qty_cnd, stk_cnd, crd_cnd, updown_incls, pric_cnd, trde_prica_cnd, stex_tp

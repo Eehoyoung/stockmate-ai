@@ -21,10 +21,7 @@ KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 logger = logging.getLogger(__name__)
 
 
-def clean_num(val) -> float:
-    if not val:
-        return 0.0
-    return float(str(val).replace("+", "").replace(",", ""))
+from utils import safe_float as clean_num
 
 
 async def get_expected_execution(rdb, stk_cd: str) -> dict:
@@ -387,11 +384,3 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
     return final_results
 
 
-async def scan_auction_signal(token: str, market: str = "000", rdb=None) -> list[dict]:
-    """Deprecated S7 auction helper.
-
-    S7 is now handled exclusively by `strategy_7_ichimoku_breakout.py`.
-    This stub remains only to avoid legacy import/call-site breakage.
-    """
-    logger.warning("[S7] legacy auction helper called for market=%s; returning no signals", market)
-    return []

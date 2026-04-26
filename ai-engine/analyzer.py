@@ -86,11 +86,12 @@ def _fmt_tpsl(signal: dict) -> str:
         slip = _get_slip_fee(signal.get("stk_cd", ""))
         raw_target = (tp1 - entry) / entry
         raw_risk   = (entry - sl)  / entry
-        eff_target = raw_target - slip
-        eff_risk   = raw_risk   + slip
+        round_trip_cost = 2 * slip
+        eff_target = raw_target - round_trip_cost
+        eff_risk   = raw_risk   + round_trip_cost
         if eff_risk > 0:
             eff_rr = eff_target / eff_risk
-            parts.append(f"실질R:R={eff_rr:.2f}({'⚠️' if eff_rr < 1.0 else 'OK'})")
+            parts.append(f"실질R:R={eff_rr:.2f}({'주의' if eff_rr < 1.0 else 'OK'})")
 
     return " | ".join(parts) + "\n" if parts else ""
 
@@ -119,10 +120,13 @@ def _s2_body(sig, c) -> str:
 def _s3_body(sig, c) -> str:
     amt = sig.get("net_buy_amt", 0)
     amt_str = f"{int(amt) // 100_000_000}억" if amt else "N/A"
+    conc = sig.get("buy_concentration_pct", 0)
+    smtm = "✓" if sig.get("inst_frgn_smtm") else ""
     return (
         f"외인+기관 순매수 신호 평가:\n"
         f"종목: {c['stk_nm']}({c['stk_cd']}), 순매수: {amt_str}, "
         f"연속일: {sig.get('continuous_days', 'N/A')}일, "
+        f"외인+기관동시{smtm} 집중도: {conc}%, "
         f"거래량비율: {sig.get('vol_ratio', 'N/A')}x, 규칙점수: {c['rule_score']}/100\n"
     )
 
@@ -257,12 +261,21 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
         strength = market_ctx.get("strength", 0)
 
     bid  = hoga.get("total_buy_bid_req", "0")
-    ask  = hoga.get("total_sel_bid_req", "1")
+    ask  = hoga.get("total_sel_bid_req", "0")
     try:
-        bid_ratio = round(float(str(bid).replace(",", "")) /
-                          max(float(str(ask).replace(",", "")), 1), 2)
+        bid_val = float(str(bid).replace(",", "") or 0)
+        ask_val = float(str(ask).replace(",", "") or 0)
+        if bid_val > 0 and ask_val > 0:
+            bid_ratio = round(bid_val / ask_val, 2)
+        elif signal.get("bid_ratio") is not None:
+            bid_ratio = round(float(str(signal.get("bid_ratio")).replace(",", "")), 2)
+        else:
+            bid_ratio = 0
     except Exception:
-        bid_ratio = 0
+        try:
+            bid_ratio = round(float(str(signal.get("bid_ratio")).replace(",", "")), 2)
+        except Exception:
+            bid_ratio = 0
 
     # 공통 컨텍스트 – 각 body 함수에 전달
     ctx = {
@@ -274,17 +287,50 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
         "rule_score": rule_score,
     }
     tpsl_ctx = _fmt_tpsl(signal)
+    quality_ctx = (
+        f"신호품질: {signal.get('signal_quality_score', 'N/A')}/100"
+        f"({signal.get('signal_quality_bucket', 'N/A')}), "
+        f"RR품질: {signal.get('rr_quality_bucket', 'N/A')}, "
+        f"성과EV: {signal.get('strategy_ev_pct', signal.get('expected_value', 'N/A'))}, "
+        f"표본수: {signal.get('strategy_sample_count', signal.get('sample_n', 'N/A'))}\n"
+    )
+
+    # 시장 컨텍스트: 지수 등락률, 거래대금, 시가총액
+    _kospi = market_ctx.get("kospi_flu_rt")
+    _kosdaq = market_ctx.get("kosdaq_flu_rt")
+    _mktcap = market_ctx.get("market_cap_eok")
+    _acc_prica_raw = tick.get("acc_trde_prica", "")
+    try:
+        _acc_eok = int(float(str(_acc_prica_raw).replace(",", "").replace("+", "") or "0")) // 100_000_000
+    except (TypeError, ValueError):
+        _acc_eok = 0
+    _idx_str = ""
+    if _kospi is not None or _kosdaq is not None:
+        _idx_str += "지수: "
+        if _kospi is not None:
+            _idx_str += f"KOSPI{_kospi:+.2f}% "
+        if _kosdaq is not None:
+            _idx_str += f"KOSDAQ{_kosdaq:+.2f}%"
+        _idx_str = _idx_str.strip() + ", "
+    _market_ctx_line = (
+        f"{_idx_str}"
+        f"당일거래대금: {_acc_eok}억원"
+        + (f", 시총: {_mktcap}억" if _mktcap else "")
+        + "\n"
+    ) if (_idx_str or _acc_eok or _mktcap) else ""
 
     tpl = _STRATEGY_TEMPLATES.get(strategy)
     if tpl:
         body_fn, question = tpl
-        return body_fn(signal, ctx) + tpsl_ctx + question
+        return body_fn(signal, ctx) + _market_ctx_line + quality_ctx + tpsl_ctx + question
 
     # 미등록 전략 – 범용 폴백
     return (
         f"매매 신호 평가:\n"
         f"종목: {ctx['stk_nm']}({ctx['stk_cd']}), 전략: {strategy}, "
         f"등락: {ctx['flu_rt']}%, 체결강도: {ctx['strength']}, 규칙점수: {rule_score}/100\n"
+        f"{_market_ctx_line}"
+        f"{quality_ctx}"
         f"{tpsl_ctx}"
         f"진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
     )
@@ -368,35 +414,38 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
         return result
 
     except asyncio.TimeoutError:
-        logger.warning("[AI] Claude 타임아웃 (%ds) [%s %s] – 규칙 폴백",
+        logger.warning("[AI] Claude 타임아웃 (%ds) [%s %s] – CANCEL",
                        CLAUDE_TIMEOUT, signal.get("stk_cd"), signal.get("strategy"))
-        return _fallback(rule_score)
+        return _ai_failure_cancel(rule_score, "AI analysis timeout")
     except json.JSONDecodeError as e:
         logger.error("[AI] JSON 파싱 실패: %s / raw=%.200s", e, raw_text)
-        return _fallback(rule_score)
+        return _ai_failure_cancel(rule_score, "AI response JSON parse failed")
     except anthropic.APIError as e:
-        logger.warning("[AI] Claude API 오류: %s – 규칙 폴백", e)
-        return _fallback(rule_score)
+        logger.warning("[AI] Claude API 오류: %s – CANCEL", e)
+        return _ai_failure_cancel(rule_score, "AI API error")
     except Exception as e:
-        logger.warning("[AI] 예기치 않은 오류: %s – 규칙 폴백", e)
-        return _fallback(rule_score)
+        logger.warning("[AI] 예기치 않은 오류: %s – CANCEL", e)
+        return _ai_failure_cancel(rule_score, "AI analysis unavailable")
 
-
-def _fallback(rule_score: float) -> dict:
-    """Claude API 실패 시 규칙 스코어 기반 폴백"""
-    action = "ENTER" if rule_score >= 70 else ("HOLD" if rule_score >= 50 else "CANCEL")
+def _ai_failure_cancel(rule_score: float, cancel_reason: str) -> dict:
     return {
-        "action":              action,
+        "action":              "CANCEL",
         "ai_score":            rule_score,
         "confidence":          "LOW",
-        "reason":              "AI 분석 실패 – 규칙 스코어 기반 폴백 적용",
-        "cancel_reason":       "AI 분석 실패" if action == "CANCEL" else None,
+        "reason":              cancel_reason,
+        "cancel_reason":       cancel_reason,
+        "cancel_type":         "AI_UNAVAILABLE",
         "adjusted_target_pct": None,
         "adjusted_stop_pct":   None,
         "claude_tp1":          None,
         "claude_tp2":          None,
         "claude_sl":           None,
     }
+
+
+def _fallback(rule_score: float) -> dict:
+    """Claude API 실패 시 보수적으로 CANCEL한다."""
+    return _ai_failure_cancel(rule_score, "AI analysis unavailable")
 
 
 def _normalize_signal_result(result: dict) -> dict:

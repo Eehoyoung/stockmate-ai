@@ -39,6 +39,10 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
 PG_WRITER_ENABLED = os.getenv("PG_WRITER_ENABLED", "true").lower() in ("1", "true", "yes")
 
 
+async def _init_pg_conn(conn: asyncpg.Connection):
+    await conn.execute("SET TIME ZONE 'Asia/Seoul'")
+
+
 async def _create_pg_pool():
     if not PG_WRITER_ENABLED:
         logger.info("[Postgres] direct event writer disabled")
@@ -53,6 +57,7 @@ async def _create_pg_pool():
             min_size=1,
             max_size=4,
             command_timeout=5,
+            init=_init_pg_conn,
         )
         async with pool.acquire() as conn:
             await conn.execute("SELECT 1")

@@ -52,6 +52,9 @@ public class StockMaster {
     @Builder.Default
     private Boolean isActive = true;
 
+    @Column(name = "market_cap")
+    private Long marketCap;
+
     @Column(name = "last_price", precision = 10, scale = 0)
     private BigDecimal lastPrice;
 

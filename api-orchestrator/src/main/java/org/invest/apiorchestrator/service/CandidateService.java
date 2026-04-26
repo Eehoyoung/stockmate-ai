@@ -151,7 +151,7 @@ public class CandidateService {
 
     /** S12 종가 강도 확인 (ka10032 거래대금상위, flu_rt>0, TTL 10분) */
     public List<String> getS12Candidates(String market) {
-        return loadCandidates("s12", market, Duration.ofMinutes(10), 10,
+        return loadCandidates("s12", market, Duration.ofMinutes(15), 15,
                 () -> fetchKa10032Codes(market, 0.0001, Double.MAX_VALUE, 50));
     }
 

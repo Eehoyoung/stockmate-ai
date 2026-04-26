@@ -29,7 +29,7 @@ _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
-_KA10055_MAX_PAGES = int(os.getenv("S3_KA10055_MAX_PAGES", "50"))
+_KA10055_MAX_PAGES = int(os.getenv("S3_KA10055_MAX_PAGES", "3"))
 
 
 async def fetch_intraday_investor(token: str, market_type: str = "000") -> list:
@@ -293,7 +293,7 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
     cont_map = await fetch_continuous_netbuy(token, market)
 
     results = []
-    for item in smtm_list[:10]:  # 429 방지: ka10055×2 호출 상한 10종목
+    for item in smtm_list[:5]:  # 429 방지: ka10055×2 호출 상한 5종목
         stk_cd = normalize_stock_code(item.get("stk_cd"))
         if not stk_cd:
             continue
@@ -312,6 +312,15 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             net_buy_amt = int(raw_amt) if raw_amt.lstrip("-").isdigit() else 0
         except (TypeError, ValueError):
             net_buy_amt = 0
+
+        # 순매수 집중도: |netprps_qty| / acc_trde_qty * 100 (%)
+        # smtm_netprps_tp="1" 필터 자체가 외인+기관 동시 순매수를 보장함
+        try:
+            net_qty = abs(int(str(item.get("netprps_qty", "0")).replace("+", "").replace(",", "").replace("-", "") or "0"))
+            acc_qty = int(str(item.get("acc_trde_qty", "0")).replace("+", "").replace(",", "") or "0")
+            buy_concentration_pct = round(net_qty / acc_qty * 100, 1) if acc_qty > 0 else 0.0
+        except (TypeError, ValueError, ZeroDivisionError):
+            buy_concentration_pct = 0.0
 
         # cur_prc, flu_rt: ka10063 응답에 포함 (부호 처리)
         try:
@@ -354,6 +363,8 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             "flu_rt": round(flu_rt, 2),
             "vol_ratio": round(vol_ratio, 2),
             "continuous_days": continuous_days,
+            "inst_frgn_smtm": True,        # smtm_netprps_tp="1" → 외인+기관 동시 순매수 확인
+            "buy_concentration_pct": buy_concentration_pct,
             "entry_type": "지정가_1호가",
             **tp_sl.to_signal_fields(),
         })

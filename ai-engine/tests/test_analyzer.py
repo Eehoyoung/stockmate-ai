@@ -100,6 +100,34 @@ class TestFallback:
 # ──────────────────────────────────────────────────────────────────
 
 class TestBuildUserMessage:
+    def test_uses_signal_bid_ratio_when_hoga_missing(self):
+        from analyzer import _build_user_message
+        signal = _signal(
+            "S1_GAP_OPEN",
+            bid_ratio=7.17,
+            cntr_strength=500,
+            cur_prc=21450,
+            tp1_price=22000,
+            sl_price=20200,
+        )
+        msg = _build_user_message(signal, {"tick": {"flu_rt": "5.46"}, "hoga": {}, "strength": 0, "vi": {}}, 100.0)
+        assert "7.17" in msg
+
+    def test_message_contains_signal_quality_context(self):
+        from analyzer import _build_user_message
+        signal = _signal(
+            "S1_GAP_OPEN",
+            signal_quality_score=72.5,
+            signal_quality_bucket="strong",
+            rr_quality_bucket="caution",
+            strategy_ev_pct="N/A",
+            strategy_sample_count=0,
+        )
+        msg = _build_user_message(signal, _ctx(), 75.0)
+        assert "신호품질" in msg
+        assert "72.5" in msg
+        assert "RR품질" in msg
+
     def test_s1_message_contains_gap(self):
         from analyzer import _build_user_message
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0)

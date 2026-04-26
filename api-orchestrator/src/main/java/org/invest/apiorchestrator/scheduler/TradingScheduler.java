@@ -145,32 +145,61 @@ public class TradingScheduler {
         log.info("=== market open (09:00) / python websocket-listener owned ===");
     }
 
-    @Scheduled(cron = "0 5/15 9-14 * * MON-FRI", zone = "Asia/Seoul")
+    @Scheduled(cron = "0 5/15 9-15 * * MON-FRI", zone = "Asia/Seoul")
     public void preloadCandidatePools() {
         LocalTime now = KstClock.nowTime();
-        if (now.isAfter(LocalTime.of(14, 30))) {
+        if (now.isAfter(LocalTime.of(15, 10))) {
             return;
         }
 
         log.debug("[Pool] intraday preload start");
         try {
             PRELOAD_POOL.submit(() -> {
+                boolean intradayWindow = !now.isAfter(LocalTime.of(14, 30));
                 for (String market : new String[]{"001", "101"}) {
-                    try { candidateService.getS4Candidates(market); }  catch (Exception e) { log.warn("[Pool] S4 {} error: {}", market, e.getMessage()); }
-                    try { candidateService.getS8Candidates(market); }  catch (Exception e) { log.warn("[Pool] S8 {} error: {}", market, e.getMessage()); }
-                    try { candidateService.getS9Candidates(market); }  catch (Exception e) { log.warn("[Pool] S9 {} error: {}", market, e.getMessage()); }
-                    try { candidateService.getS10Candidates(market); } catch (Exception e) { log.warn("[Pool] S10 {} error: {}", market, e.getMessage()); }
-                    try { candidateService.getS11Candidates(market); } catch (Exception e) { log.warn("[Pool] S11 {} error: {}", market, e.getMessage()); }
+                    if (intradayWindow) {
+                        try { candidateService.getS4Candidates(market); }  catch (Exception e) { log.warn("[Pool] S4 {} error: {}", market, e.getMessage()); }
+                        try { candidateService.getS8Candidates(market); }  catch (Exception e) { log.warn("[Pool] S8 {} error: {}", market, e.getMessage()); }
+                        try { candidateService.getS9Candidates(market); }  catch (Exception e) { log.warn("[Pool] S9 {} error: {}", market, e.getMessage()); }
+                        try { candidateService.getS10Candidates(market); } catch (Exception e) { log.warn("[Pool] S10 {} error: {}", market, e.getMessage()); }
+                        try { candidateService.getS11Candidates(market); } catch (Exception e) { log.warn("[Pool] S11 {} error: {}", market, e.getMessage()); }
+                    }
                     try { candidateService.getS12Candidates(market); } catch (Exception e) { log.warn("[Pool] S12 {} error: {}", market, e.getMessage()); }
-                    try { candidateService.getS13Candidates(market); } catch (Exception e) { log.warn("[Pool] S13 {} error: {}", market, e.getMessage()); }
-                    try { candidateService.getS14Candidates(market); } catch (Exception e) { log.warn("[Pool] S14 {} error: {}", market, e.getMessage()); }
-                    try { candidateService.getS15Candidates(market); } catch (Exception e) { log.warn("[Pool] S15 {} error: {}", market, e.getMessage()); }
+                    if (intradayWindow) {
+                        try { candidateService.getS13Candidates(market); } catch (Exception e) { log.warn("[Pool] S13 {} error: {}", market, e.getMessage()); }
+                        try { candidateService.getS14Candidates(market); } catch (Exception e) { log.warn("[Pool] S14 {} error: {}", market, e.getMessage()); }
+                        try { candidateService.getS15Candidates(market); } catch (Exception e) { log.warn("[Pool] S15 {} error: {}", market, e.getMessage()); }
+                    }
                 }
                 log.info("[Pool] intraday preload complete");
             });
         } catch (Exception e) {
             log.error("[Pool] intraday preload failed: {}", e.getMessage());
         }
+    }
+
+    @Scheduled(cron = "0 */10 9-15 * * MON-FRI", zone = "Asia/Seoul")
+    public void pollMarketIndexFluRt() {
+        if (KstClock.nowTime().isAfter(LocalTime.of(15, 10))) {
+            return;
+        }
+        for (String[] pair : new String[][]{
+                {KOSPI_PROXY_CODE, "market:kospi_flu_rt"},
+                {KOSDAQ_PROXY_CODE, "market:kosdaq_flu_rt"}
+        }) {
+            try {
+                KiwoomApiResponses.StkBasicInfoResponse res = kiwoomApiService.fetchKa10001(pair[0]);
+                if (res != null && res.isSuccess()) {
+                    Double val = dbl(res.getFluRt());
+                    if (val != null) {
+                        redis.opsForValue().set(pair[1], String.valueOf(val), Duration.ofMinutes(12));
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("[MarketIdx] poll failed [{}]: {}", pair[0], e.getMessage());
+            }
+        }
+        log.debug("[MarketIdx] index flu_rt refreshed");
     }
 
     @Scheduled(cron = "0 0 * * * MON-FRI", zone = "Asia/Seoul")

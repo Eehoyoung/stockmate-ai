@@ -8,7 +8,7 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "kiwoom_tokens")
+@Table(name = "kiwoom_tokens")   // V33: kiwoom_token → kiwoom_tokens 로 RENAME 확정
 @EntityListeners(AuditingEntityListener.class)
 @Getter
 @NoArgsConstructor
@@ -20,7 +20,7 @@ public class KiwoomToken {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "access_token", nullable = false, length = 2000)
+    @Column(name = "access_token", nullable = false, columnDefinition = "TEXT")
     private String accessToken;
 
     @Column(name = "token_type", length = 20)

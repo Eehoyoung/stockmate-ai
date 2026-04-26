@@ -43,6 +43,7 @@ async def write_tick(rdb, values: dict, stk_cd: str, pg_pool=None):
         return
     key = f"ws:tick:{stk_cd}"
     try:
+        now_ms = str(int(time.time() * 1000))
         mapping = {
             "cur_prc": values.get("10", ""),
             "pred_pre": values.get("11", ""),
@@ -51,6 +52,7 @@ async def write_tick(rdb, values: dict, stk_cd: str, pg_pool=None):
             "acc_trde_prica": values.get("14", ""),
             "cntr_tm": values.get("20", ""),
             "cntr_str": values.get("228", ""),
+            "updated_at_ms": now_ms,
         }
         await rdb.hmset(key, mapping)
         await rdb.expire(key, 600)
@@ -61,6 +63,22 @@ async def write_tick(rdb, values: dict, stk_cd: str, pg_pool=None):
             await rdb.lpush(sk, cntr_str)
             await rdb.ltrim(sk, 0, 9)
             await rdb.expire(sk, 900)
+            recent = await rdb.lrange(sk, 0, 4)
+            nums = []
+            for value in recent:
+                try:
+                    nums.append(float(str(value).replace(",", "").replace("+", "")))
+                except (TypeError, ValueError):
+                    pass
+            meta = {
+                "updated_at_ms": now_ms,
+                "latest": cntr_str,
+                "sample_n": str(len(nums)),
+            }
+            if nums:
+                meta["avg_5"] = str(round(sum(nums) / len(nums), 2))
+            await rdb.hmset(f"ws:strength_meta:{stk_cd}", meta)
+            await rdb.expire(f"ws:strength_meta:{stk_cd}", 900)
 
         if pg_pool:
             await insert_tick_event(pg_pool, "0B", stk_cd, values)
@@ -75,6 +93,7 @@ async def write_expected(rdb, values: dict, stk_cd: str, pg_pool=None):
         return
     key = f"ws:expected:{stk_cd}"
     try:
+        now_ms = str(int(time.time() * 1000))
         exp_cntr_pric = values.get("10", "")
         exp_pred_pre = values.get("11", "")
         exp_flu_rt = values.get("12", "")
@@ -87,6 +106,7 @@ async def write_expected(rdb, values: dict, stk_cd: str, pg_pool=None):
             "exp_flu_rt": exp_flu_rt,
             "exp_cntr_qty": exp_cntr_qty,
             "exp_cntr_tm": exp_cntr_tm,
+            "updated_at_ms": now_ms,
         }
 
         if exp_cntr_pric and exp_flu_rt:
@@ -113,6 +133,7 @@ async def write_hoga(rdb, values: dict, stk_cd: str, pg_pool=None):
         return
     key = f"ws:hoga:{stk_cd}"
     try:
+        now_ms = str(int(time.time() * 1000))
         mapping = {
             "total_buy_bid_req": values.get("125", ""),
             "total_sel_bid_req": values.get("121", ""),
@@ -121,6 +142,7 @@ async def write_hoga(rdb, values: dict, stk_cd: str, pg_pool=None):
             "buy_bid_req_1": values.get("71", ""),
             "sel_bid_req_1": values.get("61", ""),
             "bid_req_base_tm": values.get("21", ""),
+            "updated_at_ms": now_ms,
         }
         await rdb.hmset(key, mapping)
         await rdb.expire(key, 120)
@@ -142,6 +164,7 @@ async def write_vi(rdb, values: dict, stk_cd: str, pg_pool=None):
 
     key = f"vi:{real_stk_cd}"
     try:
+        now_ms = str(int(time.time() * 1000))
         mapping = {
             "vi_price": vi_price,
             "vi_type": vi_type,
@@ -151,7 +174,10 @@ async def write_vi(rdb, values: dict, stk_cd: str, pg_pool=None):
             "ref_price": values.get("11", ""),
             "upper_limit": values.get("305", ""),
             "lower_limit": values.get("306", ""),
+            "updated_at_ms": now_ms,
         }
+        if vi_stat == "2":
+            mapping["released_at_ms"] = now_ms
         await rdb.hmset(key, mapping)
         await rdb.expire(key, 3600)
 

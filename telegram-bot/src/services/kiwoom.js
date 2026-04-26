@@ -7,7 +7,7 @@
 
 const axios = require('axios');
 
-const BASE_URL = process.env.API_ORCHESTRATOR_BASE_URL;
+const BASE_URL = 'http://host.docker.internal:8080';
 
 if (!BASE_URL) {
     throw new Error('API_ORCHESTRATOR_BASE_URL is required');

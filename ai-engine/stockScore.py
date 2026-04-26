@@ -8,7 +8,7 @@ stockScore.py
      - 조건 미충족 또는 데이터 부족 → 탈락
      - S2: VI 미발동 → 자동 탈락
      - S7: 09:00~09:30 외 시간대 → 자동 탈락
-     - S12: 14:30~15:30 외 시간대 → 자동 탈락
+     - S12: 14:30~15:10 외 시간대 → 자동 탈락
   3. 매칭 전략별 규칙 점수 (scorer.rule_score) + Claude AI 분석 (analyzer.analyze_signal)
   4. CLAUDE_THRESHOLDS 임계점수 이상인 전략 결과 반환
 
@@ -37,8 +37,9 @@ from ma_utils import (
     fetch_daily_candles, _safe_price, _safe_vol,
     detect_golden_cross, _calc_ma,
 )
+from indicator_rsi import calc_rsi as _calc_rsi_list
 from redis_reader import get_tick_data, get_hoga_data, get_avg_cntr_strength, get_vi_status
-from scorer import rule_score as _rule_score, CLAUDE_THRESHOLDS
+from scorer import rule_score as _rule_score, get_claude_threshold
 from analyzer import analyze_signal
 from tp_sl_engine import calc_tp_sl
 from utils import safe_float as _sf
@@ -111,7 +112,7 @@ class StockSnapshot:
     @property
     def is_closing(self) -> bool:
         m = datetime.now().hour * 60 + datetime.now().minute
-        return 870 <= m < 930   # 14:30~15:30
+        return 870 <= m < 910   # 14:30~15:10
 
     @property
     def prev_close(self) -> float:
@@ -157,17 +158,9 @@ class StockSnapshot:
 
 
 def _calc_rsi(closes: list[float], period: int = 14) -> Optional[float]:
-    if len(closes) < period + 1:
-        return None
-    gains, losses = [], []
-    for i in range(period):
-        d = closes[i] - closes[i + 1]
-        (gains if d > 0 else losses).append(abs(d))
-    avg_g = sum(gains) / period if gains else 0.0
-    avg_l = sum(losses) / period if losses else 0.0
-    if avg_l == 0:
-        return 100.0
-    return round(100 - 100 / (1 + avg_g / avg_l), 1)
+    vals = _calc_rsi_list(closes, period)
+    v = vals[0] if vals else 0.0
+    return round(v, 1) if v != 0.0 else None
 
 
 async def _fetch_frgn_data(token: str, stk_cd: str) -> tuple[int, int, int, int]:
@@ -397,13 +390,15 @@ def _check_s3(snap: StockSnapshot) -> Optional[dict]:
 
 
 def _check_s4(snap: StockSnapshot) -> Optional[dict]:
-    """S4 장대양봉: 등락률 3%+ + 거래량 3x+ + 체결강도 120+"""
+    """S4 장대양봉: 등락률 3%+ + 거래량 3x+ + 체결강도 125+ + bid_ratio 1.4+"""
     if snap.flu_rt < 3.0:
         return None
     vol_ratio = snap.vol_ratio
     if vol_ratio is None or vol_ratio < 3.0:
         return None
-    if snap.avg_strength < 120:
+    if snap.avg_strength < 125:
+        return None
+    if snap.bid_ratio is None or snap.bid_ratio < 1.4:
         return None
     # 바디비율 근사: 등락률 높을수록 장대양봉 가능성 높음
     body_ratio = min(0.9, snap.flu_rt / 10.0 + 0.5)
@@ -417,6 +412,7 @@ def _check_s4(snap: StockSnapshot) -> Optional[dict]:
         "body_ratio":    round(body_ratio, 2),
         "is_new_high":   snap.high_52w and snap.cur_prc >= snap.high_52w * 0.99,
         "cntr_strength": round(snap.avg_strength, 1),
+        "bid_ratio":     snap.bid_ratio,
         "holding_days":  2,
     }
 
@@ -586,6 +582,10 @@ def _check_s10(snap: StockSnapshot) -> Optional[dict]:
         return None
     if snap.flu_rt < 1.0:
         return None
+    if snap.avg_strength < 115:
+        return None
+    if snap.bid_ratio is None or snap.bid_ratio < 1.2:
+        return None
 
     vol_ratio = snap.vol_ratio
     if vol_ratio is not None and vol_ratio < 2.0:
@@ -603,6 +603,7 @@ def _check_s10(snap: StockSnapshot) -> Optional[dict]:
         "vol_surge_rt":  vol_surge_rt,
         "rsi":           snap.rsi14,
         "cntr_strength": round(snap.avg_strength, 1),
+        "bid_ratio":     snap.bid_ratio,
         "flu_rt":        snap.flu_rt,
         "holding_days":  7,
         "cond_count":    2,
@@ -634,12 +635,14 @@ def _check_s11(snap: StockSnapshot) -> Optional[dict]:
 
 
 def _check_s12(snap: StockSnapshot) -> Optional[dict]:
-    """S12 종가강도: 14:30~15:30 only + 등락 0~3% + 체결강도 110+"""
+    """S12 종가강도: 14:30~15:10 only + 등락 0~3% + 체결강도 120+ + bid_ratio 1.5+"""
     if not snap.is_closing:
         return None
     if not (0.0 <= snap.flu_rt <= 3.0):
         return None
-    if snap.avg_strength < 110:
+    if snap.avg_strength < 120:
+        return None
+    if snap.bid_ratio is None or snap.bid_ratio < 1.5:
         return None
     return {
         "strategy":      "S12_CLOSING",
@@ -737,6 +740,10 @@ def _check_s15(snap: StockSnapshot) -> Optional[dict]:
         return None
     if snap.flu_rt < 0.5:
         return None
+    if snap.avg_strength < 120:
+        return None
+    if snap.bid_ratio is None or snap.bid_ratio < 1.3:
+        return None
 
     vol_ratio = snap.vol_ratio
     if vol_ratio is not None and vol_ratio < 1.5:
@@ -751,6 +758,7 @@ def _check_s15(snap: StockSnapshot) -> Optional[dict]:
         "rsi":           snap.rsi14,
         "vol_ratio":     vol_ratio,
         "cntr_strength": round(snap.avg_strength, 1),
+        "bid_ratio":     snap.bid_ratio,
         "flu_rt":        snap.flu_rt,
         "holding_days":  5,
         "cond_count":    3,
@@ -771,7 +779,7 @@ _CHECKERS = [
     ("S9_PULLBACK_SWING",   _check_s9,  None),
     ("S10_NEW_HIGH",        _check_s10, None),
     ("S11_FRGN_CONT",       _check_s11, "외인 연속매수 목록 미포함"),
-    ("S12_CLOSING",         _check_s12, "14:30~15:30 이외 시간대"),
+    ("S12_CLOSING",         _check_s12, "14:30~15:10 이외 시간대"),
     ("S13_BOX_BREAKOUT",    _check_s13, None),
     ("S14_OVERSOLD_BOUNCE", _check_s14, None),
     ("S15_MOMENTUM_ALIGN",  _check_s15, None),
@@ -810,7 +818,7 @@ async def score_one_signal(
     임계점수 미달 시 None 반환.
     """
     strategy  = signal["strategy"]
-    threshold = CLAUDE_THRESHOLDS.get(strategy, 60)
+    threshold = get_claude_threshold(strategy)
     mctx      = snap.market_ctx()
 
     # 규칙 점수
@@ -848,17 +856,23 @@ async def score_one_signal(
             if signal.get("action") == "CANCEL":
                 return None
         except asyncio.TimeoutError:
-            logger.warning("[stockScore] AI 타임아웃 [%s %s] – 규칙점수로 폴백", snap.stk_cd, strategy)
-            signal["action"]     = "ENTER"
-            signal["ai_score"]   = round(r_score * 0.9, 1)
+            logger.warning("[stockScore] AI 타임아웃 [%s %s] – CANCEL", snap.stk_cd, strategy)
+            signal["action"] = "CANCEL"
+            signal["ai_score"] = round(r_score, 1)
             signal["confidence"] = "LOW"
-            signal["ai_reason"]  = "AI 분석 타임아웃 – 규칙 점수 기반 판단"
+            signal["cancel_type"] = "AI_UNAVAILABLE"
+            signal["cancel_reason"] = "AI analysis timeout"
+            signal["ai_reason"] = "AI analysis timeout"
+            return None
         except Exception as e:
             logger.error("[stockScore] AI 오류 [%s %s]: %s", snap.stk_cd, strategy, e)
-            signal["action"]     = "ENTER"
-            signal["ai_score"]   = round(r_score * 0.9, 1)
+            signal["action"] = "CANCEL"
+            signal["ai_score"] = round(r_score, 1)
             signal["confidence"] = "LOW"
-            signal["ai_reason"]  = f"AI 분석 실패 – 규칙 점수 기반 판단"
+            signal["cancel_type"] = "AI_UNAVAILABLE"
+            signal["cancel_reason"] = "AI analysis unavailable"
+            signal["ai_reason"] = "AI analysis unavailable"
+            return None
     else:
         signal["action"]     = "ENTER"
         signal["ai_score"]   = round(r_score, 1)

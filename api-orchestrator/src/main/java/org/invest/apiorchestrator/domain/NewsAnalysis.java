@@ -9,6 +9,9 @@ import java.time.LocalDateTime;
 /**
  * 뉴스 분석 결과 엔티티.
  * Python news_scheduler 가 Claude API로 분석한 결과를 DB에 영속화한다.
+ *
+ * V33: 구형 컬럼 headline(→summary로 이관), sector 제거됨 (V1 baseline 잔재, 엔티티에 없음).
+ *      sectors, risk_factors, summary, confidence, news_count 는 V22에서 추가됨.
  */
 @Entity
 @Table(name = "news_analysis", indexes = {

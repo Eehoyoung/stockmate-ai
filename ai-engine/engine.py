@@ -54,6 +54,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("engine")
 
+
+async def _init_pg_conn(conn: asyncpg.Connection) -> None:
+    await conn.execute("SET TIME ZONE 'Asia/Seoul'")
+
+
 async def main():
     logger.info("=" * 50)
     logger.info("  StockMate AI – AI Engine 시작")
@@ -101,6 +106,7 @@ async def main():
                 user=PG_USER, password=PG_PASSWORD,
                 min_size=2, max_size=8,
                 command_timeout=10,
+                init=_init_pg_conn,
             )
             logger.info("[PG] PostgreSQL 풀 생성 완료 → %s:%d/%s", PG_HOST, PG_PORT, PG_DB)
         except Exception as e:

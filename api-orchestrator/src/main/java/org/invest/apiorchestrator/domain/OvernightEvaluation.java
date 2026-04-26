@@ -30,9 +30,15 @@ public class OvernightEvaluation {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /** trading_signals.id 참조. FK: ON DELETE SET NULL (V33 확인) */
     @Column(name = "signal_id")
     private Long signalId;
 
+    /**
+     * (레거시) V30 이전 open_positions.id 참조.
+     * V33에서 FK 제거됨 — open_positions 가 뷰로 전환되어 실제 테이블 없음.
+     * 이력 조회 목적으로 컬럼은 유지.
+     */
     @Column(name = "position_id")
     private Long positionId;
 

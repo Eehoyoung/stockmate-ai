@@ -19,8 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from ma_utils import fetch_daily_candles, _safe_price, _safe_vol
-from indicator_rsi import fetch_minute_candles
+from ma_utils import fetch_daily_candles, fetch_minute_candles, _safe_price, _safe_vol
 
 logger = logging.getLogger(__name__)
 
@@ -28,26 +27,6 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────
 # 데이터클래스
 # ──────────────────────────────────────────────────────────────
-
-@dataclass
-class OBVResult:
-    """OBV 계산 결과"""
-    stk_cd:  str   = ""
-    obv:     Optional[float] = None   # 최신 OBV
-    obv_prev: Optional[float] = None  # 직전 봉 OBV
-    obv_ma:  Optional[float] = None   # OBV 20봉 이동평균
-
-    def is_rising(self) -> bool:
-        """OBV 상승 (매집 신호)"""
-        if self.obv is None or self.obv_prev is None:
-            return False
-        return self.obv > self.obv_prev
-
-    def is_above_ma(self) -> bool:
-        """OBV > OBV MA (상승 추세 확인)"""
-        return (self.obv is not None and self.obv_ma is not None
-                and self.obv > self.obv_ma)
-
 
 @dataclass
 class MFIResult:
@@ -91,67 +70,6 @@ class VWAPResult:
         if self.vwap and self.vwap > 0:
             return (self.cur_prc - self.vwap) / self.vwap * 100
         return None
-
-
-@dataclass
-class VolumeRatioResult:
-    """거래량 비율 결과"""
-    stk_cd:     str   = ""
-    period:     int   = 20
-    cur_vol:    float = 0.0    # 당일 거래량
-    avg_vol:    float = 0.0    # N일 평균 거래량
-    ratio:      Optional[float] = None  # cur_vol / avg_vol
-
-    @property
-    def is_surge(self) -> bool:
-        """거래량 2배 이상 급증"""
-        return self.ratio is not None and self.ratio >= 2.0
-
-    @property
-    def is_dry(self) -> bool:
-        """거래량 0.5배 이하 (거래 위축)"""
-        return self.ratio is not None and self.ratio <= 0.5
-
-
-# ──────────────────────────────────────────────────────────────
-# 순수 계산 함수 – OBV
-# ──────────────────────────────────────────────────────────────
-
-def calc_obv(
-    closes: list[float],
-    volumes: list[float],
-) -> list[float]:
-    """
-    OBV 계산.
-
-    Args:
-        closes:  종가 리스트 (최신순)
-        volumes: 거래량 리스트 (최신순)
-
-    Returns:
-        OBV 리스트 (최신순).
-
-    규칙:
-        close > prev_close → +volume
-        close < prev_close → -volume
-        close == prev_close → ±0
-    """
-    if len(closes) < 2 or len(volumes) < 2:
-        return [0.0] * len(closes)
-
-    rev_c = list(reversed(closes))
-    rev_v = list(reversed(volumes))
-
-    obv_rev: list[float] = [0.0]
-    running = 0.0
-    for i in range(1, len(rev_c)):
-        if rev_c[i] > rev_c[i - 1]:
-            running += rev_v[i]
-        elif rev_c[i] < rev_c[i - 1]:
-            running -= rev_v[i]
-        obv_rev.append(running)
-
-    return list(reversed(obv_rev))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -248,97 +166,6 @@ def calc_vwap(
 
 
 # ──────────────────────────────────────────────────────────────
-# 일봉 OBV
-# ──────────────────────────────────────────────────────────────
-
-async def get_obv_daily(
-    token: str,
-    stk_cd: str,
-    obv_ma_period: int = 20,
-) -> OBVResult:
-    """
-    일봉 기반 OBV 반환 (ka10081).
-
-    Args:
-        token:         Bearer 인증 토큰
-        stk_cd:        종목코드
-        obv_ma_period: OBV 이동평균 기간 (기본 20)
-
-    Returns:
-        OBVResult – obv, obv_prev, obv_ma 포함.
-    """
-    candles = await fetch_daily_candles(token, stk_cd)
-    closes, volumes = [], []
-    for c in candles:
-        p = _safe_price(c.get("cur_prc"))
-        v = _safe_vol(c.get("trde_qty"))
-        if p > 0:
-            closes.append(p)
-            volumes.append(v)
-
-    if len(closes) < 2:
-        return OBVResult(stk_cd=stk_cd)
-
-    obv_vals = calc_obv(closes, volumes)
-
-    obv_ma: Optional[float] = None
-    if len(obv_vals) >= obv_ma_period:
-        obv_ma = sum(obv_vals[:obv_ma_period]) / obv_ma_period
-
-    return OBVResult(
-        stk_cd=stk_cd,
-        obv=obv_vals[0] if obv_vals else None,
-        obv_prev=obv_vals[1] if len(obv_vals) > 1 else None,
-        obv_ma=obv_ma,
-    )
-
-
-# ──────────────────────────────────────────────────────────────
-# 일봉 MFI
-# ──────────────────────────────────────────────────────────────
-
-async def get_mfi_daily(
-    token: str,
-    stk_cd: str,
-    period: int = 14,
-) -> MFIResult:
-    """
-    일봉 기반 MFI 반환 (ka10081).
-
-    Returns:
-        MFIResult – mfi, mfi_prev 포함.
-    """
-    candles = await fetch_daily_candles(token, stk_cd)
-    highs, lows, closes, volumes = [], [], [], []
-    for c in candles:
-        h = _safe_price(c.get("high_pric"))
-        l = _safe_price(c.get("low_pric"))
-        p = _safe_price(c.get("cur_prc"))
-        v = _safe_vol(c.get("trde_qty"))
-        if h > 0 and l > 0 and p > 0:
-            highs.append(h)
-            lows.append(l)
-            closes.append(p)
-            volumes.append(v)
-
-    if len(closes) < period + 1:
-        return MFIResult(stk_cd=stk_cd, period=period)
-
-    mfi_vals = calc_mfi(highs, lows, closes, volumes, period)
-
-    def _val(lst: list[float], idx: int) -> Optional[float]:
-        v = lst[idx] if idx < len(lst) else 0.0
-        return v if v != 0.0 else None
-
-    return MFIResult(
-        stk_cd=stk_cd,
-        period=period,
-        mfi=_val(mfi_vals, 0),
-        mfi_prev=_val(mfi_vals, 1),
-    )
-
-
-# ──────────────────────────────────────────────────────────────
 # 분봉 VWAP (당일 기준)
 # ──────────────────────────────────────────────────────────────
 
@@ -389,49 +216,3 @@ async def get_vwap_minute(
     )
 
 
-# ──────────────────────────────────────────────────────────────
-# 일봉 거래량 비율 (VR)
-# ──────────────────────────────────────────────────────────────
-
-async def get_volume_ratio_daily(
-    token: str,
-    stk_cd: str,
-    period: int = 20,
-) -> VolumeRatioResult:
-    """
-    일봉 기반 거래량 비율 반환 (ka10081).
-
-    Args:
-        token:  Bearer 인증 토큰
-        stk_cd: 종목코드
-        period: 평균 거래량 기간 (기본 20)
-
-    Returns:
-        VolumeRatioResult – cur_vol, avg_vol, ratio 포함.
-        index 0 = 오늘(최신), index 1~period = 과거 평균 기준.
-
-    계산 방식:
-        cur_vol = candles[0].trde_qty
-        avg_vol = SMA(trde_qty[1:period+1]) — 오늘 제외 N일 평균
-        ratio   = cur_vol / avg_vol
-    """
-    candles = await fetch_daily_candles(token, stk_cd)
-    volumes: list[float] = []
-    for c in candles:
-        v = _safe_vol(c.get("trde_qty"))
-        volumes.append(v)
-
-    if len(volumes) < period + 1:
-        return VolumeRatioResult(stk_cd=stk_cd, period=period)
-
-    cur_vol = volumes[0]
-    avg_vol = sum(volumes[1: period + 1]) / period
-    ratio = cur_vol / avg_vol if avg_vol > 0 else None
-
-    return VolumeRatioResult(
-        stk_cd=stk_cd,
-        period=period,
-        cur_vol=cur_vol,
-        avg_vol=avg_vol,
-        ratio=ratio,
-    )

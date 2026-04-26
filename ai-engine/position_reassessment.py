@@ -15,7 +15,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from db_writer import get_active_positions
+from db_reader import get_active_positions
 from http_utils import fetch_hoga
 from indicator_atr import get_atr_minute
 from indicator_macd import get_macd_daily, get_macd_minute

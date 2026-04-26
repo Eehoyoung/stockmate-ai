@@ -40,15 +40,27 @@ public class TradingSignal {
     @Column(name = "strategy", nullable = false, length = 30)
     private StrategyType strategy;
 
+    /**
+     * 레거시 신호 점수 — Python 스코어링 도입 이전 Java에서 계산하던 값.
+     * rule_score, ai_score 로 대체됨. 컬럼은 이력 목적으로 유지.
+     */
     @Column(name = "signal_score")
     private Double signalScore;
 
     @Column(name = "entry_price")
     private Double entryPrice;
 
+    /**
+     * 레거시 목표가 — tp1_price, tp2_price 도입 이전 사용.
+     * 컬럼은 이력 목적으로 유지.
+     */
     @Column(name = "target_price")
     private Double targetPrice;
 
+    /**
+     * 레거시 손절가 — sl_price 도입 이전 사용.
+     * 컬럼은 이력 목적으로 유지.
+     */
     @Column(name = "stop_price")
     private Double stopPrice;
 

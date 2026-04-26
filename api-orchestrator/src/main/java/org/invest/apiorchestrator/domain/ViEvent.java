@@ -7,10 +7,14 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
 import java.time.LocalDateTime;
 
+// V33: trigger_price → vi_price, reference_price → ref_price 로 컬럼명 통일.
+//      stk_nm, vi_status, vi_price, acc_volume, ref_price, upper_limit,
+//      lower_limit, market_type, released_at 컬럼이 DB에 추가됨.
 @Entity
 @Table(name = "vi_events", indexes = {
-        @Index(name = "idx_vi_stk_cd", columnList = "stk_cd"),
-        @Index(name = "idx_vi_created_at", columnList = "created_at")
+        @Index(name = "idx_vi_stk_cd",     columnList = "stk_cd"),
+        @Index(name = "idx_vi_created_at", columnList = "created_at"),
+        @Index(name = "idx_vi_status_cd",  columnList = "vi_status, stk_cd")
 })
 @EntityListeners(AuditingEntityListener.class)
 @Getter
@@ -35,12 +39,14 @@ public class ViEvent {
     @Column(name = "vi_status", length = 2)
     private String viStatus;  // 1:발동, 2:해제
 
+    /** VI 발동 가격 (V33: 구 trigger_price 컬럼에서 이관) */
     @Column(name = "vi_price")
     private Double viPrice;
 
     @Column(name = "acc_volume")
     private Long accVolume;
 
+    /** 기준 가격 (V33: 구 reference_price 컬럼에서 이관) */
     @Column(name = "ref_price")
     private Double refPrice;
 
@@ -57,6 +63,7 @@ public class ViEvent {
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
+    /** VI 해제 시각 (vi_status=2 시 채워짐) */
     @Column(name = "released_at")
     private LocalDateTime releasedAt;
 

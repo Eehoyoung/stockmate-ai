@@ -117,10 +117,13 @@ def _safe_vol(raw) -> float:
 
 import time as _time
 
-# 캐시: {stk_cd: (candles, expire_at)}
-# 일봉 데이터는 장 중 변하지 않으므로 1시간 캐시 적용
+# 일봉 캐시: {stk_cd: (candles, expire_at)}
 _CANDLE_CACHE: dict[str, tuple[list[dict], float]] = {}
 _CANDLE_CACHE_TTL = int(os.getenv("MA_CACHE_TTL_SEC", "3600"))
+
+# 분봉 캐시: {(stk_cd, tic_scope): (candles, expire_at)}
+_MIN_CANDLE_CACHE: dict[tuple[str, str], tuple[list[dict], float]] = {}
+_MIN_CACHE_TTL = int(os.getenv("RSI_MIN_CACHE_TTL_SEC", "300"))
 
 
 def _candle_cache_get(stk_cd: str) -> list[dict] | None:
@@ -203,6 +206,48 @@ async def fetch_daily_candles(token: str, stk_cd: str, target_count: int = 120) 
         _candle_cache_set(stk_cd, all_candles)
 
     return all_candles
+
+
+async def fetch_minute_candles(
+    token: str,
+    stk_cd: str,
+    tic_scope: str = "5",
+) -> list[dict]:
+    """
+    ka10080 주식분봉차트조회요청.
+    오류 시 빈 리스트. 결과는 최신순(index 0 = 가장 최근 봉).
+    """
+    key = (stk_cd, tic_scope)
+    entry = _MIN_CANDLE_CACHE.get(key)
+    if entry and _time.monotonic() < entry[1]:
+        return entry[0]
+
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/chart",
+                headers={
+                    "api-id": "ka10080",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={
+                    "stk_cd": stk_cd.strip(),
+                    "tic_scope": tic_scope,
+                    "upd_stkpc_tp": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10080", logger):
+                return []
+            candles = data.get("stk_min_pole_chart_qry", [])
+            if candles:
+                _MIN_CANDLE_CACHE[key] = (candles, _time.monotonic() + _MIN_CACHE_TTL)
+            return candles
+    except Exception as e:
+        logger.debug("[ma] ka10080 실패 [%s/%s]: %s", stk_cd, tic_scope, e)
+        return []
 
 
 # ──────────────────────────────────────────────────────────────

@@ -271,3 +271,39 @@ class TestGetViStatus:
         result = _run(get_vi_status(rdb, "005930"))
 
         assert result == {}
+
+
+class TestMarketFreshness:
+    def test_freshness_status_cancel_when_age_exceeds_cutoff(self):
+        from redis_reader import freshness_status
+
+        result = freshness_status({"updated_at_ms": "1000"}, "tick", now_ms=7001)
+
+        assert result["state"] == "cancel"
+        assert result["age_ms"] == 6001
+
+    def test_freshness_status_missing_without_timestamp(self):
+        from redis_reader import freshness_status
+
+        result = freshness_status({"cur_prc": "50000"}, "tick", now_ms=7001)
+
+        assert result["state"] == "missing"
+        assert result["age_ms"] is None
+
+    def test_get_market_freshness_reads_strength_meta(self):
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(side_effect=[
+            {"updated_at_ms": "10000"},
+            {"updated_at_ms": "9500"},
+            {"updated_at_ms": "4000"},
+            {},
+        ])
+
+        from redis_reader import get_market_freshness
+        result = _run(get_market_freshness(rdb, "005930", now_ms=10000))
+
+        assert result["tick"]["state"] == "fresh"
+        assert result["hoga"]["state"] == "fresh"
+        assert result["strength"]["state"] == "caution"
+        assert result["vi"]["state"] == "missing"
+        assert rdb.hgetall.await_args_list[2][0][0] == "ws:strength_meta:005930"
