@@ -59,3 +59,5 @@ npm-debug.log*
 *.md
 .claude
 **/.claude
+/api-orchestrator/.claude/
+/websocket-listener/.claude/
