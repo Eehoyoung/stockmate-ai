@@ -1,0 +1,9 @@
+{
+  "model": "sonnet",
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
+  },
+  "cleanupPeriodDays": 30,
+  "includeCoAuthoredBy": true
+}
