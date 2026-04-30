@@ -39,7 +39,6 @@ STATUS_REPORT_SLOTS = _parse_report_slots()
 
 STRATEGY_WINDOWS: dict[str, tuple[time, time]] = {
     "S1_GAP_OPEN": (time(8, 50), time(9, 30)),
-    "S2_VI_PULLBACK": (time(9, 0), time(15, 0)),
     "S3_INST_FRGN": (time(9, 30), time(14, 30)),
     "S4_BIG_CANDLE": (time(10, 0), time(14, 30)),
     "S5_PROG_FRGN": (time(10, 0), time(14, 0)),
@@ -47,24 +46,23 @@ STRATEGY_WINDOWS: dict[str, tuple[time, time]] = {
     "S7_ICHIMOKU_BREAKOUT": (time(10, 0), time(14, 30)),
     "S8_GOLDEN_CROSS": (time(10, 0), time(14, 30)),
     "S9_PULLBACK_SWING": (time(9, 30), time(13, 0)),
-    "S10_NEW_HIGH": (time(11, 0), time(14, 0)),
-    "S11_FRGN_CONT": (time(9, 30), time(14, 30)),
+    "S10_NEW_HIGH": (time(10, 0), time(14, 0)),
+    "S11_FRGN_CONT": (time(10, 0), time(14, 30)),
     "S12_CLOSING": (time(14, 30), time(15, 10)),
-    "S13_BOX_BREAKOUT": (time(9, 30), time(14, 0)),
+    "S13_BOX_BREAKOUT": (time(10, 0), time(14, 0)),
     "S14_OVERSOLD_BOUNCE": (time(10, 0), time(13, 0)),
     "S15_MOMENTUM_ALIGN": (time(9, 30), time(12, 0)),
 }
 
 POOL_KEYS: dict[str, list[str]] = {
     "S1_GAP_OPEN": ["candidates:s1:001", "candidates:s1:101"],
-    "S2_VI_PULLBACK": ["candidates:s2:001", "candidates:s2:101"],
     "S3_INST_FRGN": ["candidates:s3:001", "candidates:s3:101"],
     "S4_BIG_CANDLE": ["candidates:s4:001", "candidates:s4:101"],
     "S5_PROG_FRGN": ["candidates:s5:001", "candidates:s5:101"],
     "S6_THEME_LAGGARD": ["candidates:s6:001", "candidates:s6:101"],
     "S7_ICHIMOKU_BREAKOUT": ["candidates:s7:001", "candidates:s7:101"],
     "S8_GOLDEN_CROSS": ["candidates:s8:001", "candidates:s8:101"],
-    "S9_PULLBACK_SWING": ["candidates:s8:001", "candidates:s8:101"],
+    "S9_PULLBACK_SWING": ["candidates:s9:001", "candidates:s9:101"],
     "S10_NEW_HIGH": ["candidates:s10:001", "candidates:s10:101"],
     "S11_FRGN_CONT": ["candidates:s11:001", "candidates:s11:101"],
     "S12_CLOSING": ["candidates:s12:001", "candidates:s12:101"],
@@ -120,6 +118,14 @@ async def _get_recent_signal_stats(rdb, strategies: list[str]) -> dict[str, dict
             "last_stk_cd": last_signal.get("stk_cd", ""),
         }
     return stats
+
+
+async def _get_s2_worker_status(rdb) -> dict[str, str]:
+    try:
+        return await rdb.hgetall("status:s2_vi_watch_worker")
+    except Exception as e:
+        logger.debug("[StatusReport] S2 worker status fetch failed: %s", e)
+        return {}
 
 
 def _build_message(
@@ -213,7 +219,8 @@ async def _publish_status_report(rdb) -> None:
     for strategy, keys in POOL_KEYS.items():
         pool_counts[strategy] = await _pool_count(rdb, keys)
 
-    recent_stats = await _get_recent_signal_stats(rdb, list(STRATEGY_WINDOWS.keys()))
+    recent_stats = await _get_recent_signal_stats(rdb, list(STRATEGY_WINDOWS.keys()) + ["S2_VI_PULLBACK"])
+    s2_worker_status = await _get_s2_worker_status(rdb)
 
     queue_counts = {}
     for key in ("telegram_queue", "ai_scored_queue", "vi_watch_queue", "error_queue"):
@@ -299,6 +306,7 @@ async def _publish_status_report(rdb) -> None:
             "queue_counts": queue_counts,
             "ws_online": ws_online,
             "recent_stats": recent_stats,
+            "s2_worker_status": s2_worker_status,
             "position_count": position_count,
             "exit_today_count": exit_today_count,
             "trailing_active_count": trailing_active_count,

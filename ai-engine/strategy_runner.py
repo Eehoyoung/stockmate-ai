@@ -363,18 +363,17 @@ async def _scan_s15(rdb, token):
 
 
 _SCHEDULE: list[tuple[str, time, time, callable]] = [
-    ("S2", time(9, 0), time(14, 50), _scan_s2),
     ("S7", time(10, 0), time(14, 30), _scan_s7),
     ("S1", time(8, 30), time(9, 10), _scan_s1),
     ("S3", time(9, 30), time(14, 30), _scan_s3),
-    ("S4", time(9, 30), time(14, 30), _scan_s4),
+    ("S4", time(10, 0), time(14, 30), _scan_s4),
     ("S5", time(10, 0), time(14, 0), _scan_s5),
     ("S6", time(9, 30), time(13, 0), _scan_s6),
-    ("S10", time(9, 30), time(14, 30), _scan_s10),
-    ("S11", time(9, 30), time(14, 30), _scan_s11),
+    ("S10", time(10, 0), time(14, 0), _scan_s10),
+    ("S11", time(10, 0), time(14, 30), _scan_s11),
     ("S8", time(10, 0), time(14, 30), _scan_s8),
     ("S9", time(9, 30), time(13, 0), _scan_s9),
-    ("S13", time(9, 30), time(14, 0), _scan_s13),
+    ("S13", time(10, 0), time(14, 0), _scan_s13),
     ("S14", time(9, 30), time(14, 0), _scan_s14),
     ("S15", time(10, 0), time(14, 30), _scan_s15),
     ("S12", time(14, 30), time(15, 10), _scan_s12),

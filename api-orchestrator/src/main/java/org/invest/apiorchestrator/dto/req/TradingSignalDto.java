@@ -155,7 +155,6 @@ public class TradingSignalDto {
             case S4_BIG_CANDLE       -> "📊";
             case S5_PROG_FRGN        -> "💻";
             case S6_THEME_LAGGARD    -> "🔥";
-            case S7_AUCTION          -> "⚡";
             case S7_ICHIMOKU_BREAKOUT -> "☁️";
             case S8_GOLDEN_CROSS     -> "📈";
             case S9_PULLBACK_SWING   -> "🔽";

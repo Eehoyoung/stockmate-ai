@@ -274,6 +274,29 @@ class TestStrategyPrompts:
         from analyzer import _build_user_message
         return _build_user_message(signal, ctx, 75.0)
 
+    def _get_system_arg(self, signal):
+        response = _make_response('{"action":"HOLD","ai_score":60,"confidence":"MEDIUM","reason":"watch","adjusted_target_pct":null,"adjusted_stop_pct":null}')
+        with patch("analyzer._get_claude_client") as mock_fn:
+            mock_client = MagicMock()
+            mock_client.messages.create = AsyncMock(return_value=response)
+            mock_fn.return_value = mock_client
+
+            from analyzer import analyze_signal
+            _run(analyze_signal(signal, _ctx(), 75.0))
+
+        return mock_client.messages.create.call_args.kwargs["system"]
+
+    def test_s1_uses_gap_open_system_prompt(self):
+        import analyzer
+        system_prompt = self._get_system_arg(_sig("S1_GAP_OPEN", gap_pct=4.0))
+        assert system_prompt == analyzer._S1_GAP_OPEN_SYS_PROMPT
+        assert system_prompt != analyzer._SYS_PROMPT
+
+    def test_non_s1_uses_default_system_prompt(self):
+        import analyzer
+        system_prompt = self._get_system_arg(_sig("S2_VI_PULLBACK", pullback_pct=-1.5))
+        assert system_prompt == analyzer._SYS_PROMPT
+
     def test_s1_prompt_contains_gap(self):
         msg = self._get_prompt(_sig("S1_GAP_OPEN", gap_pct=4.0))
         assert "4.0" in msg
@@ -323,6 +346,48 @@ class TestStrategyPrompts:
         """알 수 없는 전략 코드도 프롬프트에 포함"""
         msg = self._get_prompt(_sig("S99_CUSTOM"))
         assert "S99_CUSTOM" in msg
+
+
+class TestS1SystemPromptStability:
+    def test_s1_uses_dedicated_system_prompt(self):
+        from analyzer import _S1_GAP_OPEN_SYS_PROMPT, _SYS_PROMPT, _get_system_prompt
+
+        assert _get_system_prompt("S1_GAP_OPEN") == _S1_GAP_OPEN_SYS_PROMPT
+        assert _get_system_prompt("S2_VI_PULLBACK") == _SYS_PROMPT
+
+    def test_s1_prompt_requires_json_only_single_line_no_markdown(self):
+        from analyzer import _get_system_prompt
+
+        prompt = _get_system_prompt("S1_GAP_OPEN")
+        lowered = prompt.lower()
+
+        assert "exactly one valid json object on a single line" in lowered
+        assert "do not use markdown" in lowered
+        assert "code fences" in lowered
+        assert "explanatory text outside the json" in lowered
+
+    def test_s1_prompt_blocks_unprovided_context_inference(self):
+        from analyzer import _get_system_prompt
+
+        prompt = _get_system_prompt("S1_GAP_OPEN").lower()
+
+        assert "use only the values explicitly present" in prompt
+        assert "do not infer, invent, or mention news" in prompt
+        assert "themes" in prompt
+        assert "institutional flow" in prompt
+        assert "foreign flow" in prompt
+
+    def test_s1_prompt_requires_hold_cancel_null_tpsl_and_enter_integer_prices(self):
+        from analyzer import _get_system_prompt
+
+        prompt = _get_system_prompt("S1_GAP_OPEN").lower()
+
+        assert "for enter only" in prompt
+        assert "absolute krw prices as integers" in prompt
+        assert "for hold or cancel" in prompt
+        assert "claude_tp1, claude_tp2, and claude_sl must be null" in prompt
+        assert "for cancel only, cancel_reason must be a short korean string" in prompt
+        assert "for enter or hold, cancel_reason must be null" in prompt
 
 
 # ──────────────────────────────────────────────────────────────────

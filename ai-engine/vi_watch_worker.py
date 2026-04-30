@@ -35,6 +35,46 @@ POLL_INTERVAL    = 5.0    # 초: vi_watch_queue 폴링 주기 (Java: 5초)
 MAX_BATCH        = 20     # 회당 최대 처리 건수 (Java: 20)
 QUEUE_TTL        = 43200  # 12시간
 _SUPPLEMENT_INTERVAL = 30.0  # 초: 풀 보완 실행 주기
+STRATEGY_NAME = "S2_VI_PULLBACK"
+STATUS_SIGNAL_TTL_SEC = 600
+WORKER_STATUS_TTL_SEC = 600
+
+
+async def _record_worker_metric(rdb, event: str, stk_cd: str | None = None) -> None:
+    """Record lightweight S2 worker health without affecting signal processing."""
+    try:
+        now_ts = str(int(time.time()))
+        key = "status:s2_vi_watch_worker"
+        mapping = {
+            "last_event": event,
+            "updated_at": now_ts,
+        }
+        if stk_cd:
+            mapping["last_stk_cd"] = str(stk_cd)
+        await rdb.hset(key, mapping=mapping)
+        await rdb.hincrby(key, f"{event}_count", 1)
+        await rdb.expire(key, WORKER_STATUS_TTL_SEC)
+    except Exception as status_err:
+        logger.debug("[VI Watch] status metric failed event=%s: %s", event, status_err)
+
+
+async def _record_signal_metric(rdb, signal: dict) -> None:
+    """Mirror strategy_runner status metrics for S2 signals published by VI worker."""
+    try:
+        status_key = f"status:signals_10m:{STRATEGY_NAME}"
+        await rdb.incr(status_key)
+        await rdb.expire(status_key, STATUS_SIGNAL_TTL_SEC)
+        await rdb.hset(
+            f"status:last_signal:{STRATEGY_NAME}",
+            mapping={
+                "stk_cd": str(signal.get("stk_cd", "")),
+                "score": str(signal.get("score", "")),
+                "updated_at": str(int(time.time())),
+            },
+        )
+        await rdb.expire(f"status:last_signal:{STRATEGY_NAME}", STATUS_SIGNAL_TTL_SEC)
+    except Exception as status_err:
+        logger.debug("[VI Watch] signal status metric failed: %s", status_err)
 
 
 async def _supplement_from_pool(rdb) -> int:
@@ -57,7 +97,7 @@ async def _supplement_from_pool(rdb) -> int:
 
         for stk_cd in pool:
             # 이미 신호 발행된 종목 skip
-            dedup_key = f"scanner:dedup:S2_VI_PULLBACK:{stk_cd}"
+            dedup_key = f"scanner:dedup:{STRATEGY_NAME}:{stk_cd}"
             if await rdb.exists(dedup_key):
                 continue
 
@@ -109,6 +149,7 @@ async def run_vi_watch_worker(rdb):
 
             # 1. 감시 시간 만료 체크
             if now_ms > item.get("watch_until", 0):
+                await _record_worker_metric(rdb, "expired", item.get("stk_cd"))
                 continue
 
             # 2. 조건 체크
@@ -116,16 +157,26 @@ async def run_vi_watch_worker(rdb):
 
             if signal:
                 # 신호 발생 시 처리 (중복 방지 로직 포함)
-                dedup_key = f"scanner:dedup:S2_VI_PULLBACK:{item['stk_cd']}"
+                dedup_key = f"scanner:dedup:{STRATEGY_NAME}:{item['stk_cd']}"
                 if await rdb.set(dedup_key, "1", nx=True, ex=3600):
                     await rdb.lpush("telegram_queue", json.dumps(signal, ensure_ascii=False))
+                    await rdb.expire("telegram_queue", QUEUE_TTL)
+                    await _record_signal_metric(rdb, signal)
+                    await _record_worker_metric(rdb, "published", item.get("stk_cd"))
                     logger.info("🔥 S2 신호 포착: %s", item['stk_cd'])
+                else:
+                    await _record_worker_metric(rdb, "duplicate", item.get("stk_cd"))
             else:
                 # 3. 조건 미충족 시 다시 큐에 삽입 (단, 약간의 지연 후 재진입 위해 LPUSH 사용 권장)
                 # 너무 자주 체크하지 않도록 sleep을 주거나 처리 순서를 뒤로 보냄
                 await rdb.lpush("vi_watch_queue", item_raw)
+                await _record_worker_metric(rdb, "requeued", item.get("stk_cd"))
                 await asyncio.sleep(0.1) # 과도한 루프 방지
 
         except Exception as e:
+            try:
+                await _record_worker_metric(rdb, "error")
+            except Exception:
+                pass
             logger.error("[VI Watch] 에러: %s", e)
             await asyncio.sleep(1)

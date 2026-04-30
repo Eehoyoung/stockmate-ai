@@ -107,7 +107,7 @@ public class TradingSignal {
     @Column(name = "position_status", length = 20)
     private String positionStatus;
 
-    @Column(name = "sector", length = 50)
+    @Column(name = "sector", length = 100)
     private String sector;
 
     @Column(name = "entry_qty")
@@ -166,11 +166,11 @@ public class TradingSignal {
     private String aiReason;
 
     /** TP 계산 방법 (swing_resistance / fib_1272 / MA20_x099 등) */
-    @Column(name = "tp_method", length = 60)
+    @Column(name = "tp_method", length = 200)
     private String tpMethod;
 
     /** SL 계산 방법 (swing_low_x099 / MA20_x099 / ATR_x20 등) */
-    @Column(name = "sl_method", length = 60)
+    @Column(name = "sl_method", length = 200)
     private String slMethod;
 
     /** R:R < 1.0 경보 플래그 */
@@ -360,7 +360,6 @@ public class TradingSignal {
     public enum StrategyType {
         // ── 장전/시초가 ──────────────────────────
         S1_GAP_OPEN,        // 갭상승 + 체결강도 시초가
-        S7_AUCTION,         // 레거시 동시호가 예상체결 갭 필터 (기존 데이터 호환용)
         S7_ICHIMOKU_BREAKOUT, // 일목균형표 구름대 돌파 스윙
         // ── 단기 이벤트 ─────────────────────────
         S2_VI_PULLBACK,     // VI 발동 후 눌림목 재진입

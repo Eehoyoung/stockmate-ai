@@ -273,7 +273,7 @@ async def _fetch_ka10027(token: str, market: str, sort_tp: str = "1") -> list[di
         if not validate_kiwoom_response(data, "ka10027", logger):
             break
 
-        items = data.get("pred_pre_flu_upper", [])
+        items = data.get("pred_pre_flu_rt_upper", [])
         results.extend(items)
 
         cont_yn = resp.headers.get("cont-yn", "N")
@@ -318,8 +318,7 @@ async def _build_s4(token: str, market: str, rdb) -> None:
 
 
 async def _build_s8(token: str, market: str, rdb) -> None:
-    """S8 골든크로스: 0.5% ≤ flu_rt ≤ 8.0%, TTL 1800s, 150개
-    S9(눌림목 반등)도 이 풀을 공유하므로 TTL을 충분히 확보한다."""
+    """S8 golden-cross input: ka10027 rising-rate pool, 0.5% <= flu_rt <= 8.0%."""
     items = await _fetch_ka10027(token, market, sort_tp="1")
     codes = []
     for x in items:
@@ -332,6 +331,23 @@ async def _build_s8(token: str, market: str, rdb) -> None:
         if len(codes) >= 150:
             break
     await _lpush_with_ttl(rdb, f"candidates:s8:{market}", codes, 1800)
+
+
+async def _build_s9(token: str, market: str, rdb) -> None:
+    """S9 pullback input uses the same source/filter as S8 but owns candidates:s9:*."""
+    # S8 and S9 use the same source/filter, but each strategy writes its own Redis pool.
+    items = await _fetch_ka10027(token, market, sort_tp="1")
+    codes = []
+    for x in items:
+        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
+        flu_rt = _clean(x.get("flu_rt", 0))
+        if 0.5 <= flu_rt <= 8.0:
+            stk_cd = real_stk_cd
+            if stk_cd:
+                codes.append(stk_cd)
+        if len(codes) >= 150:
+            break
+    await _lpush_with_ttl(rdb, f"candidates:s9:{market}", codes, 1800)
 
 
 async def _build_s14(token: str, market: str, rdb) -> None:
@@ -816,6 +832,16 @@ async def _build_intraday(token: str, rdb) -> None:
 
     각 전략 빌드 함수를 개별 try-except로 감싸서 하나 실패해도 나머지가 계속 실행되도록 함.
     """
+    # S1 풀이 비어 있으면 장중 재빌드 (컨테이너가 장전 윈도우 이후 재시작된 경우 대응)
+    for market in MARKETS:
+        try:
+            if not await rdb.exists(f"candidates:s1:{market}"):
+                logger.info("[builder] S1 %s 풀 없음 – 장중 재빌드", market)
+                await _build_s1(token, market, rdb)
+                await asyncio.sleep(_API_INTERVAL)
+        except Exception as e:
+            logger.error("[builder] S1 %s 장중 재빌드 오류: %s", market, e)
+
     for market in MARKETS:
         for fn, name in [
             (_build_s2,  f"S2 {market}"),
@@ -824,6 +850,7 @@ async def _build_intraday(token: str, rdb) -> None:
             (_build_s5,  f"S5 {market}"),
             (_build_s7,  f"S7 {market}"),
             (_build_s8,  f"S8 {market}"),
+            (_build_s9,  f"S9 {market}"),
             (_build_s10, f"S10 {market}"),
             (_build_s11, f"S11 {market}"),
             (_build_s12, f"S12 {market}"),

@@ -68,6 +68,27 @@ const CONFIDENCE_LABEL = {
     LOW:    '⚪ 낮음',
 };
 
+const SIGNAL_STAGE_LABEL = {
+    WATCH:  '관찰',
+    HOLD:   '관망',
+    ENTRY:  '조건 충족 확인',
+    CANCEL: '취소',
+};
+
+function _normalizeSignalStage(stage) {
+    const normalized = String(stage || '').trim().toUpperCase();
+    return SIGNAL_STAGE_LABEL[normalized] ? normalized : null;
+}
+
+function _effectiveAction(item) {
+    if (item.action) return item.action;
+    const stage = _normalizeSignalStage(item.signal_stage);
+    if (stage === 'ENTRY') return 'ENTER';
+    if (stage === 'WATCH' || stage === 'HOLD') return 'HOLD';
+    if (stage === 'CANCEL') return 'CANCEL';
+    return item.action;
+}
+
 /**
  * 거래 신호 → 텔레그램 HTML 메시지
  * @param {Object} item  ai_scored_queue 항목
@@ -130,13 +151,24 @@ function formatRuleOnlySignal(item) {
     const targetPct = item.adjusted_target_pct ?? item.target_pct;
     const stopPct = item.adjusted_stop_pct ?? item.stop_pct;
 
+    if (item.strategy === 'S1_GAP_OPEN') {
+        return [
+            '🚨갭상승 관찰 알림🚨',
+            `종목: ${escapeHtml(stockLabel)}`,
+            `관찰 기준가: ${_formatPriceOrPct(entry, null, '부근 조건 확인')}`,
+            `무효화 기준: ${_formatPriceOrPct(stop, stopPct, '이탈 여부 확인')}`,
+            `상단 대응 기준: ${_formatPriceOrPct(target, targetPct, '도달 여부 관찰')}`,
+            '확인사항\n1. 갭 상승 이후 체결강도와 호가 유지 여부를 확인합니다.\n2. 급격한 갭 메우기나 거래량 둔화 시 관찰을 중단합니다.\n3. 최종 판단은 사용자의 계획과 리스크 기준에 따릅니다.'
+        ].join('\n');
+    }
+
     return [
         '🚨가라급등열차 점장선생🚨',
         `종목: ${escapeHtml(stockLabel)}`,
         `진입가:  ${_formatPriceOrPct(entry, null, '이하 신규매수')}`,
         `손절가:  ${_formatPriceOrPct(stop, stopPct, '손절')}`,
         `목표가 : ${_formatPriceOrPct(target, targetPct, '이상 분할 매도 대응')}`,
-        '주의사항: 1. 매수는 필수가 아닙니다. \n 2. 비중은 계좌의 10% 이내를 권고합니다. \n 3. 투자판다은 개인에게 있습니다.'
+        '주의사항\n1. 매수는 필수가 아닙니다. \n2. 비중은 계좌의 10% 이내를 권고합니다. \n3. 투자판단은 개인에게 있습니다.'
     ].join('\n');
 }
 
@@ -145,8 +177,11 @@ function formatSignal(item) {
         return formatRuleOnlySignal(item);
     }
 
+    const effectiveAction = _effectiveAction(item);
+    const signalStage = _normalizeSignalStage(item.signal_stage);
+    const isS1GapOpen = item.strategy === 'S1_GAP_OPEN';
     const emoji    = STRATEGY_EMOJI[item.strategy] ?? '📌';
-    const action   = ACTION_LABEL[item.action]     ?? item.action;
+    const action   = ACTION_LABEL[effectiveAction]     ?? effectiveAction;
     const conf     = CONFIDENCE_LABEL[item.confidence] ?? item.confidence;
     const aiScore  = (item.ai_score ?? 0).toFixed(1);
     const ruleScore= (item.rule_score ?? 0).toFixed(1);
@@ -183,29 +218,34 @@ function formatSignal(item) {
     const displayedTp2 = displayTp2 || claudeTp2 || tp2;
     const displayedSl  = claudeSl  || sl;
 
-    if (item.action === 'ENTER') {
+    if (effectiveAction === 'ENTER') {
         lines.push('');
         lines.push(`종목: <b>${escapeHtml(stockLabel)}</b>`);
-        lines.push(`진입 판단: <b>조건부 매수 검토</b>`);
+        if (isS1GapOpen) {
+            lines.push(`신호 단계: <b>${SIGNAL_STAGE_LABEL[signalStage || 'WATCH']}</b>`);
+            lines.push('판단: <b>갭 상승 관찰, 조건 충족 확인 필요</b>');
+        } else {
+            lines.push(`진입 판단: <b>조건부 매수 검토</b>`);
+        }
         lines.push(`신뢰도: ${conf}  |  AI 점수: <b>${aiScore}</b>점  |  규칙 점수: ${ruleScore}점`);
 
         if (curPrc > 0) {
-            lines.push(`현재가(매수 기준): <b>${formatWon(curPrc)}</b>`);
+            lines.push(`${isS1GapOpen ? '현재가(관찰 기준)' : '현재가(매수 기준)'}: <b>${formatWon(curPrc)}</b>`);
         }
         if (displayedTp1) {
-            lines.push(`1차 목표가: <b>${formatWon(displayedTp1)}</b>${formatMove(displayedTp1) ? ` (${formatMove(displayedTp1)})` : ''}`);
+            lines.push(`${isS1GapOpen ? '1차 상단 기준' : '1차 목표가'}: <b>${formatWon(displayedTp1)}</b>${formatMove(displayedTp1) ? ` (${formatMove(displayedTp1)})` : ''}`);
         } else {
             const targetPct = item.adjusted_target_pct ?? item.target_pct;
-            if (targetPct != null) lines.push(`1차 목표 수익률: <b>+${targetPct}%</b>`);
+            if (targetPct != null) lines.push(`${isS1GapOpen ? '1차 상단 변동률' : '1차 목표 수익률'}: <b>+${targetPct}%</b>`);
         }
         if (displayedTp2) {
-            lines.push(`2차 목표가: <b>${formatWon(displayedTp2)}</b>${formatMove(displayedTp2) ? ` (${formatMove(displayedTp2)})` : ''}`);
+            lines.push(`${isS1GapOpen ? '2차 상단 기준' : '2차 목표가'}: <b>${formatWon(displayedTp2)}</b>${formatMove(displayedTp2) ? ` (${formatMove(displayedTp2)})` : ''}`);
         }
         if (displayedSl) {
-            lines.push(`손절가: <b>${formatWon(displayedSl)}</b>${formatMove(displayedSl) ? ` (${formatMove(displayedSl)})` : ''}`);
+            lines.push(`${isS1GapOpen ? '무효화 기준' : '손절가'}: <b>${formatWon(displayedSl)}</b>${formatMove(displayedSl) ? ` (${formatMove(displayedSl)})` : ''}`);
         } else {
             const stopPct = item.adjusted_stop_pct ?? item.stop_pct;
-            if (stopPct != null) lines.push(`손절 기준: <b>${stopPct}%</b>`);
+            if (stopPct != null) lines.push(`${isS1GapOpen ? '무효화 변동률' : '손절 기준'}: <b>${stopPct}%</b>`);
         }
 
         if (item.rr_ratio != null) {
@@ -218,39 +258,50 @@ function formatSignal(item) {
         }
 
         const pos = _positionSize(item.ai_score, item.confidence);
-        if (pos) lines.push(`권장 비중: <b>${pos}</b>`);
-        if (item.entry_type) lines.push(`매수 방식: ${item.entry_type}`);
-        if (item.ai_reason) lines.push(`추천이유: ${escapeHtml(item.ai_reason)}`);
+        if (!isS1GapOpen && pos) lines.push(`권장 비중: <b>${pos}</b>`);
+        if (item.entry_type) lines.push(`${isS1GapOpen ? '확인 조건' : '매수 방식'}: ${item.entry_type}`);
+        if (item.ai_reason) lines.push(`${isS1GapOpen ? '관찰 근거' : '추천이유'}: ${escapeHtml(item.ai_reason)}`);
 
         lines.push('');
-        lines.push('<b>진입 체크포인트</b>');
-        lines.push(`1. 기준가: ${curPrc > 0 ? `<b>${formatWon(curPrc)}</b>` : '매수 기준가'} 부근에서 호가와 체결 강도 유지 확인`);
-        lines.push(`2. 비중: ${pos ? `<b>${pos}</b> 이내` : '계획 비중 이내'}로 진입하고 손절 기준 손실폭을 먼저 확정`);
-        if (displayedTp2) {
-            lines.push('3. 목표 관리: TP1은 1차 매도가, TP2는 추세 추종');
+        lines.push(isS1GapOpen ? '<b>확인 체크포인트</b>' : '<b>진입 체크포인트</b>');
+        lines.push(`1. 기준가: ${curPrc > 0 ? `<b>${formatWon(curPrc)}</b>` : (isS1GapOpen ? '관찰 기준가' : '매수 기준가')} 부근에서 호가와 체결 강도 유지 확인`);
+        if (isS1GapOpen) {
+            lines.push('2. 갭 상승 후 눌림, 거래량 둔화, 호가 약화 여부 확인');
         } else {
-            lines.push('3. 목표 관리: TP1 도달 전 거래량 둔화와 호가 약화 여부 점검');
+            lines.push(`2. 비중: ${pos ? `<b>${pos}</b> 이내` : '계획 비중 이내'}로 진입하고 손절 기준 손실폭을 먼저 확정`);
+        }
+        if (displayedTp2) {
+            lines.push(isS1GapOpen ? '3. 상단 기준: 1차/2차 기준 도달 여부와 추세 지속성 확인' : '3. 목표 관리: TP1은 1차 매도가, TP2는 추세 추종');
+        } else {
+            lines.push(isS1GapOpen ? '3. 상단 기준: 목표 구간 도달 전 거래량과 체결강도 변화 점검' : '3. 목표 관리: TP1 도달 전 거래량 둔화와 호가 약화 여부 점검');
         }
         if (displayedSl) {
             lines.push(`4. 무효화 기준: <b>${formatWon(displayedSl)}</b> 이탈 시 전략 전제 훼손으로 대응`);
         } else {
-            lines.push('4. 무효화 기준: 손절 조건 충족 시 전략 전제 훼손으로 대응');
+            lines.push(`4. 무효화 기준: ${isS1GapOpen ? '하단 이탈 조건 충족 시' : '손절 조건 충족 시'} 전략 전제 훼손으로 대응`);
         }
         if (item.skip_entry) {
             const rrStr = item.rr_ratio != null ? ` (현재 R:R ${Number(item.rr_ratio).toFixed(2)})` : '';
-            lines.push(`주의: 손익비가 낮아 추격 매수는 비추천${rrStr}`);
+            lines.push(isS1GapOpen ? `주의: 손익비가 낮아 추격 판단은 보류${rrStr}` : `주의: 손익비가 낮아 추격 매수는 비추천${rrStr}`);
         }
     } else {
-        lines.push(
-            `${action}  |  신뢰도: ${conf}`,
-            `AI 스코어: <b>${aiScore}</b>점  (규칙: ${ruleScore}점)`,
-        );
+        if (isS1GapOpen) {
+            lines.push(
+                `신호 단계: <b>${SIGNAL_STAGE_LABEL[signalStage || 'WATCH']}</b>  |  신뢰도: ${conf}`,
+                `AI 스코어: <b>${aiScore}</b>점  (규칙: ${ruleScore}점)`,
+            );
+        } else {
+            lines.push(
+                `${action}  |  신뢰도: ${conf}`,
+                `AI 스코어: <b>${aiScore}</b>점  (규칙: ${ruleScore}점)`,
+            );
+        }
         if (curPrc > 0) {
-            lines.push(`진입가: <b>${curPrc.toLocaleString()}원</b>  (${item.entry_type ?? '-'})`);
+            lines.push(`${isS1GapOpen ? '관찰 기준가' : '진입가'}: <b>${curPrc.toLocaleString()}원</b>  (${item.entry_type ?? '-'})`);
         }
     }
 
-    if (item.action !== 'ENTER') {
+    if (effectiveAction !== 'ENTER') {
         if (tp1 || tp2 || sl) {
             lines.push('📐 <b>목표가 (규칙 기반)</b>');
             if (tp1 && curPrc > 0) {
@@ -302,13 +353,13 @@ function formatSignal(item) {
     }
 
     // 포지션 크기 제안 (ENTER 신호 외)
-    if (item.action !== 'ENTER') {
+    if (effectiveAction !== 'ENTER') {
         const pos = _positionSize(item.ai_score, item.confidence);
-        if (pos) lines.push(`💰 권장 비중: <b>${pos}</b>`);
+        if (!isS1GapOpen && pos) lines.push(`💰 권장 비중: <b>${pos}</b>`);
     }
 
     // AI 분석 근거
-    if (item.ai_reason && item.action !== 'ENTER') {
+    if (item.ai_reason && effectiveAction !== 'ENTER') {
         lines.push('');
         lines.push(`💬 <i>${escapeHtml(item.ai_reason)}</i>`);
     }

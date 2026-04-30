@@ -42,6 +42,7 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
     candidates: list[str] = []
     if rdb:
         try:
+            logger.debug("[S9] using candidates:s9 strategy-owned pool for pullback scan")
             kospi  = await rdb.lrange("candidates:s9:001", 0, 99)
             kosdaq = await rdb.lrange("candidates:s9:101", 0, 99)
             candidates = list(dict.fromkeys(kospi + kosdaq))[:30]
@@ -49,7 +50,7 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
             logger.warning("[S9] Redis 후보 조회 실패: %s", e)
 
     if not candidates:
-        logger.warning("[S9] candidates:s9:001/101 풀 없음 – candidates_builder 기동 확인 필요")
+        logger.warning("[S9] candidates:s9:001/101 pool 없음 – candidates_builder 기동 확인 필요")
         return []
 
     results = []

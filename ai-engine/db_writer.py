@@ -12,6 +12,8 @@ from typing import Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import asyncpg
+
 from position_lifecycle import ACTIVE_POSITION_STATES, ACTIVE_SIGNAL_STATUSES, TERMINAL_SIGNAL_STATUSES
 from utils import normalize_stock_code, safe_float_opt as _sf
 
@@ -50,6 +52,15 @@ def _opt_bool(v) -> Optional[bool]:
     if s in {"false", "0", "n", "no"}:
         return False
     return None
+
+
+def _clip_str(v, limit: int) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    return s[:limit]
 
 
 def _add_business_days(start_dt: datetime, days: int) -> datetime:
@@ -216,6 +227,11 @@ async def _upsert_primary_trade_plan(
     trailing_pct: Optional[float],
 ) -> None:
     strategy_code = (strategy_code or "").strip() or "UNKNOWN"
+    strategy_version = _clip_str(strategy_version, 40)
+    tp_model = _clip_str(tp_model, 200)
+    sl_model = _clip_str(sl_model, 200)
+    time_stop_type = _clip_str(time_stop_type, 30)
+    time_stop_session = _clip_str(time_stop_session, 30)
     entry = _opt_num(entry_price)
     tp = _opt_num(tp_price)
     sl = _opt_num(sl_price)
@@ -224,7 +240,7 @@ async def _upsert_primary_trade_plan(
     trailing_rule = None
     if trailing_pct is not None:
         basis = str(trailing_basis or "single_tp")
-        trailing_rule = f"{basis}:{round(float(trailing_pct), 2)}%"
+        trailing_rule = _clip_str(f"{basis}:{round(float(trailing_pct), 2)}%", 200)
 
     updated = await conn.execute(
         """
@@ -528,8 +544,8 @@ async def insert_python_signal(
                     _sf(signal.get("tp1_price")),
                     _sf(signal.get("tp2_price")),
                     _sf(signal.get("sl_price")),
-                    signal.get("tp_method"),
-                    signal.get("sl_method"),
+                    _clip_str(signal.get("tp_method"), 200),
+                    _clip_str(signal.get("sl_method"), 200),
                     _sf(signal.get("rr_ratio")),
                     _sf(signal.get("raw_rr")),
                     _sf(signal.get("single_tp_rr")),
@@ -594,6 +610,12 @@ async def insert_python_signal(
                         },
                     )
                 return row["id"] if row else None
+    except asyncpg.ForeignKeyViolationError as e:
+        logger.warning(
+            "[DBWriter] insert_python_signal FK violation (stk_cd not in stock_master) [%s %s]: %s",
+            signal.get("stk_cd"), signal.get("strategy"), e,
+        )
+        return None
     except Exception as e:
         logger.error("[DBWriter] insert_python_signal error [%s %s]: %s", signal.get("stk_cd"), signal.get("strategy"), e)
         return None

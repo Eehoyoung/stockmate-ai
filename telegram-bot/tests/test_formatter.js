@@ -78,11 +78,17 @@ test('formatSignal includes basic trade context', () => {
     assert.ok(msg.includes('삼성전자'));
     assert.ok(!msg.includes('초보자용 매수 가이드'));
     assert.ok(!msg.includes('지금 할 일'));
-    assert.ok(msg.includes('진입 체크포인트'));
+    assert.ok(msg.includes('갭 상승 관찰'));
+    assert.ok(msg.includes('확인 체크포인트'));
+    assert.ok(!msg.includes('신규매수'));
+    assert.ok(!msg.includes('권장 비중'));
+    assert.ok(!msg.includes('조건부 매수 검토'));
+    assert.ok(!msg.includes('매수 방식'));
+    assert.ok(!msg.includes('추격 매수'));
     assert.ok(msg.includes('&lt;') || !msg.includes('<script>'));
 });
 
-test('formatSignal renders short rule-only buy form', () => {
+test('formatSignal renders S1 rule-only as observation form', () => {
     const msg = formatSignal(makeSignal({
         type: 'RULE_ONLY_SIGNAL',
         signal_grade: 'RULE_ONLY',
@@ -91,18 +97,33 @@ test('formatSignal renders short rule-only buy form', () => {
         sl_price: 17480,
         stk_nm: 'BNK금융지주',
     }));
-    assert.ok(msg.includes('가라급등열차 점장선생'));
+    assert.ok(msg.includes('갭상승 관찰 알림'));
     assert.ok(msg.includes('종목: BNK금융지주'));
-    assert.ok(msg.includes('18,900원 이하 신규매수') || msg.includes('18,880원 이하 신규매수'));
-    assert.ok(msg.includes('20,070원 이상 분할 매도 대응'));
-    assert.ok(msg.includes('손절'));
-    assert.ok(msg.includes('분할 매도 대응'));
+    assert.ok(msg.includes('18,900원 부근 조건 확인') || msg.includes('18,880원 부근 조건 확인'));
+    assert.ok(msg.includes('20,070원 도달 여부 관찰'));
+    assert.ok(msg.includes('무효화 기준'));
+    assert.ok(!msg.includes('신규매수'));
+    assert.ok(!msg.includes('권장 비중'));
     assert.strictEqual(msg, formatRuleOnlySignal({
+        strategy: 'S1_GAP_OPEN',
         stk_nm: 'BNK금융지주',
         cur_prc: 18880,
         tp1_price: 20070,
         sl_price: 17480,
     }));
+});
+
+test('formatRuleOnlySignal keeps legacy buy wording for non-S1 strategies', () => {
+    const msg = formatRuleOnlySignal({
+        strategy: 'S2_VI_PULLBACK',
+        stk_nm: 'BNK금융지주',
+        cur_prc: 18880,
+        tp1_price: 20070,
+        sl_price: 17480,
+    });
+    assert.ok(msg.includes('가라급등열차 점장선생'));
+    assert.ok(msg.includes('신규매수'));
+    assert.ok(msg.includes('권고'));
 });
 
 test('formatSignal falls back to target and stop percentages', () => {
@@ -130,6 +151,34 @@ test('formatSignal shows integrated TP1 before Claude TP1', () => {
         sl_price: 82000,
     }));
     assert.ok(msg.includes('88,000'));
+});
+
+test('formatSignal handles optional S1 signal_stage values safely', () => {
+    const watchMsg = formatSignal(makeSignal({ signal_stage: 'WATCH' }));
+    assert.ok(watchMsg.includes('신호 단계: <b>관찰</b>'));
+    assert.ok(!watchMsg.includes('권장 비중'));
+    assert.ok(!watchMsg.includes('신규매수'));
+
+    const entryMsg = formatSignal(makeSignal({ signal_stage: 'ENTRY' }));
+    assert.ok(entryMsg.includes('신호 단계: <b>조건 충족 확인</b>'));
+    assert.ok(!entryMsg.includes('조건부 매수 검토'));
+
+    const holdMsg = formatSignal(makeSignal({ action: undefined, signal_stage: 'HOLD' }));
+    assert.ok(holdMsg.includes('신호 단계: <b>관망</b>'));
+    assert.ok(holdMsg.includes('관찰 기준가'));
+    assert.ok(!holdMsg.includes('진입가'));
+    assert.ok(!holdMsg.includes('권장 비중'));
+});
+
+test('formatSignal keeps non-S1 ENTER wording unchanged', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S2_VI_PULLBACK',
+        signal_stage: 'ENTRY',
+    }));
+    assert.ok(msg.includes('진입 판단: <b>조건부 매수 검토</b>'));
+    assert.ok(msg.includes('권장 비중'));
+    assert.ok(msg.includes('매수 방식'));
+    assert.ok(msg.includes('진입 체크포인트'));
 });
 
 test('formatForceClose renders stock code and strategy', () => {

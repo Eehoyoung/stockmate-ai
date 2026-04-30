@@ -197,7 +197,7 @@ async function main() {
     const chatIds = getAllowedChatIds();
     startConfirmPoller(bot, chatIds);
 
-    const healthPort = parseInt(process.env.HEALTH_PORT || '3001', 10);
+    const healthPort = parseInt(process.env.TELEGRAM_HEALTH_PORT || process.env.HEALTH_PORT || '3001', 10);
     health.start(healthPort);
     logger.info('[Bot] health server started', { port: healthPort });
 }

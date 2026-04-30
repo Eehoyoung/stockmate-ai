@@ -29,10 +29,13 @@ def _normalize_stock_code(stk_cd: str | None) -> str:
 
 async def write_heartbeat(rdb, grp_status: dict):
     try:
-        mapping = {"updated_at": str(time.time())}
+        now_ts = str(time.time())
+        mapping = {"updated_at": now_ts}
         mapping.update(grp_status)
         await rdb.hmset("ws:py_heartbeat", mapping)
         await rdb.expire("ws:py_heartbeat", 90)
+        # ws:heartbeat: 모니터링 시스템이 참조하는 표준 키 (단순 타임스탬프 문자열)
+        await rdb.set("ws:heartbeat", now_ts, ex=90)
     except Exception as e:
         logger.debug("[Redis] heartbeat update failed: %s", e)
 

@@ -17,6 +17,7 @@ const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 2000);
 const MIN_AI_SCORE = Number(process.env.MIN_AI_SCORE ?? 65);
 const HOLD_MIN_SCORE = 80;
 const MAX_SIGNALS_PER_MIN = Number(process.env.MAX_SIGNALS_PER_MIN ?? 20);
+const VALID_SIGNAL_STAGES = new Set(['WATCH', 'HOLD', 'ENTRY', 'CANCEL']);
 
 let _signalCount = 0;
 let _windowStart = Date.now();
@@ -44,6 +45,20 @@ function getPrimaryChatIds() {
         .split(',')
         .map((id) => id.trim())
         .filter(Boolean);
+}
+
+function normalizeSignalStage(stage) {
+    const normalized = String(stage || '').trim().toUpperCase();
+    return VALID_SIGNAL_STAGES.has(normalized) ? normalized : null;
+}
+
+function getEffectiveAction(item) {
+    if (item.action) return item.action;
+    const stage = normalizeSignalStage(item.signal_stage);
+    if (stage === 'ENTRY') return 'ENTER';
+    if (stage === 'WATCH' || stage === 'HOLD') return 'HOLD';
+    if (stage === 'CANCEL') return 'CANCEL';
+    return item.action;
 }
 
 async function isAllowedByFilter(chatId, strategy) {
@@ -204,16 +219,18 @@ async function processItem(bot, item) {
         }
     }
 
-    const { action, ai_score } = item;
+    const { ai_score } = item;
+    const signalStage = normalizeSignalStage(item.signal_stage);
+    const action = getEffectiveAction(item);
     const isRuleOnly = item.signal_grade === 'RULE_ONLY'
         || item.validation_stage === 'RULE_ONLY'
         || item.type === 'RULE_ONLY_SIGNAL';
-    if (action === 'CANCEL') return;
+    if (action === 'CANCEL' || signalStage === 'CANCEL') return;
     if (action === 'ENTER' && !isRuleOnly && ai_score < MIN_AI_SCORE) {
         logger.info('below score threshold', { stk_cd: item.stk_cd, strategy: item.strategy, score: ai_score });
         return;
     }
-    if (action === 'HOLD' && ai_score < HOLD_MIN_SCORE) return;
+    if ((action === 'HOLD' || signalStage === 'HOLD') && ai_score < HOLD_MIN_SCORE) return;
 
     if (!_checkRateLimit()) {
         logger.warn('rate limit exceeded', {

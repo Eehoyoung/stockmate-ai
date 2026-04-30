@@ -43,11 +43,11 @@ public class TradePlan {
     private String planName = "primary";
 
     /** TP 계산 모델 식별자 */
-    @Column(name = "tp_model", length = 50)
+    @Column(name = "tp_model", length = 200)
     private String tpModel;
 
     /** SL 계산 모델 식별자 */
-    @Column(name = "sl_model", length = 50)
+    @Column(name = "sl_model", length = 200)
     private String slModel;
 
     @Column(name = "tp_price", precision = 10, scale = 0)
@@ -80,15 +80,15 @@ public class TradePlan {
     private String timeStopSession;
 
     /** 트레일링 스탑 룰 식별자 */
-    @Column(name = "trailing_rule", length = 50)
+    @Column(name = "trailing_rule", length = 200)
     private String trailingRule;
 
     /** 부분 TP 룰 식별자 */
-    @Column(name = "partial_tp_rule", length = 50)
+    @Column(name = "partial_tp_rule", length = 100)
     private String partialTpRule;
 
     /** 청산 우선순위 (TP_FIRST / SL_FIRST / TIME_STOP 등) */
-    @Column(name = "planned_exit_priority", length = 50)
+    @Column(name = "planned_exit_priority", length = 100)
     private String plannedExitPriority;
 
     /** 플랜 우선순위 (1=primary) */

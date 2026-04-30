@@ -146,7 +146,7 @@ class TestQueueWorkerHappyPath:
         assert "257.2" in captured[0]["ai_reason"]
 
     def test_high_score_hold_is_promoted_to_enter(self):
-        item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=1.2)
+        item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=2.0, bid_ratio=2.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
 
@@ -445,6 +445,170 @@ class TestQueueWorkerFailures:
         assert payload["rr_ratio"] == payload["effective_rr"]
         assert payload["rr_ratio"] != 0.9
         assert abs(payload["rr_ratio"] - 3.118) < 0.01
+
+    def test_s1_claude_enter_is_final_cancel_when_effective_rr_below_hard_rule(self):
+        item = _signal(cur_prc=10000, tp1_price=12000, sl_price=9000, rr_ratio=2.0, min_rr_ratio=1.0, bid_ratio=2.0)
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch(
+                 "queue_worker.analyze_signal",
+                 new_callable=AsyncMock,
+                 return_value={
+                     "action": "ENTER",
+                     "ai_score": 82.0,
+                     "confidence": "HIGH",
+                     "reason": "claude says enter",
+                     "claude_tp1": 10500,
+                     "claude_tp2": 10600,
+                     "claude_sl": 9700,
+                 },
+             ), \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert len(captured) == 1
+        payload = captured[0]
+        assert payload["action"] == "CANCEL"
+        assert payload["cancel_type"] == "CLAUDE_HARD_RULE"
+        assert payload["claude_tp1"] is None
+        assert payload["claude_tp2"] is None
+        assert payload["claude_sl"] is None
+        assert "S1 effective R:R" in payload["cancel_reason"]
+
+
+class TestClaudeRiskPostprocess:
+    def test_hold_or_cancel_nulls_claude_prices(self):
+        from queue_worker import _apply_claude_postprocess_hard_rules
+
+        payload = {
+            "strategy": "S1_GAP_OPEN",
+            "action": "HOLD",
+            "claude_tp1": 11000,
+            "claude_tp2": 12000,
+            "claude_sl": 9500,
+        }
+
+        result = _apply_claude_postprocess_hard_rules(payload)
+
+        assert result["action"] == "HOLD"
+        assert result["claude_tp1"] is None
+        assert result["claude_tp2"] is None
+        assert result["claude_sl"] is None
+
+    def test_enter_invalid_tp_sl_relation_becomes_cancel_and_nulls_prices(self):
+        from queue_worker import _apply_claude_postprocess_hard_rules
+
+        payload = {
+            "strategy": "S1_GAP_OPEN",
+            "action": "ENTER",
+            "cur_prc": 10000,
+            "claude_tp1": 9900,
+            "claude_tp2": 10500,
+            "claude_sl": 9700,
+        }
+
+        result = _apply_claude_postprocess_hard_rules(payload)
+
+        assert result["action"] == "CANCEL"
+        assert result["cancel_type"] == "CLAUDE_HARD_RULE"
+        assert result["claude_tp1"] is None
+        assert result["claude_tp2"] is None
+        assert result["claude_sl"] is None
+        assert "tp1 > entry > sl" in result["cancel_reason"]
+
+    def test_enter_tp2_below_tp1_becomes_cancel(self):
+        from queue_worker import _apply_claude_postprocess_hard_rules
+
+        payload = {
+            "strategy": "S1_GAP_OPEN",
+            "action": "ENTER",
+            "cur_prc": 10000,
+            "claude_tp1": 11000,
+            "claude_tp2": 10999,
+            "claude_sl": 9500,
+            "effective_rr": 2.0,
+        }
+
+        result = _apply_claude_postprocess_hard_rules(payload)
+
+        assert result["action"] == "CANCEL"
+        assert result["cancel_type"] == "CLAUDE_HARD_RULE"
+        assert "tp2 must be greater than or equal to tp1" in result["cancel_reason"]
+
+
+class TestPipelineDailyCounter:
+    """pipeline_daily Redis 키 오염 방지 테스트."""
+
+    def test_daily_report_bypass_does_not_create_pipeline_key(self):
+        """DAILY_REPORT 페이로드(strategy 없음)는 pipeline_daily: 키를 생성하면 안 된다."""
+        item = {
+            "type": "DAILY_REPORT",
+            "date": "2026-04-28",
+            "total_signals": 5,
+        }
+        rdb = _make_rdb(json.dumps(item))
+
+        with patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        # hincrby가 호출되지 않아야 한다 — 빈 strategy 키 생성을 막는 핵심 단언
+        rdb.hincrby.assert_not_awaited()
+
+    def test_none_strategy_payload_does_not_create_pipeline_key(self):
+        """strategy 필드가 null/None 인 페이로드도 pipeline_daily 키를 만들지 않아야 한다."""
+        item = {
+            "type": "OVERNIGHT_RISK_ALERT",
+            "stk_cd": "005930",
+            "strategy": None,
+            "message": "갭다운 경보",
+        }
+        rdb = _make_rdb(json.dumps(item))
+
+        with patch("queue_worker.push_score_only_queue", new_callable=AsyncMock), \
+             patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(0.0, {})), \
+             patch("queue_worker.should_skip_ai", return_value=True):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        rdb.hincrby.assert_not_awaited()
+
+    def test_normal_signal_increments_pipeline_counter(self):
+        """정상 전략 신호는 pipeline_daily:{date}:{strategy} 키를 증가시켜야 한다."""
+        item = _signal(strategy="S7_ICHIMOKU_BREAKOUT")
+        rdb = _make_rdb(json.dumps(item))
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(75.0, {})), \
+             patch("queue_worker.should_skip_ai", return_value=True), \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        # hincrby 가 S7_ICHIMOKU_BREAKOUT 키로 호출됐는지 확인
+        calls = rdb.hincrby.await_args_list
+        assert len(calls) >= 1
+        first_key = calls[0].args[0]
+        assert "S7_ICHIMOKU_BREAKOUT" in first_key
+        assert not first_key.endswith(":")
 
 
 class TestQueueWorkerEmptyQueue:

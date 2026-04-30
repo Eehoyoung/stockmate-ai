@@ -264,6 +264,13 @@ class TestRunStrategyScanner:
 
 
 class TestTimeBasedStrategyActivation:
+    @staticmethod
+    def _active_tags_at(hour, minute):
+        import datetime
+        from strategy_runner import _active_schedule_entries
+
+        return {tag for tag, _, _, _ in _active_schedule_entries(datetime.time(hour, minute))}
+
     def test_no_tasks_before_market_open(self):
         import datetime
         from strategy_runner import _run_once
@@ -288,6 +295,26 @@ class TestTimeBasedStrategyActivation:
         entries = _active_schedule_entries(datetime.time(10, 15))
         tags = [tag for tag, _, _, _ in entries]
         assert "S7" in tags
+
+    def test_s2_not_scheduled_in_strategy_runner(self):
+        assert "S2" not in self._active_tags_at(9, 0)
+        assert "S2" not in self._active_tags_at(10, 0)
+        assert "S2" not in self._active_tags_at(14, 50)
+
+    @pytest.mark.parametrize(
+        ("strategy", "start", "end", "after_end"),
+        [
+            ("S4", (10, 0), (14, 30), (14, 31)),
+            ("S10", (10, 0), (14, 0), (14, 1)),
+            ("S11", (10, 0), (14, 30), (14, 31)),
+            ("S13", (10, 0), (14, 0), (14, 1)),
+        ],
+    )
+    def test_final_schedule_boundaries(self, strategy, start, end, after_end):
+        assert strategy not in self._active_tags_at(9, 59)
+        assert strategy in self._active_tags_at(*start)
+        assert strategy in self._active_tags_at(*end)
+        assert strategy not in self._active_tags_at(*after_end)
 
 
 class TestConstants:

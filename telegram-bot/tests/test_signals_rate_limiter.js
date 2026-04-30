@@ -251,6 +251,20 @@ test('signals.js에 MIN_AI_SCORE 변수 존재', () => {
     assert.ok(content.includes('MIN_AI_SCORE'));
 });
 
+test('signals.js에 signal_stage optional 처리 존재', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const content = fs.readFileSync(
+        path.join(__dirname, '../src/handlers/signals.js'),
+        'utf8'
+    );
+    assert.ok(content.includes('normalizeSignalStage'));
+    assert.ok(content.includes('WATCH'));
+    assert.ok(content.includes('HOLD'));
+    assert.ok(content.includes('ENTRY'));
+    assert.ok(content.includes('CANCEL'));
+});
+
 // ──────────────────────────────────────────────────────────────────
 // 최종 결과
 // ──────────────────────────────────────────────────────────────────

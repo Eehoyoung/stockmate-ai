@@ -60,6 +60,17 @@ except Exception:
         '"claude_tp1":null,"claude_tp2":null,"claude_sl":null}'
     )
 
+try:
+    _S1_GAP_OPEN_SYS_PROMPT = (_PROMPT_DIR / "signal_analysis_s1_gap_open.txt").read_text(encoding="utf-8")
+except Exception:
+    _S1_GAP_OPEN_SYS_PROMPT = _SYS_PROMPT
+
+
+def _get_system_prompt(strategy: str | None) -> str:
+    if strategy == "S1_GAP_OPEN":
+        return _S1_GAP_OPEN_SYS_PROMPT
+    return _SYS_PROMPT
+
 
 def _fmt_tpsl(signal: dict) -> str:
     """규칙 기반 TP/SL 컨텍스트 + 실질 R:R(슬리피지 반영) 문자열 생성"""
@@ -370,6 +381,7 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
     """
     client       = _get_claude_client()
     user_message = _build_user_message(signal, market_ctx, rule_score)
+    system_prompt = _get_system_prompt(signal.get("strategy"))
 
     raw_text = ""
     try:
@@ -377,7 +389,7 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
             client.messages.create(
                 model      = CLAUDE_MODEL,
                 max_tokens = MAX_TOKENS,
-                system     = _SYS_PROMPT,
+                system     = system_prompt,
                 messages   = [{"role": "user", "content": user_message}],
             ),
             timeout=CLAUDE_TIMEOUT,

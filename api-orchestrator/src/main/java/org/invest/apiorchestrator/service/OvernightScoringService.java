@@ -188,8 +188,8 @@ public class OvernightScoringService {
             case S14_OVERSOLD_BOUNCE -> 15;
             // 장대양봉·테마후발: 중립 – 상황에 따라 다름
             case S4_BIG_CANDLE, S6_THEME_LAGGARD -> 15;
-            // 갭오픈·VI눌림·레거시 동시호가(S7_AUCTION): 오버나잇 부적합
-            case S1_GAP_OPEN, S2_VI_PULLBACK, S7_AUCTION -> 5;
+            // 갭오픈·VI눌림: 오버나잇 부적합
+            case S1_GAP_OPEN, S2_VI_PULLBACK -> 5;
         };
     }
 

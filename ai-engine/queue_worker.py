@@ -81,10 +81,17 @@ _S12_END_MINUTE = 15 * 60 + 10
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 RR_CAUTION_THRESHOLD = float(os.getenv("RR_CAUTION_THRESHOLD", "1.2"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
+S1_CLAUDE_MIN_EFFECTIVE_RR = 1.8
+CLAUDE_HARD_RULE_CANCEL_TYPE = "CLAUDE_HARD_RULE"
+_CLAUDE_PRICE_FIELDS = ("claude_tp1", "claude_tp2", "claude_sl")
 
 
 async def _incr_pipeline(rdb, strategy: str, field: str) -> None:
     """Best-effort per-strategy daily pipeline counters."""
+    if not strategy:
+        # strategy가 없는 bypass 페이로드(DAILY_REPORT 등)는 카운터를 건너뜀.
+        # 빈 strategy로 pipeline_daily:{date}: 키가 생성되는 것을 방지한다.
+        return
     try:
         today = datetime.now(_KST).strftime("%Y-%m-%d")
         key = f"pipeline_daily:{today}:{strategy}"
@@ -421,6 +428,63 @@ def _raw_rr(entry: float | None, tp: float | None, sl: float | None) -> float | 
     return round((tp_f - entry_f) / risk, 3)
 
 
+def _null_claude_prices(payload: dict) -> None:
+    for field in _CLAUDE_PRICE_FIELDS:
+        payload[field] = None
+
+
+def _cancel_by_claude_hard_rule(payload: dict, reason: str) -> dict:
+    payload["action"] = "CANCEL"
+    payload["confidence"] = "LOW"
+    payload["cancel_reason"] = reason
+    payload["ai_reason"] = reason
+    payload["skip_entry"] = True
+    payload["cancel_type"] = CLAUDE_HARD_RULE_CANCEL_TYPE
+    _null_claude_prices(payload)
+    return payload
+
+
+def _apply_claude_postprocess_hard_rules(payload: dict) -> dict:
+    """Apply final schema/risk hard rules after Claude action/TP/SL overrides."""
+    action = str(payload.get("action") or "HOLD").upper()
+    payload["action"] = action
+
+    if action in ("HOLD", "CANCEL"):
+        _null_claude_prices(payload)
+        return payload
+
+    if action != "ENTER":
+        return payload
+
+    entry = _fv(payload.get("cur_prc") or payload.get("entry_price"), None)
+    claude_tp1 = _fv(payload.get("claude_tp1"), None)
+    claude_tp2 = _fv(payload.get("claude_tp2"), None)
+    claude_sl = _fv(payload.get("claude_sl"), None)
+
+    if entry is not None and (claude_tp1 is not None or claude_sl is not None):
+        if claude_tp1 is None or claude_sl is None or not (claude_tp1 > entry > claude_sl):
+            return _cancel_by_claude_hard_rule(
+                payload,
+                "Claude TP/SL hard rule failed: requires tp1 > entry > sl",
+            )
+
+    if claude_tp2 is not None and claude_tp1 is not None and claude_tp2 < claude_tp1:
+        return _cancel_by_claude_hard_rule(
+            payload,
+            "Claude TP/SL hard rule failed: tp2 must be greater than or equal to tp1",
+        )
+
+    if payload.get("strategy") == "S1_GAP_OPEN":
+        rr = _fv(payload.get("effective_rr") or payload.get("rr_ratio"), None)
+        if rr is not None and rr < S1_CLAUDE_MIN_EFFECTIVE_RR:
+            return _cancel_by_claude_hard_rule(
+                payload,
+                f"S1 effective R:R {rr:.2f} below {S1_CLAUDE_MIN_EFFECTIVE_RR:.2f}",
+            )
+
+    return payload
+
+
 def _apply_claude_rr_override(payload: dict) -> dict:
     """Recompute displayed/stored RR when Claude changes executable TP/SL."""
     if payload.get("action") != "ENTER":
@@ -499,8 +563,16 @@ async def process_one(rdb, pg_pool=None) -> bool:
     normalize_signal_prices(item)
 
     stk_cd = normalize_stock_code(item.get("stk_cd", ""))
-    strategy = item.get("strategy", "")
+    strategy = item.get("strategy") or ""
     item["stk_cd"] = stk_cd
+
+    # bypass 타입(FORCE_CLOSE, DAILY_REPORT 등)은 strategy 없이 발행되므로
+    # _incr_pipeline 보다 먼저 체크해 파이프라인 카운터가 오염되지 않도록 한다.
+    item_type = item.get("type", "")
+    if item_type in ("FORCE_CLOSE", "DAILY_REPORT"):
+        await push_score_only_queue(rdb, item)
+        logger.debug("[Worker] bypass item forwarded [%s]", item_type)
+        return True
 
     await _incr_pipeline(rdb, strategy, "candidate")
 
@@ -511,12 +583,6 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 item["stk_nm"] = await fetch_stk_nm(rdb, token, stk_cd)
         except Exception as nm_err:
             logger.debug("[Worker] stk_nm lookup failed [%s %s]: %s", stk_cd, strategy, nm_err)
-
-    item_type = item.get("type", "")
-    if item_type in ("FORCE_CLOSE", "DAILY_REPORT"):
-        await push_score_only_queue(rdb, item)
-        logger.debug("[Worker] bypass item forwarded [%s]", item_type)
-        return True
 
     signal_id = item.get("id")
     signal = item
@@ -637,13 +703,22 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "adjusted_target_pct": ai_result.get("adjusted_target_pct"),
             "adjusted_stop_pct": ai_result.get("adjusted_stop_pct"),
             "claude_tp1": ai_result.get("claude_tp1"),
-            "claude_tp2": None,
+            "claude_tp2": ai_result.get("claude_tp2"),
             "claude_sl": ai_result.get("claude_sl"),
             "tp2_price": None,
+            "cancel_type": cancel_type or ai_result.get("cancel_type"),
             **quality,
         }
         normalize_signal_prices(enriched)
         enriched = _apply_claude_rr_override(enriched)
+        enriched = _apply_claude_postprocess_hard_rules(enriched)
+        action = enriched.get("action", action)
+        confidence = enriched.get("confidence", confidence)
+        cancel_reason = enriched.get("cancel_reason")
+        cancel_type = enriched.get("cancel_type")
+        reason = enriched.get("ai_reason", reason)
+        display_reason = _resolve_display_reason(action, reason, cancel_reason)
+        enriched["ai_reason"] = display_reason
         await push_score_only_queue(rdb, enriched)
 
         if cancel_type in ("AI_UNAVAILABLE", "AI_DAILY_LIMIT") or (
@@ -733,7 +808,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                         db_id,
                         ai_score=ai_score_val,
                         tp1_price=_fv(enriched.get("claude_tp1") or enriched.get("tp1_price")),
-                        tp2_price=None,
+                        tp2_price=_fv(enriched.get("claude_tp2") or enriched.get("tp2_price")),
                         sl_price=_fv(enriched.get("claude_sl") or enriched.get("sl_price")),
                         rr_ratio=_fv(enriched.get("rr_ratio")),
                         trailing_pct=_fv(enriched.get("trailing_pct")),
