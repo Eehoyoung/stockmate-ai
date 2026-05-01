@@ -76,6 +76,7 @@ public class DataPersistenceScheduler {
                         .accTrdePrica(_l(tick.get("acc_trde_prica")))
                         .cntrStr(_d(tick.get("cntr_str")))
                         .tickType("0B")
+                        .mustPersist(hasMeaningfulTradeSnapshot(tick))
                         .build());
             }
 
@@ -89,6 +90,7 @@ public class DataPersistenceScheduler {
                         .totalAskQty(totalAsk)
                         .bidAskRatio(ratio(totalBid, totalAsk))
                         .tickType("0D")
+                        .mustPersist(false)
                         .build());
             }
 
@@ -101,6 +103,7 @@ public class DataPersistenceScheduler {
                         .fluRt(_d(expected.get("exp_flu_rt")))
                         .accTrdeQty(_l(expected.get("exp_cntr_qty")))
                         .tickType("0H")
+                        .mustPersist(hasMeaningfulExpectedSnapshot(expected))
                         .build());
             }
         }
@@ -240,6 +243,17 @@ public class DataPersistenceScheduler {
 
     private boolean isEventWriterActive() {
         return "1".equals(redis.opsForValue().get("ws:db_writer:event_mode"));
+    }
+
+    private static boolean hasMeaningfulTradeSnapshot(Map<Object, Object> tick) {
+        return _d(tick.get("cur_prc")) != null
+                || _l(tick.get("acc_trde_qty")) != null
+                || _d(tick.get("cntr_str")) != null;
+    }
+
+    private static boolean hasMeaningfulExpectedSnapshot(Map<Object, Object> expected) {
+        return _d(expected.get("exp_cntr_pric")) != null
+                || _l(expected.get("exp_cntr_qty")) != null;
     }
 
     private DailyIndicators buildDailyIndicators(LocalDate date, String stkCd,

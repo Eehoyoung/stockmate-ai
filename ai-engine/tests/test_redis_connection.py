@@ -199,18 +199,17 @@ class TestRedisConnectionManagerReconnect:
 
         call_count = [0]
 
-        def make_client():
+        def make_client(*args, **kwargs):
             # 두 번째 호출부터 new_client 반환
             call_count[0] += 1
-            if call_count[0] > 1:
-                return new_client
-            return old_client
+            return new_client
 
         with patch("redis_reader.aioredis.Redis", side_effect=make_client), \
              patch("asyncio.sleep", new_callable=AsyncMock):
             client = _run(mgr.reconnect())
 
         old_client.aclose.assert_awaited()
+        assert client is new_client
 
 
 # ──────────────────────────────────────────────────────────────────

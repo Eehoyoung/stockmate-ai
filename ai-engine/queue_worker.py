@@ -74,7 +74,7 @@ _BEAR_GATE_EXEMPT = {"S9_PULLBACK_SWING", "S14_OVERSOLD_BOUNCE", "S11_FRGN_CONT"
 
 # ── R:R 사전필터 장세별 임계값 ─────────────────────────────────────────────
 # bull: 모멘텀이 슬리피지를 상쇄 → 0.65, bear: 리스크 엄격 → 0.80
-_RR_BY_REGIME = {"bull": 0.65, "sideways": 0.75, "bear": 0.80, "neutral": 0.75}
+_RR_BY_REGIME = {"bull": 0.65, "sideways": 0.75, "bear": 0.80, "neutral": 0.80}
 
 _S12_START_MINUTE = 14 * 60 + 30
 _S12_END_MINUTE = 15 * 60 + 10
@@ -859,6 +859,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
 
     except Exception as err:
         logger.error("[Worker] processing failed [%s %s]: %s", stk_cd, strategy, err)
+        await _incr_pipeline(rdb, strategy, "processing_error")
         failure_payload = _build_failure_payload(item, strategy, stk_cd, err)
         normalize_signal_prices(failure_payload)
 

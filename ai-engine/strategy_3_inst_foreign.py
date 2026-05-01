@@ -14,6 +14,7 @@ import asyncio
 import httpx
 import logging
 import os
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
@@ -21,6 +22,8 @@ from ma_utils import fetch_daily_candles, _safe_price, _calc_ma
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
 from utils import normalize_stock_code
+from strategy_perf import perf_timer
+from strategy_shared_cache import cache_get_json, cache_set_json, flag_enabled
 
 logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
@@ -32,6 +35,31 @@ _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _KA10055_MAX_PAGES = int(os.getenv("S3_KA10055_MAX_PAGES", "3"))
+_KA10055_CACHE_TTL = int(os.getenv("S3_KA10055_CACHE_TTL", "30"))
+
+
+class Ka10055RunStats:
+    def __init__(self) -> None:
+        self.counters = Counter()
+        self._seen = set()
+
+    def warn(self, reason: str, dedupe_key: tuple, message: str, *args) -> None:
+        self.counters[reason] += 1
+        key = (reason, dedupe_key)
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        logger.warning(message, *args)
+
+    def log_summary(self) -> None:
+        if not self.counters:
+            return
+        logger.warning(
+            "[S3] ka10055 summary page_cap=%d next_key_loop=%d repeated_page=%d",
+            self.counters.get("page_cap", 0),
+            self.counters.get("next_key_loop", 0),
+            self.counters.get("repeated_page", 0),
+        )
 
 
 async def fetch_intraday_investor(token: str, market_type: str = "000") -> list:
@@ -159,7 +187,7 @@ async def fetch_continuous_netbuy(token: str, market: str) -> dict:
 import asyncio
 from datetime import datetime
 
-async def fetch_volume_compare(token: str, stk_cd: str) -> float:
+async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka10055RunStats | None = None) -> float:
     """ka10055 당일전일체결량 - 동시간 거래량 비율"""
 
     # 현재 시간 추출 (HHMMSS 형식) - 전일 데이터의 동시간 필터링을 위함
@@ -168,6 +196,18 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
         return 0.0
 
     current_time = datetime.now(KST).strftime("%H%M%S")
+    use_cache = flag_enabled("S3_KA10055_CACHE_ENABLED") and rdb is not None
+    cache_key = f"strategy:s3:ka10055:{stk_cd}:{current_time[:4]}"
+    if use_cache:
+        cached = await cache_get_json(rdb, cache_key)
+        if isinstance(cached, (int, float)):
+            return float(cached)
+
+    def warn(reason: str, tdy_pred: str, message: str, *args) -> None:
+        if run_stats:
+            run_stats.warn(reason, (stk_cd, tdy_pred), message, *args)
+        else:
+            logger.warning(message, *args)
 
     async def get_total_volume(tdy_pred: str) -> int:
         total_qty = 0
@@ -180,12 +220,14 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
             while True:
                 page += 1
                 if page > _KA10055_MAX_PAGES:
-                    logger.warning("[S3] ka10055 %s/%s 페이지 상한(%d) 도달, 루프 강제 종료",
-                                   stk_cd, tdy_pred, _KA10055_MAX_PAGES)
+                    warn("page_cap", tdy_pred,
+                         "[S3] ka10055 %s/%s page cap(%d) reached, forced stop",
+                         stk_cd, tdy_pred, _KA10055_MAX_PAGES)
                     break
                 if next_key:
                     if next_key in requested_next_keys:
-                        logger.warning("[S3] ka10055 %s/%s next-key loop detected: %s", stk_cd, tdy_pred, next_key)
+                        warn("next_key_loop", tdy_pred,
+                             "[S3] ka10055 %s/%s next-key loop detected: %s", stk_cd, tdy_pred, next_key)
                         break
                     requested_next_keys.add(next_key)
 
@@ -246,8 +288,9 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
                 if page_signature == prev_page_signature:
                     repeated_page_count += 1
                     if repeated_page_count >= 2:
-                        logger.warning("[S3] ka10055 %s/%s repeated page payload detected - page=%d next_key=%s",
-                                       stk_cd, tdy_pred, page, next_key or "-")
+                        warn("repeated_page", tdy_pred,
+                             "[S3] ka10055 %s/%s repeated page payload detected - page=%d next_key=%s",
+                             stk_cd, tdy_pred, page, next_key or "-")
                         break
                 else:
                     repeated_page_count = 0
@@ -263,12 +306,16 @@ async def fetch_volume_compare(token: str, stk_cd: str) -> float:
         return total_qty
 
     # 순차 실행 — 동시 호출 시 /api/dostk/stkinfo 429 과부하 발생
-    today_qty = await get_total_volume("1")
-    await asyncio.sleep(_API_INTERVAL)
-    prev_qty = await get_total_volume("2")
+    async with perf_timer("s3_ka10055", rdb=rdb, fields={"stk_cd": stk_cd}):
+        today_qty = await get_total_volume("1")
+        await asyncio.sleep(_API_INTERVAL)
+        prev_qty = await get_total_volume("2")
 
     # 전일 동시간 거래량이 0인 경우 ZeroDivisionError 방지
-    return today_qty / prev_qty if prev_qty > 0 else 0.0
+    ratio = today_qty / prev_qty if prev_qty > 0 else 0.0
+    if use_cache:
+        await cache_set_json(rdb, cache_key, ratio, _KA10055_CACHE_TTL)
+    return ratio
 
 async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
     # 1. candidates:s3:{market} 풀 우선 확인
@@ -295,7 +342,9 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
     cont_map = await fetch_continuous_netbuy(token, market)
 
     results = []
-    for item in smtm_list[:5]:  # 429 방지: ka10055×2 호출 상한 5종목
+    ka10055_stats = Ka10055RunStats()
+    scan_items = smtm_list[:5]
+    for item in scan_items:  # 429 방지: ka10055×2 호출 상한 5종목
         stk_cd = normalize_stock_code(item.get("stk_cd"))
         if not stk_cd:
             continue
@@ -303,7 +352,7 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             continue
 
         await asyncio.sleep(_API_INTERVAL)   # Rate limit: ka10055 × 2회 호출 전 대기
-        vol_ratio = await fetch_volume_compare(token, stk_cd)
+        vol_ratio = await fetch_volume_compare(token, stk_cd, rdb=rdb, run_stats=ka10055_stats)
         if vol_ratio < 1.5:
             continue
 
@@ -371,4 +420,5 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             **tp_sl.to_signal_fields(),
         })
 
+    ka10055_stats.log_summary()
     return sorted(results, key=lambda x: x.get("net_buy_amt", 0), reverse=True)[:5]

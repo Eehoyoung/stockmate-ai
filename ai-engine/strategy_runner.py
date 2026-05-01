@@ -44,6 +44,10 @@ STATUS_SIGNAL_TTL_SEC = int(os.getenv("STATUS_SIGNAL_TTL_SEC", "600"))
 MAX_CONCURRENT_STRATEGIES = int(os.getenv("MAX_CONCURRENT_STRATEGIES", "3"))
 _semaphore: asyncio.Semaphore | None = None
 
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
 from strategy_meta import SWING_STRATEGIES as _SWING_STRATEGIES
 
 
@@ -56,14 +60,55 @@ def _get_semaphore() -> asyncio.Semaphore:
 
 _DEFAULT_STRATEGY_TIMEOUT_SEC = int(os.getenv("STRATEGY_TIMEOUT_SEC", "300"))
 _SLOW_STRATEGY_WARN_SEC = float(os.getenv("SLOW_STRATEGY_WARN_SEC", "30"))
+ENABLE_STRATEGY_LATENCY_METRICS = _env_flag("ENABLE_STRATEGY_LATENCY_METRICS")
+STRATEGY_LATENCY_STATUS_TTL_SEC = int(os.getenv("STRATEGY_LATENCY_STATUS_TTL_SEC", "1800"))
 _STRATEGY_TIMEOUT_OVERRIDES = {
     "S3": int(os.getenv("STRATEGY_TIMEOUT_S3_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
+    "S5": int(os.getenv("STRATEGY_TIMEOUT_S5_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
     "S11": int(os.getenv("STRATEGY_TIMEOUT_S11_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
 }
 
 
 def _strategy_timeout_sec(name: str) -> int:
     return _STRATEGY_TIMEOUT_OVERRIDES.get(name, _DEFAULT_STRATEGY_TIMEOUT_SEC)
+
+
+async def _incr_pipeline_daily(rdb, strategy: str, field: str) -> None:
+    if not rdb or not strategy:
+        return
+    try:
+        from datetime import datetime, timedelta, timezone as _tz
+
+        today = datetime.now(_tz(timedelta(hours=9))).strftime("%Y-%m-%d")
+        key = f"pipeline_daily:{today}:{strategy}"
+        await rdb.hincrby(key, field, 1)
+        await rdb.expire(key, 172800)
+    except Exception:
+        pass
+
+
+async def _record_strategy_latency(rdb, name: str, elapsed_sec: float, state: str) -> None:
+    if not ENABLE_STRATEGY_LATENCY_METRICS or not rdb:
+        return
+    try:
+        key = f"status:strategy_latency:{name}"
+        await rdb.hset(
+            key,
+            mapping={
+                "strategy": name,
+                "state": state,
+                "latency_ms": str(int(elapsed_sec * 1000)),
+                "slow_threshold_ms": str(int(_SLOW_STRATEGY_WARN_SEC * 1000)),
+                "timeout_sec": str(_strategy_timeout_sec(name)),
+                "updated_at": str(int(_time.time())),
+            },
+        )
+        await rdb.expire(key, STRATEGY_LATENCY_STATUS_TTL_SEC)
+        if state == "slow":
+            await rdb.hincrby(key, "slow_count", 1)
+            await _incr_pipeline_daily(rdb, name, "slow")
+    except Exception as metric_err:
+        logger.debug("[Runner] strategy latency metric failed [%s]: %s", name, metric_err)
 
 
 def _current_kst_time() -> time:
@@ -91,24 +136,21 @@ async def _run_strategy_with_semaphore(name: str, coro, rdb=None):
             elapsed_sec = _time.monotonic() - started_at
             if elapsed_sec >= _SLOW_STRATEGY_WARN_SEC:
                 logger.warning("[Runner] [%s] 느린 실행 감지 (%.1fs, timeout=%ds)", name, elapsed_sec, timeout_sec)
+                await _record_strategy_latency(rdb, name, elapsed_sec, "slow")
             else:
                 logger.debug("[Runner] [%s] 실행 완료 (%.1fs)", name, elapsed_sec)
+                await _record_strategy_latency(rdb, name, elapsed_sec, "ok")
             return result
         except asyncio.TimeoutError:
             elapsed_sec = _time.monotonic() - started_at
             logger.error("[Runner] [%s] 전략 실행 타임아웃 (%ds) - 강제 취소 elapsed=%.1fs", name, timeout_sec, elapsed_sec)
-            if rdb:
-                try:
-                    from datetime import datetime, timedelta, timezone as _tz
-
-                    today = datetime.now(_tz(timedelta(hours=9))).strftime("%Y-%m-%d")
-                    await rdb.hincrby(f"pipeline_daily:{today}:{name}", "timeout", 1)
-                    await rdb.expire(f"pipeline_daily:{today}:{name}", 172800)
-                except Exception:
-                    pass
+            await _incr_pipeline_daily(rdb, name, "timeout")
+            await _record_strategy_latency(rdb, name, elapsed_sec, "timeout")
         except Exception:
             elapsed_sec = _time.monotonic() - started_at
             logger.exception("[Runner] [%s] 실행 실패 (%.1fs)", name, elapsed_sec)
+            await _incr_pipeline_daily(rdb, name, "error")
+            await _record_strategy_latency(rdb, name, elapsed_sec, "error")
             raise
 
 

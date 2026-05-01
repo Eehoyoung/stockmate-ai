@@ -35,7 +35,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from health_server import set_ws_connected, record_message_received
+from health_server import set_ws_connected, set_ws_session, record_message_received
 from redis_writer import write_tick, write_expected, write_hoga, write_vi, write_heartbeat
 from token_loader import load_token
 
@@ -54,12 +54,8 @@ def _now_kst() -> datetime:
 
 
 def _is_market_hours() -> bool:
-    """현재 KST 시각이 장 운영 시간 (평일 07:30~15:35) 인지 확인"""
-    now = _now_kst()
-    if now.weekday() not in _WEEKDAYS:
-        return False
-    t = dtime(now.hour, now.minute, now.second)
-    return dtime(*_MARKET_OPEN_HOUR) <= t < dtime(*_MARKET_CLOSE_HOUR)
+    """Return True while the listener should actively connect/subscribe."""
+    return _get_market_session() not in {"closed", "post_quiet"}
 
 
 def _next_market_open() -> datetime:
@@ -198,24 +194,59 @@ async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
     return ranked, ranked[:100]
 
 
-def _get_market_phase() -> str:
-    """현재 KST 시각 기준 장 구분 반환.
-    - pre_open   : 07:30 ~ 08:00  0H/0D/1h 구독 (장전 시간외 초반, 0B 활동 미미)
-    - pre_market : 08:00 ~ 09:00  0B 추가 구독 (동시호가, ws:tick/strength 축적)
-    - market     : 09:00 ~ 15:20  0B/0D/1h (0H 해제)
-    - closed     : 그 외
-    """
+def _get_market_session() -> str:
+    """Return the KST trading session used by subscription and reconnect logic."""
     now = _now_kst()
     if now.weekday() not in _WEEKDAYS:
         return "closed"
-    t = dtime(now.hour, now.minute, now.second)
+    t = dtime(now.hour, now.minute, now.second, now.microsecond)
     if dtime(7, 30) <= t < dtime(8, 0):
-        return "pre_open"
-    if dtime(8, 0) <= t < dtime(9, 0):
         return "pre_market"
-    if dtime(9, 0) <= t < dtime(20, 10):
-        return "market"
+    if dtime(8, 0) <= t < dtime(9, 0, 30):
+        return "opening_auction"
+    if dtime(9, 0, 30) <= t < dtime(15, 20):
+        return "main_market"
+    if dtime(15, 20) <= t < dtime(15, 30):
+        return "closing_auction"
+    if dtime(15, 30) <= t < dtime(15, 40):
+        return "after_preopen"
+    if dtime(15, 40) <= t < dtime(20, 0):
+        return "after_market"
+    if dtime(20, 0) <= t < dtime(20, 10):
+        return "post_quiet"
     return "closed"
+
+
+def _get_market_phase() -> str:
+    """Backward-compatible alias for older tests and callers."""
+    return _get_market_session()
+
+
+def _groups_for_session(session: str, all_cands: list[str], top100: list[str]) -> list[tuple[str, str, list[str]]]:
+    if session == "pre_market":
+        return [
+            ("2", "0H", top100),
+            ("4", "0D", top100),
+            ("3", "1h", [""]),
+        ]
+    if session == "opening_auction":
+        return [
+            ("1", "0B", all_cands),
+            ("2", "0H", top100),
+            ("4", "0D", top100),
+            ("3", "1h", [""]),
+        ]
+    if session in {"main_market", "closing_auction", "after_preopen", "after_market"}:
+        return [
+            ("1", "0B", all_cands),
+            ("4", "0D", top100),
+            ("3", "1h", [""]),
+        ]
+    return []
+
+
+def _is_expected_silent_close(session: str, close_code) -> bool:
+    return session in {"post_quiet", "closed"} and close_code in {1000, 1001, None}
 
 
 async def _send_unreg(ws, grp_no: str, ttype: str):
@@ -233,33 +264,11 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     GRP 4: 0D 호가잔량  – 상위 100             [pre_open / pre_market / market]
     """
     all_cands, top100 = await _get_ranked_candidates(rdb)
-    subscribed_0b: list[str] = []
-    subscribed_0d: list[str] = []
-    subscribed_0h: list[str] = []
+    session = phase
+    set_ws_session(session)
+    groups = _groups_for_session(session, all_cands, top100)
 
-    if phase == "pre_open":
-        # 07:30~08:00: 0B 활동 미미 – 예상체결·호가잔량·VI 만 구독
-        groups = [
-            ("2", "0H", top100),  # 예상체결
-            ("4", "0D", top100),  # 호가잔량
-            ("3", "1h", [""]),    # VI 전종목
-        ]
-    elif phase == "pre_market":
-        # 08:00~09:00: 0B 추가 – ws:tick/ws:strength 축적 (S1·S7 체결강도 준비)
-        groups = [
-            ("1", "0B", all_cands),  # 체결 – 08:00부터 시작
-            ("2", "0H", top100),     # 예상체결
-            ("4", "0D", top100),     # 호가잔량
-            ("3", "1h", [""]),       # VI 전종목
-        ]
-    elif phase == "market":
-        # 09:00~20:10: 예상체결(0H) 해제, 체결(0B) 계속
-        groups = [
-            ("1", "0B", all_cands),  # 체결
-            ("4", "0D", top100),     # 호가잔량
-            ("3", "1h", [""]),       # VI 전종목
-        ]
-    else:  # closed
+    if not groups:
         for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("3", "1h"), ("4", "0D")]:
             try:
                 await _send_unreg(ws, grp_no, ttype)
@@ -269,7 +278,7 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
         await _replace_subscription_set(rdb, "ws:subscribed:0B", [])
         await _replace_subscription_set(rdb, "ws:subscribed:0H", [])
         await _replace_subscription_set(rdb, "ws:subscribed:0D", [])
-        logger.info("[WS] 장 종료 – 전체 구독 해제 완료")
+        logger.info("[WS] session=%s, all subscriptions cleared", session)
         return
 
     # 키움 WS 프로토콜: item 배열에 종목코드 목록, type 배열에 실시간 항목을 담아 전송
@@ -288,8 +297,8 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
             logger.info("[WS] 구독 grp=%s type=%s %d개", grp_no, ttype, len(batch))
             await asyncio.sleep(0.3)
 
-    # 정규장 전환 시 예상체결(0H) 구독 해제 (pre_market 에서 등록된 GRP2)
-    if phase == "market":
+    # 0H is only valid through opening_auction; make later sessions explicitly release it.
+    if phase in {"main_market", "closing_auction", "after_preopen", "after_market"}:
         try:
             await _send_unreg(ws, "2", "0H")
             logger.info("[WS] 정규장 전환 – 예상체결(0H) 구독 해제")
@@ -317,14 +326,14 @@ async def _phase_watcher(ws, rdb):
             await asyncio.sleep(30)
             new_phase = _get_market_phase()
             refresh_counter += 1
-            refresh_every = 2 if current_phase in {"pre_open", "pre_market"} else 10
+            refresh_every = 2 if current_phase in {"pre_market", "opening_auction"} else 10
 
             if new_phase != current_phase:
                 logger.info("[WS] 장 구분 전환 %s → %s", current_phase, new_phase)
                 await _subscribe_by_phase(ws, rdb, new_phase)
                 current_phase = new_phase
                 refresh_counter = 0
-            elif refresh_counter >= refresh_every and current_phase != "closed":
+            elif refresh_counter >= refresh_every and current_phase not in {"closed", "post_quiet"}:
                 logger.info("[WS] 후보 갱신 구독 재전송 (phase=%s)", current_phase)
                 await _subscribe_by_phase(ws, rdb, current_phase)
                 refresh_counter = 0
@@ -381,6 +390,11 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
             watchlist, top100 = await _get_ranked_candidates(rdb)
             if not watchlist:
                 continue
+            session = _get_market_session()
+            groups = _groups_for_session(session, watchlist, top100)
+            active_types = {ttype for _, ttype, _ in groups}
+            if "0B" not in active_types:
+                continue
 
             watchset = set(watchlist)
             topset = set(top100)
@@ -389,8 +403,10 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
 
             for code in new_codes:
                 groups = [("1", "0B")]
-                if code in topset:
-                    groups.extend([("2", "0H"), ("4", "0D")])
+                if "0H" in active_types and code in topset:
+                    groups.append(("2", "0H"))
+                if "0D" in active_types and code in topset:
+                    groups.append(("4", "0D"))
                 for grp_no, ttype in groups:
                     payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "0",
                                "data": [{"item": [code], "type": [ttype]}]}
@@ -452,7 +468,7 @@ async def run_ws_loop(rdb, pg_pool=None):
 
     if BYPASS_MARKET_HOURS:
         logger.warning(
-            "[WS] ⚠️  BYPASS_MARKET_HOURS=true – 장 시간 외에도 WebSocket 연결을 유지합니다"
+            "[WS] BYPASS_MARKET_HOURS=true keeps the process alive; session rules still control subscriptions"
         )
 
     # GRP 충돌 방지 검사: JAVA_WS_ENABLED=true 이면 Python과 Java가 동일 GRP 사용 위험
@@ -485,6 +501,8 @@ async def run_ws_loop(rdb, pg_pool=None):
                 delay_sec       = BASE_RECONNECT_MS / 1000
 
         connect_time = None
+        active_session = _get_market_session()
+        set_ws_session(active_session)
         try:
             token = await load_token(rdb)
 
@@ -533,8 +551,8 @@ async def run_ws_loop(rdb, pg_pool=None):
                 # 구독(REG) 도중 서버가 PING을 보내도 즉시 PONG 응답 가능
                 message_task = asyncio.create_task(_run_message_loop(ws, rdb, pg_pool))
 
-                # BYPASS 모드: 장 시간 무관 → pre_market phase(0B 포함 전체 구독)로 처리
-                initial_phase = "pre_market" if BYPASS_MARKET_HOURS else _get_market_phase()
+                # BYPASS keeps the process alive, but it must not force a trading subscription session.
+                initial_phase = _get_market_session()
                 await _subscribe_by_phase(ws, rdb, initial_phase)
 
                 # 초기 구독 후보를 subscribed_set 에 등록 (watchlist poller 가 중복 UNREG 방지)
@@ -566,9 +584,14 @@ async def run_ws_loop(rdb, pg_pool=None):
                 logger.info("[WS] 연결 %.1f초 유지 후 종료 – 카운터 리셋", elapsed)
 
         except ConnectionClosed as e:
-            reason = f"ConnectionClosed:{e.rcvd.code if e.rcvd else 'unknown'}"
-            logger.warning("[WS] 연결 끊김 (ConnectionClosed): %s", e,
-                           extra={"error_code": reason})
+            close_code = e.rcvd.code if e.rcvd else None
+            if _is_expected_silent_close(active_session, close_code):
+                reason = f"expected_silent_close:{active_session}"
+                logger.info("[WS] expected silent close in session=%s code=%s", active_session, close_code)
+            else:
+                reason = f"ConnectionClosed:{close_code if close_code is not None else 'unknown'}"
+                logger.warning("[WS] 연결 끊김 (ConnectionClosed): %s", e,
+                               extra={"error_code": reason})
             set_ws_connected(False, reason=reason)
         except OSError as e:
             reason = f"OSError:{type(e).__name__}"

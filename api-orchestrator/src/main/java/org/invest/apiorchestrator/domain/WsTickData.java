@@ -65,6 +65,10 @@ public class WsTickData {
     @Column(name = "tick_type", length = 4)
     private String tickType;
 
+    @Builder.Default
+    @Column(name = "must_persist", nullable = false)
+    private Boolean mustPersist = false;
+
     @CreatedDate
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

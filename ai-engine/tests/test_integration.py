@@ -1,4 +1,4 @@
-"""
+﻿"""
 tests/test_integration.py
 queue_worker + analyzer + scorer 통합 테스트.
 여러 컴포넌트가 함께 작동하는 흐름을 검증.
@@ -265,12 +265,12 @@ class TestScoringAndAnalysisIntegration:
         low_skip = should_skip_ai(low_score, "S1_GAP_OPEN")
         assert low_skip  # 낮은 점수 → 건너뜀
 
-    def test_fallback_action_based_on_rule_score(self):
-        """폴백 시 rule_score로 action 결정"""
+    def test_fallback_action_is_conservative_cancel(self):
+        """폴백 시 rule_score와 무관하게 보수적 CANCEL"""
         from scorer import rule_score
         from analyzer import _fallback
 
-        # 높은 점수 → ENTER
+        # 높은 점수도 AI 실패 시 CANCEL
         high_ctx = {
             "tick": {"flu_rt": "4.0"},
             "hoga": {"total_buy_bid_req": "3000", "total_sel_bid_req": "1000"},
@@ -279,7 +279,7 @@ class TestScoringAndAnalysisIntegration:
         high_score = rule_score({"strategy": "S1_GAP_OPEN", "gap_pct": 4.0}, high_ctx)
         if high_score >= 70:
             fallback = _fallback(high_score)
-            assert fallback["action"] == "ENTER"
+            assert fallback["action"] == "CANCEL"
 
         # 낮은 점수 → CANCEL
         low_ctx = {

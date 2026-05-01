@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:stockmate_test;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: none
+  batch:
+    job:
+      enabled: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: test
+
+kiwoom:
+  api:
+    app-key: test
+    app-secret: test
+    base-url: http://localhost
+
+telegram:
+  bot:
+    token: test

@@ -1,4 +1,4 @@
-"""
+﻿"""
 tests/test_analyzer_advanced.py
 analyzer.py 심화 테스트: 전략별 경계값, JSON 파싱 다양한 케이스,
 _track_api_usage, 특수 입력 처리.
@@ -51,17 +51,17 @@ def _make_response(text: str):
 # ──────────────────────────────────────────────────────────────────
 
 class TestFallbackBoundaries:
-    def test_fallback_exactly_70_is_enter(self):
+    def test_fallback_exactly_70_is_cancel(self):
         from analyzer import _fallback
-        assert _fallback(70.0)["action"] == "ENTER"
+        assert _fallback(70.0)["action"] == "CANCEL"
 
-    def test_fallback_just_below_70_is_hold(self):
+    def test_fallback_just_below_70_is_cancel(self):
         from analyzer import _fallback
-        assert _fallback(69.9)["action"] == "HOLD"
+        assert _fallback(69.9)["action"] == "CANCEL"
 
-    def test_fallback_exactly_50_is_hold(self):
+    def test_fallback_exactly_50_is_cancel(self):
         from analyzer import _fallback
-        assert _fallback(50.0)["action"] == "HOLD"
+        assert _fallback(50.0)["action"] == "CANCEL"
 
     def test_fallback_just_below_50_is_cancel(self):
         from analyzer import _fallback
@@ -71,9 +71,9 @@ class TestFallbackBoundaries:
         from analyzer import _fallback
         assert _fallback(0.0)["action"] == "CANCEL"
 
-    def test_fallback_100_is_enter(self):
+    def test_fallback_100_is_cancel(self):
         from analyzer import _fallback
-        assert _fallback(100.0)["action"] == "ENTER"
+        assert _fallback(100.0)["action"] == "CANCEL"
 
     def test_fallback_confidence_always_low(self):
         from analyzer import _fallback
@@ -307,7 +307,7 @@ class TestStrategyPrompts:
 
     def test_s3_prompt_contains_continuous_days(self):
         msg = self._get_prompt(_sig("S3_INST_FRGN", net_buy_amt=10_000_000_000, continuous_days=5))
-        assert "0.8" in msg or "구름" in msg
+        assert "연속일: 5일" in msg
 
     def test_s3_amt_formatted_in_eok(self):
         """S3 순매수 금액 억 단위 표시"""

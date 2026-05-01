@@ -39,7 +39,13 @@ def _signal(**overrides):
 
 
 def _ctx():
-    return {"tick": {}, "hoga": {}, "strength": 120.0, "vi": {}, "ws_online": False}
+    return {
+        "tick": {},
+        "hoga": {"total_buy_bid_req": "200", "total_sel_bid_req": "100"},
+        "strength": 120.0,
+        "vi": {},
+        "ws_online": False,
+    }
 
 
 class TestQueueWorkerHappyPath:
@@ -207,6 +213,7 @@ class TestQueueWorkerFailures:
         assert payload["error_type"] == "RuntimeError"
         assert "market ctx unavailable" in payload["error"]
         rdb.lpush.assert_awaited_once()
+        assert any(call.args[1] == "processing_error" for call in rdb.hincrby.await_args_list)
 
     def test_failed_processing_no_longer_degrades_to_hold(self):
         item = _signal()

@@ -99,3 +99,32 @@ class TestFetchVolumeCompare:
         assert ratio == pytest.approx(1.5)
         assert any("next-key loop detected" in record.message for record in caplog.records)
         assert len(today_client.requests) == 2
+
+    def test_uses_cache_when_flag_enabled(self, monkeypatch):
+        from strategy_3_inst_foreign import fetch_volume_compare
+
+        rdb = MagicMock()
+        rdb.get = AsyncMock(return_value="2.5")
+        monkeypatch.setenv("S3_KA10055_CACHE_ENABLED", "1")
+
+        with patch("strategy_3_inst_foreign.kiwoom_client") as mock_client, \
+             patch("strategy_3_inst_foreign.datetime") as mock_datetime:
+            mock_datetime.now.return_value.strftime.return_value = "093856"
+            ratio = _run(fetch_volume_compare("token", "005930", rdb=rdb))
+
+        assert ratio == pytest.approx(2.5)
+        mock_client.assert_not_called()
+
+    def test_run_stats_dedupes_warning_and_counts_summary(self, caplog):
+        from strategy_3_inst_foreign import Ka10055RunStats
+
+        stats = Ka10055RunStats()
+        with caplog.at_level("WARNING"):
+            stats.warn("page_cap", ("005930", "1"), "warn %s", "once")
+            stats.warn("page_cap", ("005930", "1"), "warn %s", "twice")
+            stats.log_summary()
+
+        messages = [record.message for record in caplog.records]
+        assert messages.count("warn once") == 1
+        assert not any(message == "warn twice" for message in messages)
+        assert any("ka10055 summary page_cap=2" in message for message in messages)

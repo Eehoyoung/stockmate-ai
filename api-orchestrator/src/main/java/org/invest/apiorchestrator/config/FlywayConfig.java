@@ -3,6 +3,7 @@ package org.invest.apiorchestrator.config;
 import org.flywaydb.core.Flyway;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
@@ -20,6 +21,7 @@ import java.util.Set;
  * 안전망으로 유지한다.
  */
 @Configuration
+@ConditionalOnProperty(name = "spring.flyway.enabled", havingValue = "true", matchIfMissing = true)
 public class FlywayConfig {
 
     private static final Logger log = LoggerFactory.getLogger(FlywayConfig.class);

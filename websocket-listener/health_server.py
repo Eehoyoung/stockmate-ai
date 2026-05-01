@@ -10,6 +10,7 @@ A2 헬스체크 정밀화:
 """
 
 import asyncio
+import os
 import time
 import logging
 
@@ -23,6 +24,7 @@ _ws_connected: bool            = False
 _disconnect_reason: str        = ""        # 예: "ConnectionClosed:1001", "OSError", "LoginFailed"
 _last_message_time: float | None = None    # monotonic timestamp
 _start_time: float | None      = None
+_current_session: str | None   = None
 
 # Redis 인스턴스 참조 (main.py 가 주입)
 _rdb = None
@@ -31,6 +33,8 @@ _rdb = None
 _tg_last_success_at: float | None = None   # monotonic
 _tg_last_error_at:   float | None = None
 _tg_last_error_msg:  str          = ""
+
+EXPOSE_WS_SESSION = os.getenv("HEALTH_EXPOSE_SESSION", "false").lower() in ("1", "true", "yes")
 
 
 # ── Public setter API ────────────────────────────────────────
@@ -49,6 +53,12 @@ def record_message_received() -> None:
     """실시간 메시지 수신 시 호출 – last_message_time 갱신."""
     global _last_message_time
     _last_message_time = time.monotonic()
+
+
+def set_ws_session(session: str | None) -> None:
+    """Record the current market session for optional health output."""
+    global _current_session
+    _current_session = session
 
 
 def set_redis(rdb) -> None:
@@ -122,6 +132,8 @@ async def _health_handler(request):
     ws_info: dict = {"connected": _ws_connected}
     if not _ws_connected and _disconnect_reason:
         ws_info["disconnect_reason"] = _disconnect_reason
+    if EXPOSE_WS_SESSION and _current_session:
+        ws_info["session"] = _current_session
 
     # 전체 상태 판단
     # UP       : WS 연결 + Redis OK

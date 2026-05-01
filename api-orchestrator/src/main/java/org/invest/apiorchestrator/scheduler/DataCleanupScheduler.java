@@ -6,6 +6,7 @@ import org.invest.apiorchestrator.repository.KiwoomTokenRepository;
 import org.invest.apiorchestrator.repository.OvernightEvaluationRepository;
 import org.invest.apiorchestrator.repository.WsTickDataRepository;
 import org.invest.apiorchestrator.util.KstClock;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -23,6 +24,9 @@ public class DataCleanupScheduler {
     private final KiwoomTokenRepository kiwoomTokenRepository;
     private final OvernightEvaluationRepository overnightEvaluationRepository;
     private final JdbcTemplate jdbcTemplate;
+
+    @Value("${cleanup.ws-tick-data.delete-enabled:false}")
+    private boolean wsTickDataDeleteEnabled;
 
     /**
      * 매일 23:30 - 오래된 데이터 일괄 정리
@@ -43,6 +47,10 @@ public class DataCleanupScheduler {
     }
 
     private void cleanupOldTickData() {
+        if (!wsTickDataDeleteEnabled) {
+            log.info("[DataCleanup] ws_tick_data delete skipped: cleanup.ws-tick-data.delete-enabled=false");
+            return;
+        }
         LocalDateTime cutoff = KstClock.now().minusDays(3);
         try {
             int deleted = tickDataRepository.deleteOldTickData(cutoff);

@@ -85,17 +85,37 @@ async function isAllowedByWatchlist(chatId, stkCd) {
     }
 }
 
-async function _broadcast(bot, { type, text, logLabel, logMeta = {}, extraOpts = {}, chatIds = null }) {
+function getRecipientGroup(chatIds, explicitGroup) {
+    if (explicitGroup) return explicitGroup;
+    if (chatIds) return 'primary';
+    return 'allowed';
+}
+
+async function _broadcast(bot, { type, text, logLabel, logMeta = {}, extraOpts = {}, chatIds = null, recipientGroup = null }) {
     const targetChatIds = chatIds || getAllowedChatIds();
     const options = { parse_mode: 'HTML', disable_web_page_preview: true, ...extraOpts };
+    const deliveryMeta = {
+        recipient_group: getRecipientGroup(chatIds, recipientGroup),
+        chat_ids: targetChatIds,
+    };
+    let sentCount = 0;
+    let failedCount = 0;
+
     for (const chatId of targetChatIds) {
         try {
             await bot.telegram.sendMessage(chatId, text, options);
+            sentCount++;
         } catch (e) {
-            logger.error(`${type} send failed`, { chat_id: chatId, ...logMeta }, e);
+            failedCount++;
+            logger.error(`${type} send failed`, { chat_id: chatId, ...deliveryMeta, ...logMeta }, e);
         }
     }
-    logger.info(`${logLabel || type} sent`, logMeta);
+    logger.info(`${logLabel || type} sent`, {
+        ...deliveryMeta,
+        sent_count: sentCount,
+        failed_count: failedCount,
+        ...logMeta,
+    });
 }
 
 function _statusReportPayload(item) {

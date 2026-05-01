@@ -17,6 +17,6 @@ public interface WsTickDataRepository extends JpaRepository<WsTickData, Long> {
             String stkCd, String tickType, LocalDateTime after);
 
     @Modifying
-    @Query("DELETE FROM WsTickData w WHERE w.createdAt < :before")
+    @Query("DELETE FROM WsTickData w WHERE w.createdAt < :before AND w.mustPersist = false")
     int deleteOldTickData(@Param("before") LocalDateTime before);
 }

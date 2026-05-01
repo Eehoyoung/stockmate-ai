@@ -25,6 +25,7 @@ function buildCommands(overrides = {}) {
         hogas: overrides.hogas || {},
         hashes: overrides.hashes || {},
     };
+    const logs = [];
 
     const redisClient = {
         get: async (key) => redisState.kv.get(key) ?? null,
@@ -66,7 +67,7 @@ function buildCommands(overrides = {}) {
             getCandidatePoolStatus: async () => overrides.poolStatus || null,
             getAiEngineCandidates: async () => overrides.aiPoolStatus || null,
             getSignalHistory: async () => overrides.signalHistory || [],
-            health: async () => ({ status: 'UP', service: 'ok' }),
+            health: async () => overrides.health || ({ status: 'UP', service: 'ok', business_date: '2026-04-30' }),
             getSignalPerformance: async () => overrides.performanceSignals || [],
             getPerformanceSummary: async () => overrides.performanceSummary || [],
             getStrategyAnalysis: async () => overrides.strategyAnalysis || [],
@@ -98,7 +99,11 @@ function buildCommands(overrides = {}) {
         filename: loggerPath,
         loaded: true,
         exports: {
-            getLogger: () => ({ info() {}, warn() {}, error() {} }),
+            getLogger: () => ({
+                info(message, meta) { logs.push({ level: 'info', message, meta }); },
+                warn(message, meta) { logs.push({ level: 'warn', message, meta }); },
+                error(message, meta, error) { logs.push({ level: 'error', message, meta, error }); },
+            }),
         },
     };
 
@@ -114,7 +119,7 @@ function buildCommands(overrides = {}) {
     };
 
     const commands = require(commandsPath);
-    return { commands, redisState };
+    return { commands, redisState, logs };
 }
 
 function createCtx(text, chatId = 100) {
@@ -140,6 +145,15 @@ async function test(name, fn) {
         console.log(`  FAIL ${name}`);
         console.log(`    Error: ${error.message}`);
     }
+}
+
+function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0) {
+    const entry = logs.find((log) => log.level === 'info' && log.message === message);
+    assert.ok(entry, `${message} log should exist`);
+    assert.strictEqual(entry.meta.recipient_group, 'request_chat');
+    assert.deepStrictEqual(entry.meta.chat_ids, [String(chatId)]);
+    assert.strictEqual(entry.meta.sent_count, sentCount);
+    assert.strictEqual(entry.meta.failed_count, failedCount);
 }
 
 (async () => {
@@ -257,6 +271,47 @@ async function test(name, fn) {
         assert.ok(ctx.replies[1].includes('주요 섹터'));
         assert.ok(ctx.replies[1].includes('영향 뉴스'));
         assert.ok(ctx.replies[1].includes('한 줄 결론'));
+    });
+
+    await test('/status writes operational delivery log', async () => {
+        const { commands, logs } = buildCommands();
+        const ctx = createCtx('/status', 430);
+        await commands.status(ctx);
+        assert.ok(ctx.replies[0].length > 0);
+        assertDeliveryLog(logs, 'status sent', 430);
+    });
+
+    await test('/news writes operational delivery log with chat id counts', async () => {
+        const { commands, logs } = buildCommands({
+            liveNewsBrief: { message: 'live-news' },
+        });
+        const ctx = createCtx('/news', 431);
+        await commands.newsStatus(ctx);
+        assert.strictEqual(ctx.replies.length, 2);
+        const entries = logs.filter((log) => log.level === 'info' && log.message === 'news sent');
+        assert.strictEqual(entries.length, 2);
+        for (const entry of entries) {
+            assert.strictEqual(entry.meta.recipient_group, 'request_chat');
+            assert.deepStrictEqual(entry.meta.chat_ids, ['431']);
+            assert.strictEqual(entry.meta.sent_count, 1);
+            assert.strictEqual(entry.meta.failed_count, 0);
+        }
+    });
+
+    await test('/report writes 20260430 operational delivery log', async () => {
+        const { commands, logs } = buildCommands({
+            hashes: {
+                'daily_summary:20260430': {
+                    total_signals: '3',
+                    avg_score: '78.5',
+                    by_strategy: JSON.stringify({ S1_GAP_OPEN: 2, S8_GOLDEN_CROSS: 1 }),
+                },
+            },
+        });
+        const ctx = createCtx('/report', 432);
+        await commands.report(ctx);
+        assert.ok(ctx.replies[0].includes('20260430'));
+        assertDeliveryLog(logs, 'report sent', 432);
     });
 
     await test('/claude renders structured action output', async () => {

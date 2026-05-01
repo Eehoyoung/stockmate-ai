@@ -15,14 +15,25 @@ from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
 from utils import safe_float as clean_val
+from strategy_perf import perf_timer
+from strategy_shared_cache import cache_get_json, cache_set_json, flag_enabled
 
 logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_S5_CACHE_TTL = int(os.getenv("S5_SHARED_CACHE_TTL", "60"))
+_S5_OVERLAP_LIMIT = int(os.getenv("S5_OVERLAP_LIMIT", "15"))
+_S5_TWO_STAGE_LIMIT = int(os.getenv("S5_TWO_STAGE_LIMIT", "8"))
 
-async def fetch_progra_netbuy(token: str, market: str) -> dict:
+async def fetch_progra_netbuy(token: str, market: str, rdb=None) -> dict:
     """ka90003 프로그램순매수상위50 조회 (연속조회 포함)"""
+    cache_key = f"strategy:s5:ka90003:{market}"
+    if flag_enabled("S5_SHARED_CACHE_ENABLED") and rdb is not None:
+        cached = await cache_get_json(rdb, cache_key)
+        if isinstance(cached, dict):
+            return cached
+
     market_map = {"KOSPI": "P00101", "KOSDAQ": "P10102", "001": "P00101", "101": "P10102", "000": "P00101"}
     kiwoom_mrkt = market_map.get(market.upper(), "P00101")
 
@@ -77,10 +88,18 @@ async def fetch_progra_netbuy(token: str, market: str) -> dict:
             next_key = resp.headers.get("next-key", "").strip()
             if cont_yn != "Y" or not next_key:
                 break
+    if flag_enabled("S5_SHARED_CACHE_ENABLED") and rdb is not None:
+        await cache_set_json(rdb, cache_key, result, _S5_CACHE_TTL)
     return result
 
-async def fetch_frgn_inst_upper(token: str, market: str) -> set:
+async def fetch_frgn_inst_upper(token: str, market: str, rdb=None) -> set:
     """ka90009 외국인기관매매상위 - 외인 순매수 종목 코드 추출 (연속조회 포함)"""
+    cache_key = f"strategy:s5:ka90009:{market}"
+    if flag_enabled("S5_SHARED_CACHE_ENABLED") and rdb is not None:
+        cached = await cache_get_json(rdb, cache_key)
+        if isinstance(cached, list):
+            return set(cached)
+
     # ka90009는 시장코드가 001, 101 형태를 따름
     mrkt = "001" if market in ["KOSPI", "001", "000"] else "101"
 
@@ -124,10 +143,23 @@ async def fetch_frgn_inst_upper(token: str, market: str) -> set:
             next_key = resp.headers.get("next-key", "").strip()
             if cont_yn != "Y" or not next_key:
                 break
+    if flag_enabled("S5_SHARED_CACHE_ENABLED") and rdb is not None:
+        await cache_set_json(rdb, cache_key, sorted(result_set), _S5_CACHE_TTL)
     return result_set
 
-async def check_extra_conditions(token: str, stk_cd: str, market: str = "001") -> bool:
+async def check_extra_conditions(token: str, stk_cd: str, market: str = "001", rdb=None) -> bool:
     """전일 기관 순매수 여부 및 5분봉 5이평선 상단 확인"""
+    cache_key = f"strategy:s5:extra:{market}:{stk_cd}"
+    if flag_enabled("S5_EXTRA_CACHE_ENABLED") and rdb is not None:
+        cached = await cache_get_json(rdb, cache_key)
+        if isinstance(cached, bool):
+            return cached
+
+    async def finish(value: bool) -> bool:
+        if flag_enabled("S5_EXTRA_CACHE_ENABLED") and rdb is not None:
+            await cache_set_json(rdb, cache_key, value, _S5_CACHE_TTL)
+        return value
+
     try:
         # 전일 날짜 (단, 장 종료 후 호출 시 로직에 따라 당일/전일 조정 필요)
         yesterday = (datetime.now(KST) - timedelta(days=1)).strftime("%Y%m%d")
@@ -144,9 +176,9 @@ async def check_extra_conditions(token: str, stk_cd: str, market: str = "001") -
             if validate_kiwoom_response(inst_data, "ka10044", logger):
                 netbuy_list = inst_data.get("daly_orgn_trde_stk", [])
                 if not any(item.get("stk_cd") == stk_cd for item in netbuy_list):
-                    return False
+                    return await finish(False)
             else:
-                return False
+                return await finish(False)
 
             # 2. ka10080 5분봉 5이평선 확인
             chart_resp = await client.post(
@@ -160,8 +192,8 @@ async def check_extra_conditions(token: str, stk_cd: str, market: str = "001") -
                 if len(candles) >= 5:
                     cur_prc = clean_val(candles[0].get("cur_prc", 0))
                     ma5 = mean([clean_val(c.get("cur_prc", 0)) for c in candles[:5]])
-                    return cur_prc >= ma5
-            return False
+                    return await finish(cur_prc >= ma5)
+            return await finish(False)
     except Exception as e:
         logger.debug(f"[S5_Extra] {stk_cd} 필터 제외: {e}")
         return False
@@ -179,10 +211,11 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
             logger.debug("[S5] 풀 조회 실패: %s", e)
 
     # 1. 기초 데이터 동시 수집
-    prog_map, frgn_set = await asyncio.gather(
-        fetch_progra_netbuy(token, market),
-        fetch_frgn_inst_upper(token, market)
-    )
+    async with perf_timer("s5_base_fetch", rdb=rdb, fields={"market": market}):
+        prog_map, frgn_set = await asyncio.gather(
+            fetch_progra_netbuy(token, market, rdb=rdb),
+            fetch_frgn_inst_upper(token, market, rdb=rdb)
+        )
 
     # 2. 프로그램 순매수 & 외인 순매수 교집합 추출 (순매수 금액 상위 15종목으로 제한)
     overlap_raw = set(prog_map.keys()) & frgn_set
@@ -193,13 +226,19 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
         logger.debug("[S5] 풀 필터 후 교집합 %d개", len(overlap_raw))
     else:
         logger.debug("[S5] 풀 없음 – ka90003 전수 조회")
-    overlap = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:15]
+    overlap_limit = _S5_TWO_STAGE_LIMIT if flag_enabled("S5_TWO_STAGE_ENABLED") else _S5_OVERLAP_LIMIT
+    overlap = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:overlap_limit]
+    if flag_enabled("S5_TWO_STAGE_SHADOW"):
+        shadow = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:_S5_TWO_STAGE_LIMIT]
+        logger.info("[S5] two-stage shadow current=%d shadow=%d", len(overlap), len(shadow))
     results = []
 
     # 3. 교집합 종목들에 대해 정밀 필터 적용 (ka10044+ka10080 × 15 = 30 calls max)
     for stk_cd in overlap:
         await asyncio.sleep(_API_INTERVAL) # 과부하 방지
-        if await check_extra_conditions(token, stk_cd, market):
+        async with perf_timer("s5_extra", rdb=rdb, fields={"market": market, "stk_cd": stk_cd}):
+            extra_ok = await check_extra_conditions(token, stk_cd, market, rdb=rdb)
+        if extra_ok:
             info = prog_map[stk_cd]
             # ka90003 응답에서 직접 수집한 stk_nm/cur_prc 우선 사용
             stk_nm  = info.get("stk_nm") or await fetch_stk_nm(rdb, token, stk_cd)

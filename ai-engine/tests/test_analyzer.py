@@ -1,4 +1,4 @@
-"""
+﻿"""
 tests/test_analyzer.py
 analyzer.py 의 JSON 파싱, 폴백, Claude 클라이언트 모킹 테스트.
 실제 API 연결 없이 unittest.mock 사용.
@@ -51,32 +51,32 @@ def _make_response(text: str):
 # ──────────────────────────────────────────────────────────────────
 
 class TestFallback:
-    def test_fallback_high_score_enter(self):
+    def test_fallback_high_score_cancel(self):
         from analyzer import _fallback
         result = _fallback(75.0)
-        assert result["action"] == "ENTER"
+        assert result["action"] == "CANCEL"
         assert result["ai_score"] == 75.0
         assert result["confidence"] == "LOW"
 
-    def test_fallback_mid_score_hold(self):
+    def test_fallback_mid_score_cancel(self):
         from analyzer import _fallback
         result = _fallback(55.0)
-        assert result["action"] == "HOLD"
+        assert result["action"] == "CANCEL"
 
     def test_fallback_low_score_cancel(self):
         from analyzer import _fallback
         result = _fallback(30.0)
         assert result["action"] == "CANCEL"
 
-    def test_fallback_boundary_70_enter(self):
+    def test_fallback_boundary_70_cancel(self):
         from analyzer import _fallback
         result = _fallback(70.0)
-        assert result["action"] == "ENTER"
+        assert result["action"] == "CANCEL"
 
-    def test_fallback_boundary_50_hold(self):
+    def test_fallback_boundary_50_cancel(self):
         from analyzer import _fallback
         result = _fallback(50.0)
-        assert result["action"] == "HOLD"
+        assert result["action"] == "CANCEL"
 
     def test_fallback_boundary_49_cancel(self):
         from analyzer import _fallback
@@ -315,7 +315,7 @@ class TestAnalyzeSignal:
         assert result["confidence"] == "LOW"
 
     def test_fallback_score_used_for_action(self):
-        """폴백 시 rule_score 기준으로 action 결정"""
+        """폴백 시 rule_score와 무관하게 보수적으로 CANCEL"""
         mock_response = _make_response("no json here")
 
         with patch("analyzer._get_claude_client") as mock_client_fn:
@@ -324,10 +324,10 @@ class TestAnalyzeSignal:
             mock_client_fn.return_value = mock_client
 
             from analyzer import analyze_signal
-            result_enter = self._run(analyze_signal(_signal(), _ctx(), 75.0))
+            result_cancel_high = self._run(analyze_signal(_signal(), _ctx(), 75.0))
             result_cancel = self._run(analyze_signal(_signal(), _ctx(), 30.0))
 
-        assert result_enter["action"] == "ENTER"
+        assert result_cancel_high["action"] == "CANCEL"
         assert result_cancel["action"] == "CANCEL"
 
 

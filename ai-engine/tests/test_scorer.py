@@ -1,9 +1,4 @@
-"""
-tests/test_scorer.py
-scorer.py ??rule_score ?⑥닔??????⑥쐞 ?뚯뒪??
-媛??꾨왂蹂?理쒖쟻/理쒖냼/?ｌ?耳?댁뒪 ?쒕굹由ъ삤瑜?寃利?
-"""
-
+﻿
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,7 +12,6 @@ from scorer import rule_score, get_claude_threshold, should_skip_ai, _safe_float
 # ??????????????????????????????????????????????????????????????????
 
 def _ctx(strength=120.0, flu_rt=3.0, bid_ratio=1.5):
-    """湲곕낯 market_ctx ?앹꽦"""
     total_buy = bid_ratio * 1000
     return {
         "tick": {"flu_rt": str(flu_rt)},
@@ -65,24 +59,20 @@ class TestSafeFloat:
 # ??????????????????????????????????????????????????????????????????
 
 class TestS1GapOpen:
-    """S1: 媛?긽???쒖큹媛 ?꾨왂"""
 
     def test_optimal_conditions_high_score(self):
-        """媛?3~5%, 媛뺥븳 泥닿껐媛뺣룄, ?믪? ?멸?鍮꾩쑉 ????0??""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0, cntr_strength=160)
         ctx = _ctx(strength=160, flu_rt=4.0, bid_ratio=2.5)
         score, _ = rule_score(signal, ctx)
         assert score >= 70, f"Expected >=70 but got {score}"
 
     def test_minimal_conditions_low_score(self):
-        """媛??놁쓬, ?쏀븳 泥닿껐媛뺣룄, ??? ?멸?鍮꾩쑉 ??<50??""
         signal = _signal("S1_GAP_OPEN", gap_pct=0.5)
         ctx = _ctx(strength=90, flu_rt=0.5, bid_ratio=1.0)
         score, _ = rule_score(signal, ctx)
         assert score < 50, f"Expected <50 but got {score}"
 
     def test_gap_3_to_5_gets_20_points(self):
-        """媛?3~5%??理쒓퀬 ?먯닔 援ш컙"""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=100, flu_rt=4.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -90,7 +80,6 @@ class TestS1GapOpen:
         assert score == 20.0
 
     def test_gap_5_to_8_gets_15_points(self):
-        """媛?5~8%??以묎컙 ?먯닔 援ш컙"""
         signal = _signal("S1_GAP_OPEN", gap_pct=6.0)
         ctx = _ctx(strength=100, flu_rt=6.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -103,7 +92,6 @@ class TestS1GapOpen:
         assert score == 35.0
 
     def test_overheat_penalty_above_15pct(self):
-        """flu_rt > 15% ??怨쇱뿴 ?⑤꼸??-20??""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=160, flu_rt=16.0, bid_ratio=2.5)
         score_overheat, _ = rule_score(signal, ctx)
@@ -112,7 +100,6 @@ class TestS1GapOpen:
         assert score_overheat < score_normal
 
     def test_penalty_10_to_15pct(self):
-        """flu_rt 10~15% ??二쇱쓽 ?⑤꼸??-10??"""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0)
         ctx_11 = _ctx(strength=100, flu_rt=11.0, bid_ratio=0.5)
         ctx_4 = _ctx(strength=100, flu_rt=4.0, bid_ratio=0.5)
@@ -121,14 +108,12 @@ class TestS1GapOpen:
         assert score_penalty == score_normal - 10
 
     def test_decline_penalty_below_minus5pct(self):
-        """flu_rt < -5% ???섎씫 ?⑤꼸??-15??""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=100, flu_rt=-6.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == max(0.0, 20.0 - 15.0)
 
     def test_cntr_strength_bonus(self):
-        """cntr_strength > 150 ??+10??蹂대꼫??""
         signal_with = _signal("S1_GAP_OPEN", gap_pct=4.0, cntr_strength=160)
         signal_without = _signal("S1_GAP_OPEN", gap_pct=4.0)
         ctx = _ctx(strength=100, flu_rt=4.0, bid_ratio=0.5)
@@ -137,28 +122,24 @@ class TestS1GapOpen:
         assert score_with == score_without + 10
 
     def test_zero_values(self):
-        """紐⑤뱺 媛믪씠 0????0??""
         signal = _signal("S1_GAP_OPEN", gap_pct=0, cntr_strength=0)
         ctx = _ctx(strength=0, flu_rt=0, bid_ratio=0)
         score, _ = rule_score(signal, ctx)
         assert score >= 0.0
 
     def test_score_clamped_0_to_100(self):
-        """?먯닔????긽 0~100 踰붿쐞"""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0, cntr_strength=200)
         ctx = _ctx(strength=200, flu_rt=4.0, bid_ratio=5.0)
         score, _ = rule_score(signal, ctx)
         assert 0.0 <= score <= 100.0
 
     def test_missing_gap_pct_defaults_zero(self):
-        """gap_pct ?놁쓣 ??湲곕낯媛?0?쇰줈 泥섎━"""
         signal = _signal("S1_GAP_OPEN")  # gap_pct ?놁쓬
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
         assert isinstance(score, float)
 
     def test_signal_bid_ratio_fallback_used_when_hoga_missing(self):
-        """WS ?멸?媛 ?놁뼱??signal.bid_ratio 濡?S1 ?섏슂 ?먯닔瑜?怨꾩궛?쒕떎."""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0, bid_ratio=2.5)
         ctx = {
             "tick": {"flu_rt": "4.0"},
@@ -181,24 +162,20 @@ class TestS1GapOpen:
 # ??????????????????????????????????????????????????????????????????
 
 class TestS2ViPullback:
-    """S2: VI 諛쒕룞 ???뚮┝紐??꾨왂"""
 
     def test_optimal_conditions_high_score(self):
-        """?뚮┝ 1~2%, ?숈쟻VI, 媛뺥븳 泥닿껐媛뺣룄, ?믪? ?멸?鍮꾩쑉 ????0??""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=True)
         ctx = _ctx(strength=130, flu_rt=3.0, bid_ratio=1.8)
         score, _ = rule_score(signal, ctx)
         assert score >= 70, f"Expected >=70 but got {score}"
 
     def test_minimal_conditions_low_score(self):
-        """?뚮┝ ?놁쓬, 鍮꾨룞?갫I, ?쏀븳 泥닿껐媛뺣룄 ??<50??""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=0, is_dynamic=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=1.0)
         score, _ = rule_score(signal, ctx)
         assert score < 50, f"Expected <50 but got {score}"
 
     def test_is_dynamic_true_bool(self):
-        """is_dynamic=True(bool) ??+15??""
         signal_dyn = _signal("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=True)
         signal_static = _signal("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
@@ -207,7 +184,6 @@ class TestS2ViPullback:
         assert score_dyn == score_static + 15
 
     def test_is_dynamic_int_1(self):
-        """is_dynamic=1(int) ??truthy ??+15??""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=1)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -215,35 +191,30 @@ class TestS2ViPullback:
         assert score == 45.0
 
     def test_is_dynamic_int_0(self):
-        """is_dynamic=0(int) ??falsy ??+0??""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=0)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 30.0
 
     def test_pullback_1_to_2pct_max_score(self):
-        """?뚮┝ 1~2% ??30??(理쒓퀬 援ш컙)"""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 30.0
 
     def test_pullback_2_to_3pct_medium_score(self):
-        """?뚮┝ 2~3% ??20??""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=-2.5, is_dynamic=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 20.0
 
     def test_pullback_over_3pct_zero_score(self):
-        """?뚮┝ 3% 珥덇낵 ??0??""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=-4.0, is_dynamic=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 0.0
 
     def test_none_pullback_defaults(self):
-        """pullback_pct=None ??abs(0)=0 ??0 < 3.0 ?대?濡?20??""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=None, is_dynamic=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -251,14 +222,12 @@ class TestS2ViPullback:
         assert score == 20.0
 
     def test_missing_is_dynamic(self):
-        """is_dynamic ?놁쓣 ??0??(falsy)"""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=-1.5)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 30.0
 
     def test_strength_bonus_120(self):
-        """泥닿껐媛뺣룄 > 120 ??+20??""
         signal = _signal("S2_VI_PULLBACK", pullback_pct=-1.5, is_dynamic=False)
         ctx = _ctx(strength=125, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -270,10 +239,8 @@ class TestS2ViPullback:
 # ??????????????????????????????????????????????????????????????????
 
 class TestS3InstFrgn:
-    """S3: ?몄씤+湲곌? ?숈떆 ?쒕ℓ???꾨왂"""
 
     def test_optimal_conditions_high_score(self):
-        """?洹쒕え ?쒕ℓ?? 5???곗냽, ?믪? 嫄곕옒?됰퉬??????0??""
         signal = _signal(
             "S3_INST_FRGN",
             net_buy_amt=50_000_000_000,  # 500??
@@ -285,7 +252,6 @@ class TestS3InstFrgn:
         assert score >= 70, f"Expected >=70 but got {score}"
 
     def test_minimal_conditions_low_score(self):
-        """?뚮웾 ?쒕ℓ?? ?곗냽???놁쓬, ??? 嫄곕옒?됰퉬????<30??""
         signal = _signal(
             "S3_INST_FRGN",
             net_buy_amt=1_000_000,  # 100留???
@@ -297,35 +263,30 @@ class TestS3InstFrgn:
         assert score < 30, f"Expected <30 but got {score}"
 
     def test_continuous_days_5_plus_gets_30(self):
-        """5???댁긽 ?곗냽 ??+30??""
         signal = _signal("S3_INST_FRGN", net_buy_amt=0, continuous_days=5, vol_ratio=0)
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
         assert score == 30.0
 
     def test_continuous_days_3_gets_20(self):
-        """3???댁긽 ?곗냽 ??+20??""
         signal = _signal("S3_INST_FRGN", net_buy_amt=0, continuous_days=3, vol_ratio=0)
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
         assert score == 20.0
 
     def test_continuous_days_1_gets_10(self):
-        """1???곗냽 ??+10??""
         signal = _signal("S3_INST_FRGN", net_buy_amt=0, continuous_days=1, vol_ratio=0)
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
         assert score == 10.0
 
     def test_continuous_days_0_gets_0(self):
-        """0???곗냽 ??0??""
         signal = _signal("S3_INST_FRGN", net_buy_amt=0, continuous_days=0, vol_ratio=0)
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
         assert score == 0.0
 
     def test_vol_ratio_thresholds(self):
-        """嫄곕옒??鍮꾩쑉蹂??먯닔: 3x=25, 2x=20, 1.5x=10, <1.5x=0"""
         base = {"net_buy_amt": 0, "continuous_days": 0}
         ctx = _ctx()
 
@@ -342,7 +303,6 @@ class TestS3InstFrgn:
         assert rule_score(signal_1x, ctx)[0] == 0.0
 
     def test_net_buy_amt_capped_at_25(self):
-        """net_buy_amt 湲곕컲 ?먯닔 理쒕? 25??""
         signal = _signal(
             "S3_INST_FRGN",
             net_buy_amt=999_999_999_999,  # 留ㅼ슦 ??媛?
@@ -360,14 +320,12 @@ class TestS3InstFrgn:
         assert score == 10.0
 
     def test_missing_continuous_days_defaults(self):
-        """continuous_days ?놁쓣 ??0?쇰줈 泥섎━"""
         signal = _signal("S3_INST_FRGN", net_buy_amt=0, vol_ratio=0)
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
         assert score == 0.0
 
     def test_none_continuous_days(self):
-        """continuous_days=None ??0?쇰줈 泥섎━"""
         signal = _signal("S3_INST_FRGN", net_buy_amt=0, continuous_days=None, vol_ratio=0)
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
@@ -379,38 +337,32 @@ class TestS3InstFrgn:
 # ??????????????????????????????????????????????????????????????????
 
 class TestS4BigCandle:
-    """S4: ?λ??묐큺 異붽꺽 ?꾨왂"""
 
     def test_optimal_conditions_high_score(self):
-        """?믪? 嫄곕옒?됰퉬?? ?믪? 紐명넻鍮꾩쑉, ?좉퀬媛, 媛뺥븳 泥닿껐媛뺣룄 ????5??""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=12, body_ratio=0.85, is_new_high=True)
         ctx = _ctx(strength=155, flu_rt=5.0, bid_ratio=2.0)
         score, _ = rule_score(signal, ctx)
         assert score >= 75, f"Expected >=75 but got {score}"
 
     def test_minimal_conditions_low_score(self):
-        """??? 嫄곕옒?됰퉬?? ??? 紐명넻鍮꾩쑉, ?좉퀬媛 ?꾨떂, ?쏀븳 泥닿껐媛뺣룄 ??<30??""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=2, body_ratio=0.5, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=1.0)
         score, _ = rule_score(signal, ctx)
         assert score < 30, f"Expected <30 but got {score}"
 
     def test_vol_ratio_over_10_gets_30(self):
-        """嫄곕옒?됰퉬??> 10 ??25??""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=11, body_ratio=0, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 30.0
 
     def test_vol_ratio_5_to_10_gets_25(self):
-        """嫄곕옒?됰퉬??5~10 ??20??""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=7, body_ratio=0, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 25.0
 
     def test_body_ratio_over_0_8_gets_20(self):
-        """紐명넻鍮꾩쑉 ??0.8 ??20??""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0.8, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -423,21 +375,18 @@ class TestS4BigCandle:
         assert score == 10.0
 
     def test_is_new_high_adds_20(self):
-        """?좉퀬媛 ??+20??""
         signal_high = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0, is_new_high=True)
         signal_no = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0, is_new_high=False)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         assert rule_score(signal_high, ctx)[0] == rule_score(signal_no, ctx)[0] + 20
 
     def test_missing_is_new_high(self):
-        """is_new_high ?놁쓣 ??0??""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 0.0
 
     def test_strength_150_plus_gets_20(self):
-        """泥닿껐媛뺣룄 > 150 ??20??""
         signal = _signal("S4_BIG_CANDLE", vol_ratio=0, body_ratio=0, is_new_high=False)
         ctx = _ctx(strength=155, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -454,45 +403,38 @@ class TestS4BigCandle:
 # ??????????????????????????????????????????????????????????????????
 
 class TestS5ProgFrgn:
-    """S5: ?꾨줈洹몃옩+?몄씤 ?숇컲 ?꾨왂"""
 
     def test_optimal_conditions_high_score(self):
-        """?洹쒕え ?쒕ℓ?? 媛뺥븳 泥닿껐媛뺣룄, ?믪? ?멸?鍮꾩쑉 ????5??""
         signal = _signal("S5_PROG_FRGN", net_buy_amt=100_000_000_000)
         ctx = _ctx(strength=135, flu_rt=3.0, bid_ratio=2.5)
         score, _ = rule_score(signal, ctx)
         assert score >= 65, f"Expected >=65 but got {score}"
 
     def test_minimal_conditions_low_score(self):
-        """?뚮웾 ?쒕ℓ?? ?쏀븳 泥닿껐媛뺣룄, ??? ?멸?鍮꾩쑉 ??<20??""
         signal = _signal("S5_PROG_FRGN", net_buy_amt=1_000_000)
         ctx = _ctx(strength=90, flu_rt=3.0, bid_ratio=1.0)
         score, _ = rule_score(signal, ctx)
-        assert score < 20, f"Expected <20 but got {score}"
+        assert score == 0.0
 
     def test_net_buy_amt_capped_at_40(self):
-        """net_buy_amt 湲곕컲 ?먯닔 理쒕? 40??""
         signal = _signal("S5_PROG_FRGN", net_buy_amt=999_999_999_999)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 40.0
 
     def test_strength_above_130_gets_25(self):
-        """泥닿껐媛뺣룄 > 130 ??25??""
         signal = _signal("S5_PROG_FRGN", net_buy_amt=0)
         ctx = _ctx(strength=135, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 25.0
 
     def test_strength_120_to_130_gets_20(self):
-        """泥닿껐媛뺣룄 120~130 ??20??""
         signal = _signal("S5_PROG_FRGN", net_buy_amt=0)
         ctx = _ctx(strength=125, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 20.0
 
     def test_bid_ratio_above_2_gets_20(self):
-        """?멸?鍮꾩쑉 > 2 ??20??""
         signal = _signal("S5_PROG_FRGN", net_buy_amt=0)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=2.5)
         score, _ = rule_score(signal, ctx)
@@ -511,14 +453,12 @@ class TestS5ProgFrgn:
         assert score == 45.0
 
     def test_zero_net_buy_amt(self):
-        """net_buy_amt=0 ??0??""
         signal = _signal("S5_PROG_FRGN", net_buy_amt=0)
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 0.0
 
     def test_missing_net_buy_amt(self):
-        """net_buy_amt ?놁쓣 ??0??""
         signal = _signal("S5_PROG_FRGN")
         ctx = _ctx(strength=100, flu_rt=3.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -530,38 +470,32 @@ class TestS5ProgFrgn:
 # ??????????????????????????????????????????????????????????????????
 
 class TestS6ThemeLaggard:
-    """S6: ?뚮쭏 ?꾨컻二??꾨왂"""
 
     def test_optimal_conditions_high_score(self):
-        """媛?1~3%, 媛뺥븳 泥닿껐媛뺣룄, ?믪? ?멸?鍮꾩쑉 ????0??""
         signal = _signal("S6_THEME_LAGGARD", gap_pct=2.0, cntr_strength=160, theme_name="AI")
         ctx = _ctx(strength=155, flu_rt=2.0, bid_ratio=2.0)
         score, _ = rule_score(signal, ctx)
         assert score >= 60, f"Expected >=60 but got {score}"
 
     def test_minimal_conditions_low_score(self):
-        """媛??놁쓬, ?쏀븳 泥닿껐媛뺣룄, ??? ?멸?鍮꾩쑉 ??<20??""
         signal = _signal("S6_THEME_LAGGARD", gap_pct=0, cntr_strength=0)
         ctx = _ctx(strength=90, flu_rt=0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
-        assert score < 20, f"Expected <20 but got {score}"
+        assert score == 15.0
 
     def test_gap_1_to_3_gets_25(self):
-        """媛?1~3% ??25??""
         signal = _signal("S6_THEME_LAGGARD", gap_pct=2.0, cntr_strength=0)
         ctx = _ctx(strength=100, flu_rt=2.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 25.0
 
     def test_gap_3_to_5_gets_15(self):
-        """媛?3~5% ??15??""
         signal = _signal("S6_THEME_LAGGARD", gap_pct=4.0, cntr_strength=0)
         ctx = _ctx(strength=100, flu_rt=4.0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
         assert score == 15.0
 
     def test_cntr_strength_takes_priority_over_ctx(self):
-        """?좏샇 ??cntr_strength媛 ctx strength蹂대떎 ?곗꽑 ?ъ슜"""
         signal_high_cntr = _signal("S6_THEME_LAGGARD", gap_pct=0, cntr_strength=160)
         signal_no_cntr = _signal("S6_THEME_LAGGARD", gap_pct=0, cntr_strength=0)
         ctx_low = _ctx(strength=90, flu_rt=0, bid_ratio=0.5)
@@ -573,7 +507,6 @@ class TestS6ThemeLaggard:
         assert score_high_cntr > score_no_cntr
 
     def test_bid_ratio_above_1_5_gets_20_plus_gap(self):
-        """?멸?鍮꾩쑉 > 1.5 ??20??+ gap=0(< 5)?대?濡?15??= 35??""
         signal = _signal("S6_THEME_LAGGARD", gap_pct=0, cntr_strength=0)
         ctx = _ctx(strength=100, flu_rt=0, bid_ratio=2.0)
         score, _ = rule_score(signal, ctx)
@@ -581,7 +514,6 @@ class TestS6ThemeLaggard:
         assert score == 35.0
 
     def test_bid_ratio_1_2_to_1_5_gets_10(self):
-        """?멸?鍮꾩쑉 1.2~1.5 ??10??(gap?? 濡?gap ?먯닔 0)"""
         signal = _signal("S6_THEME_LAGGARD", gap_pct=6.0, cntr_strength=0)
         ctx = _ctx(strength=100, flu_rt=6.0, bid_ratio=1.3)
         score, _ = rule_score(signal, ctx)
@@ -589,7 +521,6 @@ class TestS6ThemeLaggard:
         assert score == 10.0
 
     def test_none_gap_pct(self):
-        """gap_pct=None ??0?쇰줈 泥섎━ ??0 < 5 ?대?濡?15??""
         signal = _signal("S6_THEME_LAGGARD", gap_pct=None, cntr_strength=0)
         ctx = _ctx(strength=100, flu_rt=0, bid_ratio=0.5)
         score, _ = rule_score(signal, ctx)
@@ -600,7 +531,6 @@ class TestS6ThemeLaggard:
 # S7_ICHIMOKU_BREAKOUT tests
 
 class TestS7IchimokuBreakout:
-    """S7: Ichimoku cloud breakout"""
 
     def test_optimal_conditions_high_score(self):
         signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=2.0, rsi=55, cond_count=3)
@@ -667,7 +597,6 @@ class TestThresholdAndSkipAi:
         assert should_skip_ai(75.0, "S1_GAP_OPEN") is False
 
     def test_should_skip_ai_no_strategy(self):
-        """strategy 誘몄?????MIN_SCORE 湲곗? ?ъ슜"""
         import os
         min_score = float(os.getenv("AI_SCORE_THRESHOLD", "60.0"))
         assert should_skip_ai(min_score - 1, "") is True
@@ -680,26 +609,22 @@ class TestThresholdAndSkipAi:
 
 class TestCommonPenalties:
     def test_unknown_strategy_zero_score(self):
-        """?????녿뒗 ?꾨왂 ??0??(match???대떦?섎뒗 case ?놁쓬)"""
         signal = _signal("UNKNOWN_STRATEGY")
         ctx = _ctx()
         score, _ = rule_score(signal, ctx)
         assert score == 0.0
 
     def test_score_not_negative(self):
-        """?먯닔??0 誘몃쭔???섏? ?딆쓬"""
         signal = _signal("S1_GAP_OPEN", gap_pct=0)
         ctx = _ctx(strength=0, flu_rt=16.0, bid_ratio=0)  # 怨쇱뿴 ?⑤꼸??-20
         score, _ = rule_score(signal, ctx)
         assert score >= 0.0
 
     def test_empty_signal(self):
-        """鍮??좏샇 dict ??0?? ?ㅻ쪟 ?놁쓬"""
         score, _ = rule_score({}, {})
         assert score == 0.0
 
     def test_empty_market_ctx(self):
-        """鍮?market_ctx ??湲곕낯媛믪쑝濡?泥섎━"""
         signal = _signal("S1_GAP_OPEN", gap_pct=4.0)
         score, _ = rule_score(signal, {})
         assert isinstance(score, float)

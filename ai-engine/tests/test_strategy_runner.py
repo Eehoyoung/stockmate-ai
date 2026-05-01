@@ -176,6 +176,29 @@ class TestSemaphore:
         sem = strategy_runner._get_semaphore()
         assert not sem.locked()
 
+    def test_slow_strategy_records_status_and_pipeline_when_enabled(self, monkeypatch):
+        import strategy_runner
+        from strategy_runner import _run_strategy_with_semaphore
+
+        strategy_runner._semaphore = None
+        rdb = MagicMock()
+        rdb.hset = AsyncMock(return_value=True)
+        rdb.expire = AsyncMock(return_value=True)
+        rdb.hincrby = AsyncMock(return_value=1)
+
+        async def success():
+            return "ok"
+
+        monkeypatch.setattr(strategy_runner, "ENABLE_STRATEGY_LATENCY_METRICS", True)
+        monkeypatch.setattr(strategy_runner, "_SLOW_STRATEGY_WARN_SEC", 0.0)
+
+        result = _run(_run_strategy_with_semaphore("S3", success(), rdb=rdb))
+
+        assert result == "ok"
+        rdb.hset.assert_awaited()
+        assert rdb.hset.await_args.args[0] == "status:strategy_latency:S3"
+        assert any(call.args[1] == "slow" for call in rdb.hincrby.await_args_list)
+
 
 class TestRunOnce:
     def test_skips_all_strategies_when_no_token(self, caplog):

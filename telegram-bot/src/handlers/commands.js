@@ -84,6 +84,38 @@ function guard(handler) {
     };
 }
 
+async function sendOperationalReplies(ctx, command, replies) {
+    const chatIds = [String(ctx.chat.id)];
+    let sentCount = 0;
+    let failedCount = 0;
+    const items = Array.isArray(replies) ? replies : [replies];
+
+    for (const item of items) {
+        const text = typeof item === 'string' ? item : item.text;
+        const options = typeof item === 'string' ? undefined : item.options;
+        try {
+            await ctx.reply(text, options);
+            sentCount++;
+        } catch (e) {
+            failedCount++;
+            logger.error(`${command} send failed`, {
+                recipient_group: 'request_chat',
+                chat_ids: chatIds,
+                sent_count: sentCount,
+                failed_count: failedCount,
+            }, e);
+            throw e;
+        }
+    }
+
+    logger.info(`${command} sent`, {
+        recipient_group: 'request_chat',
+        chat_ids: chatIds,
+        sent_count: sentCount,
+        failed_count: failedCount,
+    });
+}
+
 const STRATEGY_MAP = {
     s1:  'S1_GAP_OPEN',
     s2:  'S2_VI_PULLBACK',
@@ -494,7 +526,10 @@ const status = guard(async (ctx) => {
     const h = await kiwoom.health();
     const usage = await getClaudeUsage();
     const maxCalls = Number(process.env.MAX_CLAUDE_CALLS_PER_DAY ?? 100);
-    return ctx.reply(renderHealthSummary(h, { ...usage, maxCalls }), { parse_mode: 'HTML' });
+    return sendOperationalReplies(ctx, 'status', {
+        text: renderHealthSummary(h, { ...usage, maxCalls }),
+        options: { parse_mode: 'HTML' },
+    });
 
     // ws_solver.md 4.4: ws:py_heartbeat 로 Python WS 상태 진단
     const redis = getClient();
@@ -869,14 +904,16 @@ const userSettings = guard(async (ctx) => {
 
 /** /뉴스 – 최근 뉴스 + 분석 결과 */
 const newsStatus = guard(async (ctx) => {
-    await ctx.reply('뉴스와 장상황을 즉시 재분석 중입니다. 잠시만 기다리세요.');
+    await sendOperationalReplies(ctx, 'news', '뉴스와 장상황을 즉시 재분석 중입니다. 잠시만 기다리세요.');
 
     try {
         const brief = await kiwoom.getLiveNewsBrief();
         if (brief?.analysis || brief?.message) {
             const message = brief?.analysis ? formatNewsBriefResponse(brief) : brief.message;
-            await ctx.reply(message, { parse_mode: 'HTML', disable_web_page_preview: true });
-            return;
+            return sendOperationalReplies(ctx, 'news', {
+                text: message,
+                options: { parse_mode: 'HTML', disable_web_page_preview: true },
+            });
         }
     } catch (e) {
         logger.warn('/news live brief failed, fallback to cached analysis', { error: e.message });
@@ -894,7 +931,10 @@ const newsStatus = guard(async (ctx) => {
         if (analysisRaw) analysis = JSON.parse(analysisRaw);
     } catch (_) {}
 
-    await ctx.reply(formatNewsStatus({ analysis, sentiment, sectors }), { parse_mode: 'HTML' });
+    await sendOperationalReplies(ctx, 'news', {
+        text: formatNewsStatus({ analysis, sentiment, sectors }),
+        options: { parse_mode: 'HTML' },
+    });
 });
 
 /** /섹터 – 섹터 분석 현황 */
@@ -1313,7 +1353,7 @@ const reportEnhanced = guard(async (ctx) => {
     const data = await redis.hgetall(`daily_summary:${today}`);
 
     if (!data || Object.keys(data).length === 0) {
-        return ctx.reply('📊 오늘 데이터 없음');
+        return sendOperationalReplies(ctx, 'report', '📊 오늘 데이터 없음');
     }
 
     let byStrategy = '-';
@@ -1332,15 +1372,16 @@ const reportEnhanced = guard(async (ctx) => {
     const totalClosed = wins != null && losses != null ? wins + losses : null;
     const winRate = totalClosed ? ((wins / totalClosed) * 100).toFixed(0) : null;
 
-    await ctx.reply(
+    await sendOperationalReplies(ctx, 'report', {
+        text:
         `📊 <b>오늘의 신호 리포트 (${today})</b>\n\n` +
         `총 신호: <b>${data.total_signals ?? '-'}</b>\n` +
         `평균 스코어: <b>${data.avg_score ?? '-'}</b>\n` +
         `${data.avg_pnl != null ? `평균 P&L: <b>${Number(data.avg_pnl).toFixed(2)}%</b>\n` : ''}` +
         `${wins != null && losses != null ? `승/패: <b>${wins}</b> / <b>${losses}</b>${winRate ? ` | 승률 <b>${winRate}%</b>` : ''}\n` : ''}` +
         `전략별\n${byStrategy}`,
-        { parse_mode: 'HTML' }
-    );
+        options: { parse_mode: 'HTML' },
+    });
 });
 
 const filterEnhanced = guard(async (ctx) => {

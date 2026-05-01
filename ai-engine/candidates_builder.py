@@ -8,8 +8,10 @@ Java CandidateService 역할을 Python으로 이관.
 갱신 주기: CANDIDATE_BUILD_INTERVAL_SEC (기본 600초 = 10분)
 """
 import asyncio
+import json
 import logging
 import os
+import time as _time
 from datetime import datetime, time, timedelta, timezone
 
 from http_utils import validate_kiwoom_response, kiwoom_post
@@ -22,6 +24,91 @@ KST = timezone(timedelta(hours=9))
 
 CANDIDATE_BUILD_INTERVAL_SEC = int(os.getenv("CANDIDATE_BUILD_INTERVAL_SEC", "600"))
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+S3S5_STATUS_TTL_SEC = int(os.getenv("S3S5_STATUS_TTL_SEC", "1800"))
+
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+ENABLE_S3S5_LATENCY_STATUS = _env_flag("ENABLE_S3S5_LATENCY_STATUS")
+ENABLE_CANDIDATES_META = _env_flag("ENABLE_CANDIDATES_META")
+
+
+async def _incr_pipeline_daily(rdb, strategy: str, field: str) -> None:
+    if not rdb or not strategy:
+        return
+    try:
+        today = datetime.now(KST).strftime("%Y-%m-%d")
+        key = f"pipeline_daily:{today}:{strategy}"
+        await rdb.hincrby(key, field, 1)
+        await rdb.expire(key, 172800)
+    except Exception:
+        pass
+
+
+async def _write_candidates_meta(
+    rdb,
+    *,
+    strategy: str,
+    market: str,
+    codes: list[str],
+    ttl: int,
+    source: str,
+    elapsed_ms: int | None = None,
+    state: str = "ok",
+) -> None:
+    if not ENABLE_CANDIDATES_META or not rdb:
+        return
+    try:
+        mapping = {
+            "strategy": strategy,
+            "market": market,
+            "count": str(len(codes)),
+            "source": source,
+            "ttl": str(ttl),
+            "state": state,
+            "updated_at": str(int(_time.time())),
+            "codes_json": json.dumps(codes, ensure_ascii=False),
+        }
+        if elapsed_ms is not None:
+            mapping["latency_ms"] = str(elapsed_ms)
+        key = f"candidates_meta:{strategy.lower()}:{market}"
+        await rdb.hset(key, mapping=mapping)
+        await rdb.expire(key, ttl)
+    except Exception as meta_err:
+        logger.debug("[builder] candidates_meta write failed [%s %s]: %s", strategy, market, meta_err)
+
+
+async def _record_s3s5_status(
+    rdb,
+    *,
+    strategy: str,
+    market: str,
+    count: int,
+    elapsed_ms: int,
+    state: str,
+    source: str,
+) -> None:
+    if not ENABLE_S3S5_LATENCY_STATUS or not rdb:
+        return
+    try:
+        key = f"status:candidates_builder:{strategy}:{market}"
+        await rdb.hset(
+            key,
+            mapping={
+                "strategy": strategy,
+                "market": market,
+                "state": state,
+                "count": str(count),
+                "latency_ms": str(elapsed_ms),
+                "source": source,
+                "updated_at": str(int(_time.time())),
+            },
+        )
+        await rdb.expire(key, S3S5_STATUS_TTL_SEC)
+    except Exception as status_err:
+        logger.debug("[builder] S3/S5 status write failed [%s %s]: %s", strategy, market, status_err)
 
 
 # ── 공통 유틸 ──────────────────────────────────────────────────────────
@@ -591,12 +678,51 @@ async def _fetch_ka10065_set(token: str, market: str, orgn_tp: str) -> set:
 
 async def _build_s3(token: str, market: str, rdb) -> None:
     """S3 외인+기관 동시순매수: ka10065 교집합, TTL 600s, 100개"""
-    frgn_set, inst_set = await asyncio.gather(
-        _fetch_ka10065_set(token, market, "9000"),
-        _fetch_ka10065_set(token, market, "9999"),
-    )
-    codes = list(frgn_set & inst_set)[:100]
-    await _lpush_with_ttl(rdb, f"candidates:s3:{market}", codes, 1200)
+    started_at = _time.monotonic()
+    strategy = "S3"
+    ttl = 1200
+    try:
+        frgn_set, inst_set = await asyncio.gather(
+            _fetch_ka10065_set(token, market, "9000"),
+            _fetch_ka10065_set(token, market, "9999"),
+        )
+        codes = list(frgn_set & inst_set)[:100]
+        await _lpush_with_ttl(rdb, f"candidates:s3:{market}", codes, ttl)
+        elapsed_ms = int((_time.monotonic() - started_at) * 1000)
+        state = "empty" if not codes else "ok"
+        await _write_candidates_meta(
+            rdb,
+            strategy=strategy,
+            market=market,
+            codes=codes,
+            ttl=ttl,
+            source="ka10065",
+            elapsed_ms=elapsed_ms,
+            state=state,
+        )
+        await _record_s3s5_status(
+            rdb,
+            strategy=strategy,
+            market=market,
+            count=len(codes),
+            elapsed_ms=elapsed_ms,
+            state=state,
+            source="ka10065",
+        )
+        await _incr_pipeline_daily(rdb, strategy, "candidate_build_empty" if not codes else "candidate_build_ok")
+    except Exception:
+        elapsed_ms = int((_time.monotonic() - started_at) * 1000)
+        await _record_s3s5_status(
+            rdb,
+            strategy=strategy,
+            market=market,
+            count=0,
+            elapsed_ms=elapsed_ms,
+            state="error",
+            source="ka10065",
+        )
+        await _incr_pipeline_daily(rdb, strategy, "candidate_build_error")
+        raise
 
 
 # ── S5: ka90003 프로그램순매수상위 ──────────────────────────────────────
@@ -606,36 +732,73 @@ _PROG_MRKT_MAP = {"001": "P00101", "101": "P10102"}
 
 async def _build_s5(token: str, market: str, rdb) -> None:
     """S5 프로그램순매수: ka90003, TTL 600s, 100개"""
+    started_at = _time.monotonic()
+    strategy = "S5"
+    ttl = 1200
     kiwoom_mkt = _PROG_MRKT_MAP.get(market, "P00101")
-    resp = await kiwoom_post(
-        f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-        {
-            "api-id": "ka90003",
-            "authorization": f"Bearer {token}",
-            "Content-Type": "application/json;charset=UTF-8",
-        },
-        {"trde_upper_tp": "2", "amt_qty_tp": "1", "mrkt_tp": kiwoom_mkt, "stex_tp": "3"},
-        "ka90003",
-    )
-    if resp is None:
-        return
-    data = resp.json()
-    if not validate_kiwoom_response(data, "ka90003", logger):
-        return
-
-    codes = []
-    for x in data.get("prm_netprps_upper_50", []):
-        real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
-        stk_cd = real_stk_cd
-        try:
-            net = _clean(x.get("prm_netprps_amt", "0"))
-        except Exception:
-            net = 0.0
-        if stk_cd and net > 0:
-            codes.append(stk_cd)
-        if len(codes) >= 100:
-            break
-    await _lpush_with_ttl(rdb, f"candidates:s5:{market}", codes, 1200)
+    try:
+        resp = await kiwoom_post(
+            f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+            {
+                "api-id": "ka90003",
+                "authorization": f"Bearer {token}",
+                "Content-Type": "application/json;charset=UTF-8",
+            },
+            {"trde_upper_tp": "2", "amt_qty_tp": "1", "mrkt_tp": kiwoom_mkt, "stex_tp": "3"},
+            "ka90003",
+        )
+        codes = []
+        state = "empty"
+        if resp is not None:
+            data = resp.json()
+            if validate_kiwoom_response(data, "ka90003", logger):
+                for x in data.get("prm_netprps_upper_50", []):
+                    real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
+                    stk_cd = real_stk_cd
+                    try:
+                        net = _clean(x.get("prm_netprps_amt", "0"))
+                    except Exception:
+                        net = 0.0
+                    if stk_cd and net > 0:
+                        codes.append(stk_cd)
+                    if len(codes) >= 100:
+                        break
+                await _lpush_with_ttl(rdb, f"candidates:s5:{market}", codes, ttl)
+                state = "empty" if not codes else "ok"
+        elapsed_ms = int((_time.monotonic() - started_at) * 1000)
+        await _write_candidates_meta(
+            rdb,
+            strategy=strategy,
+            market=market,
+            codes=codes,
+            ttl=ttl,
+            source="ka90003",
+            elapsed_ms=elapsed_ms,
+            state=state,
+        )
+        await _record_s3s5_status(
+            rdb,
+            strategy=strategy,
+            market=market,
+            count=len(codes),
+            elapsed_ms=elapsed_ms,
+            state=state,
+            source="ka90003",
+        )
+        await _incr_pipeline_daily(rdb, strategy, "candidate_build_empty" if not codes else "candidate_build_ok")
+    except Exception:
+        elapsed_ms = int((_time.monotonic() - started_at) * 1000)
+        await _record_s3s5_status(
+            rdb,
+            strategy=strategy,
+            market=market,
+            count=0,
+            elapsed_ms=elapsed_ms,
+            state="error",
+            source="ka90003",
+        )
+        await _incr_pipeline_daily(rdb, strategy, "candidate_build_error")
+        raise
 
 
 # ── S6: ka90001→ka90002 테마 구성종목 ────────────────────────────────────

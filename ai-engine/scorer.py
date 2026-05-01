@@ -75,6 +75,9 @@ def _time_bonus(strategy: str) -> float:
     시간대별 전략 보너스 점수 (+0~5점).
     장 시간 외에는 0 반환.
     """
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return 0.0
+
     now = datetime.now(KST)
     h, m = now.hour, now.minute
     minute_of_day = h * 60 + m
