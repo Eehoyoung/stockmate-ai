@@ -156,6 +156,7 @@ test('formatSignal shows integrated TP1 before Claude TP1', () => {
 test('formatSignal handles optional S1 signal_stage values safely', () => {
     const watchMsg = formatSignal(makeSignal({ signal_stage: 'WATCH' }));
     assert.ok(watchMsg.includes('신호 단계: <b>관찰</b>'));
+    assert.ok(!watchMsg.includes('진입 판단'));
     assert.ok(!watchMsg.includes('권장 비중'));
     assert.ok(!watchMsg.includes('신규매수'));
 
@@ -168,6 +169,17 @@ test('formatSignal handles optional S1 signal_stage values safely', () => {
     assert.ok(holdMsg.includes('관찰 기준가'));
     assert.ok(!holdMsg.includes('진입가'));
     assert.ok(!holdMsg.includes('권장 비중'));
+});
+
+test('formatSignal sanitizes S1 upstream buy wording', () => {
+    const msg = formatSignal(makeSignal({
+        entry_type: '시장가 매수',
+        ai_reason: '신규 매수 가능하나 추격 매수는 주의',
+    }));
+    assert.ok(msg.includes('체결강도와 호가 우위 재확인'));
+    assert.ok(!msg.includes('시장가 매수'));
+    assert.ok(!msg.includes('신규 매수'));
+    assert.ok(!msg.includes('추격 매수'));
 });
 
 test('formatSignal keeps non-S1 ENTER wording unchanged', () => {

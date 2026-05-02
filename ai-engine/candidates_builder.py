@@ -33,6 +33,58 @@ def _env_flag(name: str, default: str = "false") -> bool:
 
 ENABLE_S3S5_LATENCY_STATUS = _env_flag("ENABLE_S3S5_LATENCY_STATUS")
 ENABLE_CANDIDATES_META = _env_flag("ENABLE_CANDIDATES_META")
+ENABLE_SESSION_CANDIDATE_BUILDER = _env_flag("ENABLE_SESSION_CANDIDATE_BUILDER")
+
+SESSION_PRE_MARKET = "pre_market"
+SESSION_INTRADAY = "intraday"
+SESSION_S12_ONLY = "s12_only"
+SESSION_IDLE = "idle"
+
+
+try:
+    from market_session import get_candidate_builder_session as _external_candidate_builder_session
+except Exception:
+    _external_candidate_builder_session = None
+
+
+def _local_candidate_builder_session(now: time) -> str:
+    if time(7, 25) <= now <= time(8, 25):
+        return SESSION_PRE_MARKET
+    if time(9, 5) <= now < time(14, 50):
+        return SESSION_INTRADAY
+    if time(14, 50) <= now <= time(14, 55):
+        return SESSION_S12_ONLY
+    return SESSION_IDLE
+
+
+def _normalize_candidate_builder_session(session) -> str:
+    value = getattr(session, "value", session)
+    value = str(value or "").strip().lower()
+    if value in {SESSION_PRE_MARKET, "pre", "premarket", "before_open"}:
+        return SESSION_PRE_MARKET
+    if value in {SESSION_INTRADAY, "regular", "market", "open"}:
+        return SESSION_INTRADAY
+    if value in {SESSION_S12_ONLY, "closing", "close", "closing_auction", "after_1450"}:
+        return SESSION_S12_ONLY
+    return SESSION_IDLE
+
+
+def _candidate_builder_session(now: datetime | time) -> str:
+    if _external_candidate_builder_session:
+        try:
+            session = _external_candidate_builder_session(now)
+            if session:
+                return _normalize_candidate_builder_session(session)
+        except TypeError:
+            try:
+                session = _external_candidate_builder_session()
+                if session:
+                    return _normalize_candidate_builder_session(session)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return _local_candidate_builder_session(now)
 
 
 async def _incr_pipeline_daily(rdb, strategy: str, field: str) -> None:
@@ -990,23 +1042,26 @@ async def _build_pre_market(token: str, rdb) -> None:
     await _refresh_watchlist(rdb)
 
 
-async def _build_intraday(token: str, rdb) -> None:
-    """장중 배치: S2~S15 전략 풀 갱신.
+async def _build_intraday(token: str, rdb, session: str | None = None) -> None:
+    """Build intraday candidate pools.
 
-    각 전략 빌드 함수를 개별 try-except로 감싸서 하나 실패해도 나머지가 계속 실행되도록 함.
+    When session-based ordering is enabled, the S12-only session refreshes only
+    candidates:s12:* and leaves existing S2 and other pools as auxiliary inputs.
     """
-    # S1 풀이 비어 있으면 장중 재빌드 (컨테이너가 장전 윈도우 이후 재시작된 경우 대응)
-    for market in MARKETS:
-        try:
-            if not await rdb.exists(f"candidates:s1:{market}"):
-                logger.info("[builder] S1 %s 풀 없음 – 장중 재빌드", market)
-                await _build_s1(token, market, rdb)
-                await asyncio.sleep(_API_INTERVAL)
-        except Exception as e:
-            logger.error("[builder] S1 %s 장중 재빌드 오류: %s", market, e)
+    s12_only = session == SESSION_S12_ONLY
+
+    if not s12_only:
+        for market in MARKETS:
+            try:
+                if not await rdb.exists(f"candidates:s1:{market}"):
+                    logger.info("[builder] S1 %s missing; rebuilding during intraday", market)
+                    await _build_s1(token, market, rdb)
+                    await asyncio.sleep(_API_INTERVAL)
+            except Exception as e:
+                logger.error("[builder] S1 %s intraday rebuild failed: %s", market, e)
 
     for market in MARKETS:
-        for fn, name in [
+        builders = [(_build_s12, f"S12 {market}")] if s12_only else [
             (_build_s2,  f"S2 {market}"),
             (_build_s3,  f"S3 {market}"),
             (_build_s4,  f"S4 {market}"),
@@ -1020,18 +1075,19 @@ async def _build_intraday(token: str, rdb) -> None:
             (_build_s13, f"S13 {market}"),
             (_build_s14, f"S14 {market}"),
             (_build_s15, f"S15 {market}"),
-        ]:
+        ]
+        for fn, name in builders:
             try:
                 await fn(token, market, rdb)
             except Exception as e:
-                logger.error("[builder] 장중 %s 빌드 오류: %s", name, e)
+                logger.error("[builder] intraday %s build failed: %s", name, e)
             await asyncio.sleep(_API_INTERVAL)
 
-    # S6: 테마는 시장 무관 → 루프 외부에서 1회 호출
-    try:
-        await _build_s6(token, rdb)
-    except Exception as e:
-        logger.error("[builder] S6 빌드 오류: %s", e)
+    if not s12_only:
+        try:
+            await _build_s6(token, rdb)
+        except Exception as e:
+            logger.error("[builder] S6 build failed: %s", e)
     await _refresh_watchlist(rdb)
 
 
@@ -1042,7 +1098,8 @@ async def run_candidate_builder(rdb) -> None:
     logger.info("[builder] candidates_builder 시작 (주기=%ds)", CANDIDATE_BUILD_INTERVAL_SEC)
 
     while True:
-        now = datetime.now(KST).time()
+        now_dt = datetime.now(KST)
+        now = now_dt.time()
         try:
             token = await rdb.get("kiwoom:token")
         except Exception as e:
@@ -1052,6 +1109,24 @@ async def run_candidate_builder(rdb) -> None:
         if not token:
             logger.debug("[builder] kiwoom:token 없음 — 30초 대기")
             await asyncio.sleep(30)
+            continue
+
+        if ENABLE_SESSION_CANDIDATE_BUILDER:
+            session = _candidate_builder_session(now_dt)
+            if session == SESSION_PRE_MARKET:
+                logger.info("[builder] pre-market candidate build start")
+                await _build_pre_market(token, rdb)
+                await asyncio.sleep(180)
+            elif session == SESSION_INTRADAY:
+                logger.info("[builder] intraday candidate build start")
+                await _build_intraday(token, rdb, session=session)
+                await asyncio.sleep(CANDIDATE_BUILD_INTERVAL_SEC)
+            elif session == SESSION_S12_ONLY:
+                logger.info("[builder] S12-only candidate build start")
+                await _build_intraday(token, rdb, session=session)
+                await asyncio.sleep(CANDIDATE_BUILD_INTERVAL_SEC)
+            else:
+                await asyncio.sleep(300)
             continue
 
         if time(7, 25) <= now <= time(9, 10):

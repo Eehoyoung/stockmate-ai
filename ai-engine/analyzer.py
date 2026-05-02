@@ -62,7 +62,8 @@ except Exception:
 
 try:
     _S1_GAP_OPEN_SYS_PROMPT = (_PROMPT_DIR / "signal_analysis_s1_gap_open.txt").read_text(encoding="utf-8")
-except Exception:
+except Exception as exc:
+    logger.warning("[AI] S1 prompt load failed, using default prompt: %s", exc)
     _S1_GAP_OPEN_SYS_PROMPT = _SYS_PROMPT
 
 
@@ -476,6 +477,13 @@ def _normalize_signal_result(result: dict) -> dict:
         cancel_reason = reason
     if action != "CANCEL":
         cancel_reason = None
+    if action in ("HOLD", "CANCEL"):
+        result = {
+            **result,
+            "claude_tp1": None,
+            "claude_tp2": None,
+            "claude_sl": None,
+        }
 
     return {
         "action":              action,

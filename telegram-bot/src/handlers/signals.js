@@ -53,7 +53,6 @@ function normalizeSignalStage(stage) {
 }
 
 function getEffectiveAction(item) {
-    if (item.action) return item.action;
     const stage = normalizeSignalStage(item.signal_stage);
     if (stage === 'ENTRY') return 'ENTER';
     if (stage === 'WATCH' || stage === 'HOLD') return 'HOLD';

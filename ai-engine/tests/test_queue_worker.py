@@ -66,7 +66,7 @@ class TestQueueWorkerHappyPath:
         mock_analyze.assert_not_called()
 
     def test_rule_score_tuple_contract_is_used(self):
-        item = _signal()
+        item = _signal(cur_prc=10000, tp1_price=12000, sl_price=9500, rr_ratio=4.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
 
@@ -119,7 +119,7 @@ class TestQueueWorkerHappyPath:
         assert captured[0]["action"] == "CANCEL"
 
     def test_signal_cntr_strength_is_used_for_market_ctx_and_payload(self):
-        item = _signal(cntr_strength=257.2)
+        item = _signal(cntr_strength=257.2, cur_prc=10000, tp1_price=12000, sl_price=9500, rr_ratio=4.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
         seen_ctx = {}
@@ -495,6 +495,40 @@ class TestQueueWorkerFailures:
 
 
 class TestClaudeRiskPostprocess:
+    def test_s1_high_score_hold_promotes_to_enter(self):
+        from queue_worker import _maybe_promote_hold_to_enter
+
+        action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
+            strategy="S1_GAP_OPEN",
+            action="HOLD",
+            confidence="MEDIUM",
+            reason="watch opening continuation",
+            cancel_reason=None,
+            ai_score=95.0,
+        )
+
+        assert action == "ENTER"
+        assert confidence == "MEDIUM"
+        assert "HOLD promoted to ENTER" in reason
+        assert cancel_reason is None
+
+    def test_non_s1_high_score_hold_still_promotes_to_enter(self):
+        from queue_worker import _maybe_promote_hold_to_enter
+
+        action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
+            strategy="S2_VI_PULLBACK",
+            action="HOLD",
+            confidence="HIGH",
+            reason="strong pullback",
+            cancel_reason=None,
+            ai_score=95.0,
+        )
+
+        assert action == "ENTER"
+        assert confidence == "HIGH"
+        assert "HOLD promoted to ENTER" in reason
+        assert cancel_reason is None
+
     def test_hold_or_cancel_nulls_claude_prices(self):
         from queue_worker import _apply_claude_postprocess_hard_rules
 
@@ -534,6 +568,49 @@ class TestClaudeRiskPostprocess:
         assert result["claude_sl"] is None
         assert "tp1 > entry > sl" in result["cancel_reason"]
 
+    def test_s1_enter_without_claude_tp_sl_becomes_cancel(self):
+        from queue_worker import _apply_claude_postprocess_hard_rules
+
+        payload = {
+            "strategy": "S1_GAP_OPEN",
+            "action": "ENTER",
+            "cur_prc": 10000,
+            "claude_tp1": None,
+            "claude_tp2": None,
+            "claude_sl": None,
+        }
+
+        result = _apply_claude_postprocess_hard_rules(payload)
+
+        assert result["action"] == "CANCEL"
+        assert result["cancel_type"] == "CLAUDE_HARD_RULE"
+        assert result["claude_tp1"] is None
+        assert result["claude_tp2"] is None
+        assert result["claude_sl"] is None
+        assert "ENTER requires entry, tp1, and sl" in result["cancel_reason"]
+
+    def test_s1_enter_can_use_rule_tp_sl_when_claude_prices_are_empty(self):
+        from queue_worker import _apply_claude_postprocess_hard_rules
+
+        payload = {
+            "strategy": "S1_GAP_OPEN",
+            "action": "ENTER",
+            "cur_prc": 10000,
+            "tp1_price": 12000,
+            "sl_price": 9500,
+            "rr_ratio": 4.0,
+            "claude_tp1": None,
+            "claude_tp2": None,
+            "claude_sl": None,
+        }
+
+        result = _apply_claude_postprocess_hard_rules(payload)
+
+        assert result["action"] == "ENTER"
+        assert result["claude_tp1"] is None
+        assert result["claude_tp2"] is None
+        assert result["claude_sl"] is None
+
     def test_enter_tp2_below_tp1_becomes_cancel(self):
         from queue_worker import _apply_claude_postprocess_hard_rules
 
@@ -552,6 +629,102 @@ class TestClaudeRiskPostprocess:
         assert result["action"] == "CANCEL"
         assert result["cancel_type"] == "CLAUDE_HARD_RULE"
         assert "tp2 must be greater than or equal to tp1" in result["cancel_reason"]
+
+    def test_claude_rr_below_hard_threshold_sets_cancel_type(self):
+        from queue_worker import _apply_claude_rr_override
+
+        payload = {
+            "strategy": "S2_VI_PULLBACK",
+            "action": "ENTER",
+            "stk_cd": "005930",
+            "cur_prc": 10000,
+            "claude_tp1": 10100,
+            "claude_sl": 9800,
+        }
+
+        result = _apply_claude_rr_override(payload)
+
+        assert result["action"] == "CANCEL"
+        assert result["cancel_type"] == "CLAUDE_HARD_RULE"
+        assert result["claude_tp1"] is None
+        assert result["claude_tp2"] is None
+        assert result["claude_sl"] is None
+
+
+class TestSessionEnterGuard:
+    def test_session_enter_guard_is_off_by_default(self):
+        from queue_worker import _apply_session_enter_guard
+
+        payload = {"strategy": "S1_GAP_OPEN", "action": "ENTER", "market_session": "after_market"}
+
+        result = _apply_session_enter_guard(payload)
+
+        assert result["action"] == "ENTER"
+
+    def test_session_enter_guard_blocks_after_market_enter(self):
+        from queue_worker import _apply_session_enter_guard
+
+        payload = {"strategy": "S1_GAP_OPEN", "action": "ENTER", "market_session": "after_market"}
+
+        with patch("queue_worker.SESSION_ENTER_GUARD_ENABLED", True):
+            result = _apply_session_enter_guard(payload)
+
+        assert result["action"] == "CANCEL"
+        assert result["cancel_type"] == "SESSION_ENTER_GUARD"
+        assert result["skip_entry"] is True
+        assert "after_market" in result["cancel_reason"]
+
+    def test_session_enter_guard_exempts_s2(self):
+        from queue_worker import _apply_session_enter_guard
+
+        payload = {"strategy": "S2_VI_PULLBACK", "action": "ENTER", "market_session": "closed"}
+
+        with patch("queue_worker.SESSION_ENTER_GUARD_ENABLED", True):
+            result = _apply_session_enter_guard(payload)
+
+        assert result["action"] == "ENTER"
+
+    def test_session_enter_guard_blocks_promoted_hold_in_process_one(self):
+        item = _signal(
+            cur_prc=10000,
+            tp1_price=10300,
+            sl_price=9900,
+            rr_ratio=2.0,
+            bid_ratio=2.0,
+            market_session="after_market",
+        )
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker.SESSION_ENTER_GUARD_ENABLED", True), \
+             patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch(
+                 "queue_worker.analyze_signal",
+                 new_callable=AsyncMock,
+                 return_value={
+                     "action": "HOLD",
+                     "ai_score": 80.0,
+                     "confidence": "HIGH",
+                     "reason": "strong but originally hold",
+                 },
+             ), \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert len(captured) == 1
+        assert captured[0]["action"] == "CANCEL"
+        assert captured[0]["cancel_type"] == "SESSION_ENTER_GUARD"
+        assert "after_market" in captured[0]["cancel_reason"]
+        assert "HOLD promoted to ENTER" not in captured[0]["ai_reason"]
 
 
 class TestPipelineDailyCounter:

@@ -23,8 +23,10 @@ def _kst(hour: int, minute: int, second: int = 0, weekday: int = 0) -> datetime:
     "hour,minute,second,expected",
     [
         (7, 29, 59, "closed"),
-        (7, 30, 0, "pre_market"),
-        (8, 0, 0, "opening_auction"),
+        (7, 30, 0, "closed"),
+        (7, 59, 59, "closed"),
+        (8, 0, 0, "pre_market"),
+        (8, 50, 0, "opening_auction"),
         (9, 0, 29, "opening_auction"),
         (9, 0, 30, "main_market"),
         (15, 20, 0, "closing_auction"),
@@ -40,6 +42,20 @@ def test_market_session_boundaries(hour, minute, second, expected):
 
     with patch("ws_client._now_kst", return_value=_kst(hour, minute, second)):
         assert ws_client._get_market_session() == expected
+
+
+def test_early_connect_window_is_separate_from_market_session():
+    import ws_client
+
+    with patch("ws_client._now_kst", return_value=_kst(7, 30)):
+        assert ws_client._get_market_session() == "closed"
+        assert ws_client._is_early_connect_window() is True
+        assert ws_client._is_market_hours() is True
+
+    with patch("ws_client._now_kst", return_value=_kst(8, 0)):
+        assert ws_client._get_market_session() == "pre_market"
+        assert ws_client._is_early_connect_window() is False
+        assert ws_client._is_market_hours() is True
 
 
 @pytest.mark.parametrize("weekday", [5, 6])
@@ -69,6 +85,26 @@ async def test_after_market_subscribes_0b_0d_1h_without_0h():
             sent_types.extend(payload["data"][0]["type"])
 
     assert sent_types == ["0B", "0D", "1h"]
+
+
+@pytest.mark.asyncio
+async def test_pre_market_subscribes_0b_0h_0d_1h():
+    import ws_client
+
+    ws = AsyncMock()
+    rdb = AsyncMock()
+    with patch("ws_client._get_ranked_candidates", new_callable=AsyncMock) as ranked, \
+         patch("ws_client.asyncio.sleep", new_callable=AsyncMock):
+        ranked.return_value = (["005930", "000660"], ["005930"])
+        await ws_client._subscribe_by_phase(ws, rdb, "pre_market")
+
+    sent_types = []
+    for call in ws.send.call_args_list:
+        payload = json.loads(call.args[0])
+        if payload["trnm"] == "REG":
+            sent_types.extend(payload["data"][0]["type"])
+
+    assert sent_types == ["0B", "0H", "0D", "1h"]
 
 
 @pytest.mark.asyncio

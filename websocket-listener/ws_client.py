@@ -36,6 +36,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from health_server import set_ws_connected, set_ws_session, record_message_received
+import market_session
 from redis_writer import write_tick, write_expected, write_hoga, write_vi, write_heartbeat
 from token_loader import load_token
 
@@ -55,28 +56,17 @@ def _now_kst() -> datetime:
 
 def _is_market_hours() -> bool:
     """Return True while the listener should actively connect/subscribe."""
-    return _get_market_session() not in {"closed", "post_quiet"}
+    return market_session.should_keep_ws_connected(_now_kst())
+
+
+def _is_early_connect_window() -> bool:
+    """Return True during the WebSocket-only early connection window."""
+    return market_session.is_early_connect_window(_now_kst())
 
 
 def _next_market_open() -> datetime:
-    """다음 장 개장 datetime (KST, timezone-aware) 반환"""
-    now = _now_kst()
-    wd  = now.weekday()
-    t   = dtime(now.hour, now.minute, now.second)
-    open_t = dtime(*_MARKET_OPEN_HOUR)
-
-    # 오늘 개장 전이면 오늘 07:30
-    if wd in _WEEKDAYS and t < open_t:
-        return now.replace(hour=open_t.hour, minute=open_t.minute,
-                           second=0, microsecond=0)
-
-    # 오늘 이미 개장했거나 주말 → 다음 평일 07:30
-    days_ahead = 1
-    if wd >= 4:          # 금=4 → 토=1일 후(6 아님), 일=2일 후
-        days_ahead = 7 - wd
-    base = now.replace(hour=open_t.hour, minute=open_t.minute,
-                       second=0, microsecond=0)
-    return base + timedelta(days=days_ahead)
+    """Return the next WebSocket connection start time in KST."""
+    return market_session.next_ws_connect_time(_now_kst())
 
 
 async def _wait_for_market_open():
@@ -196,25 +186,7 @@ async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
 
 def _get_market_session() -> str:
     """Return the KST trading session used by subscription and reconnect logic."""
-    now = _now_kst()
-    if now.weekday() not in _WEEKDAYS:
-        return "closed"
-    t = dtime(now.hour, now.minute, now.second, now.microsecond)
-    if dtime(7, 30) <= t < dtime(8, 0):
-        return "pre_market"
-    if dtime(8, 0) <= t < dtime(9, 0, 30):
-        return "opening_auction"
-    if dtime(9, 0, 30) <= t < dtime(15, 20):
-        return "main_market"
-    if dtime(15, 20) <= t < dtime(15, 30):
-        return "closing_auction"
-    if dtime(15, 30) <= t < dtime(15, 40):
-        return "after_preopen"
-    if dtime(15, 40) <= t < dtime(20, 0):
-        return "after_market"
-    if dtime(20, 0) <= t < dtime(20, 10):
-        return "post_quiet"
-    return "closed"
+    return market_session.current_session(_now_kst())
 
 
 def _get_market_phase() -> str:
@@ -225,6 +197,7 @@ def _get_market_phase() -> str:
 def _groups_for_session(session: str, all_cands: list[str], top100: list[str]) -> list[tuple[str, str, list[str]]]:
     if session == "pre_market":
         return [
+            ("1", "0B", all_cands),
             ("2", "0H", top100),
             ("4", "0D", top100),
             ("3", "1h", [""]),

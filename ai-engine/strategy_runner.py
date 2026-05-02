@@ -28,6 +28,7 @@ import os
 import time as _time
 from datetime import time, timedelta, timezone
 
+from market_session import current_session, is_trading_active
 from utils import normalize_stock_code
 
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -61,6 +62,9 @@ def _get_semaphore() -> asyncio.Semaphore:
 _DEFAULT_STRATEGY_TIMEOUT_SEC = int(os.getenv("STRATEGY_TIMEOUT_SEC", "300"))
 _SLOW_STRATEGY_WARN_SEC = float(os.getenv("SLOW_STRATEGY_WARN_SEC", "30"))
 ENABLE_STRATEGY_LATENCY_METRICS = _env_flag("ENABLE_STRATEGY_LATENCY_METRICS")
+ENABLE_STRATEGY_SESSION_FILTER = _env_flag("ENABLE_STRATEGY_SESSION_FILTER")
+STRATEGY_SESSION_DRY_RUN = _env_flag("STRATEGY_SESSION_DRY_RUN")
+STRATEGY_SESSION_FAIL_OPEN = _env_flag("STRATEGY_SESSION_FAIL_OPEN", "true")
 STRATEGY_LATENCY_STATUS_TTL_SEC = int(os.getenv("STRATEGY_LATENCY_STATUS_TTL_SEC", "1800"))
 _STRATEGY_TIMEOUT_OVERRIDES = {
     "S3": int(os.getenv("STRATEGY_TIMEOUT_S3_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
@@ -113,6 +117,37 @@ async def _record_strategy_latency(rdb, name: str, elapsed_sec: float, state: st
 
 def _current_kst_time() -> time:
     return datetime.datetime.now(KST).time()
+
+
+def _current_kst_datetime() -> datetime.datetime:
+    return datetime.datetime.now(KST)
+
+
+def _session_filter_allows_run(now: datetime.datetime | None = None) -> bool:
+    if not ENABLE_STRATEGY_SESSION_FILTER:
+        return True
+
+    try:
+        checked_at = now or _current_kst_datetime()
+        session = current_session(checked_at)
+        active = is_trading_active(checked_at)
+    except Exception as exc:
+        if STRATEGY_SESSION_FAIL_OPEN:
+            logger.warning("[Runner] session filter failed open: %s", exc)
+            return True
+        logger.warning("[Runner] session filter failed closed: %s", exc)
+        return False
+
+    if active:
+        logger.debug("[Runner] session filter allows scan (session=%s)", session.value)
+        return True
+
+    if STRATEGY_SESSION_DRY_RUN:
+        logger.info("[Runner] session filter dry-run would skip scan (session=%s)", session.value)
+        return True
+
+    logger.info("[Runner] session filter skipped scan (session=%s)", session.value)
+    return False
 
 
 def _active_schedule_entries(now: time | None = None):
@@ -425,6 +460,9 @@ _SCHEDULE: list[tuple[str, time, time, callable]] = [
 async def _run_once(rdb):
     now = _current_kst_time()
     active_entries = _active_schedule_entries(now)
+    if not _session_filter_allows_run():
+        return
+
     token = await _load_token(rdb)
     if not token:
         if active_entries:

@@ -81,12 +81,28 @@ function _normalizeSignalStage(stage) {
 }
 
 function _effectiveAction(item) {
-    if (item.action) return item.action;
     const stage = _normalizeSignalStage(item.signal_stage);
     if (stage === 'ENTRY') return 'ENTER';
     if (stage === 'WATCH' || stage === 'HOLD') return 'HOLD';
     if (stage === 'CANCEL') return 'CANCEL';
     return item.action;
+}
+
+function _s1EntryConditionLabel(entryType) {
+    const raw = String(entryType || '').trim();
+    if (!raw) return null;
+    if (/market|시장가|매수|buy|entry/i.test(raw)) return '체결강도와 호가 우위 재확인';
+    return raw;
+}
+
+function _s1ReasonText(reason) {
+    return String(reason || '')
+        .replace(/신규\s*매수/g, '신규 관찰')
+        .replace(/즉시\s*매수/g, '즉시 조건 확인')
+        .replace(/시장가\s*매수/g, '시장가 조건 확인')
+        .replace(/추격\s*매수/g, '추격 판단')
+        .replace(/매수\s*방식/g, '확인 조건')
+        .replace(/권장\s*비중/g, '관찰 비중');
 }
 
 /**
@@ -259,8 +275,14 @@ function formatSignal(item) {
 
         const pos = _positionSize(item.ai_score, item.confidence);
         if (!isS1GapOpen && pos) lines.push(`권장 비중: <b>${pos}</b>`);
-        if (item.entry_type) lines.push(`${isS1GapOpen ? '확인 조건' : '매수 방식'}: ${item.entry_type}`);
-        if (item.ai_reason) lines.push(`${isS1GapOpen ? '관찰 근거' : '추천이유'}: ${escapeHtml(item.ai_reason)}`);
+        if (item.entry_type) {
+            const entryLabel = isS1GapOpen ? _s1EntryConditionLabel(item.entry_type) : item.entry_type;
+            if (entryLabel) lines.push(`${isS1GapOpen ? '확인 조건' : '매수 방식'}: ${entryLabel}`);
+        }
+        if (item.ai_reason) {
+            const reasonText = isS1GapOpen ? _s1ReasonText(item.ai_reason) : item.ai_reason;
+            lines.push(`${isS1GapOpen ? '관찰 근거' : '추천이유'}: ${escapeHtml(reasonText)}`);
+        }
 
         lines.push('');
         lines.push(isS1GapOpen ? '<b>확인 체크포인트</b>' : '<b>진입 체크포인트</b>');
@@ -297,7 +319,8 @@ function formatSignal(item) {
             );
         }
         if (curPrc > 0) {
-            lines.push(`${isS1GapOpen ? '관찰 기준가' : '진입가'}: <b>${curPrc.toLocaleString()}원</b>  (${item.entry_type ?? '-'})`);
+            const entryLabel = isS1GapOpen ? _s1EntryConditionLabel(item.entry_type) : (item.entry_type ?? '-');
+            lines.push(`${isS1GapOpen ? '관찰 기준가' : '진입가'}: <b>${curPrc.toLocaleString()}원</b>  (${entryLabel ?? '-'})`);
         }
     }
 
@@ -361,7 +384,7 @@ function formatSignal(item) {
     // AI 분석 근거
     if (item.ai_reason && effectiveAction !== 'ENTER') {
         lines.push('');
-        lines.push(`💬 <i>${escapeHtml(item.ai_reason)}</i>`);
+        lines.push(`💬 <i>${escapeHtml(isS1GapOpen ? _s1ReasonText(item.ai_reason) : item.ai_reason)}</i>`);
     }
 
     // 신호 시간

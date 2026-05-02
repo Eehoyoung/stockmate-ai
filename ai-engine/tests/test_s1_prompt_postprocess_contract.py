@@ -99,3 +99,22 @@ def test_postprocess_fills_cancel_reason_for_cancel():
 
     assert result["action"] == "CANCEL"
     assert result["cancel_reason"] == "weak opening auction"
+
+
+def test_postprocess_nulls_claude_prices_for_hold_and_cancel():
+    from analyzer import _normalize_signal_result
+
+    for action in ("HOLD", "CANCEL"):
+        result = _normalize_signal_result({
+            "action": action,
+            "ai_score": 77,
+            "confidence": "MEDIUM",
+            "reason": "wait for confirmation",
+            "claude_tp1": 88000,
+            "claude_tp2": 92000,
+            "claude_sl": 82000,
+        })
+
+        assert result["claude_tp1"] is None
+        assert result["claude_tp2"] is None
+        assert result["claude_sl"] is None

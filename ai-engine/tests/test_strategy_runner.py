@@ -201,6 +201,48 @@ class TestSemaphore:
 
 
 class TestRunOnce:
+    def test_session_filter_flag_off_allows_existing_flow(self, monkeypatch):
+        import strategy_runner
+
+        monkeypatch.setattr(strategy_runner, "ENABLE_STRATEGY_SESSION_FILTER", False)
+        monkeypatch.setattr(strategy_runner, "is_trading_active", MagicMock(side_effect=AssertionError("should not be called")))
+
+        assert strategy_runner._session_filter_allows_run() is True
+
+    def test_session_filter_skips_closed_session(self, monkeypatch):
+        import datetime
+        import strategy_runner
+        from market_session import MarketSession
+
+        monkeypatch.setattr(strategy_runner, "ENABLE_STRATEGY_SESSION_FILTER", True)
+        monkeypatch.setattr(strategy_runner, "STRATEGY_SESSION_DRY_RUN", False)
+        monkeypatch.setattr(strategy_runner, "current_session", MagicMock(return_value=MarketSession.CLOSED))
+        monkeypatch.setattr(strategy_runner, "is_trading_active", MagicMock(return_value=False))
+
+        assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 7, 0)) is False
+
+    def test_session_filter_dry_run_allows_closed_session(self, monkeypatch):
+        import datetime
+        import strategy_runner
+        from market_session import MarketSession
+
+        monkeypatch.setattr(strategy_runner, "ENABLE_STRATEGY_SESSION_FILTER", True)
+        monkeypatch.setattr(strategy_runner, "STRATEGY_SESSION_DRY_RUN", True)
+        monkeypatch.setattr(strategy_runner, "current_session", MagicMock(return_value=MarketSession.CLOSED))
+        monkeypatch.setattr(strategy_runner, "is_trading_active", MagicMock(return_value=False))
+
+        assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 7, 0)) is True
+
+    def test_session_filter_fail_open_allows_on_error(self, monkeypatch):
+        import datetime
+        import strategy_runner
+
+        monkeypatch.setattr(strategy_runner, "ENABLE_STRATEGY_SESSION_FILTER", True)
+        monkeypatch.setattr(strategy_runner, "STRATEGY_SESSION_FAIL_OPEN", True)
+        monkeypatch.setattr(strategy_runner, "current_session", MagicMock(side_effect=RuntimeError("boom")))
+
+        assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 7, 0)) is True
+
     def test_skips_all_strategies_when_no_token(self, caplog):
         import datetime
         from strategy_runner import _run_once

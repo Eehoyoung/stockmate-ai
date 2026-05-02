@@ -15,15 +15,6 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from analyzer import analyze_signal
-from db_writer import (
-    cancel_open_position_by_signal,
-    confirm_open_position,
-    insert_ai_cancel_signal,
-    insert_python_signal,
-    insert_rule_cancel_signal,
-    insert_score_components,
-    update_signal_score,
-)
 from http_utils import fetch_stk_nm
 from price_utils import normalize_signal_prices
 from redis_reader import (
@@ -42,6 +33,12 @@ from redis_reader import (
 from scorer import check_daily_limit, get_claude_threshold, rule_score, should_skip_ai
 from tp_sl_engine import compute_rr
 from utils import normalize_stock_code, safe_float as _fv
+
+try:
+    from market_session import MarketSession, current_session
+except Exception:
+    MarketSession = None
+    current_session = None
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +78,82 @@ _S12_END_MINUTE = 15 * 60 + 10
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 RR_CAUTION_THRESHOLD = float(os.getenv("RR_CAUTION_THRESHOLD", "1.2"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
-S1_CLAUDE_MIN_EFFECTIVE_RR = 1.8
+S1_CLAUDE_MIN_EFFECTIVE_RR = float(os.getenv("S1_CLAUDE_MIN_EFFECTIVE_RR", "1.8"))
+SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").lower() == "true"
 CLAUDE_HARD_RULE_CANCEL_TYPE = "CLAUDE_HARD_RULE"
 _CLAUDE_PRICE_FIELDS = ("claude_tp1", "claude_tp2", "claude_sl")
+_SESSION_ENTER_BLOCKLIST = {
+    "pre_market",
+    "opening_auction",
+    "closing_auction",
+    "after_preopen",
+    "after_market",
+    "post_quiet",
+    "closed",
+    "off_market",
+    "outside_market",
+    "out_of_session",
+    "after_hours",
+    "장외",
+}
+_STRATEGY_ENTER_SESSIONS = {
+    "S1_GAP_OPEN": {"main_market"},
+    "S3_INST_FRGN": {"main_market"},
+    "S4_BIG_CANDLE": {"main_market"},
+    "S5_PROG_FRGN": {"main_market"},
+    "S6_THEME_LAGGARD": {"main_market"},
+    "S7_ICHIMOKU_BREAKOUT": {"main_market"},
+    "S8_GOLDEN_CROSS": {"main_market"},
+    "S9_PULLBACK_SWING": {"main_market"},
+    "S10_NEW_HIGH": {"main_market"},
+    "S11_FRGN_CONT": {"main_market"},
+    "S12_CLOSING": {"main_market", "closing_auction"},
+    "S13_BOX_BREAKOUT": {"main_market"},
+    "S14_OVERSOLD_BOUNCE": {"main_market"},
+    "S15_MOMENTUM_ALIGN": {"main_market"},
+}
+_SESSION_ENTER_EXEMPT_TYPES = {
+    "DAILY_REPORT",
+    "FORCE_CLOSE",
+    "MIDDAY_REPORT",
+    "OVERNIGHT_HOLD",
+    "OVERNIGHT_RISK_ALERT",
+    "STATUS_REPORT",
+}
+
+
+def _db_writer():
+    import db_writer
+
+    return db_writer
+
+
+async def insert_python_signal(*args, **kwargs):
+    return await _db_writer().insert_python_signal(*args, **kwargs)
+
+
+async def update_signal_score(*args, **kwargs):
+    return await _db_writer().update_signal_score(*args, **kwargs)
+
+
+async def insert_score_components(*args, **kwargs):
+    return await _db_writer().insert_score_components(*args, **kwargs)
+
+
+async def confirm_open_position(*args, **kwargs):
+    return await _db_writer().confirm_open_position(*args, **kwargs)
+
+
+async def insert_rule_cancel_signal(*args, **kwargs):
+    return await _db_writer().insert_rule_cancel_signal(*args, **kwargs)
+
+
+async def insert_ai_cancel_signal(*args, **kwargs):
+    return await _db_writer().insert_ai_cancel_signal(*args, **kwargs)
+
+
+async def cancel_open_position_by_signal(*args, **kwargs):
+    return await _db_writer().cancel_open_position_by_signal(*args, **kwargs)
 
 
 async def _incr_pipeline(rdb, strategy: str, field: str) -> None:
@@ -105,6 +175,89 @@ def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None)
     if action == "CANCEL" and cancel_reason:
         return cancel_reason
     return reason
+
+
+def _current_market_session(now: datetime | None = None) -> str:
+    if current_session is not None:
+        try:
+            session = current_session(now)
+            value = getattr(session, "value", session)
+            return str(value).lower()
+        except Exception:
+            pass
+    now = now or datetime.now(_KST)
+    if now.weekday() >= 5:
+        return "closed"
+    t = now.time()
+    if t < datetime.strptime("08:00:00", "%H:%M:%S").time():
+        return "closed"
+    if t < datetime.strptime("08:50:00", "%H:%M:%S").time():
+        return "pre_market"
+    if t < datetime.strptime("09:00:30", "%H:%M:%S").time():
+        return "opening_auction"
+    if t < datetime.strptime("15:20:00", "%H:%M:%S").time():
+        return "main_market"
+    if t < datetime.strptime("15:30:00", "%H:%M:%S").time():
+        return "closing_auction"
+    if t < datetime.strptime("15:40:00", "%H:%M:%S").time():
+        return "after_preopen"
+    if t < datetime.strptime("20:00:00", "%H:%M:%S").time():
+        return "after_market"
+    if t < datetime.strptime("20:10:00", "%H:%M:%S").time():
+        return "post_quiet"
+    return "closed"
+
+
+def _resolve_signal_session(payload: dict, ctx: dict | None = None) -> str:
+    for source in (payload, ctx or {}):
+        for field in ("market_session", "session", "ws_session"):
+            value = source.get(field)
+            if value:
+                return str(value).strip().lower()
+    return _current_market_session()
+
+
+def _is_session_enter_guard_exempt(payload: dict) -> bool:
+    strategy = str(payload.get("strategy") or "")
+    if strategy.startswith("S2"):
+        return True
+
+    item_type = str(payload.get("type") or "").upper()
+    if item_type in _SESSION_ENTER_EXEMPT_TYPES:
+        return True
+    if "REPORT" in item_type or "FORCE_CLOSE" in item_type or "EXIT" in item_type or "CLOSE" in item_type:
+        return True
+
+    action = str(payload.get("action") or "").upper()
+    return action in {"FORCE_CLOSE", "EXIT", "CLOSE", "SELL"}
+
+
+def _apply_session_enter_guard(payload: dict, ctx: dict | None = None) -> dict:
+    if not SESSION_ENTER_GUARD_ENABLED:
+        return payload
+    if str(payload.get("action") or "").upper() != "ENTER":
+        return payload
+    if _is_session_enter_guard_exempt(payload):
+        return payload
+
+    session = _resolve_signal_session(payload, ctx)
+    strategy = str(payload.get("strategy") or "")
+    allowed_sessions = _STRATEGY_ENTER_SESSIONS.get(strategy)
+    if allowed_sessions is not None and session in allowed_sessions:
+        return payload
+    if allowed_sessions is None and session not in _SESSION_ENTER_BLOCKLIST:
+        return payload
+
+    reason = f"Session enter guard blocked new ENTER during {session}"
+    payload["market_session"] = session
+    payload["action"] = "CANCEL"
+    payload["confidence"] = "LOW"
+    payload["cancel_reason"] = reason
+    payload["ai_reason"] = reason
+    payload["skip_entry"] = True
+    payload["cancel_type"] = "SESSION_ENTER_GUARD"
+    _null_claude_prices(payload)
+    return payload
 
 
 def _coerce_rule_score_result(result) -> tuple[float, dict]:
@@ -290,6 +443,7 @@ def _rr_quality_bucket(rr: float | None) -> str:
 
 def _maybe_promote_hold_to_enter(
     *,
+    strategy: str = "",
     action: str,
     confidence: str,
     reason: str,
@@ -461,6 +615,25 @@ def _apply_claude_postprocess_hard_rules(payload: dict) -> dict:
     claude_tp2 = _fv(payload.get("claude_tp2"), None)
     claude_sl = _fv(payload.get("claude_sl"), None)
 
+    fallback_tp1 = _fv(payload.get("tp1_price") or payload.get("display_tp2_price"), None)
+    fallback_sl = _fv(payload.get("sl_price"), None)
+    effective_tp1 = claude_tp1 if claude_tp1 is not None else fallback_tp1
+    effective_sl = claude_sl if claude_sl is not None else fallback_sl
+
+    if payload.get("strategy") == "S1_GAP_OPEN" and (
+        entry is None or effective_tp1 is None or effective_sl is None
+    ):
+        return _cancel_by_claude_hard_rule(
+            payload,
+            "S1 TP/SL hard rule failed: ENTER requires entry, tp1, and sl",
+        )
+
+    if payload.get("strategy") == "S1_GAP_OPEN" and not (effective_tp1 > entry > effective_sl):
+        return _cancel_by_claude_hard_rule(
+            payload,
+            "S1 TP/SL hard rule failed: requires tp1 > entry > sl",
+        )
+
     if entry is not None and (claude_tp1 is not None or claude_sl is not None):
         if claude_tp1 is None or claude_sl is None or not (claude_tp1 > entry > claude_sl):
             return _cancel_by_claude_hard_rule(
@@ -517,6 +690,8 @@ def _apply_claude_rr_override(payload: dict) -> dict:
         payload["ai_reason"] = payload["cancel_reason"]
         payload["skip_entry"] = True
         payload["rr_skip_reason"] = payload["cancel_reason"]
+        payload["cancel_type"] = CLAUDE_HARD_RULE_CANCEL_TYPE
+        _null_claude_prices(payload)
     elif skip and not payload.get("rr_skip_reason"):
         payload["rr_skip_reason"] = f"Claude TP/SL effective_rr {rr:.2f} < min_rr {float(min_rr):.2f}" if min_rr is not None else None
     return payload
@@ -659,6 +834,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                         reason = ai_result.get("reason", f"Rule score {r_score:.1f} passed")
                         cancel_reason = ai_result.get("cancel_reason")
                         action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
+                            strategy=strategy,
                             action=action,
                             confidence=confidence,
                             reason=reason,
@@ -712,6 +888,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
         normalize_signal_prices(enriched)
         enriched = _apply_claude_rr_override(enriched)
         enriched = _apply_claude_postprocess_hard_rules(enriched)
+        enriched = _apply_session_enter_guard(enriched, ctx)
         action = enriched.get("action", action)
         confidence = enriched.get("confidence", confidence)
         cancel_reason = enriched.get("cancel_reason")

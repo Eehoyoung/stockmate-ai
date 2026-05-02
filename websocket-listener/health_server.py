@@ -13,8 +13,7 @@ import asyncio
 import os
 import time
 import logging
-
-from aiohttp import web
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +34,25 @@ _tg_last_error_at:   float | None = None
 _tg_last_error_msg:  str          = ""
 
 EXPOSE_WS_SESSION = os.getenv("HEALTH_EXPOSE_SESSION", "false").lower() in ("1", "true", "yes")
+
+
+class _JsonResponse:
+    """Small test-friendly response object used before aiohttp is loaded."""
+
+    def __init__(self, body: dict, status: int = 200):
+        self.status = status
+        self.text = json.dumps(body)
+
+
+def _json_response(body: dict, status: int = 200, request=None):
+    if request is None:
+        return _JsonResponse(body, status=status)
+    try:
+        from aiohttp import web
+
+        return web.json_response(body, status=status)
+    except Exception:
+        return _JsonResponse(body, status=status)
 
 
 # ── Public setter API ────────────────────────────────────────
@@ -158,7 +176,7 @@ async def _health_handler(request):
 
     # HTTP 상태코드: UP=200, DEGRADED=200(운영 판단 가능), DOWN=503
     http_status = 503 if overall == "DOWN" else 200
-    return web.json_response(body, status=http_status)
+    return _json_response(body, status=http_status, request=request)
 
 
 # ── 서버 실행 ────────────────────────────────────────────────
@@ -166,6 +184,8 @@ async def _health_handler(request):
 async def run_health_server(port: int = 8081):
     """백그라운드로 실행되는 헬스체크 HTTP 서버 (종료 시그널까지 블로킹)."""
     global _start_time
+    from aiohttp import web
+
     _start_time = time.monotonic()
 
     app = web.Application()
