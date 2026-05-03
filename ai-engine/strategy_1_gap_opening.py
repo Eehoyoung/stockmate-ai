@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone, timedelta
 
 from http_utils import (
     fetch_hoga,
@@ -18,6 +19,7 @@ from tp_sl_engine import calc_tp_sl
 
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
+_KST = timezone(timedelta(hours=9))
 logger = logging.getLogger(__name__)
 
 
@@ -324,8 +326,22 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
 
         bid_ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
 
+        # ── 갭 구간 분류 ──
+        # 8~12%: 강한 갭, 실행 비용 증가로 감점
+        # 12~15%: 과열 갭, shadow 추적 전용 (자동 진입 금지)
+        gap_overheat = gap_pct >= 12.0
+        gap_strong   = 8.0 <= gap_pct < 12.0
+
+        # ── 장초반 time gate ──
+        # 09:00~09:03: 스프레드/호가 불안정 구간 — AUTO_SMALL만 허용
+        now_kst = datetime.now(_KST)
+        early_open = (now_kst.hour == 9 and now_kst.minute < 3)
+
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         score = (gap_pct * 0.5) + ((strength - 100) * 0.5)
+        score -= (15 if gap_overheat else 0)  # 과열 갭 큰 감점
+        score -= (8  if gap_strong   else 0)  # 강한 갭 감점
+        score -= (10 if early_open   else 0)  # 장초반 호가 불안정 감점
 
         atr_val = None
         prev_close = None
@@ -353,6 +369,14 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
             prev_close=prev_close,
         )
 
+        # signal_mode: 과열 갭 → shadow, 장초반 → auto_small, 정상 → normal
+        if gap_overheat:
+            signal_mode = "SHADOW"
+        elif early_open:
+            signal_mode = "AUTO_SMALL"
+        else:
+            signal_mode = "NORMAL"
+
         results.append(
             {
                 "stk_cd": stk_cd,
@@ -360,6 +384,9 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
                 "cur_prc": exp_price,
                 "strategy": "S1_GAP_OPEN",
                 "gap_pct": round(gap_pct, 2),
+                "gap_zone": ("overheat" if gap_overheat else "strong" if gap_strong else "normal"),
+                "signal_mode": signal_mode,
+                "early_open": early_open,
                 "cntr_strength": round(strength, 1),
                 "bid_ratio": round(bid_ratio, 2) if bid_ratio is not None else None,
                 "score": round(score, 2),

@@ -114,6 +114,23 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     if avg_strength < 120:
         return None
 
+    # ── 윗꼬리 비율 계산 ──
+    # 윗꼬리 = 고가 - 종가 (매도 압력 지표)
+    # 윗꼬리가 전체 range의 20% 이상이면 감점, 30% 이상이면 큰 감점
+    upper_shadow = h - c
+    upper_shadow_ratio = upper_shadow / candle_range if candle_range > 0 else 0.0
+    upper_shadow_penalty = 0.0
+    if upper_shadow_ratio >= 0.30:
+        upper_shadow_penalty = 15.0  # 강한 윗꼬리 — 고점 부근 매도 압력
+    elif upper_shadow_ratio >= 0.20:
+        upper_shadow_penalty = 8.0   # 약한 윗꼬리 — 감점
+
+    # ── entry_type 분리 ──
+    # 종가가 고가에 가깝다면 추격 진입(R:R 불리)
+    # 종가가 중간 이하라면 장대양봉 눌림 타점 가능성
+    price_position = (c - l) / candle_range if candle_range > 0 else 1.0
+    entry_type = "추격_시장가" if price_position >= 0.8 else "눌림_확인"
+
     # 모든 조건 통과 시 종목명 가져오기 및 결과 반환
     stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
 
@@ -128,6 +145,10 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     tp_sl = calc_tp_sl("S4_BIG_CANDLE", c, [], [], [], stk_cd=stk_cd, atr=atr_val,
                         candle_low=l, candle_high=h, min_rr=1.0)
 
+    # 스코어 계산 (gain_pct 기반 + 윗꼬리 페널티)
+    base_score = gain_pct * 2 + (avg_strength - 100) * 0.3
+    score = max(0.0, base_score - upper_shadow_penalty - (10 if entry_type == "추격_시장가" else 0))
+
     return {
         "stk_cd": stk_cd,
         "stk_nm": stk_nm,
@@ -136,8 +157,11 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
         "gain_pct": round(gain_pct, 2),
         "vol_ratio": round(vol_ratio, 1),
         "body_ratio": round(body_ratio, 2),
+        "upper_shadow_ratio": round(upper_shadow_ratio, 2),
+        "price_position": round(price_position, 2),
         "is_new_high": is_breakout,
         "cntr_strength": round(avg_strength, 1),
-        "entry_type": "추격_시장가",
+        "score": round(score, 2),
+        "entry_type": entry_type,
         **tp_sl.to_signal_fields(),
     }
