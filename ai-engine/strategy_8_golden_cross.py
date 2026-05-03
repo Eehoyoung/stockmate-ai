@@ -150,7 +150,7 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
         ma5 = sum(closes[:5]) / 5 if len(closes) >= 5 else None
         tp_sl = calc_tp_sl("S8_GOLDEN_CROSS", cur_prc, highs, lows, closes,
                             stk_cd=stk_cd, ma5=ma5, ma20=ma20, ma60=ma60,
-                            atr=atr_val, bb_upper=bb_upper)
+                            atr=atr_val, bb_upper=bb_upper, compute_zones=True)
 
         results.append({
             "stk_cd": stk_cd,

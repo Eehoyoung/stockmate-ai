@@ -135,7 +135,8 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         ma20 = sum(closes[:20]) / 20 if len(closes) >= 20 else None
         ma60 = sum(closes[:60]) / 60 if len(closes) >= 60 else None
         tp_sl = calc_tp_sl("S9_PULLBACK_SWING", t_close, highs, lows, closes,
-                            stk_cd=stk_cd, ma5=ma5, ma20=ma20, ma60=ma60)
+                            stk_cd=stk_cd, ma5=ma5, ma20=ma20, ma60=ma60,
+                            compute_zones=True)
 
         results.append({
             "stk_cd": stk_cd,

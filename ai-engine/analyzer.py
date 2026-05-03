@@ -109,6 +109,73 @@ def _fmt_tpsl(signal: dict) -> str:
     return " | ".join(parts) + "\n" if parts else ""
 
 
+_ZONE_ANALYZER_STRATEGIES = frozenset({
+    "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S13_BOX_BREAKOUT",
+    "S14_OVERSOLD_BOUNCE", "S15_MOMENTUM_ALIGN",
+})
+
+
+def _fmt_zone_ctx(signal: dict) -> str:
+    """
+    존 분석 컨텍스트 블록 생성 (S8/S9/S13/S14/S15 전용).
+    Claude가 지지/저항 존 품질을 평가하고 TP/SL을 구조적으로 제안하도록 유도.
+    """
+    if signal.get("strategy") not in _ZONE_ANALYZER_STRATEGIES:
+        return ""
+
+    buy_zone   = signal.get("buy_zone")
+    sell_zone1 = signal.get("sell_zone1")
+    zone_rr    = signal.get("zone_rr")
+
+    if not isinstance(buy_zone, dict):
+        return ""
+
+    entry  = float(signal.get("cur_prc") or signal.get("entry_price") or 0)
+    bz_low  = int(buy_zone.get("low", 0) or 0)
+    bz_high = int(buy_zone.get("high", 0) or 0)
+    bz_str  = int(buy_zone.get("strength", 0) or 0)
+    bz_anch = buy_zone.get("anchors") or []
+
+    if bz_low <= 0 or bz_high <= 0:
+        return ""
+
+    # 현재가 위치 레이블
+    if entry > 0:
+        if entry < bz_low:
+            pos_label = "박스 미진입"
+        elif entry > bz_high:
+            pos_label = "박스 상단 초과"
+        else:
+            pct = (entry - bz_low) / max(bz_high - bz_low, 1) * 100
+            top_q = bz_low + 0.75 * (bz_high - bz_low)
+            pos_label = f"박스 내부 상단 ({pct:.0f}%)" if entry >= top_q else f"박스 내부 하단 ({pct:.0f}%)"
+    else:
+        pos_label = "N/A"
+
+    lines = [
+        "[존 분석]",
+        f"매수 박스: {bz_low:,}원 ~ {bz_high:,}원 (강도 {bz_str}/5)",
+        f"  근거: {' · '.join(bz_anch) if bz_anch else 'N/A'}",
+        f"현재가 위치: {pos_label}",
+    ]
+
+    if isinstance(sell_zone1, dict):
+        sz_low  = int(sell_zone1.get("low", 0) or 0)
+        sz_high = int(sell_zone1.get("high", 0) or 0)
+        sz_anch = sell_zone1.get("anchors") or []
+        if sz_low > 0 and sz_high > 0:
+            lines += [
+                "",
+                f"매도 박스1: {sz_low:,}원 ~ {sz_high:,}원",
+                f"  근거: {' · '.join(sz_anch) if sz_anch else 'N/A'}",
+            ]
+
+    if zone_rr is not None:
+        lines.append(f"\n존 기반 R:R (최악진입 기준): {float(zone_rr):.2f}")
+
+    return "\n".join(lines) + "\n"
+
+
 # ── 전략별 프롬프트 생성 헬퍼 ────────────────────────────────────
 # 각 함수는 (signal, c) 를 받아 header + body 문자열을 반환.
 # c = {"stk_cd", "stk_nm", "flu_rt", "strength", "bid_ratio", "rule_score", "tpsl_ctx"}
@@ -300,6 +367,7 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
         "rule_score": rule_score,
     }
     tpsl_ctx = _fmt_tpsl(signal)
+    zone_ctx = _fmt_zone_ctx(signal)
     quality_ctx = (
         f"신호품질: {signal.get('signal_quality_score', 'N/A')}/100"
         f"({signal.get('signal_quality_bucket', 'N/A')}), "
@@ -335,7 +403,7 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
     tpl = _STRATEGY_TEMPLATES.get(strategy)
     if tpl:
         body_fn, question = tpl
-        return body_fn(signal, ctx) + _market_ctx_line + quality_ctx + tpsl_ctx + question
+        return body_fn(signal, ctx) + _market_ctx_line + quality_ctx + tpsl_ctx + zone_ctx + question
 
     # 미등록 전략 – 범용 폴백
     return (
@@ -345,6 +413,7 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
         f"{_market_ctx_line}"
         f"{quality_ctx}"
         f"{tpsl_ctx}"
+        f"{zone_ctx}"
         f"진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."
     )
 

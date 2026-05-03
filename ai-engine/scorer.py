@@ -70,6 +70,69 @@ def get_claude_threshold(strategy: str) -> float:
     return float(_meta_get_threshold(strategy))
 
 
+_ZONE_SCORE_STRATEGIES = frozenset({
+    "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S13_BOX_BREAKOUT",
+    "S14_OVERSOLD_BOUNCE", "S15_MOMENTUM_ALIGN",
+})
+
+
+def _zone_bonus(signal: dict, cur_prc: float) -> tuple[float, dict]:
+    """
+    존 기반 보너스/패널티 계산 (S8/S9/S13/S14/S15 전용).
+
+    조건                                 점수
+    ───────────────────────────────────────────
+    cur_prc가 buy_zone 내부              +8pt
+    buy_zone.strength ≥ 4               +10pt
+    buy_zone.strength == 3              +5pt
+    anchors 개수 ≥ 3                    +5pt
+    cur_prc가 박스 상단 25% 이내         -5pt  (존 저항에 가까운 진입)
+
+    Returns:
+        (zone_score_delta, zone_debug_dict)
+    """
+    if signal.get("strategy") not in _ZONE_SCORE_STRATEGIES:
+        return 0.0, {}
+
+    buy_zone = signal.get("buy_zone")
+    if not isinstance(buy_zone, dict):
+        return 0.0, {}
+
+    z_low      = float(buy_zone.get("low", 0) or 0)
+    z_high     = float(buy_zone.get("high", 0) or 0)
+    z_strength = int(buy_zone.get("strength", 0) or 0)
+    z_anchors  = buy_zone.get("anchors", []) or []
+
+    if z_low <= 0 or z_high <= 0:
+        return 0.0, {}
+
+    delta = 0.0
+    info: dict = {"strength": z_strength, "anchor_count": len(z_anchors)}
+
+    # 존 내부 여부
+    inside = z_low <= cur_prc <= z_high
+    info["inside_zone"] = inside
+    if inside:
+        delta += 8.0
+        top_q = z_low + 0.75 * (z_high - z_low)
+        if cur_prc >= top_q:
+            delta -= 5.0
+            info["entry_quality"] = "suboptimal_top25"
+
+    # 강도 보너스
+    if z_strength >= 4:
+        delta += 10.0
+    elif z_strength == 3:
+        delta += 5.0
+
+    # 앵커 확인 보너스
+    if len(z_anchors) >= 3:
+        delta += 5.0
+        info["anchor_confirm"] = True
+
+    return delta, info
+
+
 def _time_bonus(strategy: str) -> float:
     """
     시간대별 전략 보너스 점수 (+0~5점).
@@ -152,6 +215,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
     tick     = market_ctx.get("tick", {})
     hoga     = market_ctx.get("hoga", {})
 
+    cur_prc_for_zone = _safe_float(signal.get("cur_prc") or signal.get("entry_price", 0))
     rsi      = _safe_float(signal.get("rsi", 0))
     atr_pct  = _safe_float(signal.get("atr_pct", 0))
     cond_cnt = int(signal.get("cond_count", 0) or 0)
@@ -407,6 +471,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _strategy_data   = {"is_today_cross": bool(signal.get("is_today_cross")),
                                  "is_macd_accel": bool(signal.get("is_macd_accel")),
                                  "vol_ratio": vol_ratio_s8, "gc_score": _cross_sc}
+            _zd, _zi = _zone_bonus(signal, cur_prc_for_zone)
+            score += _zd; _technical_score += _zd; _strategy_data["zone"] = _zi
 
         case "S9_PULLBACK_SWING":
             flu_rt_s9 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
@@ -429,6 +495,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _technical_score += _rsi_sc + _ma_sc + _stoch_sc + _setup_sc + _sig_sc
             _demand_score    += _bid_sc
             _strategy_data   = {"pct_ma5": pct_ma5, "stoch_gc": bool(signal.get("stoch_gc")), "flu_rt": flu_rt_s9}
+            _zd, _zi = _zone_bonus(signal, cur_prc_for_zone)
+            score += _zd; _technical_score += _zd; _strategy_data["zone"] = _zi
 
         case "S13_BOX_BREAKOUT":
             flu_rt_s13 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
@@ -453,6 +521,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _technical_score += _rsi_sc + _bb_sc + _mfi_sc
             _strategy_data   = {"flu_rt": flu_rt_s13, "bollinger_squeeze": bool(signal.get("bollinger_squeeze")),
                                  "mfi_confirmed": bool(signal.get("mfi_confirmed")), "vol_ratio": vol_ratio_s13}
+            _zd, _zi = _zone_bonus(signal, cur_prc_for_zone)
+            score += _zd; _technical_score += _zd; _strategy_data["zone"] = _zi
 
         case "S14_OVERSOLD_BOUNCE":
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
@@ -474,6 +544,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _momentum_score  += _str_sc
             _demand_score    += _bid_sc
             _strategy_data   = {"rsi": rsi, "atr_pct": atr_pct, "rsi_score": _rsi_sc, "cond_count": cond_cnt, "vol_ratio": vol_ratio_s14}
+            _zd, _zi = _zone_bonus(signal, cur_prc_for_zone)
+            score += _zd; _technical_score += _zd; _strategy_data["zone"] = _zi
 
         case "S15_MOMENTUM_ALIGN":
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
@@ -493,6 +565,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _momentum_score  += _str_sc + _flu_sc
             _demand_score    += _bid_sc
             _strategy_data   = {"rsi": rsi, "vol_ratio": vol_ratio_s15, "flu_rt": flu_rt_s15}
+            _zd, _zi = _zone_bonus(signal, cur_prc_for_zone)
+            score += _zd; _technical_score += _zd; _strategy_data["zone"] = _zi
 
     # 조건 충족 수 보너스
     _cond_bonus = 10 if cond_cnt >= 4 else (5 if cond_cnt == 3 else 0)

@@ -39,6 +39,30 @@ def _opt_int(v) -> Optional[int]:
         return None
 
 
+def _zone_insert_params(signal: dict) -> tuple:
+    """
+    buy_zone / sell_zone1 dict에서 DB INSERT용 파라미터 7개 추출.
+    순서: buy_zone_low, buy_zone_high, buy_zone_anchors, buy_zone_strength,
+          sell_zone1_low, sell_zone1_high, zone_rr
+    """
+    import json as _json
+    bz = signal.get("buy_zone")
+    sz = signal.get("sell_zone1")
+    if not isinstance(bz, dict):
+        bz = None
+    if not isinstance(sz, dict):
+        sz = None
+    return (
+        _opt_num(bz.get("low"))      if bz else None,
+        _opt_num(bz.get("high"))     if bz else None,
+        _json.dumps(bz.get("anchors", []), ensure_ascii=False) if bz else None,
+        int(bz["strength"])          if bz and bz.get("strength") is not None else None,
+        _opt_num(sz.get("low"))      if sz else None,
+        _opt_num(sz.get("high"))     if sz else None,
+        _opt_num(signal.get("zone_rr")),
+    )
+
+
 def _opt_bool(v) -> Optional[bool]:
     if v is None:
         return None
@@ -512,7 +536,9 @@ async def insert_python_signal(
                         strategy_version, time_stop_type, time_stop_minutes, time_stop_session,
                         tp_policy_version, sl_policy_version, exit_policy_version,
                         allow_overnight, allow_reentry, time_stop_deadline_at,
-                        created_at, scored_at
+                        created_at, scored_at,
+                        buy_zone_low, buy_zone_high, buy_zone_anchors, buy_zone_strength,
+                        sell_zone1_low, sell_zone1_high, zone_rr
                     ) VALUES (
                         $1,$2,$3,$4,$5,
                         $6,$7,$8,$9,$10,
@@ -525,7 +551,9 @@ async def insert_python_signal(
                         $34,$35,$36,
                         $37,$38,$39,$40,
                         $41,$42,$43,
-                        $44,$45,$46,$47,$48
+                        $44,$45,$46,$47,$48,
+                        $49,$50,$51,$52,
+                        $53,$54,$55
                     ) RETURNING id
                     """,
                     signal.get("stk_cd", ""),
@@ -576,6 +604,8 @@ async def insert_python_signal(
                     time_stop_deadline_at,
                     now,
                     now,
+                    # zone 필드 ($49~$55)
+                    *_zone_insert_params(signal),
                 )
                 if row:
                     signal_id = row["id"]

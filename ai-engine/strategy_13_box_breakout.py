@@ -27,6 +27,7 @@ from http_utils import fetch_stk_nm
 from indicator_bollinger import calc_bollinger
 from indicator_rsi import calc_rsi
 from indicator_volume import calc_mfi
+from indicator_atr import calc_atr
 from ma_utils import fetch_daily_candles, detect_box_breakout, _safe_price, _safe_vol, _calc_ma
 from tp_sl_engine import calc_tp_sl
 
@@ -153,9 +154,16 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
 
+        # ATR 계산 (존 너비 보정 및 zone 계산에 활용)
+        atr_val = None
+        if len(highs) >= 15 and len(lows) >= 15 and len(closes) >= 15:
+            atr_vals = calc_atr(highs, lows, closes, 14)
+            atr_val = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+
         # 동적 TP/SL 계산 (highs/lows/closes 이미 추출됨)
         tp_sl = calc_tp_sl("S13_BOX_BREAKOUT", cur_prc, highs, lows, closes,
-                            stk_cd=stk_cd)
+                            stk_cd=stk_cd, atr=atr_val, ma20=ma20,
+                            compute_zones=True)
 
         results.append({
             "stk_cd": stk_cd,

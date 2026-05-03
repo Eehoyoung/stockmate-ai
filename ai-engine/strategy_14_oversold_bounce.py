@@ -45,6 +45,7 @@ import statistics
 from ma_utils import fetch_daily_candles, _safe_price, _safe_vol, _calc_ma
 from indicator_rsi import calc_rsi
 from indicator_atr import calc_atr, calc_williams_r
+from indicator_bollinger import calc_bollinger
 from indicator_stochastic import calc_stochastic
 from indicator_volume import calc_mfi
 from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
@@ -137,9 +138,14 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
 
         # 동적 TP/SL — swing_low/MA20/MA60 기반 구조적 손절 (tp_sl_engine)
         ma20_val = sum(closes[:20]) / 20 if len(closes) >= 20 else None
+        bb_lower_val = None
+        bands = calc_bollinger(closes, period=20, num_std=2.0)
+        if bands and len(bands) > 0:
+            bb_lower_val = bands[0][2]  # (upper, middle, lower)
         tp_sl = calc_tp_sl(
             "S14_OVERSOLD_BOUNCE", cur_prc, highs, lows, closes,
             stk_cd=stk_cd, atr=atr_now, ma20=ma20_val, ma60=ma60,
+            bb_lower=bb_lower_val, compute_zones=True,
         )
         results.append({
             "stk_cd": stk_cd,

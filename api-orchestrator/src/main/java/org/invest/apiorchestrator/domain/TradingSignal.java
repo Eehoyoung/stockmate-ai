@@ -289,6 +289,34 @@ public class TradingSignal {
     @Builder.Default
     private Boolean slAlertSent = false;
 
+    // ── Zone 기반 필드 (V42, Phase 1: S8/S9/S13/S14/S15) ────────────────
+    @Column(name = "buy_zone_low", precision = 12, scale = 2)
+    private BigDecimal buyZoneLow;
+
+    @Column(name = "buy_zone_high", precision = 12, scale = 2)
+    private BigDecimal buyZoneHigh;
+
+    @Column(name = "buy_zone_anchors", columnDefinition = "TEXT")
+    private String buyZoneAnchors;
+
+    @Column(name = "buy_zone_strength")
+    private Short buyZoneStrength;
+
+    @Column(name = "sell_zone1_low", precision = 12, scale = 2)
+    private BigDecimal sellZone1Low;
+
+    @Column(name = "sell_zone1_high", precision = 12, scale = 2)
+    private BigDecimal sellZone1High;
+
+    @Column(name = "sell_zone2_low", precision = 12, scale = 2)
+    private BigDecimal sellZone2Low;
+
+    @Column(name = "sell_zone2_high", precision = 12, scale = 2)
+    private BigDecimal sellZone2High;
+
+    @Column(name = "zone_rr", precision = 5, scale = 3)
+    private BigDecimal zoneRr;
+
     // ── 도메인 메서드 ────────────────────────────────────────────────────
     public void updateStatus(SignalStatus status) {
         this.signalStatus = status;
