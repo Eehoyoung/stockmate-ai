@@ -7,7 +7,11 @@ from __future__ import annotations
 진입 조건 (AND):
   ka10016: 당일 52주(250거래일) 신고가 기록 종목
   ka10023: 전일 대비 거래량 급증률 ≥ 100% (거래량 2배 이상 동반 돌파)
-  당일 등락률 2% ~ 15% 범위 (소폭 돌파 ~ 과도한 갭 제외)
+  당일 등락률 2% ~ 15% 범위
+    · 2~7%: 정상 신고가 돌파
+    · 7~10%: 강한 돌파 감점 (추가 확인 필요)
+    · 10~15%: 과열 후보, signal_mode=SHADOW (자동 진입 금지)
+  윗꼬리 필터: 고가 대비 현재가 3% 이상 밀린 신고가는 감점
   관리종목·ETF 제외
 """
 
@@ -173,6 +177,13 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         if not (2.0 <= flu_rt <= 15.0):
             continue
 
+        # 등락률 구간 분류 — 스코어링 및 signal_mode에 사용
+        # 2~7%: 정상 신고가 돌파
+        # 7~10%: 강한 돌파 (추가 확인 필요, 감점)
+        # 10~15%: 과열 후보 (shadow 추적 전용, 자동 진입 금지)
+        flu_rt_overheat = flu_rt >= 10.0
+        flu_rt_strong   = 7.0 <= flu_rt < 10.0
+
         # 진입 조건 2: 거래량 급증 100% 이상 (vol_surge_map 교차 검증)
         sdnin_rt = vol_surge_map.get(stk_cd, 0.0)
         if sdnin_rt < 100.0:
@@ -204,8 +215,23 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         except Exception as e:
             logger.debug("[S10] 일봉 조회 실패 %s: %s", stk_cd, e)
 
+        # ── 윗꼬리 필터 ──
+        # 당일 고가 대비 현재가 유지율: 고가에서 크게 밀린 신고가는 감점
+        upper_shadow_penalty = 0.0
+        if highs_d and cur_prc > 0:
+            high_today = highs_d[0]
+            if high_today > 0:
+                upper_shadow_pct = (high_today - cur_prc) / high_today * 100
+                if upper_shadow_pct >= 5.0:
+                    upper_shadow_penalty = 15.0   # 강한 윗꼬리: 큰 감점
+                elif upper_shadow_pct >= 3.0:
+                    upper_shadow_penalty = 8.0    # 약한 윗꼬리: 감점
+
         # 스코어링 (거래량 비중 강화)
         score = (flu_rt * 0.3) + (min(sdnin_rt / 100, 5.0) * 12) + (max(cntr_str - 100, 0) * 0.2)
+        score -= (12 if flu_rt_overheat else 0)      # 과열 구간 감점 (10~15%)
+        score -= (5  if flu_rt_strong   else 0)      # 강한 돌파 감점 (7~10%)
+        score -= upper_shadow_penalty                 # 윗꼬리 감점
 
         # ATR 계산 (SL/TP 폴백 품질 향상)
         atr_val = None
@@ -217,6 +243,12 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         tp_sl = calc_tp_sl("S10_NEW_HIGH", cur_prc, highs_d, lows_d, closes_d,
                            stk_cd=stk_cd, ma20=ma20, atr=atr_val)
 
+        # signal_mode: 10~15% 과열 구간은 shadow 추적 전용 (자동 진입 금지)
+        signal_mode = "SHADOW" if flu_rt_overheat else "NORMAL"
+        flu_rt_zone = ("overheat" if flu_rt_overheat
+                       else "strong" if flu_rt_strong
+                       else "normal")
+
         stk_nm = str(item.get("stk_nm", "")).strip() or await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
             "stk_cd": stk_cd,
@@ -224,6 +256,9 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             "cur_prc": round(cur_prc),
             "strategy": "S10_NEW_HIGH",
             "flu_rt": round(flu_rt, 2),
+            "flu_rt_zone": flu_rt_zone,
+            "signal_mode": signal_mode,
+            "upper_shadow_pct": round((highs_d[0] - cur_prc) / highs_d[0] * 100, 2) if highs_d and highs_d[0] > 0 else None,
             "vol_surge_rt": round(sdnin_rt, 1),
             "cntr_strength": round(cntr_str, 1),
             "bid_ratio": round(bid_ratio, 3) if bid_ratio is not None else None,

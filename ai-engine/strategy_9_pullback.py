@@ -7,7 +7,7 @@ from __future__ import annotations
   1. MA5 > MA20 > MA60 정배열 (상승 추세 확인)
   2. 현재가가 MA5 기준 -3% ~ +3% 범위 (눌림 구간 진입)
   3. 당일 양봉 (현재가 > 시가) + 등락률 > 0
-  4. 당일 거래량 ≥ 전일 거래량 × 1.1 (반등 거래량 소폭 확인)
+  4. 당일 거래량 ≥ 전일 거래량 × 1.1 (hard gate), 1.1~1.3배 구간은 감점
   5. MA20 대비 이격 ≤ 15% (추세 내 눌림, 과열 버블 제외)
   6. RSI(14) ≤ 68 – 눌림 중 과매수 종목 제거 (hard gate)
      탑트레이더 관점: RSI 높은 눌림은 "눌림"이 아니라 고점 노출
@@ -86,9 +86,10 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         if t_close <= t_open: # 음봉 제외
             continue
 
-        # 조건 4: 거래량 확인 (전일 대비 1.1배 이상)
+        # 조건 4: 거래량 확인 (전일 대비 1.1배 이상, 1.3배 미만이면 약한 거래량으로 감점)
         if vols[1] > 0 and vols[0] < vols[1] * 1.1:
             continue
+        vol_weak = (vols[1] > 0 and vols[0] < vols[1] * 1.3)  # 1.1~1.3배: 반등 확신 부족
 
         # 4. 보조지표 계산 및 하드 게이트 적용
         # 조건 6: RSI(14) ≤ 68 (과매수 상태의 눌림은 배제)
@@ -117,13 +118,22 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         if flu_rt < 0: continue  # 명시적 하락 확인 시 제외 (0은 미구독으로 허용)
 
         # 6. 최종 점수 산정
+        # pct_ma5 구간별 처리:
+        #   -1% ~ +2%: 최적 눌림 (보너스)
+        #   +2% ~ +3%: MA5 위 늦은 진입 — 추세 과열 가능성, 감점
+        #   -3% ~ -1%: MA5 아래 깊게 빠짐 — 지지 훼손 가능성, 감점
+        pct_ma5_late    = 2.0 < pct_ma5 <= 3.0
+        pct_ma5_deep    = -3.0 <= pct_ma5 < -1.0
         score = (
                 flu_rt * 0.5
                 + max(cntr_str - 100, 0) * 0.2
                 + max(5.0 - abs(pct_ma5), 0) * 2          # MA5에 딱 붙을수록 가산
-                + (10 if -1.0 <= pct_ma5 <= 2.0 else 0)   # 최적 반등 타점 구간
+                + (10 if -1.0 <= pct_ma5 <= 2.0 else 0)   # 최적 반등 타점 구간 보너스
+                - (8 if pct_ma5_late else 0)               # 늦은 진입 감점
+                - (5 if pct_ma5_deep else 0)               # 지지 이탈 가능성 감점
+                - (8 if vol_weak else 0)                   # 약한 거래량 감점 (1.1~1.3배)
                 + (12 if stoch_gc else 0)                  # 스토캐스틱 골든크로스
-                + (8 if 40 <= rsi_now <= 58 else 0)       # RSI 회복 초입 구간
+                + (8 if 40 <= rsi_now <= 58 else 0)        # RSI 회복 초입 구간
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
@@ -149,6 +159,10 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
             "stoch_gc": stoch_gc,
             "cntr_strength": round(cntr_str, 1),
             "vol_ratio": vol_ratio,
+            "vol_weak": vol_weak,
+            "pct_ma5_zone": ("optimal" if -1.0 <= pct_ma5 <= 2.0
+                             else "late" if pct_ma5_late
+                             else "deep" if pct_ma5_deep else "normal"),
             "flu_rt": round(flu_rt, 2),
             "entry_type": "현재가_종가_분할매수",
             **tp_sl.to_signal_fields(),

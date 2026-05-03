@@ -52,12 +52,12 @@ CLAUDE_THRESHOLDS: dict[str, int] = {
     "S7_ICHIMOKU_BREAKOUT": 62,
     # 스윙 전략 — signal 필드 보완 + bid_ratio 중립화 후 재조정
     "S8_GOLDEN_CROSS":     50,   # 65 → 50
-    "S9_PULLBACK_SWING":   45,   # 60 → 45
-    "S10_NEW_HIGH":        48,   # 65 → 48
+    "S9_PULLBACK_SWING":   55,   # 60 → 45 → 55 (거래량 1.3배, pct_ma5 구간 제외 강화)
+    "S10_NEW_HIGH":        55,   # 65 → 48 → 55 (등락률 구간 감점, 윗꼬리 필터)
     "S11_FRGN_CONT":       58,   # 60 → 58
     "S12_CLOSING":         60,   # 65 → 60
     "S13_BOX_BREAKOUT":    55,   # 65 → 55
-    "S14_OVERSOLD_BOUNCE": 50,   # 65 → 50
+    "S14_OVERSOLD_BOUNCE": 58,   # 65 → 50 → 58 (RSI 범위 22~38, cntr≥105 필수화, cond≥2 강화)
     "S15_MOMENTUM_ALIGN":  65,   # 70 → 65
 }
 

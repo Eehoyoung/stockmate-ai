@@ -11,15 +11,18 @@
   알고 시스템 : "2/3 이상 과매도 지표 충족 → 진입 규칙 발동"
 
 핵심 원칙: 과매도이되 추세 붕괴(MA60 -15% 이하)는 제외.
-  진짜 바닥 = "일시적 과매도 + 추세 살아있음 + 반등 신호 2개 이상"
+  진짜 바닥 = "일시적 과매도 + 추세 살아있음 + 반등 신호 2개 이상 + 매수세 유입"
 
 필수 조건 (AND):
-  1. RSI(14) ≤ 38 – 과매도권 진입 (단 RSI < 20 = 폭락 → 제외)
+  1. RSI(14) 22~38 – 과매도 반등 정상 범위
+     · RSI < 22: 폭락/패닉 후보 → 자동 진입 금지
+     · RSI > 38: 약한 눌림/하락 초입 → 전략 철학과 불일치로 제외
   2. 현재가 ≥ MA60 × 0.88 – 장기 추세 아직 살아있음
   3. ATR%(14) ≤ 4.0% – 패닉 매물 소강, 변동성 정상화 중
   4. 당일 하락폭 ≤ 5% (낙폭과대 급락 당일은 제외 – 아직 추가 하락 가능)
+  5. 체결강도 ≥ 105% – 매수세 실질 유입 확인 (보너스에서 최소 조건으로 승격)
 
-선택 조건 (3개 중 2개 이상 충족 → 진입, 모두 충족 → 점수 대폭 상승):
+선택 조건 (3개 중 2개 이상 → 실전 진입 후보, 1개 → shadow 추적 전용):
   A. Stochastic: %K가 %D를 하단(20 미만)에서 상향 돌파 (바닥 탈출 확인)
   B. Williams %R > -80 (과매도 탈출 시작, -80 돌파 상향)
   C. MFI < 30 → 최근 반등 (mfi > mfi_prev 이거나 mfi > 25)
@@ -29,7 +32,6 @@
   · RSI 반등 중 (rsi > rsi_prev)                             +10점
   · 모든 선택 조건 충족 (3/3)                                +15점
   · 거래량 비율 ≥ 1.5x (반등 거래량 확인)                    +8점
-  · 체결강도 ≥ 105%                                          +8점
 
 손절: ATR × 2.0 (동적 손절) 또는 -4% 고정
 목표: ATR × 3.5 (비대칭 수익) 또는 +7%
@@ -84,10 +86,13 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         vols   = [_safe_vol(c.get("trde_qty")) for c in candles]
         cur_prc = closes[0]
 
-        # ── 필수 조건 1 & 2: RSI 과매도(20~38) & MA60 추세 생존 ──
+        # ── 필수 조건 1 & 2: RSI 과매도(22~38) & MA60 추세 생존 ──
+        # 22~38: 과매도 반등 정상 범위
+        # 18~22: 폭락/패닉 후보 — 바닥 탈출보다 추가 하락 위험이 크므로 자동 진입 금지
+        # 38~42: 과매도 반등이 아닌 약한 눌림 — 전략 철학과 불일치로 제외
         rsi_vals = calc_rsi(closes, 14)
         rsi_now, rsi_prev = rsi_vals[0], rsi_vals[1]
-        if not (18 <= rsi_now <= 42): continue
+        if not (22 <= rsi_now <= 38): continue
 
         ma60 = sum(closes[:60]) / 60
         if cur_prc < ma60 * 0.88: continue # 추세 완전 붕괴 제외
@@ -110,6 +115,10 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
 
         if flu_rt < -5.0: continue # 하락 진행 중인 칼날 제외
 
+        # ── 필수 조건 5: 체결강도 ≥ 105 (매수세 실질 유입 확인) ──
+        # 반등 전략에서 매수세 확인이 보너스에 그치면 하락 지속 종목이 섞임
+        if cntr_str < 105.0: continue
+
         # ── 선택 조건 A: Stochastic 골든크로스 ──
         sk, sd = calc_stochastic(highs, lows, closes, 14, 3, 3)
         cond_stoch = (sk[0] > sd[0] and sk[1] <= sd[1] and sk[1] < 25)
@@ -124,7 +133,11 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
 
         # ── 선택 조건 집계 및 스코어링 ──
         cond_count = sum([cond_stoch, cond_wr, cond_mfi])
-        if cond_count < 1: continue # RSI/ATR/추세 필터를 통과한 종목은 반등 단서 1개만 보여도 재평가 허용
+        # cond_count == 0: 반등 단서 없음, 완전 제외
+        # cond_count == 1: shadow 기록만 허용 (실전 진입 후보 제외)
+        # cond_count >= 2: 실전 진입 후보
+        if cond_count < 1: continue
+        is_shadow = (cond_count == 1)
 
         vol_ma20 = sum(vols[1:21]) / 20
         vol_ratio = vols[0] / vol_ma20 if vol_ma20 > 0 else 1.0
@@ -134,7 +147,7 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         if rsi_now > rsi_prev: score += 10
         if cond_count == 3: score += 15
         if vol_ratio >= 1.5: score += 8
-        if cntr_str >= 105: score += 8
+        # cntr_str은 최소 조건으로 승격되어 여기서는 보너스 없이 조건 통과만 의미
 
         # 동적 TP/SL — swing_low/MA20/MA60 기반 구조적 손절 (tp_sl_engine)
         ma20_val = sum(closes[:20]) / 20 if len(closes) >= 20 else None
@@ -147,6 +160,7 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
             stk_cd=stk_cd, atr=atr_now, ma20=ma20_val, ma60=ma60,
             bb_lower=bb_lower_val, compute_zones=True,
         )
+        signal_mode = "SHADOW" if is_shadow else "NORMAL"
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": await fetch_stk_nm(rdb, token, stk_cd),
@@ -159,9 +173,16 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
             "vol_ratio": round(vol_ratio, 2),
             "atr_pct": round(atr_pct, 2),
             "flu_rt": round(flu_rt, 2),
+            "signal_mode": signal_mode,
             "entry_type": "당일종가_또는_익일시가",
             "holding_days": "3~5거래일",
             **tp_sl.to_signal_fields(),
         })
 
-    return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    # 실전 진입 후보(cond_count >= 2)와 shadow(cond_count == 1) 분리
+    normal = [r for r in results if r["signal_mode"] == "NORMAL"]
+    shadow = [r for r in results if r["signal_mode"] == "SHADOW"]
+    top_normal = sorted(normal, key=lambda x: x["score"], reverse=True)[:5]
+    # shadow 결과는 상위 3개만 포함 (성과 집계용 — 실전 진입 불가)
+    top_shadow = sorted(shadow, key=lambda x: x["score"], reverse=True)[:3]
+    return top_normal + top_shadow

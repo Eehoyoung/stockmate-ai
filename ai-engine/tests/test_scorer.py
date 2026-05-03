@@ -578,12 +578,12 @@ class TestThresholdAndSkipAi:
         assert get_claude_threshold("S6_THEME_LAGGARD") == 60
         assert get_claude_threshold("S7_ICHIMOKU_BREAKOUT") == 62
         assert get_claude_threshold("S8_GOLDEN_CROSS") == 50
-        assert get_claude_threshold("S9_PULLBACK_SWING") == 45
-        assert get_claude_threshold("S10_NEW_HIGH") == 48
+        assert get_claude_threshold("S9_PULLBACK_SWING") == 55
+        assert get_claude_threshold("S10_NEW_HIGH") == 55
         assert get_claude_threshold("S11_FRGN_CONT") == 58
         assert get_claude_threshold("S12_CLOSING") == 60
         assert get_claude_threshold("S13_BOX_BREAKOUT") == 55
-        assert get_claude_threshold("S14_OVERSOLD_BOUNCE") == 50
+        assert get_claude_threshold("S14_OVERSOLD_BOUNCE") == 58
         assert get_claude_threshold("S15_MOMENTUM_ALIGN") == 65
 
     def test_unknown_strategy_default_threshold(self):
