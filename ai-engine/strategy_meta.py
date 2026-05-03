@@ -58,7 +58,7 @@ CLAUDE_THRESHOLDS: dict[str, int] = {
     "S12_CLOSING":         60,   # 65 → 60
     "S13_BOX_BREAKOUT":    55,   # 65 → 55
     "S14_OVERSOLD_BOUNCE": 58,   # 65 → 50 → 58 (RSI 범위 22~38, cntr≥105 필수화, cond≥2 강화)
-    "S15_MOMENTUM_ALIGN":  65,   # 70 → 65
+    "S15_MOMENTUM_ALIGN":  60,   # 70 → 65 → 60 (cond_count 3/4 운용 모드 분리)
 }
 
 _DEFAULT_THRESHOLD = 65

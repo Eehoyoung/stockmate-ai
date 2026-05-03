@@ -265,12 +265,18 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
             compute_zones=True,
         )
 
+        # cond_count 기반 운용 모드 분리
+        # cond_count == 3: 모멘텀 동조 충분, CONFIRM 후 진입 권장
+        # cond_count == 4: 완전 동조, AUTO_SMALL 후보
+        signal_mode = "AUTO_SMALL" if cond_count == 4 else "CONFIRM"
+
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
             "stk_cd":        stk_cd,
             "stk_nm":        stk_nm,
             "cur_prc":       round(cur_prc),
             "strategy":      "S15_MOMENTUM_ALIGN",
+            "signal_mode":   signal_mode,
             "flu_rt":        round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
             "rsi":           round(rsi_now, 1) if rsi_now else None,
