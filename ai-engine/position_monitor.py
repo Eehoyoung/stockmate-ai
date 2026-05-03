@@ -27,6 +27,7 @@ from db_reader import get_active_positions
 from db_writer import (
     update_peak_price,
     close_open_position,
+    update_shadow_trade_mark,
 )
 from downtrend_detector import compute_reversal_score
 from http_utils import fetch_stk_nm
@@ -268,6 +269,17 @@ async def _check_position(rdb, pg_pool, pos: dict):
         return
 
     signal_id   = pos.get("signal_id") or 0
+    await update_shadow_trade_mark(
+        pg_pool,
+        signal_id=signal_id,
+        cur_prc=cur_prc,
+        data_quality="OK",
+        data_quality_detail={
+            "source": "position_monitor",
+            "stk_cd": stk_cd,
+            "tick_seen_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
     # ── 1. SL_HIT ────────────────────────────────────────────
     if sl_price > 0 and cur_prc <= sl_price:

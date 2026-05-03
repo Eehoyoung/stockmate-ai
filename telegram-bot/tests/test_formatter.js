@@ -143,14 +143,74 @@ test('formatSignal shows display TP2 while execution TP2 is absent', () => {
     assert.ok(msg.includes('92,000'));
 });
 
-test('formatSignal shows integrated TP1 before Claude TP1', () => {
+test('formatSignal renders RR with market regime policy wording', () => {
+    const msg = formatSignal(makeSignal({
+        tp1_price: 88000,
+        sl_price: 82000,
+        rr_ratio: 0.72,
+        rr_regime: 'bull',
+        rr_regime_threshold: 0.65,
+    }));
+    assert.ok(msg.includes('현재 장세 기준 RR/bull'));
+    assert.ok(msg.includes('통과'));
+    assert.ok(!msg.includes('손익비(R:R)'));
+});
+
+test('formatSignal escapes RR regime label', () => {
+    const msg = formatSignal(makeSignal({
+        tp1_price: 88000,
+        sl_price: 82000,
+        rr_ratio: 0.72,
+        rr_regime: '<bull&bear>',
+        rr_regime_threshold: 0.65,
+    }));
+    assert.ok(msg.includes('&lt;bull&amp;bear&gt;'));
+    assert.ok(!msg.includes('RR/<bull&bear>'));
+});
+
+test('formatSignal skips invalid RR ratio instead of rendering NaN', () => {
+    const msg = formatSignal(makeSignal({
+        tp1_price: 88000,
+        sl_price: 82000,
+        rr_ratio: 'not-a-number',
+        rr_regime_threshold: 0.65,
+    }));
+    assert.ok(!msg.includes('NaN'));
+    assert.ok(!msg.includes('현재 장세 기준 RR'));
+});
+
+test('formatSignal shows Claude execution TP1 before rule TP1', () => {
     const msg = formatSignal(makeSignal({
         tp1_price: 88000,
         claude_tp1: 90000,
         display_tp2_price: 92000,
         sl_price: 82000,
     }));
-    assert.ok(msg.includes('88,000'));
+    assert.ok(msg.includes('90,000'));
+    assert.ok(!msg.includes('88,000'));
+});
+
+test('formatSignal shows Claude execution TP2 before display TP2', () => {
+    const msg = formatSignal(makeSignal({
+        tp1_price: 88000,
+        claude_tp1: 90000,
+        claude_tp2: 94000,
+        display_tp2_price: 92000,
+        sl_price: 82000,
+    }));
+    assert.ok(msg.includes('94,000'));
+    assert.ok(!msg.includes('92,000'));
+});
+
+test('formatSignal shows Claude execution SL before rule SL', () => {
+    const msg = formatSignal(makeSignal({
+        tp1_price: 88000,
+        claude_tp1: 90000,
+        sl_price: 82000,
+        claude_sl: 81000,
+    }));
+    assert.ok(msg.includes('81,000'));
+    assert.ok(!msg.includes('82,000'));
 });
 
 test('formatSignal handles optional S1 signal_stage values safely', () => {

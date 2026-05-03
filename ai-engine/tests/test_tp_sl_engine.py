@@ -1,4 +1,4 @@
-from tp_sl_engine import calc_tp_sl
+from tp_sl_engine import TpSlResult, _apply_policy_metadata, calc_tp_sl
 
 
 def _series(base: float, step: float, size: int) -> list[float]:
@@ -142,7 +142,7 @@ def test_momentum_keeps_technical_stop_when_support_is_far():
     assert "risk_cap" not in result.sl_method
 
 
-def test_strategy_specific_min_rr_is_stricter_for_day_trade():
+def test_strategy_specific_min_rr_is_advisory_for_day_trade():
     result = calc_tp_sl(
         strategy="S2_VI_PULLBACK",
         cur_prc=100,
@@ -155,4 +155,23 @@ def test_strategy_specific_min_rr_is_stricter_for_day_trade():
     )
 
     assert result.rr_ratio < 1.6
+    assert result.skip_entry is False
+    assert "strategy advisory min_rr" in result.rr_skip_reason
+
+
+def test_invalid_tp_sl_geometry_remains_hard_skip():
+    result = _apply_policy_metadata(
+        "S2_VI_PULLBACK",
+        TpSlResult(
+            sl_price=101,
+            tp1_price=99,
+            rr_ratio=0.0,
+            skip_entry=True,
+        ),
+        cur_prc=100,
+        min_rr=1.6,
+    )
+
+    assert result.rr_ratio == 0.0
     assert result.skip_entry is True
+    assert "strategy advisory min_rr" not in (result.rr_skip_reason or "")

@@ -9,7 +9,7 @@ tp_sl_engine.py
        (MA 지지 이탈, 스윙 저점 붕괴, 박스 상단 복귀)
   TP = "다음 구조적 저항" — 스윙 고점 클러스터, 볼린저 상단, 피보나치 확장
   ATR = 변동성 컨텍스트 보조 입력 (SL/TP의 유일 기준 ×)
-  R:R = 슬리피지·수수료 반영 실효치, 최소 1.3 미달 → skip_entry=True
+  R:R = 슬리피지·수수료 반영 실효치, 전략별 min_rr은 품질 경고/백테스트 참고값
 
 지원 단계:
   Phase 1 (현재): S8/S9/S13/S15 — 일봉 기반, 추가 API 호출 없음
@@ -153,7 +153,7 @@ class TpSlResult:
     sl_method:  str            = ""   # 예: "MA20_support", "swing_low_D15", "ATR×2"
     tp_method:  str            = ""   # 예: "swing_resistance", "bollinger_upper", "fib_1272"
     rr_ratio:   float          = 0.0  # 슬리피지 반영 실효 R:R
-    skip_entry: bool           = False  # rr_ratio < MIN_RR_RATIO
+    skip_entry: bool           = False  # hard risk skip only; min_rr miss is advisory
     trailing_pct: Optional[float] = None
     trailing_activation: Optional[float] = None
     trailing_basis: str = ""
@@ -530,8 +530,11 @@ def _apply_policy_metadata(strategy: str, result: TpSlResult, *, cur_prc: float,
         if stop_pct > float(result.stop_max_pct):
             result.skip_entry = True
             result.rr_skip_reason = f"stop_pct {stop_pct:.2f}% > {float(result.stop_max_pct):.2f}%"
-    if result.skip_entry and not result.rr_skip_reason:
-        result.rr_skip_reason = f"effective_rr {result.rr_ratio:.2f} < min_rr {min_rr:.2f}"
+    if result.skip_entry and not result.rr_skip_reason and result.rr_ratio > 0:
+        result.rr_skip_reason = (
+            f"effective_rr {result.rr_ratio:.2f} < strategy advisory min_rr {min_rr:.2f}"
+        )
+        result.skip_entry = False
     return result
 
 
@@ -550,7 +553,7 @@ def compute_rr(
     :param tp_price: 목표가
     :param sl_price: 손절가
     :param min_rr:   최소 R:R (None 이면 환경변수 MIN_RR_RATIO 또는 1.3)
-    :returns: (rr_ratio, skip_entry) — skip_entry=True 이면 진입 취소 대상
+    :returns: (rr_ratio, skip_entry) — raw helper flag; strategy min_rr misses are advisory downstream
     """
     slip = _slip_fee(stk_cd)
     _min = min_rr if min_rr is not None else MIN_RR_RATIO

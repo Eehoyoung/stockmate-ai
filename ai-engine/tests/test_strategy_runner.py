@@ -221,6 +221,18 @@ class TestRunOnce:
 
         assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 7, 0)) is False
 
+    def test_session_filter_allows_trading_active_sessions_when_enabled(self, monkeypatch):
+        import datetime
+        import strategy_runner
+        from market_session import MarketSession
+
+        monkeypatch.setattr(strategy_runner, "ENABLE_STRATEGY_SESSION_FILTER", True)
+        monkeypatch.setattr(strategy_runner, "STRATEGY_SESSION_DRY_RUN", False)
+        monkeypatch.setattr(strategy_runner, "current_session", MagicMock(return_value=MarketSession.OPENING_AUCTION))
+        monkeypatch.setattr(strategy_runner, "is_trading_active", MagicMock(return_value=True))
+
+        assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 8, 55)) is True
+
     def test_session_filter_dry_run_allows_closed_session(self, monkeypatch):
         import datetime
         import strategy_runner

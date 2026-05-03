@@ -115,6 +115,34 @@ def _is_active_signal(signal_status: Optional[str], exit_type: Optional[str]) ->
     return (signal_status or "PENDING") in ACTIVE_SIGNAL_STATUSES and not exit_type
 
 
+def _parse_utc_dt(value) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _shadow_result(realized_pnl_pct: Optional[float], exit_reason: Optional[str]) -> str:
+    reason = str(exit_reason or "").upper()
+    pnl = _opt_num(realized_pnl_pct)
+    if reason in {"TP1_HIT", "TP2_HIT"}:
+        return "WIN"
+    if reason == "SL_HIT":
+        return "LOSS"
+    if pnl is None:
+        return "EXIT"
+    if pnl > 0:
+        return "WIN"
+    if pnl < 0:
+        return "LOSS"
+    return "FLAT"
+
+
 async def _load_signal_for_update(conn, signal_id: int):
     return await conn.fetchrow(
         """
@@ -348,6 +376,195 @@ async def _insert_trade_outcome(
         tp_hit,
         timeout,
     )
+
+
+async def create_shadow_trade(
+    pool,
+    *,
+    signal_id: int,
+    payload: dict,
+    entry_price: float,
+    tp1_price: Optional[float],
+    sl_price: Optional[float],
+    tp2_price: Optional[float] = None,
+    data_quality: Optional[str] = "OK",
+    data_quality_detail: Optional[dict] = None,
+) -> bool:
+    if not signal_id:
+        return False
+    entry = _opt_int(entry_price)
+    if not entry or entry <= 0:
+        logger.warning("[DBWriter] create_shadow_trade skipped: invalid entry signal_id=%s entry=%s", signal_id, entry_price)
+        return False
+
+    payload = dict(payload or {})
+    now_utc = datetime.now(timezone.utc)
+    signal_time = (
+        _parse_utc_dt(payload.get("signal_time"))
+        or _parse_utc_dt(payload.get("created_at"))
+        or _parse_utc_dt(payload.get("timestamp"))
+        or now_utc
+    )
+    latency_ms = max(0, int((now_utc - signal_time).total_seconds() * 1000))
+    detail = data_quality_detail or {
+        "rr_ratio": _opt_num(payload.get("rr_ratio")),
+        "raw_rr": _opt_num(payload.get("raw_rr")),
+        "effective_rr": _opt_num(payload.get("effective_rr")),
+        "signal_quality_bucket": payload.get("signal_quality_bucket"),
+        "tp_policy_version": payload.get("tp_policy_version"),
+        "sl_policy_version": payload.get("sl_policy_version"),
+        "exit_policy_version": payload.get("exit_policy_version"),
+    }
+    try:
+        await pool.execute(
+            """
+            INSERT INTO shadow_trades (
+                signal_id, strategy, stk_cd, stk_nm,
+                entry_price, tp1_price, tp2_price, sl_price,
+                signal_time, opened_at, status,
+                max_favorable_price, max_adverse_price, last_price,
+                latency_ms, data_quality, data_quality_detail
+            ) VALUES (
+                $1, $2, $3, $4,
+                $5, $6, $7, $8,
+                $9, NOW(), 'OPEN',
+                $5, $5, $5,
+                $10, $11, $12::jsonb
+            )
+            ON CONFLICT (signal_id) DO UPDATE SET
+                strategy = EXCLUDED.strategy,
+                stk_cd = COALESCE(EXCLUDED.stk_cd, shadow_trades.stk_cd),
+                stk_nm = COALESCE(EXCLUDED.stk_nm, shadow_trades.stk_nm),
+                entry_price = EXCLUDED.entry_price,
+                tp1_price = EXCLUDED.tp1_price,
+                tp2_price = EXCLUDED.tp2_price,
+                sl_price = EXCLUDED.sl_price,
+                signal_time = EXCLUDED.signal_time,
+                status = CASE WHEN shadow_trades.status = 'CLOSED' THEN shadow_trades.status ELSE 'OPEN' END,
+                last_price = EXCLUDED.last_price,
+                latency_ms = COALESCE(shadow_trades.latency_ms, EXCLUDED.latency_ms),
+                data_quality = COALESCE(EXCLUDED.data_quality, shadow_trades.data_quality),
+                data_quality_detail = shadow_trades.data_quality_detail || EXCLUDED.data_quality_detail,
+                updated_at = NOW()
+            """,
+            signal_id,
+            _clip_str(payload.get("strategy") or "", 30) or "UNKNOWN",
+            normalize_stock_code(payload.get("stk_cd", "")),
+            _clip_str(payload.get("stk_nm"), 100),
+            entry,
+            _opt_int(tp1_price),
+            _opt_int(tp2_price),
+            _opt_int(sl_price),
+            signal_time,
+            latency_ms,
+            _clip_str(data_quality, 20),
+            json.dumps(detail, ensure_ascii=False, default=str),
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] create_shadow_trade error signal_id=%s: %s", signal_id, e)
+        return False
+
+
+async def update_shadow_trade_mark(
+    pool,
+    *,
+    signal_id: int,
+    cur_prc: float,
+    data_quality: Optional[str] = "OK",
+    data_quality_detail: Optional[dict] = None,
+) -> bool:
+    price = _opt_int(cur_prc)
+    if not signal_id or not price or price <= 0:
+        return False
+    try:
+        await pool.execute(
+            """
+            UPDATE shadow_trades
+            SET last_price = $2,
+                max_favorable_price = CASE
+                    WHEN max_favorable_price IS NULL OR $2 > max_favorable_price THEN $2
+                    ELSE max_favorable_price
+                END,
+                max_adverse_price = CASE
+                    WHEN max_adverse_price IS NULL OR $2 < max_adverse_price THEN $2
+                    ELSE max_adverse_price
+                END,
+                max_favorable_excursion = GREATEST(
+                    COALESCE(max_favorable_excursion, 0),
+                    ROUND((($2 - entry_price) / NULLIF(entry_price, 0) * 100)::numeric, 4)
+                ),
+                max_adverse_excursion = LEAST(
+                    COALESCE(max_adverse_excursion, 0),
+                    ROUND((($2 - entry_price) / NULLIF(entry_price, 0) * 100)::numeric, 4)
+                ),
+                data_quality = COALESCE($3, data_quality),
+                data_quality_detail = CASE
+                    WHEN $4::jsonb IS NULL THEN data_quality_detail
+                    ELSE data_quality_detail || $4::jsonb
+                END,
+                updated_at = NOW()
+            WHERE signal_id = $1
+              AND status = 'OPEN'
+              AND entry_price > 0
+            """,
+            signal_id,
+            price,
+            _clip_str(data_quality, 20),
+            json.dumps(data_quality_detail, ensure_ascii=False, default=str) if data_quality_detail else None,
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] update_shadow_trade_mark error signal_id=%s: %s", signal_id, e)
+        return False
+
+
+async def close_shadow_trade(
+    conn_or_pool,
+    *,
+    signal_id: int,
+    exit_reason: str,
+    exit_price: float,
+    realized_pnl_pct: float,
+    data_quality: Optional[str] = None,
+    data_quality_detail: Optional[dict] = None,
+) -> bool:
+    price = _opt_int(exit_price)
+    if not signal_id or not price:
+        return False
+    result = _shadow_result(realized_pnl_pct, exit_reason)
+    detail = json.dumps(data_quality_detail, ensure_ascii=False, default=str) if data_quality_detail else None
+    try:
+        await conn_or_pool.execute(
+            """
+            UPDATE shadow_trades
+            SET status = 'CLOSED',
+                closed_at = COALESCE(closed_at, NOW()),
+                last_price = $2,
+                result = $3,
+                realized_pnl_simulated = $4,
+                exit_reason = $5,
+                data_quality = COALESCE($6, data_quality),
+                data_quality_detail = CASE
+                    WHEN $7::jsonb IS NULL THEN data_quality_detail
+                    ELSE data_quality_detail || $7::jsonb
+                END,
+                updated_at = NOW()
+            WHERE signal_id = $1
+              AND status = 'OPEN'
+            """,
+            signal_id,
+            price,
+            result,
+            _opt_num(realized_pnl_pct),
+            _clip_str(exit_reason, 40),
+            _clip_str(data_quality, 20),
+            detail,
+        )
+        return True
+    except Exception as e:
+        logger.error("[DBWriter] close_shadow_trade error signal_id=%s: %s", signal_id, e)
+        return False
 
 
 async def update_signal_score(
@@ -1207,6 +1424,14 @@ async def close_open_position(
                     exit_reason=exit_type,
                     exit_price=exit_price,
                     realized_pnl_pct=realized_pnl_pct,
+                )
+                await close_shadow_trade(
+                    conn,
+                    signal_id=signal_id,
+                    exit_reason=exit_type,
+                    exit_price=exit_price,
+                    realized_pnl_pct=realized_pnl_pct,
+                    data_quality_detail={"closed_by": "position_monitor"},
                 )
                 await _insert_position_state_event(
                     conn,

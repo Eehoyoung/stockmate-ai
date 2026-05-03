@@ -35,7 +35,8 @@ def _make_full_rdb(rpop_value=None):
 
 
 def _make_claude_response(action="ENTER", ai_score=78, confidence="HIGH",
-                           reason="강한 신호", target=3.5, stop=-2.0):
+                           reason="강한 신호", target=3.5, stop=-2.0,
+                           claude_tp1=None, claude_tp2=None, claude_sl=None):
     content = MagicMock()
     content.text = json.dumps({
         "action": action,
@@ -44,6 +45,9 @@ def _make_claude_response(action="ENTER", ai_score=78, confidence="HIGH",
         "reason": reason,
         "adjusted_target_pct": target,
         "adjusted_stop_pct": stop,
+        "claude_tp1": claude_tp1,
+        "claude_tp2": claude_tp2,
+        "claude_sl": claude_sl,
     })
     usage = MagicMock()
     usage.input_tokens = 300
@@ -69,12 +73,14 @@ class TestFullPipeline:
             "cntr_strength": 155.0,
             "target_pct": 4.0,
             "stop_pct": -2.0,
+            "cur_prc": 84300,
         }
         ctx = {
             "tick": {"flu_rt": "4.0"},
             "hoga": {"total_buy_bid_req": "3000", "total_sel_bid_req": "1000"},
             "strength": 155.0,
             "vi": {},
+            "market_session": "main_market",
         }
         rdb = _make_full_rdb(json.dumps(signal))
 
@@ -83,14 +89,20 @@ class TestFullPipeline:
         async def capture_push(rdb, payload):
             captured.append(payload)
 
-        mock_response = _make_claude_response("ENTER", 80)
+        ai_result = {
+            "action": "ENTER",
+            "ai_score": 80,
+            "confidence": "HIGH",
+            "reason": "강한 신호",
+            "adjusted_target_pct": 3.5,
+            "adjusted_stop_pct": -2.0,
+            "claude_tp1": 88000,
+            "claude_tp2": 90000,
+            "claude_sl": 82000,
+        }
 
         with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=ctx), \
-             patch("analyzer._get_claude_client") as mock_fn:
-            mock_client = MagicMock()
-            mock_client.messages.create = AsyncMock(return_value=mock_response)
-            mock_fn.return_value = mock_client
-
+             patch("queue_worker.analyze_signal", new_callable=AsyncMock, return_value=ai_result):
             with patch("queue_worker.push_score_only_queue", side_effect=capture_push):
                 from queue_worker import process_one
                 result = _run(process_one(rdb))

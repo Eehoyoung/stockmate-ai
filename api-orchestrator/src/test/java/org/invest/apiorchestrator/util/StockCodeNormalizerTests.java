@@ -19,7 +19,7 @@ class StockCodeNormalizerTests {
         String json = """
                 {
                   "return_code": "0",
-                  "stk_cd": "039490_AL",
+                  "stk_cd": "A039490_AL",
                   "stk_nm": "TEST"
                 }
                 """;
@@ -33,7 +33,7 @@ class StockCodeNormalizerTests {
     @Test
     void normalizesTradingSignalPayloadStockCode() {
         TradingSignalDto dto = TradingSignalDto.builder()
-                .stkCd("039490_AL")
+                .stkCd("A039490_AL")
                 .stkNm("TEST")
                 .strategy(TradingSignal.StrategyType.S1_GAP_OPEN)
                 .build();
@@ -41,5 +41,11 @@ class StockCodeNormalizerTests {
         Map<String, Object> payload = dto.toQueuePayload(1L);
 
         assertEquals("039490", payload.get("stk_cd"));
+    }
+
+    @Test
+    void normalizesPlainPrefixedStockCode() {
+        assertEquals("483650", StockCodeNormalizer.normalize("A483650_AL"));
+        assertEquals("005930", StockCodeNormalizer.normalize("A005930"));
     }
 }

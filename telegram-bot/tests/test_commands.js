@@ -63,11 +63,23 @@ function buildCommands(overrides = {}) {
         exports: {
             getTodaySignals: async () => overrides.todaySignals || [],
             getTodayStats: async () => overrides.todayStats || [],
+            searchCandidates: async () => overrides.candidateSearch || { candidates: [], count: 0 },
             getCandidates: async () => overrides.candidates || { candidates: [], codes: [], count: 0 },
             getCandidatePoolStatus: async () => overrides.poolStatus || null,
             getAiEngineCandidates: async () => overrides.aiPoolStatus || null,
             getSignalHistory: async () => overrides.signalHistory || [],
-            health: async () => overrides.health || ({ status: 'UP', service: 'ok', business_date: '2026-04-30' }),
+            health: async () => overrides.health || ({
+                status: 'UP',
+                service: 'ok',
+                business_date: '2026-04-30',
+                flags: {
+                    bypass_market_hours: false,
+                    strategy_session_filter: true,
+                    strategy_session_dry_run: false,
+                    strategy_session_fail_open: true,
+                    session_enter_guard: true,
+                },
+            }),
             getSignalPerformance: async () => overrides.performanceSignals || [],
             getPerformanceSummary: async () => overrides.performanceSummary || [],
             getStrategyAnalysis: async () => overrides.strategyAnalysis || [],
@@ -180,6 +192,21 @@ function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0
         assert.strictEqual(ctx.replies[0], 'Usage: /candidates [all|kospi|kosdaq|000|001|101]');
     });
 
+    await test('/candidates uses candidate search api', async () => {
+        const { commands } = buildCommands({
+            candidateSearch: {
+                count: 1,
+                candidates: [
+                    { stkCd: '005930', strategies: ['S8_GOLDEN_CROSS'], live: true },
+                ],
+            },
+        });
+        const ctx = createCtx('/candidates kospi');
+        await commands.candidates(ctx);
+        assert.ok(ctx.replies.join('\n').includes('005930'), ctx.replies[0]);
+        assert.ok(ctx.replies.join('\n').includes('S8_GOLDEN_CROSS'), ctx.replies[0]);
+    });
+
     await test('/quote rejects invalid code', async () => {
         const { commands } = buildCommands();
         const ctx = createCtx('/quote 5930');
@@ -278,6 +305,11 @@ function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0
         const ctx = createCtx('/status', 430);
         await commands.status(ctx);
         assert.ok(ctx.replies[0].length > 0);
+        assert.ok(ctx.replies[0].includes('market_hours_bypass: false'));
+        assert.ok(ctx.replies[0].includes('strategy_session_filter: true'));
+        assert.ok(ctx.replies[0].includes('strategy_session_dry_run: false'));
+        assert.ok(ctx.replies[0].includes('strategy_session_fail_open: true'));
+        assert.ok(ctx.replies[0].includes('session_enter_guard: true'));
         assertDeliveryLog(logs, 'status sent', 430);
     });
 

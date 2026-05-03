@@ -7,7 +7,7 @@
 
 const axios = require('axios');
 
-const BASE_URL = 'http://host.docker.internal:8080';
+const BASE_URL = process.env.API_ORCHESTRATOR_BASE_URL || process.env.API_BASE_URL || 'http://host.docker.internal:8080';
 
 if (!BASE_URL) {
     throw new Error('API_ORCHESTRATOR_BASE_URL is required');
@@ -40,6 +40,12 @@ async function getTodayStats() {
 /** 후보 종목 목록 */
 async function getCandidates(market = '000') {
     const { data } = await api.get('/api/trading/candidates', { params: { market } });
+    return data;
+}
+
+/** Candidate search API for filtered UI/Telegram candidate views. */
+async function searchCandidates(params = {}) {
+    const { data } = await api.get('/api/trading/candidates/search', { params });
     return data;
 }
 
@@ -179,7 +185,7 @@ async function getLiveNewsBrief(slot) {
 
 module.exports = {
     health, getTodaySignals, getTodayStats,
-    getCandidates, refreshToken, runStrategy,
+    getCandidates, searchCandidates, refreshToken, runStrategy,
     startWs, stopWs,
     getSignalPerformance, getPerformanceSummary,
     getSignalHistory, getStrategyAnalysis,

@@ -76,7 +76,12 @@ public class OperationsHealthService {
         response.put("flags", linkedMap(
                 "trading_control", tradingControl,
                 "calendar_pre_event", calendarPreEvent,
-                "ws_db_writer_event_mode", wsEventMode
+                "ws_db_writer_event_mode", wsEventMode,
+                "bypass_market_hours", envFlag("BYPASS_MARKET_HOURS", false),
+                "strategy_session_filter", envFlag("ENABLE_STRATEGY_SESSION_FILTER", false),
+                "strategy_session_dry_run", envFlag("STRATEGY_SESSION_DRY_RUN", false),
+                "strategy_session_fail_open", envFlag("STRATEGY_SESSION_FAIL_OPEN", true),
+                "session_enter_guard", envFlag("SESSION_ENTER_GUARD_ENABLED", false)
         ));
         response.put("queues", linkedMap(
                 "telegram_queue", telegramQueue,
@@ -112,6 +117,17 @@ public class OperationsHealthService {
             result.put(String.valueOf(values[i]), values[i + 1]);
         }
         return result;
+    }
+
+    static boolean envFlag(String key, boolean defaultValue) {
+        String value = System.getProperty(key);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(key);
+        }
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        return "true".equalsIgnoreCase(value) || "1".equals(value) || "yes".equalsIgnoreCase(value);
     }
 
     private boolean isRedisUp() {

@@ -17,6 +17,10 @@ from aiohttp import web
 logger = logging.getLogger("health_server")
 
 
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def run_health_server(port: int, rdb) -> None:
     """
     Exposes /health, /candidates, /analyze/{stk_cd}, /score/{stk_cd}, /news/brief.
@@ -64,6 +68,13 @@ async def run_health_server(port: int, rdb) -> None:
             "redis_connected": redis_ok,
             "uptime_sec": int(time.time() - start_time),
             "claude_model": os.getenv("CLAUDE_MODEL", "N/A"),
+            "session_controls": {
+                "strategy_session_filter": _env_flag("ENABLE_STRATEGY_SESSION_FILTER"),
+                "strategy_session_dry_run": _env_flag("STRATEGY_SESSION_DRY_RUN"),
+                "strategy_session_fail_open": _env_flag("STRATEGY_SESSION_FAIL_OPEN", "true"),
+                "session_enter_guard": _env_flag("SESSION_ENTER_GUARD_ENABLED"),
+                "bypass_market_hours": _env_flag("BYPASS_MARKET_HOURS"),
+            },
             "ws_db_writer_event_mode": ws_db_writer_event_mode,
             "position_count": position_count,
             "queue_backlog": queue_backlog,

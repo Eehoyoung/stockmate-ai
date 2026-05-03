@@ -128,8 +128,21 @@ function _effectiveRR(stkCd, entry, tp1, sl) {
     const effRisk   = (entry - sl)  / entry + slip;
     if (effRisk <= 0) return null;
     const rr = (effTarget / effRisk).toFixed(2);
-    const warn = Number(rr) < 1.0 ? ' ⚠️' : '';
-    return `실질R:R(슬리피지반영): <b>${rr}</b>${warn}`;
+    const warn = Number(rr) < 1.0 ? ' 주의' : '';
+    return `현재 장세 기준 RR: <b>${rr}</b>${warn}`;
+}
+
+function _formatRegimeRR(item, rrVal) {
+    const threshold = Number(item.rr_regime_threshold ?? item.market_rr_threshold);
+    if (!Number.isFinite(rrVal)) return null;
+    const regime = item.rr_regime ? escapeHtml(item.rr_regime) : '';
+    if (Number.isFinite(threshold) && threshold > 0) {
+        const status = rrVal >= threshold ? '통과' : '주의';
+        const regimeText = regime ? `/${regime}` : '';
+        return `현재 장세 기준 RR${regimeText}: <b>${status}</b> (${rrVal.toFixed(2)} / 기준 ${threshold.toFixed(2)})`;
+    }
+    const status = rrVal < 0.8 ? '주의' : '통과';
+    return `현재 장세 기준 RR: <b>${status}</b> (${rrVal.toFixed(2)})`;
 }
 
 /**
@@ -230,8 +243,8 @@ function formatSignal(item) {
     const displayTp2 = item.display_tp2_price ? normalizeForDisplay(item.display_tp2_price) : null;
     const sl  = item.sl_price  ? normalizeForDisplay(item.sl_price)  : null;
 
-    const displayedTp1 = tp1 || claudeTp1;
-    const displayedTp2 = displayTp2 || claudeTp2 || tp2;
+    const displayedTp1 = claudeTp1 || tp1;
+    const displayedTp2 = claudeTp2 || displayTp2 || tp2;
     const displayedSl  = claudeSl  || sl;
 
     if (effectiveAction === 'ENTER') {
@@ -266,8 +279,8 @@ function formatSignal(item) {
 
         if (item.rr_ratio != null) {
             const rrVal = Number(item.rr_ratio);
-            const rrFlag = rrVal < 1.0 ? ' 위험' : (rrVal < 1.3 ? ' 주의' : '');
-            lines.push(`손익비(R:R): <b>${rrVal.toFixed(2)}</b>${rrFlag}`);
+            const rrText = _formatRegimeRR(item, rrVal);
+            if (rrText) lines.push(rrText);
         } else if (displayedTp1 && displayedSl && curPrc > 0 && displayedSl < curPrc) {
             const effRR = _effectiveRR(item.stk_cd, curPrc, displayedTp1, displayedSl);
             if (effRR) lines.push(effRR);
@@ -304,7 +317,7 @@ function formatSignal(item) {
         }
         if (item.skip_entry) {
             const rrStr = item.rr_ratio != null ? ` (현재 R:R ${Number(item.rr_ratio).toFixed(2)})` : '';
-            lines.push(isS1GapOpen ? `주의: 손익비가 낮아 추격 판단은 보류${rrStr}` : `주의: 손익비가 낮아 추격 매수는 비추천${rrStr}`);
+            lines.push(isS1GapOpen ? `주의: 현재 장세 기준 RR 주의로 추격 판단은 보류${rrStr}` : `주의: 현재 장세 기준 RR 주의로 진입 보류${rrStr}`);
         }
     } else {
         if (isS1GapOpen) {

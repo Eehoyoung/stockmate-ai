@@ -27,6 +27,75 @@ from utils import safe_float as _fv
 logger = logging.getLogger(__name__)
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
+_RR_BY_REGIME = {"bull": 0.65, "sideways": 0.75, "bear": 0.80, "neutral": 0.80}
+_BEAR_GATE_EXEMPT = {"S9_PULLBACK_SWING", "S14_OVERSOLD_BOUNCE", "S11_FRGN_CONT"}
+
+
+def _normalize_market_type(value) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    text = str(value or "").strip().upper()
+    if text in {"001", "0", "KOSPI", "P00101"}:
+        return "001"
+    if text in {"101", "10", "KOSDAQ", "P10102"}:
+        return "101"
+    return ""
+
+
+def _regime_from_flu_rt(value) -> str:
+    if value is None:
+        return "neutral"
+    try:
+        flu_rt = float(value)
+    except (TypeError, ValueError):
+        return "neutral"
+    if flu_rt >= 0.5:
+        return "bull"
+    if flu_rt <= -0.5:
+        return "bear"
+    return "sideways"
+
+
+def _detect_market_regime(ctx: dict, strategy: str = "") -> str:
+    if strategy == "S1_GAP_OPEN":
+        kospi = ctx.get("kospi_exp_flu_rt") or ctx.get("kospi_flu_rt")
+        kosdaq = ctx.get("kosdaq_exp_flu_rt") or ctx.get("kosdaq_flu_rt")
+    else:
+        kospi = ctx.get("kospi_flu_rt")
+        kosdaq = ctx.get("kosdaq_flu_rt")
+
+    market_type = _normalize_market_type(ctx.get("market_type"))
+    if market_type == "001":
+        return _regime_from_flu_rt(kospi)
+    if market_type == "101":
+        return _regime_from_flu_rt(kosdaq)
+
+    vals = []
+    for value in (kospi, kosdaq):
+        try:
+            if value is not None:
+                vals.append(float(value))
+        except (TypeError, ValueError):
+            pass
+    if not vals:
+        return "neutral"
+    avg = sum(vals) / len(vals)
+    return _regime_from_flu_rt(avg)
+
+
+def _resolve_regime_rr_policy(ctx: dict | None, strategy: str = "") -> tuple[str, float]:
+    regime = _detect_market_regime(ctx or {}, strategy) if ctx else "neutral"
+    if regime == "bear" and strategy in _BEAR_GATE_EXEMPT:
+        threshold = _RR_BY_REGIME["bull"]
+    else:
+        threshold = _RR_BY_REGIME.get(regime, RR_HARD_CANCEL_THRESHOLD)
+    return regime, float(threshold)
+
+
+def _apply_regime_rr_metadata(payload: dict, regime: str, threshold: float) -> None:
+    payload["rr_policy"] = "market_regime"
+    payload["rr_regime"] = regime
+    payload["rr_regime_threshold"] = round(float(threshold), 2)
 
 
 def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None) -> str:
@@ -72,7 +141,7 @@ def _raw_rr(entry, tp, sl) -> float | None:
     return round((tp_f - entry_f) / risk, 3)
 
 
-def _apply_claude_rr_override(payload: dict) -> dict:
+def _apply_claude_rr_override(payload: dict, ctx: dict | None = None) -> dict:
     if payload.get("action") != "ENTER":
         return payload
     entry = _fv(payload.get("cur_prc") or payload.get("entry_price"), None)
@@ -80,28 +149,32 @@ def _apply_claude_rr_override(payload: dict) -> dict:
     claude_sl = _fv(payload.get("claude_sl"), None)
     if entry is None or claude_tp is None or claude_sl is None:
         return payload
-    min_rr = _fv(payload.get("min_rr_ratio"), None)
     rr, skip = compute_rr(
         str(payload.get("stk_cd", "")),
         entry,
         claude_tp,
         claude_sl,
-        min_rr=min_rr if min_rr is not None else None,
+        min_rr=None,
     )
+    regime, threshold = _resolve_regime_rr_policy(ctx, str(payload.get("strategy", "")))
+    _apply_regime_rr_metadata(payload, regime, threshold)
     payload["rr_ratio"] = rr
     payload["effective_rr"] = rr
     payload["single_tp_rr"] = _raw_rr(entry, claude_tp, claude_sl)
     payload["raw_rr"] = payload["single_tp_rr"]
     payload["rr_basis"] = "claude_tp_sl"
-    if rr < RR_HARD_CANCEL_THRESHOLD:
-        reason = f"Claude TP/SL R:R {rr:.2f} below {RR_HARD_CANCEL_THRESHOLD:.2f}"
+    if rr < threshold:
+        reason = f"Claude TP/SL R:R {rr:.2f} below market regime threshold {threshold:.2f}({regime})"
         payload["action"] = "CANCEL"
         payload["confidence"] = "LOW"
         payload["cancel_reason"] = reason
         payload["ai_reason"] = reason
         payload["rr_skip_reason"] = reason
-    elif skip and not payload.get("rr_skip_reason") and min_rr is not None:
-        payload["rr_skip_reason"] = f"Claude TP/SL effective_rr {rr:.2f} < min_rr {min_rr:.2f}"
+    elif skip and not payload.get("rr_skip_reason"):
+        payload["rr_skip_reason"] = (
+            f"Claude TP/SL effective_rr {rr:.2f} passed market regime threshold "
+            f"{threshold:.2f}({regime}); strategy min_rr is advisory"
+        )
     return payload
 
 
@@ -210,7 +283,7 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
         }
         # market_ctx 는 큰 데이터이므로 발행 전 제거
         normalize_signal_prices(enriched)
-        enriched = _apply_claude_rr_override(enriched)
+        enriched = _apply_claude_rr_override(enriched, ctx)
         enriched.pop("market_ctx", None)
         await push_score_only_queue(rdb, enriched)
         if pg_pool:

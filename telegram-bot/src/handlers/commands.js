@@ -473,7 +473,12 @@ function renderHealthSummary(health, usage) {
         `Active positions: ${positions.active_count ?? 0}\n` +
         `Trading control: ${flags.trading_control ?? '-'}\n` +
         `calendar:pre_event: ${flags.calendar_pre_event ? 'true' : 'false'}\n` +
-        `ws:db_writer:event_mode: ${flags.ws_db_writer_event_mode ?? '-'}\n\n` +
+        `ws:db_writer:event_mode: ${flags.ws_db_writer_event_mode ?? '-'}\n` +
+        `market_hours_bypass: ${flags.bypass_market_hours ? 'true' : 'false'}\n` +
+        `strategy_session_filter: ${flags.strategy_session_filter ? 'true' : 'false'}\n` +
+        `strategy_session_dry_run: ${flags.strategy_session_dry_run ? 'true' : 'false'}\n` +
+        `strategy_session_fail_open: ${flags.strategy_session_fail_open ? 'true' : 'false'}\n` +
+        `session_enter_guard: ${flags.session_enter_guard ? 'true' : 'false'}\n\n` +
         `?뵩 <b>Schedulers</b>\n${schedulerLines}` +
         claudeBlock
     );
@@ -1253,10 +1258,29 @@ const candidatesEnhanced = guard(async (ctx) => {
 
     const market = marketInfo.code;
     const [result, poolStatus] = await Promise.allSettled([
-        kiwoom.getCandidates(market),
+        kiwoom.searchCandidates({ market, limit: 20, sort: 'score' }),
         kiwoom.getCandidatePoolStatus(),
     ]);
-    const data = result.status === 'fulfilled' ? result.value : { candidates: [], codes: [], count: 0 };
+    let data = result.status === 'fulfilled'
+        ? {
+            count: result.value.count ?? 0,
+            codes: (result.value.candidates ?? []).map(item => item.stkCd),
+            candidates: (result.value.candidates ?? []).map(item => ({
+                code: item.stkCd,
+                strategies: item.strategies,
+                live: item.live,
+                dataQuality: item.dataQuality,
+                executionValidation: item.executionValidation,
+            })),
+        }
+        : null;
+    if (!data) {
+        try {
+            data = await kiwoom.getCandidates(market);
+        } catch (_) {
+            data = { candidates: [], codes: [], count: 0 };
+        }
+    }
     const withTags = (data.candidates ?? []).slice(0, 20);
 
     let lines;

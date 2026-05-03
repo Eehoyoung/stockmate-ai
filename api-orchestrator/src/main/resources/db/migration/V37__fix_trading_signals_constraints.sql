@@ -145,3 +145,9 @@ GROUP BY
     dp.net_pnl_pct,
     dp.daily_loss_limit_hit,
     dp.current_drawdown_pct;
+
+DROP TRIGGER IF EXISTS trg_sync_open_positions_view ON open_positions;
+CREATE TRIGGER trg_sync_open_positions_view
+INSTEAD OF INSERT OR UPDATE OR DELETE ON open_positions
+FOR EACH ROW
+EXECUTE FUNCTION sync_open_positions_view();

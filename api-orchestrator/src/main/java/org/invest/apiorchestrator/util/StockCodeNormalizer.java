@@ -11,6 +11,8 @@ public final class StockCodeNormalizer {
         }
         String trimmed = stkCd.trim();
         int idx = trimmed.indexOf('_');
-        return idx > 0 ? trimmed.substring(0, idx) : trimmed;
+        String base = idx > 0 ? trimmed.substring(0, idx) : trimmed;
+        String digits = base.replaceAll("\\D", "");
+        return digits.length() >= 6 ? digits.substring(0, 6) : base;
     }
 }

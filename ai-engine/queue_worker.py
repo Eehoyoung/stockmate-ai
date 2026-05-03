@@ -78,7 +78,6 @@ _S12_END_MINUTE = 15 * 60 + 10
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 RR_CAUTION_THRESHOLD = float(os.getenv("RR_CAUTION_THRESHOLD", "1.2"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
-S1_CLAUDE_MIN_EFFECTIVE_RR = float(os.getenv("S1_CLAUDE_MIN_EFFECTIVE_RR", "1.8"))
 SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").lower() == "true"
 CLAUDE_HARD_RULE_CANCEL_TYPE = "CLAUDE_HARD_RULE"
 _CLAUDE_PRICE_FIELDS = ("claude_tp1", "claude_tp2", "claude_sl")
@@ -97,7 +96,7 @@ _SESSION_ENTER_BLOCKLIST = {
     "장외",
 }
 _STRATEGY_ENTER_SESSIONS = {
-    "S1_GAP_OPEN": {"main_market"},
+    "S1_GAP_OPEN": {"pre_market", "opening_auction", "main_market"},
     "S3_INST_FRGN": {"main_market"},
     "S4_BIG_CANDLE": {"main_market"},
     "S5_PROG_FRGN": {"main_market"},
@@ -142,6 +141,10 @@ async def insert_score_components(*args, **kwargs):
 
 async def confirm_open_position(*args, **kwargs):
     return await _db_writer().confirm_open_position(*args, **kwargs)
+
+
+async def create_shadow_trade(*args, **kwargs):
+    return await _db_writer().create_shadow_trade(*args, **kwargs)
 
 
 async def insert_rule_cancel_signal(*args, **kwargs):
@@ -208,12 +211,22 @@ def _current_market_session(now: datetime | None = None) -> str:
     return "closed"
 
 
+def _normalize_session_value(value) -> str:
+    if value is None:
+        return ""
+    enum_value = getattr(value, "value", value)
+    text = str(enum_value).strip().lower()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text
+
+
 def _resolve_signal_session(payload: dict, ctx: dict | None = None) -> str:
     for source in (payload, ctx or {}):
         for field in ("market_session", "session", "ws_session"):
             value = source.get(field)
             if value:
-                return str(value).strip().lower()
+                return _normalize_session_value(value)
     return _current_market_session()
 
 
@@ -340,8 +353,71 @@ def _resolve_bid_ratio(signal: dict, ctx: dict) -> float | None:
     return None
 
 
+def _normalize_market_type(value) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    text = str(value or "").strip().upper()
+    if text in {"001", "0", "KOSPI", "P00101"}:
+        return "001"
+    if text in {"101", "10", "KOSDAQ", "P10102"}:
+        return "101"
+    return ""
+
+
+def _candidate_pool_suffix(strategy: str) -> str:
+    code = str(strategy or "").split("_", 1)[0].lower()
+    return code if code.startswith("s") and code[1:].isdigit() else ""
+
+
+async def _resolve_signal_market_type(rdb, stk_cd: str, strategy: str, signal: dict | None = None) -> str:
+    for field in ("market_type", "market", "mrkt_tp"):
+        market_type = _normalize_market_type((signal or {}).get(field))
+        if market_type:
+            return market_type
+
+    try:
+        for key in (f"stock:market:{stk_cd}", f"stock:market_type:{stk_cd}"):
+            market_type = _normalize_market_type(await rdb.get(key))
+            if market_type:
+                return market_type
+    except Exception:
+        pass
+
+    suffix = _candidate_pool_suffix(strategy)
+    if suffix:
+        try:
+            kospi, kosdaq = await asyncio.gather(
+                rdb.lrange(f"candidates:{suffix}:001", 0, -1),
+                rdb.lrange(f"candidates:{suffix}:101", 0, -1),
+            )
+            code = str(stk_cd)
+            if code in {str(x) for x in kospi}:
+                return "001"
+            if code in {str(x) for x in kosdaq}:
+                return "101"
+        except Exception:
+            pass
+    return ""
+
+
+def _regime_from_flu_rt(value) -> str:
+    if value is None:
+        return "neutral"
+    try:
+        flu_rt = float(value)
+    except (TypeError, ValueError):
+        return "neutral"
+    if flu_rt >= 0.5:
+        return "bull"
+    if flu_rt <= -0.5:
+        return "bear"
+    return "sideways"
+
+
 def _detect_market_regime(ctx: dict, strategy: str = "") -> str:
-    """KOSPI/KOSDAQ 지수 등락률 평균으로 장세 판단.
+    """시장별 지수 등락률로 장세 판단.
+    KOSPI 종목은 KOSPI200 proxy, KOSDAQ 종목은 KOSDAQ150 proxy를 우선 사용한다.
+    시장 구분이 없을 때만 KOSPI/KOSDAQ 평균으로 폴백한다.
     bull: ≥+0.5%, bear: ≤-0.5%, sideways: 그 외, neutral: 데이터 없음.
 
     S1_GAP_OPEN: 08:30~09:00 동시호가 예상 등락률이 있으면 그것을 우선 사용.
@@ -353,7 +429,18 @@ def _detect_market_regime(ctx: dict, strategy: str = "") -> str:
     else:
         kospi  = ctx.get("kospi_flu_rt")
         kosdaq = ctx.get("kosdaq_flu_rt")
-    vals = [v for v in (kospi, kosdaq) if v is not None]
+    market_type = _normalize_market_type(ctx.get("market_type"))
+    if market_type == "001":
+        return _regime_from_flu_rt(kospi)
+    if market_type == "101":
+        return _regime_from_flu_rt(kosdaq)
+    vals = []
+    for value in (kospi, kosdaq):
+        try:
+            if value is not None:
+                vals.append(float(value))
+        except (TypeError, ValueError):
+            pass
     if not vals:
         return "neutral"
     avg = sum(vals) / len(vals)
@@ -418,15 +505,27 @@ def _rr_prefilter_reason(signal: dict, ctx: dict | None = None) -> str | None:
     if rr is None:
         return None
     strategy = signal.get("strategy", "")
-    regime = _detect_market_regime(ctx, strategy) if ctx else "neutral"
+    regime, threshold = _resolve_regime_rr_policy(ctx, strategy)
+    _apply_regime_rr_metadata(signal, regime, threshold)
     # 하락장 반등 전략은 bear 장세가 오히려 진입 근거 → bull 임계값으로 완화
+    if rr < threshold:
+        return f"R:R {rr:.2f} below {threshold:.2f}({regime})"
+    return None
+
+
+def _resolve_regime_rr_policy(ctx: dict | None, strategy: str = "") -> tuple[str, float]:
+    regime = _detect_market_regime(ctx or {}, strategy) if ctx else "neutral"
     if regime == "bear" and strategy in _BEAR_GATE_EXEMPT:
         threshold = _RR_BY_REGIME["bull"]
     else:
         threshold = _RR_BY_REGIME.get(regime, RR_HARD_CANCEL_THRESHOLD)
-    if rr < threshold:
-        return f"R:R {rr:.2f} below {threshold:.2f}({regime})"
-    return None
+    return regime, float(threshold)
+
+
+def _apply_regime_rr_metadata(payload: dict, regime: str, threshold: float) -> None:
+    payload["rr_policy"] = "market_regime"
+    payload["rr_regime"] = regime
+    payload["rr_regime_threshold"] = round(float(threshold), 2)
 
 
 def _rr_quality_bucket(rr: float | None) -> str:
@@ -647,18 +746,10 @@ def _apply_claude_postprocess_hard_rules(payload: dict) -> dict:
             "Claude TP/SL hard rule failed: tp2 must be greater than or equal to tp1",
         )
 
-    if payload.get("strategy") == "S1_GAP_OPEN":
-        rr = _fv(payload.get("effective_rr") or payload.get("rr_ratio"), None)
-        if rr is not None and rr < S1_CLAUDE_MIN_EFFECTIVE_RR:
-            return _cancel_by_claude_hard_rule(
-                payload,
-                f"S1 effective R:R {rr:.2f} below {S1_CLAUDE_MIN_EFFECTIVE_RR:.2f}",
-            )
-
     return payload
 
 
-def _apply_claude_rr_override(payload: dict) -> dict:
+def _apply_claude_rr_override(payload: dict, ctx: dict | None = None) -> dict:
     """Recompute displayed/stored RR when Claude changes executable TP/SL."""
     if payload.get("action") != "ENTER":
         return payload
@@ -669,31 +760,35 @@ def _apply_claude_rr_override(payload: dict) -> dict:
     if entry is None or claude_tp is None or claude_sl is None:
         return payload
 
-    min_rr = _fv(payload.get("min_rr_ratio"), None)
     rr, skip = compute_rr(
         str(payload.get("stk_cd", "")),
         entry,
         claude_tp,
         claude_sl,
-        min_rr=min_rr if min_rr is not None else None,
+        min_rr=None,
     )
+    regime, threshold = _resolve_regime_rr_policy(ctx, str(payload.get("strategy", "")))
+    _apply_regime_rr_metadata(payload, regime, threshold)
     payload["rr_ratio"] = rr
     payload["effective_rr"] = rr
     payload["single_tp_rr"] = _raw_rr(entry, claude_tp, claude_sl)
     payload["raw_rr"] = payload["single_tp_rr"]
     payload["rr_basis"] = "claude_tp_sl"
     payload["rr_quality_bucket"] = _rr_quality_bucket(rr)
-    if rr < RR_HARD_CANCEL_THRESHOLD:
+    if rr < threshold:
         payload["action"] = "CANCEL"
         payload["confidence"] = "LOW"
-        payload["cancel_reason"] = f"Claude TP/SL R:R {rr:.2f} below {RR_HARD_CANCEL_THRESHOLD:.2f}"
+        payload["cancel_reason"] = f"Claude TP/SL R:R {rr:.2f} below market regime threshold {threshold:.2f}({regime})"
         payload["ai_reason"] = payload["cancel_reason"]
         payload["skip_entry"] = True
         payload["rr_skip_reason"] = payload["cancel_reason"]
         payload["cancel_type"] = CLAUDE_HARD_RULE_CANCEL_TYPE
         _null_claude_prices(payload)
     elif skip and not payload.get("rr_skip_reason"):
-        payload["rr_skip_reason"] = f"Claude TP/SL effective_rr {rr:.2f} < min_rr {float(min_rr):.2f}" if min_rr is not None else None
+        payload["rr_skip_reason"] = (
+            f"Claude TP/SL effective_rr {rr:.2f} passed market regime threshold "
+            f"{threshold:.2f}({regime}); strategy min_rr is advisory"
+        )
     return payload
 
 
@@ -710,6 +805,12 @@ async def _build_market_ctx(rdb, stk_cd: str, *, sector: str = "", signal: dict 
         get_market_index_exp_flu_rt(rdb),
     ]
     tick, hoga, strength, vi, freshness, sector_count, index_flu, market_cap, exp_flu = await asyncio.gather(*tasks)
+    market_type = await _resolve_signal_market_type(
+        rdb,
+        stk_cd,
+        str((signal or {}).get("strategy") or ""),
+        signal,
+    )
     return {
         "tick": tick,
         "hoga": hoga,
@@ -722,6 +823,7 @@ async def _build_market_ctx(rdb, stk_cd: str, *, sector: str = "", signal: dict 
         "kospi_exp_flu_rt": exp_flu.get("kospi_exp_flu_rt"),
         "kosdaq_exp_flu_rt": exp_flu.get("kosdaq_exp_flu_rt"),
         "market_cap_eok": market_cap,
+        "market_type": market_type,
     }
 
 
@@ -774,6 +876,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
 
         sector = signal.get("sector", "") or ""
         ctx = await _build_market_ctx(rdb, stk_cd, sector=sector, signal=signal)
+        if ctx.get("market_type") and not signal.get("market_type"):
+            signal["market_type"] = ctx["market_type"]
         exact_strength = _resolve_execution_strength(signal, ctx)
         ctx["strength"] = exact_strength
         signal["cntr_strength"] = round(exact_strength, 2) if exact_strength > 0 else signal.get("cntr_strength")
@@ -886,8 +990,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
             **quality,
         }
         normalize_signal_prices(enriched)
-        enriched = _apply_claude_rr_override(enriched)
         enriched = _apply_claude_postprocess_hard_rules(enriched)
+        enriched = _apply_claude_rr_override(enriched, ctx)
         enriched = _apply_session_enter_guard(enriched, ctx)
         action = enriched.get("action", action)
         confidence = enriched.get("confidence", confidence)
@@ -980,13 +1084,17 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 )
 
                 if action == "ENTER":
-                    await confirm_open_position(
+                    entry_for_shadow = _fv(enriched.get("entry_price") or signal.get("entry_price"))
+                    tp1_for_shadow = _fv(enriched.get("claude_tp1") or enriched.get("tp1_price"))
+                    tp2_for_shadow = _fv(enriched.get("claude_tp2") or enriched.get("tp2_price"))
+                    sl_for_shadow = _fv(enriched.get("claude_sl") or enriched.get("sl_price"))
+                    position_confirmed = await confirm_open_position(
                         pg_pool,
                         db_id,
                         ai_score=ai_score_val,
-                        tp1_price=_fv(enriched.get("claude_tp1") or enriched.get("tp1_price")),
-                        tp2_price=_fv(enriched.get("claude_tp2") or enriched.get("tp2_price")),
-                        sl_price=_fv(enriched.get("claude_sl") or enriched.get("sl_price")),
+                        tp1_price=tp1_for_shadow,
+                        tp2_price=tp2_for_shadow,
+                        sl_price=sl_for_shadow,
                         rr_ratio=_fv(enriched.get("rr_ratio")),
                         trailing_pct=_fv(enriched.get("trailing_pct")),
                         trailing_activation=_fv(enriched.get("trailing_activation")),
@@ -1007,6 +1115,19 @@ async def process_one(rdb, pg_pool=None) -> bool:
                         allow_overnight=enriched.get("allow_overnight"),
                         allow_reentry=enriched.get("allow_reentry"),
                     )
+                    if position_confirmed:
+                        await create_shadow_trade(
+                            pg_pool,
+                            signal_id=db_id,
+                            payload=enriched,
+                            entry_price=entry_for_shadow,
+                            tp1_price=tp1_for_shadow,
+                            tp2_price=tp2_for_shadow,
+                            sl_price=sl_for_shadow,
+                            data_quality="OK",
+                        )
+                    else:
+                        logger.warning("[Queue] shadow trade skipped because position confirm failed signal_id=%s", db_id)
                 else:
                     if cancel_type:
                         await insert_rule_cancel_signal(

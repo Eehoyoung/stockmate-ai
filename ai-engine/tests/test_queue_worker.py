@@ -98,6 +98,48 @@ class TestQueueWorkerHappyPath:
         assert captured[0]["ai_score"] == 81.0
         assert captured[0]["action"] == "ENTER"
 
+    def test_enter_signal_creates_shadow_trade_record(self):
+        item = _signal(entry_price=10000, cur_prc=10000, tp1_price=10800, tp2_price=11200, sl_price=9700, rr_ratio=2.6)
+        rdb = _make_rdb(json.dumps(item))
+        pg_pool = object()
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch(
+                 "queue_worker.analyze_signal",
+                 new_callable=AsyncMock,
+                 return_value={
+                     "action": "ENTER",
+                     "ai_score": 81.0,
+                     "confidence": "HIGH",
+                     "reason": "strong setup",
+                     "claude_tp1": 10900,
+                     "claude_tp2": 11300,
+                     "claude_sl": 9600,
+                 },
+             ), \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock), \
+             patch("queue_worker.insert_python_signal", new_callable=AsyncMock, return_value=777), \
+             patch("queue_worker.update_signal_score", new_callable=AsyncMock), \
+             patch("queue_worker.insert_score_components", new_callable=AsyncMock), \
+             patch("queue_worker.confirm_open_position", new_callable=AsyncMock), \
+             patch("queue_worker.create_shadow_trade", new_callable=AsyncMock) as mock_shadow:
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb, pg_pool=pg_pool))
+
+        assert result is True
+        mock_shadow.assert_awaited_once()
+        kwargs = mock_shadow.await_args.kwargs
+        assert kwargs["signal_id"] == 101
+        assert kwargs["entry_price"] == 10000
+        assert kwargs["tp1_price"] == 10900
+        assert kwargs["tp2_price"] == 11300
+        assert kwargs["sl_price"] == 9600
+        assert kwargs["data_quality"] == "OK"
+
     def test_legacy_float_rule_score_is_tolerated(self):
         item = _signal()
         rdb = _make_rdb(json.dumps(item))
@@ -453,7 +495,7 @@ class TestQueueWorkerFailures:
         assert payload["rr_ratio"] != 0.9
         assert abs(payload["rr_ratio"] - 3.118) < 0.01
 
-    def test_s1_claude_enter_is_final_cancel_when_effective_rr_below_hard_rule(self):
+    def test_s1_claude_enter_uses_market_regime_rr_instead_of_fixed_min_rr(self):
         item = _signal(cur_prc=10000, tp1_price=12000, sl_price=9000, rr_ratio=2.0, min_rr_ratio=1.0, bid_ratio=2.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
@@ -486,15 +528,36 @@ class TestQueueWorkerFailures:
         assert result is True
         assert len(captured) == 1
         payload = captured[0]
-        assert payload["action"] == "CANCEL"
-        assert payload["cancel_type"] == "CLAUDE_HARD_RULE"
-        assert payload["claude_tp1"] is None
-        assert payload["claude_tp2"] is None
-        assert payload["claude_sl"] is None
-        assert "S1 effective R:R" in payload["cancel_reason"]
+        assert payload["action"] == "ENTER"
+        assert payload["rr_policy"] == "market_regime"
+        assert payload["rr_regime_threshold"] == 0.8
+        assert payload["rr_ratio"] >= payload["rr_regime_threshold"]
 
 
 class TestClaudeRiskPostprocess:
+    def test_market_regime_is_split_by_stock_market_type(self):
+        from queue_worker import _detect_market_regime
+
+        ctx = {
+            "kospi_flu_rt": -2.0,
+            "kosdaq_flu_rt": 2.0,
+            "market_type": "001",
+        }
+        assert _detect_market_regime(ctx, "S8_GOLDEN_CROSS") == "bear"
+
+        ctx["market_type"] = "101"
+        assert _detect_market_regime(ctx, "S8_GOLDEN_CROSS") == "bull"
+
+    def test_unknown_market_type_falls_back_to_blended_regime(self):
+        from queue_worker import _detect_market_regime
+
+        ctx = {
+            "kospi_flu_rt": -2.0,
+            "kosdaq_flu_rt": 2.0,
+        }
+
+        assert _detect_market_regime(ctx, "S8_GOLDEN_CROSS") == "sideways"
+
     def test_s1_high_score_hold_promotes_to_enter(self):
         from queue_worker import _maybe_promote_hold_to_enter
 
@@ -650,14 +713,50 @@ class TestClaudeRiskPostprocess:
         assert result["claude_tp2"] is None
         assert result["claude_sl"] is None
 
+    def test_process_one_reports_invalid_claude_geometry_before_rr_threshold(self):
+        item = _signal(cur_prc=10000, tp1_price=12000, sl_price=9500, rr_ratio=4.0, bid_ratio=2.0)
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(90.0, {})), \
+             patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_ai, \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            mock_ai.return_value = {
+                "action": "ENTER",
+                "ai_score": 90,
+                "confidence": "HIGH",
+                "reason": "bad geometry",
+                "claude_tp1": 9900,
+                "claude_tp2": 10500,
+                "claude_sl": 9700,
+            }
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        payload = captured[0]
+        assert payload["action"] == "CANCEL"
+        assert payload["cancel_type"] == "CLAUDE_HARD_RULE"
+        assert "tp1 > entry > sl" in payload["cancel_reason"]
+        assert "R:R" not in payload["cancel_reason"]
+        assert payload["claude_tp1"] is None
+        assert payload["claude_tp2"] is None
+        assert payload["claude_sl"] is None
+
 
 class TestSessionEnterGuard:
-    def test_session_enter_guard_is_off_by_default(self):
+    def test_session_enter_guard_allows_when_flag_disabled(self):
         from queue_worker import _apply_session_enter_guard
 
         payload = {"strategy": "S1_GAP_OPEN", "action": "ENTER", "market_session": "after_market"}
 
-        result = _apply_session_enter_guard(payload)
+        with patch("queue_worker.SESSION_ENTER_GUARD_ENABLED", False):
+            result = _apply_session_enter_guard(payload)
 
         assert result["action"] == "ENTER"
 
@@ -673,6 +772,25 @@ class TestSessionEnterGuard:
         assert result["cancel_type"] == "SESSION_ENTER_GUARD"
         assert result["skip_entry"] is True
         assert "after_market" in result["cancel_reason"]
+
+    def test_session_enter_guard_accepts_uppercase_and_enum_session_values(self):
+        from market_session import MarketSession
+        from queue_worker import _apply_session_enter_guard
+
+        payload = {"strategy": "S8_GOLDEN_CROSS", "action": "ENTER", "market_session": "MAIN_MARKET"}
+        enum_payload = {"strategy": "S8_GOLDEN_CROSS", "action": "ENTER", "market_session": MarketSession.MAIN_MARKET}
+
+        with patch("queue_worker.SESSION_ENTER_GUARD_ENABLED", True):
+            assert _apply_session_enter_guard(payload)["action"] == "ENTER"
+            assert _apply_session_enter_guard(enum_payload)["action"] == "ENTER"
+
+    def test_session_enter_guard_allows_s1_pre_market_opening_window(self):
+        from queue_worker import _apply_session_enter_guard
+
+        with patch("queue_worker.SESSION_ENTER_GUARD_ENABLED", True):
+            for session in ("pre_market", "opening_auction", "main_market"):
+                payload = {"strategy": "S1_GAP_OPEN", "action": "ENTER", "market_session": session}
+                assert _apply_session_enter_guard(payload)["action"] == "ENTER"
 
     def test_session_enter_guard_exempts_s2(self):
         from queue_worker import _apply_session_enter_guard
