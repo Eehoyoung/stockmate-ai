@@ -117,6 +117,83 @@ function _slipFee(stkCd) {
     return String(stkCd ?? '').startsWith('0') ? SLIP_FEE.KOSPI : SLIP_FEE.KOSDAQ;
 }
 
+// ── 매수/매도 박스(Zone) 표시 ─────────────────────────────────────
+const ZONE_STRATEGIES = new Set([
+    'S8_GOLDEN_CROSS', 'S9_PULLBACK_SWING', 'S13_BOX_BREAKOUT',
+    'S14_OVERSOLD_BOUNCE', 'S15_MOMENTUM_ALIGN',
+]);
+
+const STRENGTH_STARS = ['', '☆☆☆☆☆', '★☆☆☆☆', '★★☆☆☆', '★★★☆☆', '★★★★☆', '★★★★★'];
+
+/**
+ * 매수/매도 박스 블록 생성 (zone 전략에만 노출)
+ * @param {Object} item  signal 객체
+ * @param {number} curPrc  현재가
+ * @returns {string|null}
+ */
+function _formatZoneBlock(item, curPrc) {
+    if (!ZONE_STRATEGIES.has(item.strategy)) return null;
+
+    const bz = item.buy_zone;
+    const sz = item.sell_zone1;
+    if (!bz || typeof bz !== 'object') return null;
+
+    const bzLow  = Number(bz.low  || 0);
+    const bzHigh = Number(bz.high || 0);
+    if (!bzLow || !bzHigh) return null;
+
+    const strength = Math.min(6, Math.max(0, Number(bz.strength || 0)));
+    const stars    = STRENGTH_STARS[strength] || '☆☆☆☆☆';
+
+    const rangePct = bzHigh > 0
+        ? ((bzHigh - bzLow) / bzLow * 100).toFixed(2)
+        : '-';
+
+    const anchors  = Array.isArray(bz.anchors) ? bz.anchors.join(' · ') : '-';
+
+    let posLabel = '';
+    if (curPrc > 0 && bzLow > 0 && bzHigh > 0) {
+        if (curPrc < bzLow)       posLabel = '박스 미진입';
+        else if (curPrc > bzHigh) posLabel = '박스 상단 초과';
+        else {
+            const pct = ((curPrc - bzLow) / (bzHigh - bzLow) * 100).toFixed(0);
+            posLabel  = `박스 내부 (하단 ${pct}%)`;
+        }
+    }
+
+    const lines = [
+        `▼ 매수 박스 [강도 ${stars}]`,
+        `  ${bzLow.toLocaleString()} ━━━━━━━━━━━━ ${bzHigh.toLocaleString()} (${rangePct}%)`,
+        `  근거: ${escapeHtml(anchors)}`,
+    ];
+    if (posLabel) lines.push(`  현재가 위치: ${posLabel}`);
+
+    if (sz && typeof sz === 'object') {
+        const szLow  = Number(sz.low  || 0);
+        const szHigh = Number(sz.high || 0);
+        if (szLow > 0 && szHigh > 0) {
+            const szRangePct = ((szHigh - szLow) / szLow * 100).toFixed(2);
+            const szAnchors  = Array.isArray(sz.anchors) ? sz.anchors.join(' · ') : '-';
+            lines.push('');
+            lines.push('▼ 1차 매도 박스');
+            lines.push(`  ${szLow.toLocaleString()} ━━━━━━━━━━━━ ${szHigh.toLocaleString()} (${szRangePct}%)`);
+            lines.push(`  근거: ${escapeHtml(szAnchors)}`);
+        }
+    }
+
+    // R:R 라인
+    const pointRR = item.rr_ratio != null
+        ? `점 R:R: <b>${Number(item.rr_ratio).toFixed(2)}</b>` : null;
+    const zoneRRVal = item.zone_rr != null ? Number(item.zone_rr) : null;
+    const zoneOK    = zoneRRVal !== null && zoneRRVal >= 1.3 ? '✅' : '⚠️';
+    const zoneRRStr = zoneRRVal !== null
+        ? `존 R:R: <b>${zoneRRVal.toFixed(2)}</b> ${zoneOK}` : null;
+    const rrLine = [pointRR, zoneRRStr].filter(Boolean).join('  |  ');
+    if (rrLine) { lines.push(''); lines.push(rrLine); }
+
+    return lines.join('\n');
+}
+
 /**
  * 슬리피지 반영 실질 R:R 문자열 반환
  * @returns {string|null}
@@ -288,6 +365,11 @@ function formatSignal(item) {
 
         const pos = _positionSize(item.ai_score, item.confidence);
         if (!isS1GapOpen && pos) lines.push(`권장 비중: <b>${pos}</b>`);
+
+        // 매수/매도 박스 블록 (zone 전략만)
+        const zoneBlock = _formatZoneBlock(item, curPrc);
+        if (zoneBlock) { lines.push(''); lines.push(zoneBlock); }
+
         if (item.entry_type) {
             const entryLabel = isS1GapOpen ? _s1EntryConditionLabel(item.entry_type) : item.entry_type;
             if (entryLabel) lines.push(`${isS1GapOpen ? '확인 조건' : '매수 방식'}: ${entryLabel}`);

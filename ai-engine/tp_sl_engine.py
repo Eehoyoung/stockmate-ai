@@ -174,6 +174,11 @@ class TpSlResult:
     allow_reentry: Optional[bool] = None
     display_tp1_price: Optional[int] = None
     display_tp2_price: Optional[int] = None
+    # ── Zone 기반 필드 (Phase 1: S8/S9/S13/S14/S15) ──────────
+    buy_zone:     Optional[object] = None   # TradingZone (lazy type — circular 방지)
+    sell_zone1:   Optional[object] = None   # TradingZone
+    zone_rr:      Optional[float]  = None
+    zone_rr_skip: bool             = False
 
     def to_signal_fields(self) -> dict:
         """전략 결과 dict에 merge할 TP/SL 필드 반환"""
@@ -226,6 +231,23 @@ class TpSlResult:
             d["time_stop_minutes"] = int(self.time_stop_minutes)
         if self.time_stop_session:
             d["time_stop_session"] = self.time_stop_session
+        # zone 필드 (존재 시에만 포함)
+        if self.zone_rr is not None:
+            d["zone_rr"] = round(float(self.zone_rr), 3)
+        if self.zone_rr_skip:
+            d["zone_rr_skip"] = True
+        if self.buy_zone is not None:
+            d["buy_zone"] = (
+                self.buy_zone.to_dict()
+                if hasattr(self.buy_zone, "to_dict")
+                else self.buy_zone
+            )
+        if self.sell_zone1 is not None:
+            d["sell_zone1"] = (
+                self.sell_zone1.to_dict()
+                if hasattr(self.sell_zone1, "to_dict")
+                else self.sell_zone1
+            )
         return d
 
 
@@ -635,6 +657,8 @@ def calc_tp_sl(
     vi_price:    Optional[float] = None,   # S2: VI 발동가 (TP 목표)
     candle_low:  Optional[float] = None,   # S4: 장대양봉 저점 (SL 기준)
     candle_high: Optional[float] = None,   # S4: 장대양봉 고점 (TP 기준)
+    # ── Zone 계산 옵트인 (Phase 1: S8/S9/S13/S14/S15) ─────────
+    compute_zones: bool = False,
 ) -> TpSlResult:
     """
     전략별 동적 TP/SL 계산 통합 진입점.
@@ -663,10 +687,60 @@ def calc_tp_sl(
     s = strategy.upper()
     min_rr = _resolve_strategy_min_rr(s, min_rr)
 
+    _ZONE_STRATEGIES = {
+        "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S13_BOX_BREAKOUT",
+        "S14_OVERSOLD_BOUNCE", "S15_MOMENTUM_ALIGN",
+    }
+
+    def _enrich_zones(result: TpSlResult) -> TpSlResult:
+        """존 계산 실패 시 폴백 — 기존 TP/SL 결과 보존"""
+        if not compute_zones or s not in _ZONE_STRATEGIES:
+            return result
+        try:
+            from box_zone_engine import (
+                _ZONE_CALC_MAP, calc_zone_rr,
+            )
+            zone_fn = _ZONE_CALC_MAP.get(s)
+            if not zone_fn:
+                return result
+
+            # 전략별 래퍼 호출 (가용 파라미터만 전달)
+            _kwargs: dict = {}
+            if s == "S8_GOLDEN_CROSS":
+                _kwargs = dict(ma5=ma5, ma20=ma20, ma60=ma60, bb_upper=bb_upper, atr=atr)
+            elif s == "S9_PULLBACK_SWING":
+                _kwargs = dict(ma5=ma5, ma20=ma20, ma60=ma60, atr=atr)
+            elif s == "S13_BOX_BREAKOUT":
+                _kwargs = dict(ma20=ma20, atr=atr)
+            elif s == "S14_OVERSOLD_BOUNCE":
+                _kwargs = dict(ma20=ma20, ma60=ma60, bb_lower=bb_lower, atr=atr)
+            elif s == "S15_MOMENTUM_ALIGN":
+                _kwargs = dict(ma5=ma5, ma20=ma20, bb_upper=bb_upper, atr=atr)
+
+            buy, sell = zone_fn(cur_prc, highs, lows, closes, **_kwargs)
+            result.buy_zone   = buy
+            result.sell_zone1 = sell
+
+            if buy and sell:
+                zone_rr, zone_skip = calc_zone_rr(buy, sell, slip, min_rr)
+                result.zone_rr      = zone_rr
+                result.zone_rr_skip = zone_skip
+                if zone_skip and not result.skip_entry:
+                    import os as _os
+                    if _os.getenv("ZONE_RR_GATE_ENABLED", "false").lower() == "true":
+                        result.skip_entry    = True
+                        result.rr_skip_reason = (
+                            f"zone_rr {zone_rr:.2f} < min_rr {min_rr:.2f}"
+                        )
+        except Exception as _ze:
+            logger.warning("[TP/SL] Zone 계산 오류 (무시): %s", _ze)
+        return result
+
     def finalize(result: TpSlResult) -> TpSlResult:
         result = _consolidate_single_tp(result, strategy=s, cur_prc=cur_prc, slip=slip, min_rr=min_rr)
         result = _attach_time_stop_policy(strategy, result)
-        return _apply_policy_metadata(strategy, result, cur_prc=cur_prc, min_rr=min_rr)
+        result = _apply_policy_metadata(strategy, result, cur_prc=cur_prc, min_rr=min_rr)
+        return _enrich_zones(result)
 
     # ── 데이트레이딩 (S1/S2/S4) ───────────────────────────────
     if "S1_" in s or "GAP_OPEN" in s:

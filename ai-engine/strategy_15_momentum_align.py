@@ -250,16 +250,19 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         )
 
         # ── 동적 TP/SL 계산 ──────────────────────────────────────
+        ma5_val  = sum(closes[:5]) / 5 if len(closes) >= 5 else None
         ma20_val = ma20  # 위에서 이미 계산됨
         tp_sl = calc_tp_sl(
             "S15_MOMENTUM_ALIGN", cur_prc, highs, lows, closes,
             stk_cd=stk_cd,
             atr=atr_now,
+            ma5=ma5_val,
             ma20=ma20_val,
             bb_upper=bb_upper_saved,
             macd_line=macd_now,
             macd_signal=sig_now,
             macd_hist=hist_now,
+            compute_zones=True,
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
