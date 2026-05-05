@@ -26,7 +26,7 @@ import logging
 import os
 import time
 
-from strategy_2_vi_pullback import check_vi_pullback
+from strategy_2_vi_pullback import check_vi_pullback, is_publishable_signal
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,11 @@ async def run_vi_watch_worker(rdb):
 
             # 2. 조건 체크
             signal = await check_vi_pullback(token, item, rdb)
+
+            if signal and not is_publishable_signal(signal):
+                await _record_worker_metric(rdb, "shadow", item.get("stk_cd"))
+                logger.debug("[VI Watch] S2 SHADOW 관찰 전용: %s", item.get("stk_cd"))
+                continue
 
             if signal:
                 # 신호 발생 시 처리 (중복 방지 로직 포함)

@@ -26,6 +26,7 @@ KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 from http_utils import fetch_cntr_strength_cached, fetch_stk_nm, validate_kiwoom_response, kiwoom_client
 from indicator_atr import get_atr_minute
 from tp_sl_engine import calc_tp_sl
+from execution_quality import assess_execution_quality, should_hard_reject
 
 # 부호 및 콤마 제거를 위한 유틸리티 함수
 def clean_numeric(value: str) -> float:
@@ -33,7 +34,7 @@ def clean_numeric(value: str) -> float:
     return float(str(value).replace("+", "").replace("-", "").replace(",", ""))
 
 async def fetch_minute_chart(token: str, stk_cd: str, scope: int = 5) -> list:
-    """ka10080 주식분봉차트 조회"""
+    """ka10080 주식분봉차트 조회 (봉 list 반환)."""
     try:
         async with kiwoom_client() as client:
             resp = await client.post(
@@ -57,6 +58,56 @@ async def fetch_minute_chart(token: str, stk_cd: str, scope: int = 5) -> list:
     except Exception as e:
         logger.error("[S4] ka10080 호출 실패 [%s]: %s", stk_cd, e)
         return []
+
+
+async def _fetch_minute_chart_raw_s4(token: str, stk_cd: str, scope: int = 5) -> dict:
+    """ka10080 응답 전체 dict 반환 (execution_quality 용)."""
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/chart",
+                headers={
+                    "api-id": "ka10080",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={
+                    "stk_cd": stk_cd.strip(),
+                    "tic_scope": str(scope),
+                    "upd_stkpc_tp": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10080", logger):
+                return {}
+            return data
+    except Exception as exc:
+        logger.debug("[S4] ka10080 raw 조회 실패 [%s]: %s", stk_cd, exc)
+        return {}
+
+
+async def _fetch_hoga_raw_s4(token: str, stk_cd: str) -> dict:
+    """ka10004 호가 raw dict 반환 (execution_quality 용)."""
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
+                headers={
+                    "api-id": "ka10004",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={"stk_cd": stk_cd.strip()},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10004", logger):
+                return {}
+            return data
+    except Exception as exc:
+        logger.debug("[S4] ka10004 호가 조회 실패 [%s]: %s", stk_cd, exc)
+        return {}
 
 async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     candles = await fetch_minute_chart(token, stk_cd, 5)
@@ -149,6 +200,55 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     base_score = gain_pct * 2 + (avg_strength - 100) * 0.3
     score = max(0.0, base_score - upper_shadow_penalty - (10 if entry_type == "추격_시장가" else 0))
 
+    # ── execution_quality 통합 (shadow 모드) ──────────────────────────────
+    hoga_raw = await _fetch_hoga_raw_s4(token, stk_cd)
+    candle_raw = await _fetch_minute_chart_raw_s4(token, stk_cd, scope=5)
+
+    # 다음 봉 안착 여부: 현재 가격이 전전봉 고가보다 위에 있으면 안착으로 판단
+    next_candle_hold = False
+    if len(candles) >= 3:
+        try:
+            prev_h = abs(clean_numeric(candles[1].get("high_pric", 0)))
+            if prev_h > 0 and c >= prev_h:
+                next_candle_hold = True
+        except Exception:
+            pass
+
+    # 고가 대비 현재가 밀린 % (S4 breakout_failure_pct)
+    breakout_failure_pct: float | None = None
+    if h > 0:
+        breakout_failure_pct = round((h - c) / h * 100, 2)
+
+    # 거래량 소진 판단: vol_ratio가 높지만 price_position이 낮으면 소진
+    if vol_ratio >= 10.0 and price_position < 0.5:
+        volume_exhaustion = "HIGH"
+    elif vol_ratio >= 5.0 and price_position < 0.7:
+        volume_exhaustion = "MEDIUM"
+    else:
+        volume_exhaustion = "LOW"
+
+    # entry_timing 결정
+    if price_position >= 0.8:
+        entry_timing = "WAIT_PULLBACK"
+    elif upper_shadow_ratio >= 0.30:
+        entry_timing = "REJECT"
+    else:
+        entry_timing = "CONFIRMED"
+
+    eq_result = assess_execution_quality(
+        stk_cd,
+        float(c),
+        hoga_raw,
+        candle_raw,
+        "S4",
+        extra={},
+    )
+
+    # HARD_GATE 모드: REJECT이면 탈락
+    if should_hard_reject(eq_result):
+        logger.debug("[S4] execution_quality REJECT skip [%s]", stk_cd)
+        return None
+
     return {
         "stk_cd": stk_cd,
         "stk_nm": stk_nm,
@@ -158,10 +258,19 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
         "vol_ratio": round(vol_ratio, 1),
         "body_ratio": round(body_ratio, 2),
         "upper_shadow_ratio": round(upper_shadow_ratio, 2),
+        "upper_shadow_pct": round(upper_shadow_ratio * 100, 1),
         "price_position": round(price_position, 2),
         "is_new_high": is_breakout,
         "cntr_strength": round(avg_strength, 1),
         "score": round(score, 2),
         "entry_type": entry_type,
+        # S4 추격 품질 필드
+        "breakout_failure_pct": breakout_failure_pct,
+        "volume_exhaustion": volume_exhaustion,
+        "next_candle_hold": next_candle_hold,
+        "vwap_position": eq_result["vwap_position"],
+        "entry_timing": entry_timing,
+        "chase_risk_score": eq_result["chase_risk_score"],
+        "execution_quality": eq_result["execution_quality"],
         **tp_sl.to_signal_fields(),
     }

@@ -161,7 +161,16 @@ async def _get_candidates(rdb, market: str = "001") -> list[str]:
 
 
 async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
-    """S1/S7 우선 후보를 앞에 배치한 전체/상위 100개 목록을 반환한다."""
+    """ZSET 우선순위 후보를 앞에 배치한 전체/상위 100개 목록을 반환한다."""
+    try:
+        zset_codes = await rdb.zrevrange("candidates:watchlist:z", 0, 199)
+        if zset_codes:
+            ranked = [c.decode("utf-8") if isinstance(c, bytes) else c for c in zset_codes if c]
+            ranked = ranked[:200]
+            return ranked, ranked[:100]
+    except Exception:
+        pass
+
     try:
         priority_codes = await rdb.smembers("candidates:watchlist:priority")
     except Exception:
@@ -178,6 +187,14 @@ async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
             combined.extend(await _get_candidates(rdb, market))
         watchlist = set(c for c in combined if c)
 
+    priority_codes = {
+        c.decode("utf-8") if isinstance(c, bytes) else c
+        for c in priority_codes if c
+    }
+    watchlist = {
+        c.decode("utf-8") if isinstance(c, bytes) else c
+        for c in watchlist if c
+    }
     priority_list = sorted(c for c in priority_codes if c)
     remaining = sorted(c for c in watchlist if c and c not in priority_codes)
     ranked = (priority_list + remaining)[:200]
@@ -529,9 +546,8 @@ async def run_ws_loop(rdb, pg_pool=None):
                 await _subscribe_by_phase(ws, rdb, initial_phase)
 
                 # 초기 구독 후보를 subscribed_set 에 등록 (watchlist poller 가 중복 UNREG 방지)
-                kospi  = await _get_candidates(rdb, "001")
-                kosdaq = await _get_candidates(rdb, "101")
-                subscribed_set: set = set(dict.fromkeys(kospi + kosdaq))
+                initial_ranked, _ = await _get_ranked_candidates(rdb)
+                subscribed_set: set = set(initial_ranked)
 
                 # 동적 구독 watchlist 폴러 + heartbeat + 장 구분 전환 감시 시작
                 # 키움 공식 가이드: PING 은 서버→클라이언트 방향만 정의됨.

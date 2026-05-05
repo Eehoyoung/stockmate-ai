@@ -16,6 +16,7 @@ from indicator_atr import get_atr_minute
 from ma_utils import _safe_price, fetch_daily_candles
 from redis_reader import get_avg_cntr_strength
 from tp_sl_engine import calc_tp_sl
+from execution_quality import assess_execution_quality, should_hard_reject
 
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
@@ -267,6 +268,56 @@ async def fetch_credit_filter(token: str, market: str = "000", rdb=None) -> set:
     return high_credit_set
 
 
+async def _fetch_minute_chart_s1(token: str, stk_cd: str, scope: int = 1) -> dict:
+    """ka10080 분봉차트 조회 (S1 execution_quality 용). 분봉 응답 전체 dict 반환."""
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/chart",
+                headers={
+                    "api-id": "ka10080",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={
+                    "stk_cd": stk_cd.strip(),
+                    "tic_scope": str(scope),
+                    "upd_stkpc_tp": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10080", logger):
+                return {}
+            return data
+    except Exception as exc:
+        logger.debug("[S1] ka10080 분봉 조회 실패 [%s]: %s", stk_cd, exc)
+        return {}
+
+
+async def _fetch_hoga_raw_s1(token: str, stk_cd: str) -> dict:
+    """ka10004 호가 raw dict 반환 (S1 execution_quality 용)."""
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
+                headers={
+                    "api-id": "ka10004",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={"stk_cd": stk_cd.strip()},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10004", logger):
+                return {}
+            return data
+    except Exception as exc:
+        logger.debug("[S1] ka10004 호가 조회 실패 [%s]: %s", stk_cd, exc)
+        return {}
+
+
 async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]:
     """Build S1 gap-open signals from expected execution and strength data."""
     effective = list(dict.fromkeys(candidates))
@@ -377,6 +428,56 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
         else:
             signal_mode = "NORMAL"
 
+        # ── execution_quality 통합 (shadow 모드) ──────────────────────────
+        await asyncio.sleep(_API_INTERVAL)
+        hoga_raw = await _fetch_hoga_raw_s1(token, stk_cd)
+        await asyncio.sleep(_API_INTERVAL)
+        candle_raw = await _fetch_minute_chart_s1(token, stk_cd, scope=1)
+
+        # 첫 3분봉 저가 추출 (분봉 데이터에서)
+        candle_list = candle_raw.get("stk_min_pole_chart_qry", [])
+        first_3m_low: float | None = None
+        if candle_list:
+            try:
+                recent_lows = [
+                    abs(float(str(c.get("low_pric", 0)).replace("+", "").replace(",", "")))
+                    for c in candle_list[:3]
+                    if c.get("low_pric")
+                ]
+                if recent_lows:
+                    first_3m_low = min(v for v in recent_lows if v > 0)
+            except Exception:
+                pass
+
+        # 예상체결 매수잔량 감소율 (장전 buy_req 스냅샷 차분 — 현재는 None)
+        expected_bid_decay_pct: float | None = None
+
+        # 장시작 후 예상가 대비 추가 상승폭 (현재가 vs 예상가)
+        post_open_extension_pct: float | None = None
+        if exp_price > 0 and cur_price > 0:
+            try:
+                post_open_extension_pct = round((cur_price - exp_price) / exp_price * 100, 2)
+            except Exception:
+                pass
+
+        eq_result = assess_execution_quality(
+            stk_cd,
+            float(exp_price),
+            hoga_raw,
+            candle_raw,
+            "S1",
+            extra={"gap_pct": gap_pct},
+        )
+
+        # HARD_GATE 모드: REJECT이면 탈락
+        if should_hard_reject(eq_result):
+            logger.debug("[S1] execution_quality REJECT skip [%s]", stk_cd)
+            continue
+
+        # execution_quality가 REJECT이면 signal_mode를 SHADOW로 격하
+        if eq_result["execution_quality"] == "REJECT" and signal_mode == "NORMAL":
+            signal_mode = "SHADOW"
+
         results.append(
             {
                 "stk_cd": stk_cd,
@@ -391,6 +492,14 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
                 "bid_ratio": round(bid_ratio, 2) if bid_ratio is not None else None,
                 "score": round(score, 2),
                 "entry_type": "시초가_시장가",
+                # S1 추격 품질 필드
+                "expected_bid_decay_pct": expected_bid_decay_pct,
+                "post_open_extension_pct": post_open_extension_pct,
+                "first_3m_low": first_3m_low,
+                "first_low_break": eq_result["first_low_break"],
+                "vwap_position": eq_result["vwap_position"],
+                "chase_risk_score": eq_result["chase_risk_score"],
+                "execution_quality": eq_result["execution_quality"],
                 **tp_sl.to_signal_fields(),
             }
         )

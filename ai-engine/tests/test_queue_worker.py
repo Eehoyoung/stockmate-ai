@@ -86,7 +86,8 @@ class TestQueueWorkerHappyPath:
                      "confidence": "HIGH",
                      "reason": "strong setup",
                  },
-             ), \
+             ) as mock_analyze, \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 
@@ -94,6 +95,10 @@ class TestQueueWorkerHappyPath:
 
         assert result is True
         assert len(captured) == 1
+        analyzed_signal = mock_analyze.await_args.args[0]
+        assert "persona" in analyzed_signal
+        assert "시초가 갭" in analyzed_signal["persona"]
+        assert captured[0]["persona"] == analyzed_signal["persona"]
         assert captured[0]["rule_score"] == 75.0
         assert captured[0]["ai_score"] == 81.0
         assert captured[0]["action"] == "ENTER"
@@ -107,6 +112,7 @@ class TestQueueWorkerHappyPath:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
              patch(
                  "queue_worker.analyze_signal",
                  new_callable=AsyncMock,
@@ -202,6 +208,7 @@ class TestQueueWorkerHappyPath:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
              patch("queue_worker.analyze_signal", side_effect=fake_analyze), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
@@ -225,6 +232,7 @@ class TestQueueWorkerHappyPath:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
              patch(
                  "queue_worker.analyze_signal",
                  new_callable=AsyncMock,
@@ -377,6 +385,7 @@ class TestQueueWorkerFailures:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
              patch(
                  "queue_worker.analyze_signal",
                  new_callable=AsyncMock,
@@ -499,6 +508,7 @@ class TestQueueWorkerFailures:
                      "claude_sl": 9900,
                  },
              ), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 
@@ -527,6 +537,7 @@ class TestQueueWorkerFailures:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
              patch(
                  "queue_worker.analyze_signal",
                  new_callable=AsyncMock,
@@ -540,6 +551,7 @@ class TestQueueWorkerFailures:
                      "claude_sl": 9700,
                  },
              ), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 

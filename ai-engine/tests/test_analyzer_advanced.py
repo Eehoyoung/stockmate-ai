@@ -289,13 +289,24 @@ class TestStrategyPrompts:
     def test_s1_uses_gap_open_system_prompt(self):
         import analyzer
         system_prompt = self._get_system_arg(_sig("S1_GAP_OPEN", gap_pct=4.0))
-        assert system_prompt == analyzer._S1_GAP_OPEN_SYS_PROMPT
-        assert system_prompt != analyzer._SYS_PROMPT
+        assert analyzer._S1_GAP_OPEN_SYS_PROMPT in system_prompt
+        assert analyzer._SYS_PROMPT not in system_prompt or analyzer._S1_GAP_OPEN_SYS_PROMPT == analyzer._SYS_PROMPT
+        assert "전략별 자동주입 페르소나" in system_prompt
 
     def test_non_s1_uses_default_system_prompt(self):
         import analyzer
         system_prompt = self._get_system_arg(_sig("S2_VI_PULLBACK", pullback_pct=-1.5))
-        assert system_prompt == analyzer._SYS_PROMPT
+        assert analyzer._SYS_PROMPT in system_prompt
+        assert "VI 눌림목" in system_prompt
+
+    def test_explicit_persona_overrides_default(self):
+        system_prompt = self._get_system_arg(_sig(
+            "S2_VI_PULLBACK",
+            pullback_pct=-1.5,
+            persona="custom persona marker",
+        ))
+        assert "custom persona marker" in system_prompt
+        assert "VI 눌림목 전담" not in system_prompt
 
     def test_s1_prompt_contains_gap(self):
         msg = self._get_prompt(_sig("S1_GAP_OPEN", gap_pct=4.0))

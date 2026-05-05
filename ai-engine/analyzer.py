@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 import anthropic
+from strategy_meta import get_persona
 
 logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
@@ -21,6 +22,9 @@ KST    = timezone(timedelta(hours=9))
 CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS      = 512   # TP/SL 절대가 출력을 위한 공간 확보
 CLAUDE_TIMEOUT  = 10    # seconds
+ENABLE_STRATEGY_PERSONA_INJECTION = (
+    os.getenv("ENABLE_STRATEGY_PERSONA_INJECTION", "true").lower() in {"1", "true", "yes", "on"}
+)
 
 # 수수료+세금+슬리피지 합산 (왕복 기준, KOSPI 0.35%, KOSDAQ 0.45%)
 SLIP_FEE = {"KOSPI": 0.0035, "KOSDAQ": 0.0045}  # KOSDAQ: 거래세 0.15% 포함
@@ -71,6 +75,18 @@ def _get_system_prompt(strategy: str | None) -> str:
     if strategy == "S1_GAP_OPEN":
         return _S1_GAP_OPEN_SYS_PROMPT
     return _SYS_PROMPT
+
+
+def _build_system_prompt(signal: dict) -> str:
+    """기본 시스템 프롬프트에 전략별 페르소나를 자동 주입한다."""
+    strategy = signal.get("strategy")
+    base = _get_system_prompt(strategy)
+    if not ENABLE_STRATEGY_PERSONA_INJECTION:
+        return base
+    persona = signal.get("persona") or get_persona(strategy)
+    if not persona:
+        return base
+    return f"{base}\n\n[전략별 자동주입 페르소나]\n{persona}"
 
 
 def _fmt_tpsl(signal: dict) -> str:
@@ -451,7 +467,7 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
     """
     client       = _get_claude_client()
     user_message = _build_user_message(signal, market_ctx, rule_score)
-    system_prompt = _get_system_prompt(signal.get("strategy"))
+    system_prompt = _build_system_prompt(signal)
 
     raw_text = ""
     try:

@@ -26,9 +26,41 @@ CANDIDATE_BUILD_INTERVAL_SEC = int(os.getenv("CANDIDATE_BUILD_INTERVAL_SEC", "60
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 S3S5_STATUS_TTL_SEC = int(os.getenv("S3S5_STATUS_TTL_SEC", "1800"))
 
+# 품질 필터 / watchlist ZSET 기능 플래그
+ENABLE_CANDIDATE_QUALITY_FILTER = os.getenv("ENABLE_CANDIDATE_QUALITY_FILTER", "false").lower() in {"1", "true", "yes"}
+ENABLE_WATCHLIST_ZSET = os.getenv("ENABLE_WATCHLIST_ZSET", "true").lower() in {"1", "true", "yes"}
+
+# 섹터 과열 임계치 (같은 섹터 후보가 이 수 이상이면 하향)
+_SECTOR_HEAT_MAX = int(os.getenv("CANDIDATE_SECTOR_HEAT_MAX", "10"))
+
 
 def _env_flag(name: str, default: str = "false") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def now_kst_str() -> str:
+    """현재 KST 시각을 ISO 포맷 문자열로 반환"""
+    return datetime.now(KST).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+
+
+def _decode_redis_hash(data: dict | None) -> dict:
+    decoded: dict = {}
+    for key, value in (data or {}).items():
+        if isinstance(key, bytes):
+            key = key.decode("utf-8", errors="ignore")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="ignore")
+        decoded[str(key)] = value
+    return decoded
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    try:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="ignore")
+        return float(str(value).replace(",", "").replace("+", "").strip())
+    except (TypeError, ValueError):
+        return default
 
 
 ENABLE_S3S5_LATENCY_STATUS = _env_flag("ENABLE_S3S5_LATENCY_STATUS")
@@ -171,10 +203,22 @@ async def _record_s3s5_status(
 # ── 공통 유틸 ──────────────────────────────────────────────────────────
 
 # stk_cnd="20" 미지원 API 결과에 적용하는 종목명 기반 2차 필터
+# 계획 4.4 섹션 기준: ETF/ETN/SPAC/우선주/리츠/인프라 등 포함
 _EXCLUDE_STK_NM_KEYWORDS = (
     "ETF", "ETN", "레버리지", "인버스", "2X", "곱버스", "SPAC", "스팩",
-    "선물", "합성", "액티브",
+    "선물", "합성", "액티브", "우선", "리츠", "인프라",
 )
+
+# 전략별 우선순위 가중치 (watchlist ZSET 점수 계산용)
+_STRATEGY_PRIORITY_WEIGHT = {
+    "s1": 30, "s2": 30, "s4": 30, "s13": 30,
+    "s10": 25,
+    "s8": 20, "s9": 20, "s15": 20,
+    "s12": 15,
+    "s3": 18, "s5": 18, "s6": 18, "s7": 20, "s11": 18, "s14": 18,
+}
+# 실시간 필수 전략 (추가 가점 부여)
+_REALTIME_CRITICAL_STRATEGIES = {"s1", "s2", "s4", "s13"}
 
 
 async def _filter_individual_stocks(rdb, codes: list[str]) -> list[str]:
@@ -200,16 +244,214 @@ async def _filter_individual_stocks(rdb, codes: list[str]) -> list[str]:
         return codes
 
 
-async def _lpush_with_ttl(rdb, key: str, codes: list[str], ttl: int) -> None:
-    """기존 키를 삭제하고 새 목록을 RPUSH 한 뒤 EXPIRE 설정"""
+def _assess_candidate_quality(stk_cd: str, raw_data: dict, strategy_id: str) -> dict:
+    """종목별 품질 평가 함수.
+
+    Returns dict with:
+    - candidate_quality: "A" | "B" | "C" | "REJECT"
+    - quality_score: 0~100
+    - liquidity_score: 0~100
+    - spread_score: 0~100 (데이터 없으면 50)
+    - market_cap_score: 0~100 (데이터 없으면 50)
+    - status_filter_pass: bool
+    - sector_heat_score: 0~100
+    - source_confluence: int
+    - reject_reasons: list[str]
+    """
+    reject_reasons: list[str] = []
+
+    # 1. 종목명 기반 ETF/ETN/SPAC/우선주 필터
+    stk_nm = str(raw_data.get("stk_nm", "") or "")
+    for kw in _EXCLUDE_STK_NM_KEYWORDS:
+        if kw in stk_nm:
+            reject_reasons.append(f"name_filter:{kw}")
+            break
+
+    # 2. 관리/거래정지 상태 필터 (status 필드가 있는 경우만)
+    status_filter_pass = True
+    stk_status = str(raw_data.get("status", "") or "")
+    if stk_status and stk_status not in {"0", "", "정상"}:
+        reject_reasons.append(f"status:{stk_status}")
+        status_filter_pass = False
+
+    # 3. 유동성 점수 계산 (거래대금/거래량 기반)
+    trde_amt = _clean(raw_data.get("trde_amt", raw_data.get("trde_prica", 0)))
+    trde_qty = _clean(raw_data.get("trde_qty", 0))
+    if trde_amt >= 10_000_000:  # 100억 이상
+        liquidity_score = 90
+    elif trde_amt >= 5_000_000:  # 50억 이상
+        liquidity_score = 70
+    elif trde_amt >= 1_000_000:  # 10억 이상
+        liquidity_score = 50
+    elif trde_amt > 0:
+        liquidity_score = 30
+    elif trde_qty >= 500_000:
+        liquidity_score = 60
+    elif trde_qty > 0:
+        liquidity_score = 40
+    else:
+        liquidity_score = 50  # 데이터 없음 — 중립
+
+    # 거래대금이 명시적으로 낮은 경우 하향
+    if trde_amt > 0 and trde_amt < 500_000:  # 5억 미만
+        reject_reasons.append("low_liquidity")
+
+    # 4. 스프레드 점수 (데이터 없으면 중립 50)
+    spread_score = 50
+
+    # 5. 시가총액 점수 (데이터 없으면 중립 50)
+    market_cap_score = 50
+
+    # 6. 섹터 과열 점수 (기본 100 — 외부에서 섹터 카운트 적용 시 하향)
+    sector_heat_score = 100
+
+    # 7. 출현 소스 수 (기본 1 — _refresh_watchlist에서 집계)
+    source_confluence = 1
+
+    # 최종 품질 점수 계산
+    if reject_reasons:
+        quality_score = 0
+        candidate_quality = "REJECT"
+    else:
+        base = (liquidity_score * 0.5 + spread_score * 0.2 + market_cap_score * 0.2 + sector_heat_score * 0.1)
+        quality_score = int(min(100, max(0, base)))
+        if quality_score >= 80:
+            candidate_quality = "A"
+        elif quality_score >= 60:
+            candidate_quality = "B"
+        else:
+            candidate_quality = "C"
+
+    return {
+        "candidate_quality": candidate_quality,
+        "quality_score": quality_score,
+        "liquidity_score": liquidity_score,
+        "spread_score": spread_score,
+        "market_cap_score": market_cap_score,
+        "status_filter_pass": status_filter_pass,
+        "sector_heat_score": sector_heat_score,
+        "source_confluence": source_confluence,
+        "reject_reasons": reject_reasons,
+    }
+
+
+async def _persist_candidate_quality_batch(
+    rdb,
+    *,
+    strategy_id: str,
+    market: str,
+    source_api: str,
+    raw_items: list[dict],
+    qualified_codes: list[str],
+    ttl: int,
+) -> list[str]:
+    """raw/qualified/quality Redis 키를 한 번에 적재하고 최종 후보 코드를 반환한다."""
+    built_at = now_kst_str()
+    qualified_set = set(qualified_codes)
+    final_codes: list[str] = []
+
+    quality_rows: dict[str, dict] = {}
+    raw_rows: list[str] = []
+    qualified_rows: list[str] = []
+
+    for item in raw_items:
+        stk_cd = normalize_stock_code(item.get("stk_cd", ""))
+        if not stk_cd:
+            continue
+        raw_rows.append(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+
+        quality = _assess_candidate_quality(stk_cd, item, strategy_id)
+        quality.update({
+            "stk_cd": stk_cd,
+            "strategy_id": strategy_id,
+            "market": market,
+            "source_api": source_api,
+            "built_at": built_at,
+        })
+        quality_rows[stk_cd] = quality
+
+        is_qualified = stk_cd in qualified_set
+        if ENABLE_CANDIDATE_QUALITY_FILTER and quality["candidate_quality"] == "REJECT":
+            is_qualified = False
+        if is_qualified:
+            final_codes.append(stk_cd)
+            qualified_rows.append(json.dumps({
+                "stk_cd": stk_cd,
+                "strategy_id": strategy_id,
+                "market": market,
+                "source_api": source_api,
+                "candidate_quality": quality["candidate_quality"],
+                "quality_score": quality["quality_score"],
+                "built_at": built_at,
+            }, ensure_ascii=False, separators=(",", ":")))
+
+    final_codes = list(dict.fromkeys(final_codes))
+    pipe = rdb.pipeline()
+    raw_key = f"candidates:raw:{source_api}:{market}"
+    qualified_key = f"candidates:qualified:{strategy_id}:{market}"
+    pipe.delete(raw_key)
+    if raw_rows:
+        pipe.rpush(raw_key, *raw_rows)
+    pipe.expire(raw_key, ttl)
+
+    pipe.delete(qualified_key)
+    if qualified_rows:
+        pipe.rpush(qualified_key, *qualified_rows)
+    pipe.expire(qualified_key, ttl)
+
+    for stk_cd, quality in quality_rows.items():
+        q_key = f"candidate:quality:{stk_cd}"
+        mapping = {
+            "candidate_quality": quality["candidate_quality"],
+            "quality_score": str(quality["quality_score"]),
+            "liquidity_score": str(quality["liquidity_score"]),
+            "spread_score": str(quality["spread_score"]),
+            "market_cap_score": str(quality["market_cap_score"]),
+            "status_filter_pass": str(quality["status_filter_pass"]),
+            "sector_heat_score": str(quality["sector_heat_score"]),
+            "source_confluence": str(quality["source_confluence"]),
+            "reject_reasons": json.dumps(quality["reject_reasons"], ensure_ascii=False),
+            "strategy_id": strategy_id,
+            "market": market,
+            "source_api": source_api,
+            "built_at": built_at,
+        }
+        pipe.hset(q_key, mapping=mapping)
+        pipe.expire(q_key, ttl)
+
+    await pipe.execute()
+    return final_codes
+
+
+async def _lpush_with_ttl(rdb, key: str, codes: list[str], ttl: int, meta: dict | None = None) -> None:
+    """기존 키를 삭제하고 새 목록을 RPUSH 한 뒤 EXPIRE 설정.
+
+    빈 codes이면 기존 키에 source_status=EMPTY와 built_at을 기록한다.
+    이렇게 하면 장중 API 실패(EMPTY)와 진짜 빈 후보를 구분할 수 있다.
+    """
     codes = [code for code in dict.fromkeys(normalize_stock_code(code) for code in codes) if code]
     if not codes:
-        logger.debug("[builder] %s 빈 결과 – 기존 키 유지 (TTL 만료 대기)", key)
+        logger.debug("[builder] %s 빈 결과 – EMPTY 상태 기록 후 stale key 유지", key)
+        try:
+            meta_key = f"{key}:meta"
+            await rdb.hset(meta_key, mapping={
+                "source_status": "EMPTY",
+                "built_at": now_kst_str(),
+                "count": "0",
+            })
+            await rdb.expire(meta_key, ttl)
+        except Exception as e:
+            logger.debug("[builder] EMPTY meta 기록 실패 %s: %s", key, e)
         return
     pipe = rdb.pipeline()
     pipe.delete(key)
     pipe.rpush(key, *codes)
     pipe.expire(key, ttl)
+    if meta:
+        meta_key = f"{key}:meta"
+        mapping = {k: str(v) if not isinstance(v, str) else v for k, v in meta.items()}
+        pipe.hset(meta_key, mapping=mapping)
+        pipe.expire(meta_key, ttl)
     await pipe.execute()
     logger.debug("[builder] %s ← %d종목 (TTL %ds)", key, len(codes), ttl)
 
@@ -347,9 +589,12 @@ async def _fetch_ka10029(token: str, market: str) -> list[dict]:
 async def _build_s1(token: str, market: str, rdb) -> None:
     """S1 갭상승 시초가: 3.0% ≤ flu_rt ≤ 15.0%, TTL 3600s, 100개
     장전 마지막 빌드(~08:22)가 스캐너 종료(09:10)까지 유효해야 하므로 TTL 1시간."""
+    started_at = _time.monotonic()
+    ttl = 3600
     items = await _fetch_ka10029(token, market)
     await _cache_expected_from_ka10029(rdb, items)
     ranked_items = _rank_ka10029_items(items)
+    raw_count = len(ranked_items)
     codes = []
     for item in ranked_items:
         stk_cd = normalize_stock_code(item.get("stk_cd", ""))
@@ -357,12 +602,37 @@ async def _build_s1(token: str, market: str, rdb) -> None:
             codes.append(stk_cd)
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, 3600)
+    codes = await _persist_candidate_quality_batch(
+        rdb,
+        strategy_id="s1",
+        market=market,
+        source_api="ka10029",
+        raw_items=ranked_items,
+        qualified_codes=codes,
+        ttl=ttl,
+    )
+    meta = {
+        "raw_count": raw_count,
+        "filtered_count": len(codes),
+        "rejected_count": raw_count - len(codes),
+        "top_quality_count": len(codes),
+        "built_at": now_kst_str(),
+        "source_api": "ka10029",
+        "source_status": "EMPTY" if not codes else "OK",
+    }
+    await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, ttl)
+    try:
+        await rdb.hset(f"candidate:quality:meta:s1:{market}", mapping=meta)
+        await rdb.expire(f"candidate:quality:meta:s1:{market}", ttl)
+    except Exception as e:
+        logger.debug("[builder] S1 meta 기록 실패: %s", e)
 
 
 async def _build_s7(token: str, market: str, rdb) -> None:
     """S7 일목균형표 구름대 돌파 스윙: 0.5% ≤ flu_rt ≤ 10.0%, TTL 1800s, 100개"""
+    ttl = 1800
     items = await _fetch_ka10027(token, market, sort_tp="1")
+    raw_count = len(items)
     codes = []
     for x in items:
         real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
@@ -373,7 +643,21 @@ async def _build_s7(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s7:{market}", codes, 1800)
+    meta = {
+        "raw_count": raw_count,
+        "filtered_count": len(codes),
+        "rejected_count": raw_count - len(codes),
+        "top_quality_count": len(codes),
+        "built_at": now_kst_str(),
+        "source_api": "ka10027",
+        "source_status": "EMPTY" if not codes else "OK",
+    }
+    await _lpush_with_ttl(rdb, f"candidates:s7:{market}", codes, ttl)
+    try:
+        await rdb.hset(f"candidate:quality:meta:s7:{market}", mapping=meta)
+        await rdb.expire(f"candidate:quality:meta:s7:{market}", ttl)
+    except Exception as e:
+        logger.debug("[builder] S7 meta 기록 실패: %s", e)
 
 
 # ── ka10023 거래량급증상위 공통 ────────────────────────────────────────
@@ -460,7 +744,9 @@ async def _fetch_ka10027(token: str, market: str, sort_tp: str = "1") -> list[di
 async def _build_s4(token: str, market: str, rdb) -> None:
     """S4 장대양봉 + 거래량급증: ka10023, sdninRt≥50% & fluRt 3~20%, TTL 1200s, 100개
     ws:strength:{stk_cd} ≥ 120 종목 우선 정렬 (Java CandidateService.getS4Candidates와 동일 소스)"""
+    ttl = 1200
     items = await _fetch_ka10023(token, market)
+    raw_count = len(items)
     strong: list[str] = []
     normal: list[str] = []
 
@@ -470,7 +756,7 @@ async def _build_s4(token: str, market: str, rdb) -> None:
         flu_rt   = _clean(x.get("flu_rt", 0))
         if not (sdnin_rt >= 50.0 and 3.0 <= flu_rt <= 20.0):
             continue
-        stk_cd =real_stk_cd
+        stk_cd = real_stk_cd
         if not stk_cd:
             continue
 
@@ -488,7 +774,30 @@ async def _build_s4(token: str, market: str, rdb) -> None:
             break
 
     codes = (strong + normal)[:100]
-    await _lpush_with_ttl(rdb, f"candidates:s4:{market}", codes, 1200)
+    codes = await _persist_candidate_quality_batch(
+        rdb,
+        strategy_id="s4",
+        market=market,
+        source_api="ka10023",
+        raw_items=items,
+        qualified_codes=codes,
+        ttl=ttl,
+    )
+    meta = {
+        "raw_count": raw_count,
+        "filtered_count": len(codes),
+        "rejected_count": raw_count - len(codes),
+        "top_quality_count": len(strong),
+        "built_at": now_kst_str(),
+        "source_api": "ka10023",
+        "source_status": "EMPTY" if not codes else "OK",
+    }
+    await _lpush_with_ttl(rdb, f"candidates:s4:{market}", codes, ttl)
+    try:
+        await rdb.hset(f"candidate:quality:meta:s4:{market}", mapping=meta)
+        await rdb.expire(f"candidate:quality:meta:s4:{market}", ttl)
+    except Exception as e:
+        logger.debug("[builder] S4 meta 기록 실패: %s", e)
 
 
 async def _build_s8(token: str, market: str, rdb) -> None:
@@ -584,6 +893,15 @@ async def _build_s10(token: str, market: str, rdb) -> None:
     # [핵심 수정] 리스트 컴프리헨션 내부에서 정규화 함수 호출
     # 결과가 100개가 넘지 않도록 슬라이싱하고, 정제된 6자리 코드만 codes에 담깁니다.
     codes = [normalize_stock_code(x.get("stk_cd")) for x in results if x.get("stk_cd")][:100]
+    codes = await _persist_candidate_quality_batch(
+        rdb,
+        strategy_id="s10",
+        market=market,
+        source_api="ka10016",
+        raw_items=results,
+        qualified_codes=codes,
+        ttl=1800,
+    )
 
     # Redis에 저장할 때 이제 "005930_AL"이 아닌 "005930" 형태로 들어갑니다.
     await _lpush_with_ttl(rdb, f"candidates:s10:{market}", codes, 1800)
@@ -964,6 +1282,7 @@ async def _build_s6(token: str, rdb) -> None:
 async def _build_s13(token: str, market: str, rdb) -> None:
     """S13 박스권 돌파: ka10023, sdninRt≥30% & fluRt 3~8%, TTL 1200s, 100개
     Java CandidateService.getS13Candidates와 동일 소스·필터 (M-2 fix 정렬)"""
+    ttl = 1200
     items = await _fetch_ka10023(token, market)
     codes: list[str] = []
     for x in items:
@@ -976,7 +1295,16 @@ async def _build_s13(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 100:
             break
-    await _lpush_with_ttl(rdb, f"candidates:s13:{market}", codes, 1200)
+    codes = await _persist_candidate_quality_batch(
+        rdb,
+        strategy_id="s13",
+        market=market,
+        source_api="ka10023",
+        raw_items=items,
+        qualified_codes=codes,
+        ttl=ttl,
+    )
+    await _lpush_with_ttl(rdb, f"candidates:s13:{market}", codes, ttl)
 
 
 # ── S15: ka10032 거래대금상위 독립 풀 ──────────────────────────────────
@@ -1028,26 +1356,123 @@ async def _build_s15(token: str, market: str, rdb) -> None:
     await _lpush_with_ttl(rdb, f"candidates:s15:{market}", codes, 1200)
 
 
+# ── watchlist ZSET 우선순위 계산 ───────────────────────────────────────
+
+def _calculate_watchlist_priority_score(
+    stk_cd: str,
+    strategy_ids: list[str],
+    quality_data: dict | None = None,
+) -> float:
+    """종목의 watchlist 우선순위 점수를 계산한다.
+
+    점수 구성 (최대 ~100점):
+    - 전략 중요도: 전략 중 가장 높은 가중치 (0~30)
+    - candidate quality: A=25, B=18, C=10, REJECT=-30(패널티 포함)
+    - 최신성: built_at 기준 0~15 (10분 이내=15, 30분=10, 60분=5, 이상=0)
+    - 유동성/거래대금: 0~15 (liquidity_score 0~100 → 0~15 변환)
+    - 다중 전략 출현: 전략 수 × 5, 최대 10
+    - 실시간 필수도: s1/s2/s4/s13=5, 나머지=0
+    - REJECT 패널티: candidate_quality=REJECT이면 -30
+    """
+    # 전략 중요도
+    strategy_weight = max(
+        (_STRATEGY_PRIORITY_WEIGHT.get(sid.lower(), 15) for sid in strategy_ids),
+        default=15,
+    )
+
+    # quality 점수
+    if quality_data:
+        quality_data = _decode_redis_hash(quality_data)
+        cq = str(quality_data.get("candidate_quality", "C"))
+        ls = _as_float(quality_data.get("liquidity_score", 50), 50.0)
+    else:
+        cq = "C"
+        ls = 50.0
+
+    quality_bonus_map = {"A": 25, "B": 18, "C": 10, "REJECT": 0}
+    quality_bonus = quality_bonus_map.get(cq, 10)
+
+    # 최신성 점수 (built_at이 없으면 중간값 5)
+    recency_score = 5
+    if quality_data:
+        built_at_str = quality_data.get("built_at", "")
+        if built_at_str:
+            try:
+                # now_kst_str() 포맷: "2026-05-06T09:00:00+09:00"
+                built_dt = datetime.fromisoformat(built_at_str)
+                now_dt = datetime.now(KST)
+                age_min = (now_dt - built_dt).total_seconds() / 60
+                if age_min <= 10:
+                    recency_score = 15
+                elif age_min <= 30:
+                    recency_score = 10
+                elif age_min <= 60:
+                    recency_score = 5
+                else:
+                    recency_score = 0
+            except Exception:
+                recency_score = 5
+
+    # 유동성 점수 (0~100 → 0~15)
+    liquidity_bonus = int(ls * 15 / 100)
+
+    # 다중 전략 출현 가점
+    confluence_bonus = min(len(strategy_ids) * 5, 10)
+
+    # 실시간 필수도
+    realtime_bonus = 5 if any(sid.lower() in _REALTIME_CRITICAL_STRATEGIES for sid in strategy_ids) else 0
+
+    # REJECT 패널티
+    reject_penalty = -30 if cq == "REJECT" else 0
+
+    score = (
+        strategy_weight
+        + quality_bonus
+        + recency_score
+        + liquidity_bonus
+        + confluence_bonus
+        + realtime_bonus
+        + reject_penalty
+    )
+    return float(max(0.0, score))
+
+
 # ── watchlist 통합 갱신 ─────────────────────────────────────────────────
 
 async def _refresh_watchlist(rdb, ttl: int = 900) -> None:
     """모든 전략 후보 풀 → candidates:watchlist SET 통합.
-    websocket-listener _watchlist_poller 가 이 SET 을 5초마다 읽어 동적 구독."""
+    websocket-listener _watchlist_poller 가 이 SET 을 5초마다 읽어 동적 구독.
+
+    ENABLE_WATCHLIST_ZSET=true(기본)이면 candidates:watchlist:z ZSET 도 추가로 갱신.
+    기존 SET(candidates:watchlist, candidates:watchlist:priority)은 하위 호환을 위해 유지.
+    """
     all_codes: set[str] = set()
     priority_codes: set[str] = set()
+    # 전략별 코드 맵: stk_cd → 해당 종목이 출현한 전략 ID 리스트
+    code_strategy_map: dict[str, list[str]] = {}
+
     for n in range(1, 16):
+        sid = f"s{n}"
         for mkt in MARKETS:
             try:
-                codes = await rdb.lrange(f"candidates:s{n}:{mkt}", 0, -1)
-                all_codes.update(c for c in codes if c)
+                codes = await rdb.lrange(f"candidates:{sid}:{mkt}", 0, -1)
+                for c in codes:
+                    if c:
+                        all_codes.add(c)
+                        code_strategy_map.setdefault(c, [])
+                        if sid not in code_strategy_map[c]:
+                            code_strategy_map[c].append(sid)
                 if n in (1, 7):
                     priority_codes.update(c for c in codes if c)
             except Exception:
                 pass
+
     if not all_codes:
         logger.debug("[builder] watchlist 갱신 건너뜀 (후보 없음)")
         return
+
     pipe = rdb.pipeline()
+    # 기존 SET 유지 (하위 호환)
     pipe.delete("candidates:watchlist")
     pipe.sadd("candidates:watchlist", *all_codes)
     pipe.expire("candidates:watchlist", ttl)
@@ -1056,6 +1481,56 @@ async def _refresh_watchlist(rdb, ttl: int = 900) -> None:
         pipe.sadd("candidates:watchlist:priority", *priority_codes)
         pipe.expire("candidates:watchlist:priority", ttl)
     await pipe.execute()
+
+    # ZSET 갱신 (ENABLE_WATCHLIST_ZSET=true 일 때)
+    if ENABLE_WATCHLIST_ZSET and all_codes:
+        try:
+            zset_key = "candidates:watchlist:z"
+            zset_ttl = 3600
+
+            # 종목별 품질 데이터 로드 (candidate:quality:{stk_cd} hash)
+            quality_cache: dict[str, dict] = {}
+            for stk_cd in all_codes:
+                try:
+                    qdata = _decode_redis_hash(await rdb.hgetall(f"candidate:quality:{stk_cd}"))
+                    if qdata:
+                        quality_cache[stk_cd] = qdata
+                except Exception:
+                    pass
+
+            # 점수 계산 및 ZADD
+            zset_pipe = rdb.pipeline()
+            zset_pipe.delete(zset_key)
+            scored_items: list[tuple[float, str]] = []
+            for stk_cd in all_codes:
+                strategy_ids = code_strategy_map.get(stk_cd, [])
+                quality_data = quality_cache.get(stk_cd)
+                score = _calculate_watchlist_priority_score(stk_cd, strategy_ids, quality_data)
+                scored_items.append((score, stk_cd))
+
+            # redis-py zadd: {member: score} mapping
+            if scored_items:
+                zadd_mapping = {stk_cd: score for score, stk_cd in scored_items}
+                zset_pipe.zadd(zset_key, zadd_mapping)
+                zset_pipe.expire(zset_key, zset_ttl)
+
+            # zset 상위 200개를 candidates:watchlist:priority SET에도 백필
+            # (기존 priority는 이미 SET으로 갱신됨 — ZSET 기반 priority는 추가 백필)
+            top200 = sorted(scored_items, key=lambda x: x[0], reverse=True)[:200]
+            top200_codes = [stk_cd for _, stk_cd in top200]
+            if top200_codes:
+                zset_pipe.delete("candidates:watchlist:priority")
+                zset_pipe.sadd("candidates:watchlist:priority", *top200_codes)
+                zset_pipe.expire("candidates:watchlist:priority", ttl)
+
+            await zset_pipe.execute()
+            logger.info(
+                "[builder] candidates:watchlist:z 갱신 – %d종목 (top200 priority 백필)",
+                len(scored_items),
+            )
+        except Exception as zset_err:
+            logger.warning("[builder] watchlist ZSET 갱신 실패: %s", zset_err)
+
     logger.info(
         "[builder] candidates:watchlist 갱신 – %d종목 (priority=%d)",
         len(all_codes),

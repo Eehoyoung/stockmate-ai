@@ -267,7 +267,8 @@ async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
                     "authorization": f"Bearer {token}",
                     "Content-Type": "application/json;charset=UTF-8",
                 },
-                json={"stk_cd": stk_cd, "stex_tp": "3"},
+                # Kiwoom ka10046 PDF request body only requires stk_cd.
+                json={"stk_cd": stk_cd},
             )
             resp.raise_for_status()
             data = resp.json()

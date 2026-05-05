@@ -23,6 +23,7 @@ from http_utils import fetch_cntr_strength_cached, fetch_hoga, validate_kiwoom_r
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
+from execution_quality import assess_execution_quality, should_hard_reject
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
@@ -118,6 +119,56 @@ async def fetch_volume_surge_map_all(token: str, market: str = "000") -> dict[st
             await asyncio.sleep(_API_INTERVAL)
 
     return result_map
+
+
+async def _fetch_minute_chart_raw_s10(token: str, stk_cd: str, scope: int = 5) -> dict:
+    """ka10080 분봉차트 원본 응답 반환 (execution_quality 용)."""
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/chart",
+                headers={
+                    "api-id": "ka10080",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={
+                    "stk_cd": stk_cd.strip(),
+                    "tic_scope": str(scope),
+                    "upd_stkpc_tp": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10080", logger):
+                return {}
+            return data
+    except Exception as exc:
+        logger.debug("[S10] ka10080 분봉 조회 실패 [%s]: %s", stk_cd, exc)
+        return {}
+
+
+async def _fetch_hoga_raw_s10(token: str, stk_cd: str) -> dict:
+    """ka10004 호가 원본 응답 반환 (execution_quality 용)."""
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
+                headers={
+                    "api-id": "ka10004",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={"stk_cd": stk_cd.strip()},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10004", logger):
+                return {}
+            return data
+    except Exception as exc:
+        logger.debug("[S10] ka10004 호가 조회 실패 [%s]: %s", stk_cd, exc)
+        return {}
 
 async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list:
     """52주 신고가 돌파 스윙 전략 메인 스캐너 (Redis 풀 우선 → fallback 직접 조회)"""
@@ -249,6 +300,47 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
                        else "strong" if flu_rt_strong
                        else "normal")
 
+        await asyncio.sleep(_API_INTERVAL)
+        hoga_raw = await _fetch_hoga_raw_s10(token, stk_cd)
+        await asyncio.sleep(_API_INTERVAL)
+        minute_raw = await _fetch_minute_chart_raw_s10(token, stk_cd, scope=5)
+
+        ma20_extension_pct = None
+        if ma20 and ma20 > 0:
+            ma20_extension_pct = round((cur_prc - ma20) / ma20 * 100, 2)
+
+        atr_extension_pct = None
+        if atr_val and atr_val > 0:
+            atr_extension_pct = round((cur_prc - (ma20 or cur_prc)) / atr_val * 100, 2)
+
+        high_rejection_pct = (
+            round((highs_d[0] - cur_prc) / highs_d[0] * 100, 2)
+            if highs_d and highs_d[0] > 0 else None
+        )
+
+        if high_rejection_pct is not None and high_rejection_pct >= 5.0:
+            breakout_quality = "REJECT"
+        elif high_rejection_pct is not None and high_rejection_pct >= 3.0:
+            breakout_quality = "WEAK"
+        elif flu_rt_overheat or (ma20_extension_pct is not None and ma20_extension_pct >= 20.0):
+            breakout_quality = "OVERHEATED"
+        else:
+            breakout_quality = "CONFIRMED"
+
+        eq_result = assess_execution_quality(
+            stk_cd,
+            float(cur_prc),
+            hoga_raw,
+            minute_raw,
+            "S10",
+            extra={},
+        )
+        if should_hard_reject(eq_result):
+            logger.debug("[S10] execution_quality REJECT skip [%s]", stk_cd)
+            continue
+        if eq_result["execution_quality"] == "REJECT" and signal_mode == "NORMAL":
+            signal_mode = "SHADOW"
+
         stk_nm = str(item.get("stk_nm", "")).strip() or await fetch_stk_nm(rdb, token, stk_cd)
         results.append({
             "stk_cd": stk_cd,
@@ -259,6 +351,21 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             "flu_rt_zone": flu_rt_zone,
             "signal_mode": signal_mode,
             "upper_shadow_pct": round((highs_d[0] - cur_prc) / highs_d[0] * 100, 2) if highs_d and highs_d[0] > 0 else None,
+            "atr_extension_pct": atr_extension_pct,
+            "high_rejection_pct": high_rejection_pct,
+            "ma20_extension_pct": ma20_extension_pct,
+            "breakout_quality": breakout_quality,
+            "institution_foreign_confirm": "UNKNOWN",
+            "spread_pct": eq_result["spread_pct"],
+            "depth_score": eq_result["depth_score"],
+            "sell_wall_score": eq_result["sell_wall_score"],
+            "vwap_position": eq_result["vwap_position"],
+            "first_low_break": eq_result["first_low_break"],
+            "breakout_line_break": eq_result["breakout_line_break"],
+            "close_position_pct": eq_result["close_position_pct"],
+            "chase_risk_score": eq_result["chase_risk_score"],
+            "execution_quality": eq_result["execution_quality"],
+            "reject_reason": eq_result["reject_reason"],
             "vol_surge_rt": round(sdnin_rt, 1),
             "cntr_strength": round(cntr_str, 1),
             "bid_ratio": round(bid_ratio, 3) if bid_ratio is not None else None,

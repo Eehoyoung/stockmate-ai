@@ -23,21 +23,73 @@ import asyncio
 import logging
 import os
 
-from http_utils import fetch_stk_nm
+from http_utils import fetch_stk_nm, validate_kiwoom_response, kiwoom_client
 from indicator_bollinger import calc_bollinger
 from indicator_rsi import calc_rsi
 from indicator_volume import calc_mfi
 from indicator_atr import calc_atr
 from ma_utils import fetch_daily_candles, detect_box_breakout, _safe_price, _safe_vol, _calc_ma
 from tp_sl_engine import calc_tp_sl
+from execution_quality import assess_execution_quality, should_hard_reject
 
 logger = logging.getLogger(__name__)
+KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 # 환경 변수 및 설정
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 MIN_CNTR_STR = float(os.getenv("S13_MIN_CNTR_STR", "120.0"))  # 체결강도 하한
 BOX_PERIOD = 15     # 박스권 관찰 기간
 MAX_BOX_RANGE = 8.0  # 박스권 허용 폭 (%)
+
+
+async def _fetch_minute_chart_raw_s13(token: str, stk_cd: str, scope: int = 5) -> dict:
+    """ka10080 분봉차트 원본 응답 반환 (execution_quality 용)."""
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/chart",
+                headers={
+                    "api-id": "ka10080",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={
+                    "stk_cd": stk_cd.strip(),
+                    "tic_scope": str(scope),
+                    "upd_stkpc_tp": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10080", logger):
+                return {}
+            return data
+    except Exception as exc:
+        logger.debug("[S13] ka10080 분봉 조회 실패 [%s]: %s", stk_cd, exc)
+        return {}
+
+
+async def _fetch_hoga_raw_s13(token: str, stk_cd: str) -> dict:
+    """ka10004 호가 원본 응답 반환 (execution_quality 용)."""
+    try:
+        async with kiwoom_client() as client:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
+                headers={
+                    "api-id": "ka10004",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={"stk_cd": stk_cd.strip()},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not validate_kiwoom_response(data, "ka10004", logger):
+                return {}
+            return data
+    except Exception as exc:
+        logger.debug("[S13] ka10004 호가 조회 실패 [%s]: %s", stk_cd, exc)
+        return {}
 
 async def scan_box_breakout(token: str, rdb=None) -> list:
     """
@@ -154,6 +206,19 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
 
+        box_upper = max(highs[1:BOX_PERIOD + 1]) if len(highs) > BOX_PERIOD else 0
+        box_lower = min(lows[1:BOX_PERIOD + 1]) if len(lows) > BOX_PERIOD else 0
+        box_breakout_extension_pct = (
+            (cur_prc - box_upper) / box_upper * 100 if box_upper > 0 else 0.0
+        )
+        pre_breakout_avg_3 = sum(vols[1:4]) / 3 if len(vols) >= 4 else 0
+        pre_breakout_avg_15 = sum(vols[1:16]) / 15 if len(vols) >= 16 else 0
+        pre_breakout_volume_contraction = (
+            pre_breakout_avg_15 > 0 and pre_breakout_avg_3 < pre_breakout_avg_15 * 0.8
+        )
+        breakout_failure = cur_prc < box_upper if box_upper > 0 else False
+        near_resistance = resistance_penalty > 0
+
         # ATR 계산 (존 너비 보정 및 zone 계산에 활용)
         atr_val = None
         if len(highs) >= 15 and len(lows) >= 15 and len(closes) >= 15:
@@ -164,6 +229,29 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
         tp_sl = calc_tp_sl("S13_BOX_BREAKOUT", cur_prc, highs, lows, closes,
                             stk_cd=stk_cd, atr=atr_val, ma20=ma20,
                             compute_zones=True)
+
+        await asyncio.sleep(_API_INTERVAL)
+        hoga_raw = await _fetch_hoga_raw_s13(token, stk_cd)
+        await asyncio.sleep(_API_INTERVAL)
+        minute_raw = await _fetch_minute_chart_raw_s13(token, stk_cd, scope=5)
+
+        eq_result = assess_execution_quality(
+            stk_cd,
+            float(cur_prc),
+            hoga_raw,
+            minute_raw,
+            "S13",
+            extra={"box_breakout_extension_pct": box_breakout_extension_pct},
+        )
+        if should_hard_reject(eq_result):
+            logger.debug("[S13] execution_quality REJECT skip [%s]", stk_cd)
+            continue
+
+        signal_mode = "SHADOW" if (
+            eq_result["execution_quality"] == "REJECT"
+            or near_resistance
+            or box_breakout_extension_pct > 3.0
+        ) else "NORMAL"
 
         results.append({
             "stk_cd": stk_cd,
@@ -178,6 +266,25 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
             "is_monster_vol": is_monster_vol,
             "bollinger_squeeze": bollinger_squeeze,
             "mfi_confirmed": mfi_confirmed,
+            "signal_mode": signal_mode,
+            "box_upper": round(box_upper) if box_upper else None,
+            "box_lower": round(box_lower) if box_lower else None,
+            "box_range_pct": round(box_range_pct, 2),
+            "box_breakout_extension_pct": round(box_breakout_extension_pct, 2),
+            "pre_breakout_volume_contraction": pre_breakout_volume_contraction,
+            "breakout_failure": breakout_failure,
+            "near_resistance": near_resistance,
+            "spread_pct": eq_result["spread_pct"],
+            "depth_score": eq_result["depth_score"],
+            "sell_wall_score": eq_result["sell_wall_score"],
+            "vwap_position": eq_result["vwap_position"],
+            "first_low_break": eq_result["first_low_break"],
+            "breakout_line_break": eq_result["breakout_line_break"],
+            "upper_shadow_pct": eq_result["upper_shadow_pct"],
+            "close_position_pct": eq_result["close_position_pct"],
+            "chase_risk_score": eq_result["chase_risk_score"],
+            "execution_quality": eq_result["execution_quality"],
+            "reject_reason": eq_result["reject_reason"],
             "entry_type": "당일종가_또는_익일눌림",
             "holding_days": "3~7거래일",
             **tp_sl.to_signal_fields(),

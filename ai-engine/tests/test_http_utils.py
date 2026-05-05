@@ -118,6 +118,21 @@ class TestFetchCntrStrengthSuccess:
         headers = call_kwargs.get("headers", {})
         assert headers.get("api-id") == "ka10046"
 
+    def test_ka10046_body_uses_only_stock_code(self):
+        """Kiwoom ka10046 요청 바디는 stk_cd만 전송"""
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=self._make_response([100.0]))
+            mock_client_cls.return_value = mock_client
+
+            from http_utils import fetch_cntr_strength
+            _run(fetch_cntr_strength("my-token", "005930"))
+
+        call_kwargs = mock_client.post.call_args[1]
+        assert call_kwargs.get("json") == {"stk_cd": "005930"}
+
     def test_sends_bearer_token(self):
         """Bearer 토큰 형식으로 인증"""
         with patch("httpx.AsyncClient") as mock_client_cls:

@@ -260,7 +260,8 @@ class TestRunOnce:
         from strategy_runner import _run_once
 
         rdb = _make_rdb(get=None)
-        with patch("strategy_runner._current_kst_time", return_value=datetime.time(10, 15)):
+        with patch("strategy_runner._current_kst_time", return_value=datetime.time(10, 15)), \
+             patch("strategy_runner._session_filter_allows_run", return_value=True):
             with caplog.at_level("WARNING"):
                 _run(_run_once(rdb))
 
@@ -471,3 +472,22 @@ class TestS1Fallback:
         args = scan_mock.await_args.args
         assert args[0] == "valid-token"
         assert args[1] == []
+
+
+class TestS2ShadowPublishing:
+    def test_scan_s2_does_not_push_shadow_signal(self):
+        from strategy_runner import _scan_s2
+
+        item = {"stk_cd": "005930", "watch_until": 9999999999999}
+        rdb = _make_rdb()
+        rdb.rpop = AsyncMock(side_effect=[json.dumps(item), None])
+
+        with patch(
+            "strategy_2_vi_pullback.check_vi_pullback",
+            new_callable=AsyncMock,
+            return_value={"stk_cd": "005930", "strategy": "S2_VI_PULLBACK", "signal_mode": "SHADOW"},
+        ), patch("strategy_runner._push_signals", new_callable=AsyncMock) as push_mock:
+            _run(_scan_s2(rdb, "valid-token"))
+
+        push_mock.assert_awaited_once()
+        assert push_mock.await_args.args[1] == []

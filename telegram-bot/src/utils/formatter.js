@@ -366,6 +366,39 @@ function formatSignal(item) {
         const pos = _positionSize(item.ai_score, item.confidence);
         if (!isS1GapOpen && pos) lines.push(`권장 비중: <b>${pos}</b>`);
 
+        // 진입 강도 (entry_size_tier) — 필드가 있을 때만 표시
+        if (item.entry_size_tier) {
+            const tierEmoji = {
+                SIZE_4: '🔥', SIZE_3: '💪', SIZE_2: '📊', SIZE_1: '🔍', SIZE_0: '⛔',
+            }[item.entry_size_tier] || '📊';
+            const weightDisplay = item.entry_size_weight !== undefined
+                ? ` (모델 상대 ${Number(item.entry_size_weight).toFixed(2)})`
+                : '';
+            lines.push(`${tierEmoji} 진입 강도: ${item.entry_size_tier}${weightDisplay}`);
+
+            if (item.size_downgrade_flags && item.size_downgrade_flags.length > 0) {
+                const flagKorean = {
+                    'spread_too_wide':         '스프레드 넓음',
+                    'low_liquidity':           '유동성 부족',
+                    'high_chase_risk':         '추격 리스크 높음',
+                    'poor_candidate_quality':  '후보 품질 낮음',
+                    'high_stop_pct':           '손절폭 큼',
+                    'sector_overheated':       '섹터 과열',
+                    'stale_data':              '데이터 오래됨',
+                    'strategy_cap_applied':    '전략 상한 적용',
+                    'execution_quality_reject':'체결 품질 불량',
+                };
+                const flagsKor = item.size_downgrade_flags
+                    .map(f => flagKorean[f] || f)
+                    .join(', ');
+                lines.push(`⬇️ 하향 사유: ${flagsKor}`);
+            }
+
+            if (item.entry_size_tier === 'SIZE_0') {
+                lines.push('⚠️ 진입 강도 부족 - 관찰 전용');
+            }
+        }
+
         // 매수/매도 박스 블록 (zone 전략만)
         const zoneBlock = _formatZoneBlock(item, curPrc);
         if (zoneBlock) { lines.push(''); lines.push(zoneBlock); }

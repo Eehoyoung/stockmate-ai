@@ -268,7 +268,7 @@ async def _scan_s1(rdb, token):
 
 async def _scan_s2(rdb, token):
     try:
-        from strategy_2_vi_pullback import check_vi_pullback
+        from strategy_2_vi_pullback import check_vi_pullback, is_publishable_signal
 
         s2_signals = []
         now_ms = int(_time.time() * 1000)
@@ -282,10 +282,12 @@ async def _scan_s2(rdb, token):
                     logger.debug("[Runner] S2 watch_until 만료 - 폐기 [%s]", item.get("stk_cd"))
                     continue
                 result = await check_vi_pullback(token, item, rdb=rdb)
-                if result:
+                if result and is_publishable_signal(result):
                     s2_signals.append(result)
                     if len(s2_signals) >= 3:
                         break
+                elif result:
+                    logger.debug("[Runner] S2 SHADOW 관찰 전용 - 발행 제외 [%s]", item.get("stk_cd"))
                 else:
                     await rdb.lpush("vi_watch_queue", item_raw)
             except Exception as ve:

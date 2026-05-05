@@ -16,7 +16,9 @@ from datetime import datetime, timedelta, timezone
 
 from analyzer import analyze_signal
 from http_utils import fetch_stk_nm
+from position_sizing import ENABLE_MODEL_RELATIVE_POSITION_SIZE, calculate_entry_size
 from price_utils import normalize_signal_prices
+from strategy_meta import get_persona
 from redis_reader import (
     get_avg_cntr_strength,
     get_hoga_data,
@@ -861,6 +863,9 @@ async def process_one(rdb, pg_pool=None) -> bool:
 
     await _incr_pipeline(rdb, strategy, "candidate")
 
+    if strategy and not item.get("persona"):
+        item["persona"] = get_persona(strategy)
+
     if stk_cd and not item.get("stk_nm"):
         try:
             token = await rdb.get(REDIS_TOKEN_KEY)
@@ -997,6 +1002,32 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "cancel_type": cancel_type or ai_result.get("cancel_type"),
             **quality,
         }
+        if ENABLE_MODEL_RELATIVE_POSITION_SIZE:
+            try:
+                sizing = calculate_entry_size(
+                    ai_score=enriched.get("ai_score", 0),
+                    rule_score=enriched.get("rule_score", 0),
+                    confidence=enriched.get("confidence", "LOW"),
+                    candidate_quality=enriched.get("candidate_quality", "C"),
+                    quality_score=enriched.get("quality_score", 50),
+                    chase_risk_score=enriched.get("chase_risk_score", 50),
+                    execution_quality=enriched.get("execution_quality", "B"),
+                    rr_ratio=enriched.get("rr_ratio", 1.0),
+                    rr_quality_bucket=enriched.get("rr_quality_bucket", "FAIR"),
+                    stop_pct=enriched.get("stop_pct", 3.0),
+                    atr_pct=enriched.get("atr_pct"),
+                    trde_amt=enriched.get("trde_amt"),
+                    spread_pct=enriched.get("spread_pct"),
+                    strategy_id=enriched.get("strategy_id", strategy),
+                    market_regime=enriched.get("market_regime", "neutral"),
+                    strategy_count=enriched.get("strategy_count", 1),
+                    sector_heat_score=enriched.get("sector_heat_score", 50),
+                    freshness_status=enriched.get("freshness_status", "FRESH"),
+                )
+                enriched.update(sizing)
+            except Exception as _sizing_err:
+                logger.warning("[Worker] position_sizing failed [%s %s]: %s", stk_cd, strategy, _sizing_err)
+
         normalize_signal_prices(enriched)
         enriched = _apply_claude_postprocess_hard_rules(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)

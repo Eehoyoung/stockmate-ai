@@ -302,6 +302,58 @@ test('SELL_RECOMMENDATION TRAILING keeps trailing wording', () => {
     assert.ok(msg.includes('1.5') || msg.includes('1.50'));
 });
 
+// ── entry_size_tier (진입 강도) 테스트 ─────────────────────────────
+
+test('SIZE_2 신호에 진입 강도 표시', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S8_GOLDEN_CROSS',
+        entry_size_tier: 'SIZE_2',
+        entry_size_weight: 0.50,
+        entry_size_basis: 'model_relative_not_account',
+        size_downgrade_flags: ['spread_too_wide'],
+    }));
+    assert.ok(msg.includes('SIZE_2'), 'SIZE_2 포함');
+    assert.ok(msg.includes('0.50'), 'weight 포함');
+    assert.ok(msg.includes('스프레드 넓음'), '한국어 플래그');
+    assert.ok(msg.includes('하향 사유'), '하향 사유 줄 포함');
+    assert.ok(!msg.includes('주'), '수량 표현 금지');
+    assert.ok(!msg.includes('잔고'), '잔고 표현 금지');
+});
+
+test('entry_size_tier 없는 신호는 기존대로', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S8_GOLDEN_CROSS',
+    }));
+    assert.ok(!msg.includes('진입 강도:'), 'SIZE 표시 없어야 함');
+    assert.ok(!msg.includes('하향 사유'), '하향 사유 없어야 함');
+});
+
+test('SIZE_0이면 관찰 전용 주의 문구 포함', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S8_GOLDEN_CROSS',
+        entry_size_tier: 'SIZE_0',
+        entry_size_weight: 0.00,
+        size_downgrade_flags: ['low_liquidity', 'high_stop_pct'],
+    }));
+    assert.ok(msg.includes('관찰 전용'), '관찰 전용 문구');
+    assert.ok(msg.includes('SIZE_0'), 'SIZE_0 포함');
+    assert.ok(msg.includes('유동성 부족'), '한국어 플래그 low_liquidity');
+    assert.ok(msg.includes('손절폭 큼'), '한국어 플래그 high_stop_pct');
+});
+
+test('SIZE_4 최고 강도 — 하향 사유 없음', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S8_GOLDEN_CROSS',
+        entry_size_tier: 'SIZE_4',
+        entry_size_weight: 1.00,
+        size_downgrade_flags: [],
+    }));
+    assert.ok(msg.includes('SIZE_4'), 'SIZE_4 포함');
+    assert.ok(msg.includes('1.00'), 'weight 1.00 포함');
+    assert.ok(!msg.includes('하향 사유'), '하향 사유 없음');
+    assert.ok(!msg.includes('관찰 전용'), '관찰 전용 문구 없음');
+});
+
 console.log(`\nResult: ${passCount} passed, ${failCount} failed`);
 if (failures.length > 0) {
     console.log('\nFailures:');
