@@ -72,7 +72,8 @@ def test_weekend_never_enters_trading_sessions():
 def test_candidate_builder_session_preserves_legacy_windows():
     assert get_candidate_builder_session(datetime.time(7, 25)) == "pre_market"
     assert get_candidate_builder_session(datetime.time(8, 25)) == "pre_market"
-    assert get_candidate_builder_session(datetime.time(9, 4, 59)) == "idle"
+    assert get_candidate_builder_session(datetime.time(8, 25, 1)) == "opening_recovery"
+    assert get_candidate_builder_session(datetime.time(9, 4, 59)) == "opening_recovery"
     assert get_candidate_builder_session(datetime.time(9, 5)) == "intraday"
     assert get_candidate_builder_session(datetime.time(14, 49, 59)) == "intraday"
     assert get_candidate_builder_session(datetime.time(14, 50)) == "s12_only"

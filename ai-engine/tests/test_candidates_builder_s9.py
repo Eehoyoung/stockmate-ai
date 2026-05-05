@@ -126,7 +126,8 @@ def test_local_candidate_builder_session_splits_s12_after_1450():
 
     assert candidates_builder._local_candidate_builder_session(time(7, 25)) == candidates_builder.SESSION_PRE_MARKET
     assert candidates_builder._local_candidate_builder_session(time(8, 25)) == candidates_builder.SESSION_PRE_MARKET
-    assert candidates_builder._local_candidate_builder_session(time(9, 4, 59)) == candidates_builder.SESSION_IDLE
+    assert candidates_builder._local_candidate_builder_session(time(8, 25, 1)) == candidates_builder.SESSION_OPENING_RECOVERY
+    assert candidates_builder._local_candidate_builder_session(time(9, 4, 59)) == candidates_builder.SESSION_OPENING_RECOVERY
     assert candidates_builder._local_candidate_builder_session(time(9, 5)) == candidates_builder.SESSION_INTRADAY
     assert candidates_builder._local_candidate_builder_session(time(14, 49, 59)) == candidates_builder.SESSION_INTRADAY
     assert candidates_builder._local_candidate_builder_session(time(14, 50)) == candidates_builder.SESSION_S12_ONLY
@@ -142,3 +143,66 @@ def test_external_candidate_builder_session_keeps_weekends_idle():
     saturday = datetime(2026, 5, 2, 8, 0, tzinfo=timezone(timedelta(hours=9)))
 
     assert candidates_builder._candidate_builder_session(saturday) == candidates_builder.SESSION_IDLE
+
+
+@pytest.mark.asyncio
+async def test_filter_individual_stocks_removes_etf_etn(monkeypatch):
+    """ETF/ETN 종목명 키워드가 포함된 종목은 필터링되어야 한다."""
+    import candidates_builder
+
+    codes = ["005930", "069500", "233740", "035720"]
+    # stock:code_map: 005930=삼성전자, 069500=KODEX 200 ETF, 233740=KODEX 레버리지, 035720=카카오
+    name_map = {
+        "005930": "삼성전자",
+        "069500": "KODEX 200 ETF",
+        "233740": "KODEX 레버리지",
+        "035720": "카카오",
+    }
+
+    pipe_mock = AsyncMock()
+    pipe_mock.hget = MagicMock(return_value=None)
+    pipe_mock.execute = AsyncMock(return_value=[name_map.get(c) for c in codes])
+
+    rdb = MagicMock()
+    rdb.pipeline = MagicMock(return_value=pipe_mock)
+
+    result = await candidates_builder._filter_individual_stocks(rdb, codes)
+
+    assert "005930" in result   # 삼성전자 — 유지
+    assert "035720" in result   # 카카오 — 유지
+    assert "069500" not in result  # ETF 키워드 → 제거
+    assert "233740" not in result  # 레버리지 키워드 → 제거
+
+
+@pytest.mark.asyncio
+async def test_filter_individual_stocks_falls_back_on_redis_error():
+    """Redis 파이프라인 오류 시 원본 목록을 그대로 반환해야 한다."""
+    import candidates_builder
+
+    codes = ["005930", "069500"]
+
+    rdb = MagicMock()
+    rdb.pipeline = MagicMock(side_effect=Exception("redis down"))
+
+    result = await candidates_builder._filter_individual_stocks(rdb, codes)
+
+    assert result == codes
+
+
+@pytest.mark.asyncio
+async def test_filter_individual_stocks_handles_none_names():
+    """stock:code_map에 이름이 없는 종목은 제거하지 않고 유지해야 한다."""
+    import candidates_builder
+
+    codes = ["000001", "000002"]
+
+    pipe_mock = AsyncMock()
+    pipe_mock.hget = MagicMock(return_value=None)
+    pipe_mock.execute = AsyncMock(return_value=[None, None])  # 이름 미조회
+
+    rdb = MagicMock()
+    rdb.pipeline = MagicMock(return_value=pipe_mock)
+
+    result = await candidates_builder._filter_individual_stocks(rdb, codes)
+
+    assert result == codes

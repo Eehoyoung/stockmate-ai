@@ -121,6 +121,8 @@ def get_candidate_builder_session(date_time: datetime.datetime | datetime.time |
 
     if datetime.time(7, 25) <= now <= datetime.time(8, 25):
         return "pre_market"
+    if datetime.time(8, 25) < now < datetime.time(9, 5):
+        return "opening_recovery"
     if datetime.time(9, 5) <= now < datetime.time(14, 50):
         return "intraday"
     if datetime.time(14, 50) <= now <= datetime.time(14, 55):

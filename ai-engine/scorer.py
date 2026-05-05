@@ -341,24 +341,44 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _strategy_data = {"net_buy_amt": net_amt, "cntr_strength": s5_strength, "bid_ratio": s5_bid}
 
         case "S6_THEME_LAGGARD":
-            gap_pct_s6 = abs(_safe_float(signal.get("gap_pct", 0)))
-            cntr_sig = _safe_float(signal.get("cntr_strength", 0))
-            _gap_sc = 15 if gap_pct_s6 < 5 else 0
-            if 1 <= gap_pct_s6 < 3:
-                _gap_sc += 10
+            s6_mode    = signal.get("s6_mode", "LAGGARD_CATCHUP")
+            flu_rt_s6  = abs(_safe_float(signal.get("flu_rt", signal.get("gap_pct", 0))))
+            cntr_sig   = _safe_float(signal.get("cntr_strength", 0))
+            vol_rt_s6  = _safe_float(signal.get("volume_ratio", 0))
+
+            # 모드별 등락률 점수
+            if s6_mode == "LEADER_PULLBACK":
+                # 주도주 눌림: 3~8% 구간, 5% 미만이면 추가 보너스 (실질 눌림)
+                _gap_sc = 15 if 3.0 <= flu_rt_s6 <= 8.0 else 0
+                if _gap_sc and flu_rt_s6 < 5.0:
+                    _gap_sc += 10
+            elif s6_mode == "SECONDARY_ROTATION":
+                # 2등주 확산: 1~5%, 2~4% 최적
+                _gap_sc = 15 if flu_rt_s6 < 5 else 0
+                if 1.0 <= flu_rt_s6 < 4.0:
+                    _gap_sc += 5
+            else:  # LAGGARD_CATCHUP (기존 로직 유지)
+                _gap_sc = 15 if flu_rt_s6 < 5 else 0
+                if 1 <= flu_rt_s6 < 3:
+                    _gap_sc += 10
+
             effective_strength = cntr_sig if cntr_sig > 0 else strength
             _str_sc = 30 if effective_strength > 150 else (20 if effective_strength > 120 else 0)
             _bid_sc = 0.0
             if bid_ratio is not None:
                 _bid_sc = 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
-            score += _gap_sc + _str_sc + _bid_sc
-            _momentum_score += _gap_sc + _str_sc
+            _vol_sc = 5.0 if vol_rt_s6 >= 2.0 else (3.0 if vol_rt_s6 >= 1.5 else 0.0)
+
+            score += _gap_sc + _str_sc + _bid_sc + _vol_sc
+            _momentum_score += _gap_sc + _str_sc + _vol_sc
             _demand_score   += _bid_sc
             _strategy_data = {
-                "gap_pct": gap_pct_s6,
-                "gap_score": _gap_sc,
+                "gap_pct":      flu_rt_s6,
+                "gap_score":    _gap_sc,
+                "s6_mode":      s6_mode,
+                "volume_ratio": vol_rt_s6,
                 "cntr_strength": cntr_sig,
-                "theme_name": signal.get("theme_name", ""),
+                "theme_name":   signal.get("theme_name", ""),
             }
 
         case "S7_ICHIMOKU_BREAKOUT":

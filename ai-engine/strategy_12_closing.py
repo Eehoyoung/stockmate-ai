@@ -55,7 +55,7 @@ async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: in
                 },
                 json={
                     "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "0010",
-                    "stk_cnd": "1", "crd_cnd": "0", "updown_incls": "0",
+                    "stk_cnd": "16", "crd_cnd": "0", "updown_incls": "0",
                     "pric_cnd": "8", "trde_prica_cnd": "10", "stex_tp": "3"
                 }
             )

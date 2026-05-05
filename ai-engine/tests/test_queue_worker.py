@@ -140,6 +140,26 @@ class TestQueueWorkerHappyPath:
         assert kwargs["sl_price"] == 9600
         assert kwargs["data_quality"] == "OK"
 
+    def test_resolve_bid_ratio_falls_back_to_signal_buy_sell_requests(self):
+        from queue_worker import _resolve_bid_ratio
+
+        ratio = _resolve_bid_ratio(
+            {"buy_req": "5,233", "sel_req": "3,118"},
+            {"hoga": {}},
+        )
+
+        assert ratio == 1.678
+
+    def test_resolve_bid_ratio_prefers_explicit_signal_bid_ratio(self):
+        from queue_worker import _resolve_bid_ratio
+
+        ratio = _resolve_bid_ratio(
+            {"bid_ratio": "1.55", "buy_req": "100", "sel_req": "100"},
+            {"hoga": {"total_buy_bid_req": "300", "total_sel_bid_req": "100"}},
+        )
+
+        assert ratio == 1.55
+
     def test_legacy_float_rule_score_is_tolerated(self):
         item = _signal()
         rdb = _make_rdb(json.dumps(item))

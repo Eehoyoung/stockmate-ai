@@ -36,6 +36,7 @@ ENABLE_CANDIDATES_META = _env_flag("ENABLE_CANDIDATES_META")
 ENABLE_SESSION_CANDIDATE_BUILDER = _env_flag("ENABLE_SESSION_CANDIDATE_BUILDER")
 
 SESSION_PRE_MARKET = "pre_market"
+SESSION_OPENING_RECOVERY = "opening_recovery"
 SESSION_INTRADAY = "intraday"
 SESSION_S12_ONLY = "s12_only"
 SESSION_IDLE = "idle"
@@ -50,6 +51,8 @@ except Exception:
 def _local_candidate_builder_session(now: time) -> str:
     if time(7, 25) <= now <= time(8, 25):
         return SESSION_PRE_MARKET
+    if time(8, 25) < now < time(9, 5):
+        return SESSION_OPENING_RECOVERY
     if time(9, 5) <= now < time(14, 50):
         return SESSION_INTRADAY
     if time(14, 50) <= now <= time(14, 55):
@@ -62,6 +65,8 @@ def _normalize_candidate_builder_session(session) -> str:
     value = str(value or "").strip().lower()
     if value in {SESSION_PRE_MARKET, "pre", "premarket", "before_open"}:
         return SESSION_PRE_MARKET
+    if value in {SESSION_OPENING_RECOVERY, "opening", "opening_recovery", "auction"}:
+        return SESSION_OPENING_RECOVERY
     if value in {SESSION_INTRADAY, "regular", "market", "open"}:
         return SESSION_INTRADAY
     if value in {SESSION_S12_ONLY, "closing", "close", "closing_auction", "after_1450"}:
@@ -164,6 +169,36 @@ async def _record_s3s5_status(
 
 
 # ── 공통 유틸 ──────────────────────────────────────────────────────────
+
+# stk_cnd="20" 미지원 API 결과에 적용하는 종목명 기반 2차 필터
+_EXCLUDE_STK_NM_KEYWORDS = (
+    "ETF", "ETN", "레버리지", "인버스", "2X", "곱버스", "SPAC", "스팩",
+    "선물", "합성", "액티브",
+)
+
+
+async def _filter_individual_stocks(rdb, codes: list[str]) -> list[str]:
+    """stock:code_map Redis 해시에서 종목명을 일괄 조회해 ETF/ETN/파생 종목을 제거한다.
+    Redis 장애나 이름 미조회 시 원본 목록을 그대로 반환해 안전하게 fallback한다."""
+    if not codes or not rdb:
+        return codes
+    try:
+        pipe = rdb.pipeline()
+        for code in codes:
+            pipe.hget("stock:code_map", code)
+        names = await pipe.execute()
+        filtered = [
+            code for code, name in zip(codes, names)
+            if not (name and any(kw in name for kw in _EXCLUDE_STK_NM_KEYWORDS))
+        ]
+        removed = len(codes) - len(filtered)
+        if removed:
+            logger.debug("[builder] ETF/ETN 필터: %d종목 제거 (잔류 %d)", removed, len(filtered))
+        return filtered
+    except Exception as exc:
+        logger.debug("[builder] ETF 이름 필터 실패 – 원본 반환: %s", exc)
+        return codes
+
 
 async def _lpush_with_ttl(rdb, key: str, codes: list[str], ttl: int) -> None:
     """기존 키를 삭제하고 새 목록을 RPUSH 한 뒤 EXPIRE 설정"""
@@ -289,7 +324,7 @@ async def _fetch_ka10029(token: str, market: str) -> list[dict]:
             f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
             {
                 "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "10",
-                "stk_cnd": "1", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "3",
+                "stk_cnd": "16", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "3",
             },
             "ka10029",
         )
@@ -361,7 +396,7 @@ async def _fetch_ka10023(token: str, market: str) -> list[dict]:
             f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
             {
                 "mrkt_tp": market, "sort_tp": "2", "tm_tp": "1",
-                "trde_qty_tp": "10", "stk_cnd": "1", "pric_tp": "8", "stex_tp": "3",
+                "trde_qty_tp": "10", "stk_cnd": "20", "pric_tp": "8", "stex_tp": "3",
             },
             "ka10023",
         )
@@ -401,7 +436,7 @@ async def _fetch_ka10027(token: str, market: str, sort_tp: str = "1") -> list[di
             f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
             {
                 "mrkt_tp": market, "sort_tp": sort_tp, "trde_qty_cnd": "0010",
-                "stk_cnd": "1", "crd_cnd": "0", "updown_incls": "0",
+                "stk_cnd": "16", "crd_cnd": "0", "updown_incls": "0",
                 "pric_cnd": "8", "trde_prica_cnd": "0", "stex_tp": "3",
             },
             "ka10027",
@@ -606,6 +641,7 @@ async def _build_s11(token: str, market: str, rdb) -> None:
             codes.append(stk_cd)
         if len(codes) >= 80:
             break
+    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s11:{market}", codes, 2400)
 
 
@@ -654,6 +690,7 @@ async def _build_s12(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 50:
             break
+    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s12:{market}", codes, 1200)
 
 
@@ -697,6 +734,7 @@ async def _build_s2(token: str, market: str, rdb) -> None:
             codes.append(stk_cd)
         if len(codes) >= 50:
             break
+    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s2:{market}", codes, 1200)
 
 
@@ -738,7 +776,8 @@ async def _build_s3(token: str, market: str, rdb) -> None:
             _fetch_ka10065_set(token, market, "9000"),
             _fetch_ka10065_set(token, market, "9999"),
         )
-        codes = list(frgn_set & inst_set)[:100]
+        codes = await _filter_individual_stocks(rdb, list(frgn_set & inst_set))
+        codes = codes[:100]
         await _lpush_with_ttl(rdb, f"candidates:s3:{market}", codes, ttl)
         elapsed_ms = int((_time.monotonic() - started_at) * 1000)
         state = "empty" if not codes else "ok"
@@ -815,6 +854,7 @@ async def _build_s5(token: str, market: str, rdb) -> None:
                         codes.append(stk_cd)
                     if len(codes) >= 100:
                         break
+                codes = await _filter_individual_stocks(rdb, codes)
                 await _lpush_with_ttl(rdb, f"candidates:s5:{market}", codes, ttl)
                 state = "empty" if not codes else "ok"
         elapsed_ms = int((_time.monotonic() - started_at) * 1000)
@@ -907,18 +947,13 @@ async def _build_s6(token: str, rdb) -> None:
             stk_cd = real_stk_cd
             if not stk_cd or stk_cd in seen:
                 continue
-            try:
-                flu_rt = _clean(x.get("flu_rt", "0"))
-            except Exception:
-                flu_rt = 0.0
-            # 선도주 제외: 5% 이상 이미 상승한 종목
-            if flu_rt < 5.0:
-                all_codes.append(stk_cd)
-                seen.add(stk_cd)
+            # flu_rt 기준 사전 제외 없음 — strategy_6_theme.py에서 모드별 분류
+            all_codes.append(stk_cd)
+            seen.add(stk_cd)
         if len(all_codes) >= 150:
             break
 
-    codes = all_codes[:150]
+    codes = await _filter_individual_stocks(rdb, all_codes[:150])
     # S6는 테마 기반으로 시장 구분 없이 동일 풀 적재
     for market in MARKETS:
         await _lpush_with_ttl(rdb, f"candidates:s6:{market}", codes, 1200)
@@ -989,6 +1024,7 @@ async def _build_s15(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= 80:
             break
+    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s15:{market}", codes, 1200)
 
 
@@ -1039,6 +1075,24 @@ async def _build_pre_market(token: str, rdb) -> None:
             await asyncio.sleep(_API_INTERVAL)
         except Exception as e:
             logger.error("[builder] 장전 %s 빌드 오류: %s", market, e)
+    await _refresh_watchlist(rdb)
+
+
+async def _build_opening_recovery(token: str, rdb) -> None:
+    """Keep S1 fresh during 08:25-09:05 when ka10029 often becomes valid late."""
+    for market in MARKETS:
+        try:
+            existing = await rdb.llen(f"candidates:s1:{market}")
+        except Exception:
+            existing = 0
+        if existing:
+            continue
+        try:
+            logger.info("[builder] S1 %s opening recovery rebuild start", market)
+            await _build_s1(token, market, rdb)
+            await asyncio.sleep(_API_INTERVAL)
+        except Exception as e:
+            logger.error("[builder] S1 %s opening recovery failed: %s", market, e)
     await _refresh_watchlist(rdb)
 
 
@@ -1117,6 +1171,10 @@ async def run_candidate_builder(rdb) -> None:
                 logger.info("[builder] pre-market candidate build start")
                 await _build_pre_market(token, rdb)
                 await asyncio.sleep(180)
+            elif session == SESSION_OPENING_RECOVERY:
+                logger.info("[builder] opening recovery candidate build start")
+                await _build_opening_recovery(token, rdb)
+                await asyncio.sleep(60)
             elif session == SESSION_INTRADAY:
                 logger.info("[builder] intraday candidate build start")
                 await _build_intraday(token, rdb, session=session)
@@ -1131,12 +1189,11 @@ async def run_candidate_builder(rdb) -> None:
 
         if time(7, 25) <= now <= time(9, 10):
             if now <= time(8, 25):
-                # 장전 집중 갱신: S1/S2 (3분 주기, 08:25 이전)
-                logger.info("[builder] 장전 빌드 시작")
+                logger.info("[builder] pre-market candidate build start")
                 await _build_pre_market(token, rdb)
                 await asyncio.sleep(180)
             else:
-                # 08:25 이후 S1/S7 풀 동결 – 스캐너가 안정적으로 읽도록 대기
+                await _build_opening_recovery(token, rdb)
                 await asyncio.sleep(60)
 
         elif time(9, 5) <= now <= time(14, 55):

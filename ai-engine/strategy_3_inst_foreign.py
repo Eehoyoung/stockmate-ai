@@ -36,6 +36,9 @@ _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _KA10055_MAX_PAGES = int(os.getenv("S3_KA10055_MAX_PAGES", "3"))
 _KA10055_CACHE_TTL = int(os.getenv("S3_KA10055_CACHE_TTL", "30"))
+_KA10055_CACHE_BUCKET_SEC = int(os.getenv("S3_KA10055_CACHE_BUCKET_SEC", "300"))
+_S3_SCAN_ITEM_LIMIT = int(os.getenv("S3_SCAN_ITEM_LIMIT", "3"))
+_KA10055_REQUIRE_COMPLETE = str(os.getenv("S3_KA10055_REQUIRE_COMPLETE", "1")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class Ka10055RunStats:
@@ -195,9 +198,11 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
     if not stk_cd:
         return 0.0
 
-    current_time = datetime.now(KST).strftime("%H%M%S")
+    now_kst = datetime.now(KST)
+    current_time = now_kst.strftime("%H%M%S")
     use_cache = flag_enabled("S3_KA10055_CACHE_ENABLED") and rdb is not None
-    cache_key = f"strategy:s3:ka10055:{stk_cd}:{current_time[:4]}"
+    bucket = int(now_kst.timestamp() // max(_KA10055_CACHE_BUCKET_SEC, 1))
+    cache_key = f"strategy:s3:ka10055:{stk_cd}:{bucket}"
     if use_cache:
         cached = await cache_get_json(rdb, cache_key)
         if isinstance(cached, (int, float)):
@@ -213,6 +218,7 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
         total_qty = 0
         next_key = ""
         page = 0
+        cap_reached = False
         requested_next_keys = set()
         prev_page_signature = None
         repeated_page_count = 0
@@ -220,6 +226,7 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
             while True:
                 page += 1
                 if page > _KA10055_MAX_PAGES:
+                    cap_reached = True
                     warn("page_cap", tdy_pred,
                          "[S3] ka10055 %s/%s page cap(%d) reached, forced stop",
                          stk_cd, tdy_pred, _KA10055_MAX_PAGES)
@@ -303,7 +310,7 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
                 if cont_yn != "Y" or not next_key:
                     break
 
-        return total_qty
+        return 0 if cap_reached and _KA10055_REQUIRE_COMPLETE else total_qty
 
     # 순차 실행 — 동시 호출 시 /api/dostk/stkinfo 429 과부하 발생
     async with perf_timer("s3_ka10055", rdb=rdb, fields={"stk_cd": stk_cd}):
@@ -343,8 +350,19 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
 
     results = []
     ka10055_stats = Ka10055RunStats()
-    scan_items = smtm_list[:5]
-    for item in scan_items:  # 429 방지: ka10055×2 호출 상한 5종목
+    def _net_amount(item: dict) -> int:
+        try:
+            raw_amt = str(item.get("netprps_amt", "0")).replace("+", "").replace(",", "")
+            return int(raw_amt) if raw_amt.lstrip("-").isdigit() else 0
+        except (TypeError, ValueError):
+            return 0
+
+    filtered_items = [
+        item for item in smtm_list
+        if normalize_stock_code(item.get("stk_cd")) in cont_map and _net_amount(item) > 0
+    ]
+    scan_items = sorted(filtered_items, key=_net_amount, reverse=True)[:max(_S3_SCAN_ITEM_LIMIT, 1)]
+    for item in scan_items:  # 429/latency guard: ka10055 x 2 calls per item
         stk_cd = normalize_stock_code(item.get("stk_cd"))
         if not stk_cd:
             continue

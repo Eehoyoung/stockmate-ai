@@ -350,6 +350,14 @@ def _resolve_bid_ratio(signal: dict, ctx: dict) -> float | None:
             return round(buy / sell, 3)
     except (TypeError, ValueError):
         pass
+
+    try:
+        buy = float(str(signal.get("buy_req", "")).replace(",", "").replace("+", "") or 0)
+        sell = float(str(signal.get("sel_req", "")).replace(",", "").replace("+", "") or 0)
+        if buy > 0 and sell > 0:
+            return round(buy / sell, 3)
+    except (TypeError, ValueError):
+        pass
     return None
 
 

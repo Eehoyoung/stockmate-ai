@@ -8,10 +8,19 @@ ws_tick_data and vi_events become event-complete instead of minute snapshots.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+_TICK_MIN_INTERVAL_MS = {
+    "0B": int(os.getenv("WS_DB_0B_MIN_INTERVAL_MS", "0")),
+    "0D": int(os.getenv("WS_DB_0D_MIN_INTERVAL_MS", "0")),
+    "0H": int(os.getenv("WS_DB_0H_MIN_INTERVAL_MS", "0")),
+}
+_last_tick_insert_ms: dict[tuple[str, str], int] = {}
 
 
 def _normalize_stock_code(stk_cd: str | None) -> str:
@@ -51,6 +60,19 @@ def _i(raw) -> Optional[int]:
         return None
 
 
+def _should_persist_tick(tick_type: str, stk_cd: str) -> bool:
+    min_interval = _TICK_MIN_INTERVAL_MS.get(tick_type, 0)
+    if min_interval <= 0:
+        return True
+    now_ms = int(time.monotonic() * 1000)
+    key = (tick_type, stk_cd)
+    last_ms = _last_tick_insert_ms.get(key)
+    if last_ms is not None and now_ms - last_ms < min_interval:
+        return False
+    _last_tick_insert_ms[key] = now_ms
+    return True
+
+
 async def mark_event_mode(rdb) -> None:
     try:
         await rdb.set("ws:db_writer:event_mode", "1", ex=120)
@@ -61,6 +83,8 @@ async def mark_event_mode(rdb) -> None:
 async def insert_tick_event(pg_pool, tick_type: str, stk_cd: str, values: dict) -> None:
     stk_cd = _normalize_stock_code(stk_cd)
     if not pg_pool or not stk_cd:
+        return
+    if not _should_persist_tick(tick_type, stk_cd):
         return
     try:
         if tick_type == "0B":
@@ -115,7 +139,13 @@ async def insert_tick_event(pg_pool, tick_type: str, stk_cd: str, values: dict) 
                 "0H",
             )
     except Exception as e:
-        logger.warning("[DB] ws_tick_data insert failed [%s %s]: %s", tick_type, stk_cd, e)
+        logger.warning(
+            "[DB] ws_tick_data insert failed [%s %s] %s: %r",
+            tick_type,
+            stk_cd,
+            type(e).__name__,
+            e,
+        )
 
 
 async def insert_vi_event(pg_pool, stk_cd: str, values: dict) -> None:

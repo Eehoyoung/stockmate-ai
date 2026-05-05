@@ -19,7 +19,22 @@ services:
   postgres:
     image: postgres:16-alpine
     env_file: .env
-    command: ["postgres", "-c", "timezone=Asia/Seoul", "-c", "log_timezone=Asia/Seoul"]
+    command:
+      - postgres
+      - -c
+      - timezone=Asia/Seoul
+      - -c
+      - log_timezone=Asia/Seoul
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - max_wal_size=2GB
+      - -c
+      - min_wal_size=512MB
+      - -c
+      - wal_compression=on
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -74,6 +89,7 @@ services:
         REDIS_HOST: redis
         REDIS_PORT: 6379
         HEALTH_PORT: 8081
+        WS_DB_0D_MIN_INTERVAL_MS: 1000
         TZ: Asia/Seoul
       ports:
         - "8081:8081"
@@ -105,6 +121,11 @@ services:
       REDIS_PORT: 6379
       AI_HEALTH_PORT: 8082
       API_ORCHESTRATOR_BASE_URL: http://api-orchestrator:8080
+      S3_KA10055_CACHE_ENABLED: "1"
+      S3_KA10055_CACHE_BUCKET_SEC: 300
+      S3_KA10055_CACHE_TTL: 360
+      S3_KA10055_REQUIRE_COMPLETE: "1"
+      S3_SCAN_ITEM_LIMIT: 3
       TZ: Asia/Seoul
     ports:
       - "8082:8082"

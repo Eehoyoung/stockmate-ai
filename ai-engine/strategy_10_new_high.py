@@ -49,7 +49,7 @@ async def fetch_new_high_stocks_all(token: str, market: str = "000") -> list[dic
                     "mrkt_tp": market,
                     "ntl_tp": "1",             # 신고가
                     "high_low_close_tp": "1",  # 고저기준
-                    "stk_cnd": "1",            # 관리종목 제외
+                    "stk_cnd": "1",           # 관리종목·ETF·ETN·스팩 제외
                     "trde_qty_tp": "00010",    # 만주 이상
                     "crd_cnd": "0",            # 전체
                     "updown_incls": "0",       # 상하한 제외
