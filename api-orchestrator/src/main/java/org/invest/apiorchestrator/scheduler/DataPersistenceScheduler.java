@@ -140,7 +140,7 @@ public class DataPersistenceScheduler {
             }
 
             String viStatus = "released".equals(String.valueOf(vi.get("status"))) ? "2" : "1";
-            String viType = Optional.ofNullable(vi.get("vi_type")).map(Object::toString).orElse("");
+            String viType = normalizeViType(vi.get("vi_type"));
             Double viPrice = _d(vi.get("vi_price"));
             String fingerprint = viStatus + "|" + viType + "|" + (viPrice != null ? viPrice : "");
             String markerKey = "db:vi:last:" + stkCd;
@@ -254,6 +254,28 @@ public class DataPersistenceScheduler {
     private static boolean hasMeaningfulExpectedSnapshot(Map<Object, Object> expected) {
         return _d(expected.get("exp_cntr_pric")) != null
                 || _l(expected.get("exp_cntr_qty")) != null;
+    }
+
+    private static String normalizeViType(Object raw) {
+        String value = Optional.ofNullable(raw).map(Object::toString).orElse("").trim();
+        if (value.isBlank()) {
+            return null;
+        }
+        if ("1".equals(value) || "2".equals(value) || "3".equals(value)) {
+            return value;
+        }
+        boolean dynamic = value.contains("동적");
+        boolean staticVi = value.contains("정적");
+        if (dynamic && staticVi) {
+            return "3";
+        }
+        if (dynamic) {
+            return "2";
+        }
+        if (staticVi) {
+            return "1";
+        }
+        return value.length() > 2 ? value.substring(0, 2) : value;
     }
 
     private DailyIndicators buildDailyIndicators(LocalDate date, String stkCd,

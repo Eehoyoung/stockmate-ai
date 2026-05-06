@@ -82,6 +82,36 @@ class TestCalcVolumeRatio:
         assert _calc_volume_ratio(2_000_000, candles) == 2.0
 
 
+class TestBidRatioLookup:
+    @pytest.mark.asyncio
+    async def test_redis_hoga_is_preferred(self):
+        from strategy_6_theme import _get_bid_ratio
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={
+            "total_buy_bid_req": "300",
+            "total_sel_bid_req": "100",
+        })
+
+        with patch("strategy_6_theme.fetch_hoga", new_callable=AsyncMock) as mock_fetch:
+            ratio = await _get_bid_ratio("token", rdb, "005930")
+
+        assert ratio == 3.0
+        mock_fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rest_hoga_fallback_when_ws_hoga_missing(self):
+        from strategy_6_theme import _get_bid_ratio
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={})
+
+        with patch("strategy_6_theme.fetch_hoga", new=AsyncMock(return_value=1.234)):
+            ratio = await _get_bid_ratio("token", rdb, "005930")
+
+        assert ratio == 1.23
+
+
 # ── scan_theme_laggard integration (mocked APIs) ─────────────────────────
 
 @pytest.mark.asyncio

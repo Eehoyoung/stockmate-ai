@@ -139,6 +139,20 @@ def _is_active_signal(signal_status: Optional[str], exit_type: Optional[str]) ->
     return (signal_status or "PENDING") in ACTIVE_SIGNAL_STATUSES and not exit_type
 
 
+def _is_monitorable_position(row) -> bool:
+    if not row or row["exit_type"]:
+        return False
+    position_status = str(row["position_status"] or "ACTIVE")
+    if position_status not in ACTIVE_POSITION_STATES:
+        return False
+    if _is_active_signal(row["signal_status"], row["exit_type"]):
+        return True
+    # SignalPerformanceScheduler can mark end-of-day signals EXPIRED while the
+    # position lifecycle remains ACTIVE. The position monitor must still be able
+    # to close those rows when TP/SL/trailing is reached.
+    return str(row["signal_status"] or "") == "EXPIRED"
+
+
 def _parse_utc_dt(value) -> Optional[datetime]:
     if value is None:
         return None
@@ -799,7 +813,7 @@ async def insert_python_signal(
                     signal.get("rr_skip_reason"),
                     _sf(signal.get("stop_max_pct")),
                     _sf(signal.get("gap_pct")),
-                    _sf(signal.get("vol_ratio")),
+                    _sf(signal.get("vol_ratio") if signal.get("vol_ratio") is not None else signal.get("volume_ratio")),
                     _sf(signal.get("cntr_strength") or signal.get("cntr_str")),
                     _sf(signal.get("bid_ratio")),
                     _sf(signal.get("pullback_pct")),
@@ -928,7 +942,7 @@ async def record_overnight_eval(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 row = await _load_signal_for_update(conn, signal_id)
-                if not row or not _is_active_signal(row["signal_status"], row["exit_type"]):
+                if not _is_monitorable_position(row):
                     return False
                 await conn.execute(
                     """
@@ -1350,7 +1364,7 @@ async def mark_tp1_hit(pool, position_id: int, cur_prc: int) -> bool:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 row = await _load_signal_for_update(conn, position_id)
-                if not row or not _is_active_signal(row["signal_status"], row["exit_type"]):
+                if not _is_monitorable_position(row):
                     return False
                 if str(row["position_status"] or "ACTIVE") != "ACTIVE":
                     return False
@@ -1385,7 +1399,7 @@ async def update_peak_price(pool, position_id: int, peak_price: int) -> bool:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 row = await _load_signal_for_update(conn, position_id)
-                if not row or not _is_active_signal(row["signal_status"], row["exit_type"]):
+                if not _is_monitorable_position(row):
                     return False
                 if str(row["position_status"] or "ACTIVE") not in {"ACTIVE", "PARTIAL_TP", "OVERNIGHT"}:
                     return False
@@ -1427,7 +1441,7 @@ async def close_open_position(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 row = await _load_signal_for_update(conn, signal_id)
-                if not row or not _is_active_signal(row["signal_status"], row["exit_type"]):
+                if not _is_monitorable_position(row):
                     return False
                 await conn.execute(
                     """

@@ -894,6 +894,11 @@ async def process_one(rdb, pg_pool=None) -> bool:
         exact_strength = _resolve_execution_strength(signal, ctx)
         ctx["strength"] = exact_strength
         signal["cntr_strength"] = round(exact_strength, 2) if exact_strength > 0 else signal.get("cntr_strength")
+        resolved_bid_ratio = _resolve_bid_ratio(signal, ctx)
+        if resolved_bid_ratio is not None:
+            signal["bid_ratio"] = round(resolved_bid_ratio, 3)
+        if signal.get("vol_ratio") is None and signal.get("volume_ratio") is not None:
+            signal["vol_ratio"] = signal.get("volume_ratio")
         ctx["ws_online"] = ws_online
 
         r_score, components = _coerce_rule_score_result(rule_score(signal, ctx))
@@ -1041,6 +1046,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
         enriched["ai_reason"] = display_reason
         await push_score_only_queue(rdb, enriched)
 
+        rule_only_payload = None
         if cancel_type in ("AI_UNAVAILABLE", "AI_DAILY_LIMIT") or (
             action != "ENTER" and cancel_type is None and not should_skip_ai(r_score, strategy)
         ):
@@ -1064,6 +1070,19 @@ async def process_one(rdb, pg_pool=None) -> bool:
             )
 
         if pg_pool:
+            if rule_only_payload is not None and not signal_id:
+                await insert_rule_cancel_signal(
+                    pg_pool,
+                    signal_id=None,
+                    stk_cd=stk_cd,
+                    strategy=strategy,
+                    rule_score=r_score,
+                    cancel_type=cancel_type or "RULE_ONLY",
+                    reason=display_reason,
+                    raw_payload=rule_only_payload,
+                )
+                return True
+
             db_id = signal_id
             if not db_id:
                 db_id = await insert_python_signal(

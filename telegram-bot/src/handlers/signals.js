@@ -260,9 +260,9 @@ async function processItem(bot, item) {
         return;
     }
 
-    const chatIds = getAllowedChatIds();
+    const chatIds = isRuleOnly ? getPrimaryChatIds() : getAllowedChatIds();
     if (chatIds.length === 0) {
-        logger.warn('TELEGRAM_ALLOWED_CHAT_IDS is empty');
+        logger.warn(isRuleOnly ? 'TELEGRAM_PRIMARY_CHAT_ID is empty' : 'TELEGRAM_ALLOWED_CHAT_IDS is empty');
         return;
     }
 

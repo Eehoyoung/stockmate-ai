@@ -154,6 +154,7 @@ async def insert_vi_event(pg_pool, stk_cd: str, values: dict) -> None:
         return
     try:
         vi_status = str(values.get("9068", "")).strip()
+        vi_type = _normalize_vi_type(values.get("1225", ""))
         released_at = "NOW()" if vi_status == "2" else None
         if released_at:
             await pg_pool.execute(
@@ -165,7 +166,7 @@ async def insert_vi_event(pg_pool, stk_cd: str, values: dict) -> None:
                 """,
                 stk_cd,
                 (values.get("302") or "")[:40] or None,
-                str(values.get("1225", "")).strip()[:2] or None,
+                vi_type,
                 vi_status[:2] or None,
                 _f(values.get("1221")),
                 _i(values.get("15") or values.get("13")),
@@ -184,7 +185,7 @@ async def insert_vi_event(pg_pool, stk_cd: str, values: dict) -> None:
                 """,
                 stk_cd,
                 (values.get("302") or "")[:40] or None,
-                str(values.get("1225", "")).strip()[:2] or None,
+                vi_type,
                 vi_status[:2] or None,
                 _f(values.get("1221")),
                 _i(values.get("15") or values.get("13")),
@@ -195,3 +196,20 @@ async def insert_vi_event(pg_pool, stk_cd: str, values: dict) -> None:
             )
     except Exception as e:
         logger.warning("[DB] vi_event insert failed [%s]: %s", stk_cd, e)
+
+
+def _normalize_vi_type(raw) -> str | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    if value in {"1", "2", "3"}:
+        return value
+    dynamic = "동적" in value
+    static = "정적" in value
+    if dynamic and static:
+        return "3"
+    if dynamic:
+        return "2"
+    if static:
+        return "1"
+    return value[:2] or None

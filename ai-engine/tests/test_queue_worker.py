@@ -166,6 +166,35 @@ class TestQueueWorkerHappyPath:
 
         assert ratio == 1.55
 
+    def test_process_one_persists_ctx_bid_ratio_and_volume_alias(self):
+        item = _signal(
+            strategy="S6_THEME_LAGGARD",
+            cur_prc=10000,
+            tp1_price=11200,
+            sl_price=9600,
+            rr_ratio=3.0,
+            volume_ratio=2.5,
+        )
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+        ctx = _ctx()
+        ctx["hoga"] = {"total_buy_bid_req": "240", "total_sel_bid_req": "100"}
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=ctx), \
+             patch("queue_worker.rule_score", return_value=(40.0, {"strength": 20.0})), \
+             patch("queue_worker.should_skip_ai", return_value=True), \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert captured[0]["bid_ratio"] == 2.4
+        assert captured[0]["vol_ratio"] == 2.5
+
     def test_legacy_float_rule_score_is_tolerated(self):
         item = _signal()
         rdb = _make_rdb(json.dumps(item))

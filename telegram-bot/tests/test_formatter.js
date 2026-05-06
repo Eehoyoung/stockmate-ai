@@ -7,6 +7,7 @@ const {
     formatSignal,
     formatForceClose,
     formatDailySummary,
+    formatSellSignal,
     formatSellRecommendation,
     formatRuleOnlySignal,
     escapeHtml,
@@ -267,12 +268,12 @@ test('formatDailySummary handles empty input', () => {
 
 test('SELL_RECOMMENDATION TP1 includes partial/urgent/trigger/pnl', () => {
     const msg = formatSellRecommendation(makeSellRecommendation());
-    assert.ok(msg.includes('TP1'));
-    assert.ok(msg.includes('Partial'));
-    assert.ok(msg.includes('Urgent'));
-    assert.ok(msg.includes('Trigger'));
-    assert.ok(msg.includes('Realized PnL'));
-    assert.ok(msg.includes('Reason'));
+    assert.ok(msg.includes('[매도검토]'));
+    assert.ok(msg.includes('1차 목표가 도달'));
+    assert.ok(msg.includes('청산범위'));
+    assert.ok(msg.includes('기준가'));
+    assert.ok(msg.includes('손익'));
+    assert.ok(msg.includes('판단근거'));
 });
 
 test('SELL_RECOMMENDATION SL uses stop-loss wording', () => {
@@ -284,8 +285,8 @@ test('SELL_RECOMMENDATION SL uses stop-loss wording', () => {
         realized_pnl_pct: -2.15,
         reason_summary: '손절 기준 이탈',
     }));
-    assert.ok(msg.includes('Stop loss'));
-    assert.ok(msg.includes('no'));
+    assert.ok(msg.includes('손절 기준 도달'));
+    assert.ok(msg.includes('검토 필요'));
     assert.ok(msg.includes('-2.15') || msg.includes('-2.15%'));
 });
 
@@ -297,9 +298,30 @@ test('SELL_RECOMMENDATION TRAILING keeps trailing wording', () => {
         trailing_pct: 1.5,
         reason_summary: '이익 보호를 위한 추적 손절',
     }));
-    assert.ok(msg.includes('Trailing'));
+    assert.ok(msg.includes('트레일링'));
     assert.ok(msg.includes('30%'));
     assert.ok(msg.includes('1.5') || msg.includes('1.50'));
+});
+
+test('SELL_SIGNAL TP1 with partial false does not claim partial sell', () => {
+    const msg = formatSellSignal({
+        strategy: 'S7_ICHIMOKU_BREAKOUT',
+        stk_cd: '006800',
+        stk_nm: '미래에셋증권',
+        exit_type: 'TP1_HIT',
+        partial: false,
+        entry_price: 70400,
+        cur_prc: 81100,
+        trigger_price: 78400,
+        sl_price: 67900,
+        realized_pnl_pct: 15.1989,
+        timestamp: '2026-05-06T10:01:05+09:00',
+    });
+    assert.ok(msg.includes('[매도신호]'));
+    assert.ok(msg.includes('목표가 도달'));
+    assert.ok(msg.includes('전량/단일 목표 청산'));
+    assert.ok(!msg.includes('부분 청산'));
+    assert.ok(!msg.includes('절반 청산'));
 });
 
 // ── entry_size_tier (진입 강도) 테스트 ─────────────────────────────

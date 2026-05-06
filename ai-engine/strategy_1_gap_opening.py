@@ -454,6 +454,14 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
 
         # 장시작 후 예상가 대비 추가 상승폭 (현재가 vs 예상가)
         post_open_extension_pct: float | None = None
+        cur_price = float(exp_price)
+        if candle_list:
+            try:
+                parsed_cur_price = abs(float(str(candle_list[0].get("cur_prc", 0)).replace("+", "").replace(",", "")))
+                if parsed_cur_price > 0:
+                    cur_price = parsed_cur_price
+            except Exception:
+                pass
         if exp_price > 0 and cur_price > 0:
             try:
                 post_open_extension_pct = round((cur_price - exp_price) / exp_price * 100, 2)
@@ -462,7 +470,7 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
 
         eq_result = assess_execution_quality(
             stk_cd,
-            float(exp_price),
+            cur_price,
             hoga_raw,
             candle_raw,
             "S1",

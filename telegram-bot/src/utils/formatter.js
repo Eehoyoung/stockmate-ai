@@ -827,63 +827,32 @@ function formatSellSignal(item) {
         TRAILING_STOP:  '🔵',
         TREND_REVERSAL: '⚠️',
     };
-    const EXIT_LABEL = {
-        SL_HIT:         '손절 (SL 도달)',
-        TP1_HIT:        '1차 목표가 도달 (부분 청산)',
-        TP2_HIT:        '2차 목표가 도달 (전량 청산)',
-        TRAILING_STOP:  '트레일링 스탑 발동',
-        TREND_REVERSAL: '추세 반전 감지 청산',
-    };
-
     const exitType  = item.exit_type  || 'UNKNOWN';
     const emoji     = EXIT_EMOJI[exitType]  || '📤';
-    const label     = EXIT_LABEL[exitType]  || exitType;
-    const stratEmoji = STRATEGY_EMOJI[item.strategy] ?? '📌';
-    const pnl        = Number(item.realized_pnl_pct ?? 0);
-    const pnlSign    = pnl >= 0 ? '+' : '';
-    const pnlLabel   = `${pnlSign}${pnl.toFixed(2)}%`;
-
-    const entryPrc  = normalizeForDisplay(item.entry_price ?? 0);
-    const curPrc    = normalizeForDisplay(item.cur_prc ?? 0);
-
-    const lines = [
-        `${emoji} <b>[매도신호] ${stratEmoji} ${item.strategy}</b>`,
-        `종목: <b>${escapeHtml(item.stk_cd)} ${escapeHtml(item.stk_nm || '')}</b>`,
-        `청산유형: <b>${label}</b>`,
-        `손익: <b>${pnlLabel}</b>`,
-        '',
-    ];
-
-    if (entryPrc > 0) lines.push(`진입가: ${entryPrc.toLocaleString()}원`);
-    if (curPrc   > 0) lines.push(`청산가: ${curPrc.toLocaleString()}원`);
-
-    if (exitType === 'TP1_HIT') {
-        lines.push('');
-        lines.push('💡 <i>TP1 도달 — 절반 청산, 나머지는 트레일링 스탑으로 관리</i>');
-    }
+    const lines = _formatSellBaseLines(item, {
+        title: '매도신호',
+        status: '청산 실행',
+        exitType,
+        icon: emoji,
+    });
 
     if (exitType === 'TRAILING_STOP' && item.peak_price) {
         const peak = normalizeForDisplay(item.peak_price);
         const tPct = Number(item.trailing_pct ?? 1.5);
-        lines.push(`고점: ${peak.toLocaleString()}원  낙폭: ${tPct}%`);
+        lines.push(`고점/낙폭: <b>${peak.toLocaleString()}원 / ${tPct}%</b>`);
     }
 
     if (exitType === 'TREND_REVERSAL') {
         const score = Number(item.reversal_score ?? 0);
-        lines.push(`추세반전점수: ${score.toFixed(1)}/5`);
-        if (item.ai_reason) lines.push(`AI판단: ${escapeHtml(item.ai_reason)}`);
+        lines.push(`추세반전점수: <b>${score.toFixed(1)}/5</b>`);
+        if (item.ai_reason) lines.push(`판단근거: ${escapeHtml(item.ai_reason)}`);
     }
 
     if (exitType === 'TIME_STOP' && item.time_stop_reason) {
-        lines.push(`Time stop: ${escapeHtml(String(item.time_stop_reason))}`);
+        lines.push(`판단근거: ${escapeHtml(String(item.time_stop_reason))}`);
     }
 
-    if (item.sl_price  && exitType !== 'SL_HIT') {
-        lines.push(`SL기준: ${Number(item.sl_price).toLocaleString()}원`);
-    }
-
-    lines.push('');
-    lines.push(`🕐 ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}`);
+    _appendSellFooter(lines, item);
 
     return lines.filter((l) => l !== null).join('\n');
 }
@@ -906,47 +875,127 @@ function formatSellRecommendation(item) {
             ? 'SL'
             : (rawKind.includes('TRAIL') ? 'TRAILING' : 'GENERAL'));
 
-    const labels = {
-        TP1: { title: 'TP1 partial sell', note: 'First target reached. Partial profit taking is recommended.' },
-        SL: { title: 'Stop loss', note: 'The stop-loss condition was hit.' },
-        TRAILING: { title: 'Trailing stop', note: 'Protect profit with a trailing stop.' },
-        GENERAL: { title: 'Sell recommendation', note: 'Position review is recommended.' },
-    };
+    const exitType = kind === 'TP1'
+        ? 'TP1_HIT'
+        : (kind === 'SL' ? 'SL_HIT' : (kind === 'TRAILING' ? 'TRAILING_STOP' : 'REVIEW'));
 
-    const meta = labels[kind] || labels.GENERAL;
-    const stockLabel = item.stk_nm ? `${item.stk_nm} (${item.stk_cd})` : item.stk_cd;
-    const partialLabel = typeof item.partial === 'number'
-        ? `${item.partial}%`
-        : (item.partial == null ? '-' : String(item.partial));
-    const urgentLabel = item.urgent == null ? '-' : (item.urgent ? 'yes' : 'no');
-    const lines = [
-        `<b>[SELL RECOMMENDATION] ${item.strategy || '-'}</b>`,
-        `Stock: <b>${escapeHtml(stockLabel || '')}</b>`,
-        `Type: <b>${meta.title}</b>`,
-        `Partial: <b>${partialLabel}</b>`,
-        `Urgent: <b>${urgentLabel}</b>`,
-        meta.note,
-    ];
+    const lines = _formatSellBaseLines(item, {
+        title: '매도검토',
+        status: item.urgent ? '즉시 검토' : '검토 필요',
+        exitType,
+        icon: item.urgent ? '🚨' : '📋',
+    });
 
-    if (item.trigger_price != null) {
-        lines.push(`Trigger: <b>${Number(item.trigger_price).toLocaleString()} KRW</b>`);
-    }
-    if (item.realized_pnl_pct != null) {
-        const pnl = Number(item.realized_pnl_pct);
-        const sign = pnl >= 0 ? '+' : '';
-        lines.push(`Realized PnL: <b>${sign}${pnl.toFixed(2)}%</b>`);
-    }
     if (item.trailing_pct != null || item.trailing_stop_pct != null) {
-        lines.push(`Trailing: <b>${item.trailing_pct ?? item.trailing_stop_pct}%</b>`);
+        lines.push(`트레일링: <b>${item.trailing_pct ?? item.trailing_stop_pct}%</b>`);
     }
     if (item.reason_summary) {
-        lines.push(`Reason: ${escapeHtml(item.reason_summary)}`);
+        lines.push(`판단근거: ${escapeHtml(item.reason_summary)}`);
     }
     if (item.ai_reason) {
-        lines.push(`AI Reason: ${escapeHtml(item.ai_reason)}`);
+        lines.push(`AI판단: ${escapeHtml(item.ai_reason)}`);
     }
 
+    _appendSellFooter(lines, item);
+
     return lines.join('\n');
+}
+
+function _formatSellBaseLines(item, { title, status, exitType, icon }) {
+    const stratEmoji = STRATEGY_EMOJI[item.strategy] ?? '📌';
+    const label = _sellExitLabel(exitType, item.partial);
+    const stock = item.stk_nm
+        ? `${item.stk_cd} ${item.stk_nm}`
+        : item.stk_cd;
+    const entryPrc = normalizeForDisplay(item.entry_price ?? 0);
+    const exitPrc = normalizeForDisplay(item.cur_prc ?? item.exit_price ?? 0);
+    const triggerPrc = normalizeForDisplay(item.trigger_price ?? 0);
+    const slPrc = normalizeForDisplay(item.sl_price ?? 0);
+
+    const lines = [
+        `${icon} <b>[${title}] ${stratEmoji} ${escapeHtml(item.strategy || '-')}</b>`,
+        `종목: <b>${escapeHtml(stock || '')}</b>`,
+        `상태: <b>${status}</b>`,
+        `유형: <b>${label}</b>`,
+    ];
+
+    const pnlLabel = _formatPercent(item.realized_pnl_pct);
+    if (pnlLabel) lines.push(`손익: <b>${pnlLabel}</b>`);
+
+    lines.push('');
+    if (entryPrc > 0) lines.push(`진입가: <b>${entryPrc.toLocaleString()}원</b>`);
+    if (exitPrc > 0) lines.push(`청산가: <b>${exitPrc.toLocaleString()}원</b>`);
+    if (triggerPrc > 0) lines.push(`기준가: <b>${triggerPrc.toLocaleString()}원</b>`);
+    if (slPrc > 0 && exitType !== 'SL_HIT') lines.push(`손절기준: <b>${slPrc.toLocaleString()}원</b>`);
+
+    const partialLabel = _partialLabel(item.partial);
+    if (partialLabel) lines.push(`청산범위: <b>${partialLabel}</b>`);
+
+    const guidance = _sellGuidance(exitType, item.partial);
+    if (guidance) {
+        lines.push('');
+        lines.push(`메모: ${guidance}`);
+    }
+
+    return lines;
+}
+
+function _sellExitLabel(exitType, partial) {
+    if (exitType === 'SL_HIT') return '손절 기준 도달';
+    if (exitType === 'TP1_HIT') return _isPartialExit(partial) ? '1차 목표가 도달' : '목표가 도달';
+    if (exitType === 'TP2_HIT') return '2차 목표가 도달';
+    if (exitType === 'TRAILING_STOP') return '트레일링 스탑 발동';
+    if (exitType === 'TREND_REVERSAL') return '추세 반전 감지';
+    if (exitType === 'TIME_STOP') return '시간 기준 정리';
+    if (exitType === 'REVIEW') return '포지션 점검';
+    return exitType || '포지션 점검';
+}
+
+function _sellGuidance(exitType, partial) {
+    if (exitType === 'TP1_HIT') {
+        return _isPartialExit(partial)
+            ? '1차 목표 도달. 일부 수익 실현 후 잔여 물량은 트레일링으로 관리.'
+            : '목표가 도달. 포지션 청산 결과를 확인.';
+    }
+    if (exitType === 'TP2_HIT') return '2차 목표 도달. 잔여 포지션 청산 결과를 확인.';
+    if (exitType === 'SL_HIT') return '손절 기준 도달. 추가 진입 없이 재평가.';
+    if (exitType === 'TRAILING_STOP') return '이익 보호 기준 발동. 잔여 포지션 정리 여부 확인.';
+    if (exitType === 'TIME_STOP') return '보유 시간 기준 도달. 자금 회전과 리스크를 우선 확인.';
+    return null;
+}
+
+function _partialLabel(partial) {
+    if (typeof partial === 'number') return `${partial}%`;
+    if (partial === true) return '부분 청산';
+    if (partial === false) return '전량/단일 목표 청산';
+    if (partial == null) return null;
+    return String(partial);
+}
+
+function _isPartialExit(partial) {
+    if (typeof partial === 'number') return partial > 0 && partial < 100;
+    if (typeof partial === 'string') {
+        const normalized = partial.trim().toLowerCase();
+        if (normalized === 'false' || normalized === '0' || normalized === '100%') return false;
+        return normalized.length > 0;
+    }
+    return partial === true;
+}
+
+function _formatPercent(value) {
+    if (value == null || value === '') return null;
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    const sign = num >= 0 ? '+' : '';
+    return `${sign}${num.toFixed(2)}%`;
+}
+
+function _appendSellFooter(lines, item) {
+    const ts = item.timestamp || item.signal_time || new Date();
+    const dt = ts instanceof Date ? ts : new Date(ts);
+    const displayTs = Number.isNaN(dt.getTime()) ? new Date() : dt;
+    lines.push('');
+    lines.push(`시간: ${displayTs.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}`);
 }
 
 function formatNewsAlert(item) {

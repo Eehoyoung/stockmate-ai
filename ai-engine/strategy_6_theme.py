@@ -16,6 +16,7 @@ import os
 
 from http_utils import (
     fetch_cntr_strength_cached,
+    fetch_hoga,
     fetch_stk_nm,
     kiwoom_client,
     validate_kiwoom_response,
@@ -77,18 +78,21 @@ def _calc_volume_ratio(acc_vol: float, candles: list[dict]) -> float:
         return 0.0
 
 
-async def _get_bid_ratio(rdb, stk_cd: str) -> float | None:
+async def _get_bid_ratio(token: str, rdb, stk_cd: str) -> float | None:
     """Redis ws:hoga에서 총매수잔량/총매도잔량. 데이터 없으면 None."""
-    if not rdb:
-        return None
     try:
-        hoga = await rdb.hgetall(f"ws:hoga:{stk_cd}")
-        if not hoga:
-            return None
-        buy  = clean_num(hoga.get("total_buy_bid_req", 0))
-        sell = clean_num(hoga.get("total_sel_bid_req", 0))
-        if sell > 0:
-            return round(buy / sell, 2)
+        if rdb:
+            hoga = await rdb.hgetall(f"ws:hoga:{stk_cd}")
+            if hoga:
+                buy  = clean_num(hoga.get("total_buy_bid_req", 0))
+                sell = clean_num(hoga.get("total_sel_bid_req", 0))
+                if sell > 0:
+                    return round(buy / sell, 2)
+    except Exception:
+        pass
+    try:
+        ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
+        return round(float(ratio), 2) if ratio is not None else None
     except Exception:
         pass
     return None
@@ -239,7 +243,7 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 continue
 
             # ── 호가비율 (소프트: 없으면 체결강도/거래량으로 보완) ──────────
-            bid_ratio = await _get_bid_ratio(rdb, stk_cd)
+            bid_ratio = await _get_bid_ratio(token, rdb, stk_cd)
             if bid_ratio is not None and bid_ratio < _MIN_BID_RATIO and strength < 130:
                 _log_reject(stk_cd, theme_nm, mode, "weak_bid_ratio",
                             bid_ratio=bid_ratio, strength=round(strength, 1))
