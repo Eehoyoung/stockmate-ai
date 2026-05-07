@@ -9,7 +9,7 @@ const {
     formatSellRecommendation,
     formatNewsAlert,
 } = require('../utils/formatter');
-const { formatThreadsSignal, formatThreadsBriefing } = require('../utils/threads_formatter');
+const { formatThreadsSignal, formatThreadsBriefing, computeThreadsRR } = require('../utils/threads_formatter');
 const threads = require('../services/threads');
 const { getLogger } = require('../utils/logger');
 
@@ -21,9 +21,19 @@ const HOLD_MIN_SCORE = 80;
 const MAX_SIGNALS_PER_MIN = Number(process.env.MAX_SIGNALS_PER_MIN ?? 20);
 const VALID_SIGNAL_STAGES = new Set(['WATCH', 'HOLD', 'ENTRY', 'CANCEL']);
 const THREADS_ENABLED = process.env.THREADS_ENABLED === 'true';
+const THREADS_MIN_MARKET_CAP_EOK = Number(process.env.THREADS_MIN_MARKET_CAP_EOK ?? 1000);
 
 let _signalCount = 0;
 let _windowStart = Date.now();
+
+/** 시가총액 1,000억 미만 소형주 필터 (Threads 전용, 억 단위 비교) */
+function _isLowLiquidityStock(item) {
+    const capEok = item.market_cap_eok != null
+        ? Number(item.market_cap_eok)
+        : (item.market_cap != null ? Number(item.market_cap) / 1e8 : null);
+    if (capEok === null || capEok <= 0) return false;
+    return capEok < THREADS_MIN_MARKET_CAP_EOK;
+}
 
 function _shouldPostToThreads(action, isRuleOnly) {
     if (!THREADS_ENABLED) return false;
@@ -342,14 +352,29 @@ async function processItem(bot, item) {
 
     // Threads 동시 발행 (ENTER + RULE_ONLY만, fire-and-forget)
     if (_shouldPostToThreads(action, isRuleOnly)) {
-        const threadsText = formatThreadsSignal(item);
-        threads.postText(threadsText).catch((e) =>
-            logger.error('threads post failed', {
-                stk_cd:   item.stk_cd,
-                strategy: item.strategy,
-                score:    ai_score,
-            }, e)
-        );
+        const entryPrice = Number(item.cur_prc ?? item.entry_price ?? 0);
+        const tp1Price   = Number(item.claude_tp1 ?? item.tp1_price ?? 0);
+        const slPrice    = Number(item.claude_sl  ?? item.sl_price  ?? 0);
+        const rr = computeThreadsRR(item.stk_cd, entryPrice, tp1Price, slPrice);
+
+        if (rr !== null && rr < 1.0) {
+            logger.info('threads post skipped: R:R below 1.0', {
+                stk_cd: item.stk_cd, strategy: item.strategy, rr: rr.toFixed(2),
+            });
+        } else if (_isLowLiquidityStock(item)) {
+            logger.info('threads post skipped: low liquidity stock', {
+                stk_cd: item.stk_cd, market_cap_eok: item.market_cap_eok,
+            });
+        } else {
+            const threadsText = formatThreadsSignal(item);
+            threads.postText(threadsText).catch((e) =>
+                logger.error('threads post failed', {
+                    stk_cd:   item.stk_cd,
+                    strategy: item.strategy,
+                    score:    ai_score,
+                }, e)
+            );
+        }
     }
 }
 

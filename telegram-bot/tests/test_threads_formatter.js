@@ -6,9 +6,8 @@
  */
 
 const path = require('path');
-// 프로젝트 루트 기준 실행 대응
 const formatterPath = path.resolve(__dirname, '../src/utils/threads_formatter');
-const { formatThreadsSignal, formatThreadsBriefing } = require(formatterPath);
+const { formatThreadsSignal, formatThreadsBriefing, computeThreadsRR } = require(formatterPath);
 
 let pass = 0;
 let fail = 0;
@@ -107,16 +106,13 @@ test('TC8  claude_sl 우선 적용 (sl_price 무시)', () => {
 // ── TC9: 가격 없는 경우 크래시 없음 ─────────────────────────────────────
 test('TC9  가격 필드 전부 없어도 크래시 없음', () => {
     const item = { strategy: 'S8_GOLDEN_CROSS', stk_cd: '005930' };
-    let t;
-    assert(() => { t = formatThreadsSignal(item); return true; }, '크래시 발생');
-    t = formatThreadsSignal(item);
+    const t = formatThreadsSignal(item);
     assert(typeof t === 'string', '문자열 반환 실패');
     assert(t.includes('투자권유가 아닙니다'), '면책 문구 없음');
 });
 
 // ── TC10: 450자 초과 입력 → 말줄임 처리 ─────────────────────────────────
 test('TC10 초과 길이 item → 450자 이하 + 말줄임 처리', () => {
-    // 종목명을 극단적으로 늘려 450자 초과를 강제로 만듦
     const item = {
         ...BASE,
         stk_nm: '이름이매우길고아주긴종목명이라서글자수가폭발할수도있는상황테스트용더미데이터'.repeat(10),
@@ -132,11 +128,21 @@ test('TC11 전략 설명 문구 포함', () => {
     assert(t.includes('골든크로스'), '전략 설명 없음');
 });
 
-// ── TC12: 퍼센트 변동률 표시 ─────────────────────────────────────────────
-test('TC12 저항/지지 구간 퍼센트 표시 (+/- 형식)', () => {
+// ── TC12: 목표·리스크 구간 라벨 확인 + 퍼센트 미노출 ─────────────────────
+test('TC12 목표·리스크 구간 — 퍼센트 미노출 + 라벨 확인', () => {
     const t = formatThreadsSignal(BASE);
-    assert(t.includes('+'), 'tp1 상승률 없음');
-    assert(t.includes('-'), 'sl 하락률 없음');
+    assert(t.includes('목표 구간 1'), '목표 구간 1 라벨 없음');
+    assert(t.includes('리스크 관리 구간'), '리스크 관리 구간 라벨 없음');
+    // 퍼센트 표시 없어야 함 (자본시장법 위반 방지)
+    assert(!/\(\s*[+-]\d+\.\d+%\s*\)/.test(t), '퍼센트 표시 잔존');
+});
+
+// ── TC12a: AI점수 미노출 ─────────────────────────────────────────────────
+test('TC12a AI점수 미노출 — 자본시장법 §6⑥ 준수', () => {
+    const item = { ...BASE, ai_score: 81.0 };
+    const t = formatThreadsSignal(item);
+    assert(!t.includes('AI점수'), 'AI점수 표시됨');
+    assert(!t.includes('81.0'), 'AI점수 숫자 표시됨');
 });
 
 // ── formatThreadsBriefing 테스트 ─────────────────────────────────────────
@@ -161,7 +167,6 @@ const BRIEFING_ITEM = {
         '한 줄 결론',
         '코스피가 반도체 불기둥과 함께 사상 첫 6,900선을 돌파했다.',
     ].join('\n'),
-    // item.summary 에는 내부 시스템 지표 포함 — 브리핑 포매터는 이를 절대 사용 안 함
     summary: {
         queue_counts:      { telegram_queue: 5, ai_scored_queue: 3, error_queue: 2 },
         active_strategies: ['S1_GAP_OPEN', 'S8_GOLDEN_CROSS'],
@@ -188,14 +193,26 @@ test('TC15 브리핑 — 페르소나 라인 제거', () => {
     assert(!t.includes('페르소나:'), '페르소나 라인 잔존');
 });
 
-// TC16: 시스템 운영 지표 미노출 (queue, error, strategy 명칭)
+// TC16: 시스템 운영 지표 미노출 — message 내 시스템 섹션 절단
 test('TC16 브리핑 — 시스템 운영 지표 미포함', () => {
-    const t = formatThreadsBriefing(BRIEFING_ITEM);
-    assert(!t.includes('telegram_queue'),   'telegram_queue 노출');
-    assert(!t.includes('error_queue'),      'error_queue 노출');
-    assert(!t.includes('ai_scored_queue'),  'ai_scored_queue 노출');
-    assert(!t.includes('S1_GAP_OPEN'),      'strategy 명칭 노출');
-    assert(!t.includes('S8_GOLDEN_CROSS'),  'strategy 명칭 노출');
+    const itemWithSystem = {
+        type: 'STATUS_REPORT',
+        message: [
+            '시장 온도: 강세 우위',
+            '나스닥 사상최고치 돌파',
+            '',
+            'telegram_queue: 5건',
+            'S1_GAP_OPEN: 활성',
+            'error_queue: 2건',
+            'ai_scored_queue: 3건',
+        ].join('\n'),
+    };
+    const t = formatThreadsBriefing(itemWithSystem);
+    assert(!t.includes('telegram_queue'),  'telegram_queue 노출');
+    assert(!t.includes('error_queue'),     'error_queue 노출');
+    assert(!t.includes('ai_scored_queue'), 'ai_scored_queue 노출');
+    assert(!t.includes('S1_GAP_OPEN'),     'strategy 명칭 노출');
+    assert(t.includes('시장 온도'),         '정상 내용이 제거됨');
 });
 
 // TC17: 브리핑 전용 면책 문구 포함
@@ -220,7 +237,6 @@ test('TC19 브리핑 — 긴 메시지 말줄임 처리', () => {
     };
     const t = formatThreadsBriefing(longItem);
     assert(t.length <= 450, `${t.length}자 — 450자 초과`);
-    // 말줄임이 있거나(…) 텍스트가 bodyMax 이하로 짤려야 함
     assert(
         t.includes('…') || t.split('\n\n')[0].length <= 350,
         '말줄임(…) 없이 초과됨'
@@ -232,6 +248,96 @@ test('TC20 브리핑 — 빈 message 크래시 없음', () => {
     const t = formatThreadsBriefing({ type: 'STATUS_REPORT', message: '' });
     assert(typeof t === 'string', '문자열 반환 실패');
     assert(t.includes('투자권유가 아닙니다'), '면책 문구 없음');
+});
+
+// TC21: 금지 표현 라인 필터
+test('TC21 브리핑 — 금지 표현 라인 필터', () => {
+    const item = {
+        type: 'STATUS_REPORT',
+        message: '시장 분석\n이 종목은 단기 강세 흐름입니다.\n매수를 권장합니다\n외국인 연속 순유입 지속\n목표가 상향 조정됩니다',
+    };
+    const t = formatThreadsBriefing(item);
+    assert(!t.includes('매수를 권장'), '매수 권장 라인 미제거');
+    assert(!t.includes('목표가'), '목표가 포함 라인 미제거');
+    assert(t.includes('외국인 연속 순유입 지속'), '정상 라인이 제거됨');
+});
+
+// TC22: 시간대 레이블 — [개장 전]/[정오]/[마감 후]
+test('TC22 시간대 레이블 — [개장 전]/[정오]/[마감 후]', () => {
+    // 개장 전 (08:30 KST)
+    const t1 = formatThreadsSignal({ ...BASE, signal_time: '2026-05-07T08:30:00+09:00' });
+    assert(t1.includes('[개장 전]'), '[개장 전] 레이블 없음');
+
+    // 정오 (12:00 KST)
+    const t2 = formatThreadsSignal({ ...BASE, signal_time: '2026-05-07T12:00:00+09:00' });
+    assert(t2.includes('[정오]'), '[정오] 레이블 없음');
+
+    // 마감 후 (15:35 KST)
+    const t3 = formatThreadsSignal({ ...BASE, signal_time: '2026-05-07T15:35:00+09:00' });
+    assert(t3.includes('[마감 후]'), '[마감 후] 레이블 없음');
+
+    // 일반 거래 시간 (10:23 KST) — BASE 기본값 → 레이블 없음
+    const t4 = formatThreadsSignal(BASE);
+    assert(
+        !t4.includes('[개장 전]') && !t4.includes('[정오]') && !t4.includes('[마감 후]'),
+        '일반 시간대에 레이블 표시됨'
+    );
+});
+
+// TC23: R:R 두 단계 경고 — ⛔/⚠️ 표시
+test('TC23 R:R 두 단계 경고 — ⛔/⚠️ 표시', () => {
+    // BASE: entry=73500, tp1=76000, sl=71200, KOSPI → RR≈0.877 → ⛔
+    const t1 = formatThreadsSignal(BASE);
+    assert(t1.includes('⛔'), 'RR < 1.0인데 ⛔ 없음');
+
+    // sl=72500 → effRisk=(1000/73500)+0.0035≈0.0171, effTarget=(2500/73500)-0.0035≈0.0305
+    // RR≈1.78 → 경고 없음
+    const highRR = { ...BASE, sl_price: 72500 };
+    const t2 = formatThreadsSignal(highRR);
+    assert(!t2.includes('⛔') && !t2.includes('⚠️'), 'RR ≥ 1.5인데 경고 있음');
+
+    // tp1=75500, sl=72500 → effTarget=(2000/73500)-0.0035≈0.0237, effRisk=(1000/73500)+0.0035≈0.0171
+    // RR≈1.39 → ⚠️
+    const midRR = { ...BASE, tp1_price: 75500, sl_price: 72500 };
+    const t3 = formatThreadsSignal(midRR);
+    assert(t3.includes('⚠️'), 'RR 1.0-1.5인데 ⚠️ 없음');
+    assert(!t3.includes('⛔'), 'RR ≥ 1.0인데 ⛔ 있음');
+});
+
+// TC23b: computeThreadsRR 계산 정확도
+test('TC23b computeThreadsRR 계산 정확도 (KOSPI/KOSDAQ)', () => {
+    // KOSPI: stk_cd '005930' (starts '0'), slip=0.35%
+    const rrKospi = computeThreadsRR('005930', 73500, 76000, 71200);
+    assert(rrKospi !== null, 'KOSPI RR null');
+    // effTarget = 2500/73500 - 0.0035 ≈ 0.030514
+    // effRisk   = 2300/73500 + 0.0035 ≈ 0.034793
+    // RR ≈ 0.877
+    assert(Math.abs(rrKospi - 0.877) < 0.01, `KOSPI RR 계산 오차: ${rrKospi}`);
+
+    // KOSDAQ: stk_cd '263750' (starts '2'), slip=0.45%
+    const rrKosdaq = computeThreadsRR('263750', 73500, 76000, 71200);
+    assert(rrKosdaq !== null, 'KOSDAQ RR null');
+    assert(rrKosdaq < rrKospi, 'KOSDAQ R:R이 KOSPI보다 높음 (슬리피지 차이 반영 안 됨)');
+
+    // 유효성 검사: sl >= entry → null
+    assert(computeThreadsRR('005930', 73500, 76000, 73500) === null, 'sl=entry인데 null 아님');
+    assert(computeThreadsRR('005930', 0, 76000, 71200) === null, 'entry=0인데 null 아님');
+});
+
+// TC24: 브리핑 문장 경계 말줄임 처리
+test('TC24 브리핑 — 문장 경계 말줄임 처리', () => {
+    // 250자 문장 + 200자 나머지 → 총 451자 > bodyMax(≈356)
+    // 마지막 '.'이 250번째 위치 → 40% 임계값(142) 초과 → 문장 경계 절단
+    const firstPart = '가'.repeat(250) + '.';
+    const rest      = '나'.repeat(200);
+    const longItem  = { type: 'STATUS_REPORT', message: firstPart + rest };
+    const t         = formatThreadsBriefing(longItem);
+    assert(t.length <= 450, `${t.length}자 초과`);
+    const textPart  = t.split('\n\n')[0];
+    assert(
+        textPart.endsWith('.') || textPart.endsWith('…'),
+        `문장 경계 처리 없음: "${textPart.slice(-5)}"`
+    );
 });
 
 // ── 결과 출력 ────────────────────────────────────────────────────────────

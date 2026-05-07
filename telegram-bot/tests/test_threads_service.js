@@ -234,6 +234,36 @@ console.log('\n[threads_service 단위 테스트]\n');
         assert(cnt === 2, `게시 수 기대 2, 실제: ${cnt}`);
     });
 
+    // TC9: 레이트 리밋 2회 연속 → 1회 대기 후 즉시 throw (재시도 1회 제한)
+    await test('TC9  레이트 리밋 2회 연속 → 1회 대기 후 즉시 throw', async () => {
+        await setToken();
+        let rateLimitCount = 0;
+        let waitCalled = false;
+
+        // setTimeout 패치로 대기 확인
+        const origSetTimeout = global.setTimeout;
+        global.setTimeout = (fn, ms) => {
+            if (ms === 60_000) waitCalled = true;
+            return origSetTimeout(fn, 0); // 실제 대기 없이 즉시 실행
+        };
+
+        axiosMock.post = async () => {
+            rateLimitCount++;
+            throw makeApiError(32); // 레이트 리밋 에러 반복
+        };
+
+        let threw = false;
+        try {
+            await threadsService.postText('레이트 리밋 테스트', 3);
+        } catch (_) { threw = true; }
+
+        global.setTimeout = origSetTimeout;
+
+        assert(threw, '레이트 리밋 2회에서 throw 없음');
+        assert(waitCalled, '레이트 리밋 대기(60초) 미호출');
+        assert(rateLimitCount === 2, `예상 호출 2회, 실제: ${rateLimitCount}`);
+    });
+
 })().then(() => {
     console.log(`\n결과: ${pass}통과 / ${fail}실패\n`);
     if (fail > 0) process.exit(1);

@@ -53,7 +53,7 @@ function _secondsUntilKstMidnight() {
     const kstDate     = new Date(kstMs);
     const kstMidnight = new Date(
         Date.UTC(kstDate.getUTCFullYear(), kstDate.getUTCMonth(), kstDate.getUTCDate() + 1)
-    ) - 9 * 60 * 60 * 1000; // KST 자정 → UTC ms
+    ).getTime() - 9 * 60 * 60 * 1000; // KST 자정 → UTC ms
     return Math.max(60, Math.ceil((kstMidnight - nowUtcMs) / 1000));
 }
 
@@ -187,7 +187,8 @@ async function postText(text, retries = 3) {
     }
 
     let lastErr;
-    let tokenRefreshed = false;
+    let tokenRefreshed  = false;
+    let rateLimitRetried = false;
 
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
@@ -230,8 +231,13 @@ async function postText(text, retries = 3) {
             }
 
             if (_isRateLimit(code)) {
-                // 레이트 리밋: 60초 대기 후 재시도
+                if (rateLimitRetried) {
+                    // 레이트 리밋 재시도는 1회로 제한 — 반복 대기 방지
+                    logger.error(`threads rate limited (code ${code}) after 1 retry — aborting`, { attempt }, e);
+                    throw e;
+                }
                 logger.warn(`threads rate limited (code ${code}), waiting ${RATE_LIMIT_BACKOFF_MS}ms`, { attempt });
+                rateLimitRetried = true;
                 await new Promise((r) => setTimeout(r, RATE_LIMIT_BACKOFF_MS));
                 continue;
             }
