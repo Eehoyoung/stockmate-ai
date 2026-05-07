@@ -107,14 +107,6 @@ def _slot_header(slot_name: str) -> str:
     }.get(slot_name, "📰 <b>[뉴스 브리핑]</b>")
 
 
-def _persona_line(slot_name: str) -> str:
-    return {
-        "MORNING": "페르소나: 수석 매크로 애널리스트 + 헤드 트레이더",
-        "MIDDAY": "페르소나: 수석 섹터 애널리스트 + 플로어 트레이더",
-        "CLOSE": "페르소나: 탑티어 클로징 애널리스트 + 헤드 트레이더",
-    }.get(slot_name, "페르소나: 탑급 애널리스트")
-
-
 def _build_morning_message(analysis: dict) -> str:
     sentiment_label = _sentiment_label(str(analysis.get("market_sentiment", "NEUTRAL")))
     us_market = _normalize_lines(analysis.get("us_market_points", []), 3)
@@ -125,7 +117,6 @@ def _build_morning_message(analysis: dict) -> str:
 
     lines = [
         _slot_header("MORNING"),
-        _persona_line("MORNING"),
         "",
         f"시장 온도: <b>{sentiment_label}</b>",
     ]
@@ -171,7 +162,6 @@ def _build_midday_message(analysis: dict) -> str:
 
     lines = [
         _slot_header("MIDDAY"),
-        _persona_line("MIDDAY"),
         "",
         f"시장 온도: <b>{sentiment_label}</b>",
     ]
@@ -208,7 +198,6 @@ def _build_close_message(analysis: dict) -> str:
 
     lines = [
         _slot_header("CLOSE"),
-        _persona_line("CLOSE"),
         "",
         f"시장 온도: <b>{sentiment_label}</b>",
     ]

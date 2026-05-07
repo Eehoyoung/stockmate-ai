@@ -170,7 +170,7 @@ async def main():
     if enable_confirm:
         tasks.append(asyncio.create_task(run_confirm_worker(rdb, pg_pool)))
     if enable_scanner:
-        tasks.append(asyncio.create_task(run_strategy_scanner(rdb)))
+        tasks.append(asyncio.create_task(run_strategy_scanner(rdb, pg_pool=pg_pool)))
     if enable_news:
         tasks.append(asyncio.create_task(run_news_scheduler(rdb)))
     if enable_monitor:
@@ -191,6 +191,8 @@ async def main():
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for t in pending:
         t.cancel()
+    # 모든 태스크 취소 완료 대기 후 연결 해제 (순서 보장: cancel → gather → close)
+    await asyncio.gather(*pending, return_exceptions=True)
 
     await rdb.aclose()
     if pg_pool:

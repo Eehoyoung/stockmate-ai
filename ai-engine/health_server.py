@@ -116,6 +116,7 @@ async def run_health_server(port: int, rdb) -> None:
 
     async def _score_handler(request):
         from stockScore import score_stock as score_stock_strategies
+        from claude_analyst import analyze_stock_for_user
 
         stk_cd = request.match_info.get("stk_cd", "").strip()
         if not stk_cd or not stk_cd.isdigit() or len(stk_cd) != 6:
@@ -123,9 +124,39 @@ async def run_health_server(port: int, rdb) -> None:
 
         enable_ai = request.rel_url.query.get("ai", "true").lower() != "false"
         try:
-            result = await score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai)
+            score_result, claude_result = await asyncio.gather(
+                score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai),
+                analyze_stock_for_user(rdb, stk_cd),
+                return_exceptions=True,
+            )
+            if isinstance(score_result, Exception):
+                logger.error("[Health] /score/%s score error: %s", stk_cd, score_result)
+                score_result = {"stk_cd": stk_cd, "results": [], "no_match": True, "error": str(score_result)}
+            if isinstance(claude_result, Exception):
+                logger.error("[Health] /score/%s claude error: %s", stk_cd, claude_result)
+                claude_result = {"error": str(claude_result)}
+
+            score_result["claude_full"] = {
+                "action":            claude_result.get("action"),
+                "confidence":        claude_result.get("confidence"),
+                "reasons":           claude_result.get("reasons", []),
+                "risk_factors":      claude_result.get("risk_factors", []),
+                "action_guide":      claude_result.get("action_guide", []),
+                "tp_sl":             claude_result.get("tp_sl"),
+                "summary":           claude_result.get("summary"),
+                "claude_analysis":   claude_result.get("claude_analysis"),
+                "daily_indicators":  claude_result.get("daily_indicators"),
+                "minute_indicators": claude_result.get("minute_indicators"),
+                "strategies_in_pool":claude_result.get("strategies_in_pool", []),
+                "cur_prc":           claude_result.get("cur_prc"),
+                "flu_rt":            claude_result.get("flu_rt"),
+                "cntr_str":          claude_result.get("cntr_str"),
+                "hoga":              claude_result.get("hoga"),
+                "stk_nm":            claude_result.get("stk_nm"),
+                "error":             claude_result.get("error"),
+            }
             return web.json_response(
-                result,
+                score_result,
                 dumps=lambda o: json.dumps(o, ensure_ascii=False, default=str),
             )
         except Exception as e:

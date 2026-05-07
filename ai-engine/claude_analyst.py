@@ -272,22 +272,22 @@ async def _build_minute_indicators(token: str, stk_cd: str) -> dict[str, Any]:
 
 def _build_prompt(stk_cd: str, stk_nm: str, analysis_input: dict[str, Any]) -> str:
     return (
-        "Analyze the Korean stock below and decide one action.\n"
-        "This analysis is portfolio-agnostic. Do not assume actual holdings.\n"
-        "Interpret HOLD as 'existing-holder perspective still acceptable' and SELL as "
-        "'avoid new entry or reduce/exit bias at this zone'.\n"
-        "Return JSON only with this schema:\n"
+        "아래 한국 주식을 분석하고 매매 판단을 내려주세요.\n"
+        "포트폴리오와 무관한 독립 분석입니다. 실제 보유 여부를 가정하지 마세요.\n"
+        "HOLD는 '현 보유자 관점에서 유지 가능', SELL은 '신규 진입 회피 또는 매도/비중 축소 의견'으로 해석하세요.\n"
+        "모든 텍스트 필드(reasons, risk_factors, action_guide, summary)는 반드시 한국어로 작성하세요.\n"
+        "다음 스키마의 JSON만 반환하세요:\n"
         "{"
         '"action":"ENTER|HOLD|SELL",'
         '"confidence":"HIGH|MEDIUM|LOW",'
-        '"reasons":["..."],'
-        '"risk_factors":["..."],'
-        '"action_guide":["..."],'
+        '"reasons":["한국어 근거..."],'
+        '"risk_factors":["한국어 리스크..."],'
+        '"action_guide":["한국어 실행 가이드..."],'
         '"tp_sl":{"take_profit":0,"stop_loss":0},'
-        '"summary":"..."'
+        '"summary":"한국어 한 줄 결론"'
         "}\n\n"
-        f"Stock: {stk_nm} ({stk_cd})\n"
-        f"Input JSON:\n{json.dumps(analysis_input, ensure_ascii=False, default=str, indent=2)}"
+        f"종목: {stk_nm} ({stk_cd})\n"
+        f"입력 데이터:\n{json.dumps(analysis_input, ensure_ascii=False, default=str, indent=2)}"
     )
 
 
@@ -295,11 +295,11 @@ async def _call_claude(stk_cd: str, stk_nm: str, analysis_input: dict[str, Any])
     prompt = _build_prompt(stk_cd, stk_nm, analysis_input)
     response = await _get_client().messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=900,
+        max_tokens=1200,
         system=(
-            "You are a top-tier Korean equities analyst. "
-            "Use only the provided data. Be concise, technically grounded, "
-            "and output valid JSON only."
+            "당신은 한국 주식시장 최고 수준의 기술적 분석 전문가입니다. "
+            "제공된 데이터만 사용하고, 간결하면서도 기술적 근거를 명확히 제시하세요. "
+            "모든 텍스트는 한국어로 작성하고, 유효한 JSON만 반환하세요."
         ),
         messages=[{"role": "user", "content": prompt}],
     )

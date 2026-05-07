@@ -586,12 +586,35 @@ async def _fetch_ka10029(token: str, market: str) -> list[dict]:
     return results
 
 
+async def _fetch_s1_ka10029_items(token: str, market: str) -> tuple[list[dict], str]:
+    """Fetch S1 expected-execution candidates.
+
+    Kiwoom's market-specific ka10029 result can be empty during the pre-open
+    window even when the all-market request already has usable snapshots. In
+    that case, use the all-market response so S1 pools and ws:expected hashes
+    are available before the runner starts scanning.
+    """
+    items = await _fetch_ka10029(token, market)
+    if items or market == "000":
+        return items, market
+
+    fallback_items = await _fetch_ka10029(token, "000")
+    if fallback_items:
+        logger.info(
+            "[builder] S1 %s ka10029 empty; all-market fallback supplied %d items",
+            market,
+            len(fallback_items),
+        )
+        return fallback_items, "000"
+    return items, market
+
+
 async def _build_s1(token: str, market: str, rdb) -> None:
     """S1 갭상승 시초가: 3.0% ≤ flu_rt ≤ 15.0%, TTL 3600s, 100개
     장전 마지막 빌드(~08:22)가 스캐너 종료(09:10)까지 유효해야 하므로 TTL 1시간."""
     started_at = _time.monotonic()
     ttl = 3600
-    items = await _fetch_ka10029(token, market)
+    items, source_market = await _fetch_s1_ka10029_items(token, market)
     await _cache_expected_from_ka10029(rdb, items)
     ranked_items = _rank_ka10029_items(items)
     raw_count = len(ranked_items)
@@ -618,6 +641,7 @@ async def _build_s1(token: str, market: str, rdb) -> None:
         "top_quality_count": len(codes),
         "built_at": now_kst_str(),
         "source_api": "ka10029",
+        "source_market": source_market,
         "source_status": "EMPTY" if not codes else "OK",
     }
     await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, ttl)

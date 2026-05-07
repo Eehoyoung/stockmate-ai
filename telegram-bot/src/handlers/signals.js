@@ -9,6 +9,8 @@ const {
     formatSellRecommendation,
     formatNewsAlert,
 } = require('../utils/formatter');
+const { formatThreadsSignal, formatThreadsBriefing } = require('../utils/threads_formatter');
+const threads = require('../services/threads');
 const { getLogger } = require('../utils/logger');
 
 const logger = getLogger('signals');
@@ -18,9 +20,22 @@ const MIN_AI_SCORE = Number(process.env.MIN_AI_SCORE ?? 65);
 const HOLD_MIN_SCORE = 80;
 const MAX_SIGNALS_PER_MIN = Number(process.env.MAX_SIGNALS_PER_MIN ?? 20);
 const VALID_SIGNAL_STAGES = new Set(['WATCH', 'HOLD', 'ENTRY', 'CANCEL']);
+const THREADS_ENABLED = process.env.THREADS_ENABLED === 'true';
 
 let _signalCount = 0;
 let _windowStart = Date.now();
+
+function _shouldPostToThreads(action, isRuleOnly) {
+    if (!THREADS_ENABLED) return false;
+    if (!process.env.THREADS_USER_ID || !process.env.THREADS_APP_ID) return false;
+    return action === 'ENTER' || isRuleOnly;
+}
+
+function _shouldPostBriefingToThreads(type) {
+    if (!THREADS_ENABLED) return false;
+    if (!process.env.THREADS_USER_ID || !process.env.THREADS_APP_ID) return false;
+    return type === 'STATUS_REPORT' || type === 'MIDDAY_REPORT';
+}
 
 function _checkRateLimit() {
     const now = Date.now();
@@ -90,9 +105,29 @@ function getRecipientGroup(chatIds, explicitGroup) {
     return 'allowed';
 }
 
+function stripPersonaLines(text) {
+    return String(text || '')
+        .split(/\r?\n/)
+        .filter((line) => {
+            const normalized = line
+                .replace(/<[^>]+>/g, '')
+                .replace(/[^\p{L}\p{N}:：+\s]/gu, '')
+                .trim()
+                .toLowerCase();
+            return !normalized.startsWith('페르소나:')
+                && !normalized.startsWith('페르소나：')
+                && !normalized.startsWith('persona:')
+                && !normalized.startsWith('persona：');
+        })
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 async function _broadcast(bot, { type, text, logLabel, logMeta = {}, extraOpts = {}, chatIds = null, recipientGroup = null }) {
     const targetChatIds = chatIds || getAllowedChatIds();
     const options = { parse_mode: 'HTML', disable_web_page_preview: true, ...extraOpts };
+    const displayText = stripPersonaLines(text);
     const deliveryMeta = {
         recipient_group: getRecipientGroup(chatIds, recipientGroup),
         chat_ids: targetChatIds,
@@ -102,7 +137,7 @@ async function _broadcast(bot, { type, text, logLabel, logMeta = {}, extraOpts =
 
     for (const chatId of targetChatIds) {
         try {
-            await bot.telegram.sendMessage(chatId, text, options);
+            await bot.telegram.sendMessage(chatId, displayText, options);
             sentCount++;
         } catch (e) {
             failedCount++;
@@ -234,6 +269,13 @@ async function processItem(bot, item) {
         const payload = handler(item);
         if (payload) {
             await _broadcast(bot, payload);
+            // Threads 브리핑 동시 발행 (STATUS_REPORT / MIDDAY_REPORT, fire-and-forget)
+            if (_shouldPostBriefingToThreads(item.type)) {
+                const threadsText = formatThreadsBriefing(item);
+                threads.postText(threadsText).catch((e) =>
+                    logger.error('threads briefing post failed', { type: item.type }, e)
+                );
+            }
             return;
         }
     }
@@ -297,13 +339,29 @@ async function processItem(bot, item) {
             logger.error('signal send failed', { chat_id: chatId, stk_cd: item.stk_cd }, e);
         }
     }
+
+    // Threads 동시 발행 (ENTER + RULE_ONLY만, fire-and-forget)
+    if (_shouldPostToThreads(action, isRuleOnly)) {
+        const threadsText = formatThreadsSignal(item);
+        threads.postText(threadsText).catch((e) =>
+            logger.error('threads post failed', {
+                stk_cd:   item.stk_cd,
+                strategy: item.strategy,
+                score:    ai_score,
+            }, e)
+        );
+    }
 }
 
 async function startPolling(bot) {
+    if (THREADS_ENABLED) {
+        threads.startTokenRefreshScheduler();
+    }
     logger.info('ai_scored_queue polling started', {
-        interval_ms: POLL_INTERVAL_MS,
-        min_score: MIN_AI_SCORE,
-        max_per_min: MAX_SIGNALS_PER_MIN,
+        interval_ms:     POLL_INTERVAL_MS,
+        min_score:       MIN_AI_SCORE,
+        max_per_min:     MAX_SIGNALS_PER_MIN,
+        threads_enabled: THREADS_ENABLED,
     });
 
     let emptyCount = 0;
@@ -333,4 +391,4 @@ async function startPolling(bot) {
 
 const { startConfirmPoller } = require('./confirmGate');
 
-module.exports = { startPolling, startConfirmPoller };
+module.exports = { startPolling, startConfirmPoller, stripPersonaLines };

@@ -38,7 +38,7 @@ _KA10055_MAX_PAGES = int(os.getenv("S3_KA10055_MAX_PAGES", "3"))
 _KA10055_CACHE_TTL = int(os.getenv("S3_KA10055_CACHE_TTL", "30"))
 _KA10055_CACHE_BUCKET_SEC = int(os.getenv("S3_KA10055_CACHE_BUCKET_SEC", "300"))
 _S3_SCAN_ITEM_LIMIT = int(os.getenv("S3_SCAN_ITEM_LIMIT", "3"))
-_KA10055_REQUIRE_COMPLETE = str(os.getenv("S3_KA10055_REQUIRE_COMPLETE", "1")).strip().lower() in {"1", "true", "yes", "on"}
+_KA10055_REQUIRE_COMPLETE = str(os.getenv("S3_KA10055_REQUIRE_COMPLETE", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class Ka10055RunStats:
@@ -57,12 +57,14 @@ class Ka10055RunStats:
     def log_summary(self) -> None:
         if not self.counters:
             return
-        logger.warning(
-            "[S3] ka10055 summary page_cap=%d next_key_loop=%d repeated_page=%d",
-            self.counters.get("page_cap", 0),
-            self.counters.get("next_key_loop", 0),
-            self.counters.get("repeated_page", 0),
-        )
+        page_cap = self.counters.get("page_cap", 0)
+        next_key_loop = self.counters.get("next_key_loop", 0)
+        repeated_page = self.counters.get("repeated_page", 0)
+        message = "[S3] ka10055 summary page_cap=%d next_key_loop=%d repeated_page=%d"
+        if next_key_loop or repeated_page:
+            logger.warning(message, page_cap, next_key_loop, repeated_page)
+        else:
+            logger.info(message, page_cap, next_key_loop, repeated_page)
 
 
 async def fetch_intraday_investor(token: str, market_type: str = "000") -> list:
@@ -227,9 +229,12 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
                 page += 1
                 if page > _KA10055_MAX_PAGES:
                     cap_reached = True
-                    warn("page_cap", tdy_pred,
-                         "[S3] ka10055 %s/%s page cap(%d) reached, forced stop",
-                         stk_cd, tdy_pred, _KA10055_MAX_PAGES)
+                    if run_stats:
+                        run_stats.counters["page_cap"] += 1
+                    logger.debug(
+                        "[S3] ka10055 %s/%s page cap(%d) reached; using partial volume",
+                        stk_cd, tdy_pred, _KA10055_MAX_PAGES,
+                    )
                     break
                 if next_key:
                     if next_key in requested_next_keys:

@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections import Counter, defaultdict
 
 from ma_utils import fetch_daily_candles, _safe_price, _safe_vol, _calc_ma
 from indicator_rsi import calc_rsi
@@ -75,14 +76,26 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
 
     if not candidates:
         logger.debug("[S15] 후보 없음")
+        logger.info("[S15][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
         return []
 
     results = []
+    reject_counts = Counter()
+    reject_samples = defaultdict(list)
+    evaluated_count = 0
+
+    def _reject(reason: str, stk_cd: str, **fields) -> None:
+        reject_counts[reason] += 1
+        if len(reject_samples[reason]) < 5:
+            sample = {"stk_cd": stk_cd}
+            sample.update(fields)
+            reject_samples[reason].append(sample)
     for stk_cd in candidates:
         await asyncio.sleep(_API_INTERVAL)
 
         candles = await fetch_daily_candles(token, stk_cd)
         if len(candles) < 35:   # MACD slow(26) + signal(9) 최소 요구량
+            _reject("short_candles", stk_cd, candles=len(candles))
             continue
 
         # ── OHLCV 파싱 ───────────────────────────────────────────
@@ -99,13 +112,16 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
                 vols.append(v)
 
         if len(closes) < 35:
+            _reject("short_ohlcv", stk_cd, closes=len(closes))
             continue
 
+        evaluated_count += 1
         cur_prc = closes[0]
 
         # ── 필수 1: 현재가 ≥ MA20 ────────────────────────────────
         ma20 = sum(closes[:20]) / 20
         if cur_prc < ma20:
+            _reject("below_ma20", stk_cd, cur_prc=round(cur_prc), ma20=round(ma20, 2))
             continue
 
         # ── 실시간 등락률·체결강도 ───────────────────────────────
@@ -138,6 +154,7 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
 
         # ── 필수 2: 양봉 + 과열 미달 ─────────────────────────────
         if flu_rt <= 0 or flu_rt > 12.0:
+            _reject("flu_out_of_range", stk_cd, flu_rt=round(flu_rt, 2), cntr_strength=round(cntr_str, 1) if cntr_str is not None else None)
             continue
 
         # ── RSI 계산 ─────────────────────────────────────────────
@@ -147,6 +164,7 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
 
         # ── 필수 3: RSI 미과열 ────────────────────────────────────
         if rsi_now and rsi_now > 72:
+            _reject("rsi_overheated", stk_cd, rsi=round(rsi_now, 1), flu_rt=round(flu_rt, 2))
             continue
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -205,6 +223,18 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         # ── 선택 조건 집계: 4개 중 3개 이상 ──────────────────────
         cond_count = sum([cond_macd, cond_rsi, cond_boll, cond_vol])
         if cond_count < 3:
+            _reject(
+                "cond_count_lt3",
+                stk_cd,
+                cond_count=cond_count,
+                macd=cond_macd,
+                rsi=cond_rsi,
+                boll=cond_boll,
+                vol=cond_vol,
+                rsi_val=round(rsi_now, 1) if rsi_now else None,
+                pct_b=round(pct_b, 3) if pct_b is not None else None,
+                vol_ratio=round(vol_ratio, 2),
+            )
             continue
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -271,6 +301,21 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         signal_mode = "AUTO_SMALL" if cond_count == 4 else "CONFIRM"
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
+        logger.info(
+            "[S15][pass] stk=%s mode=%s score=%.2f cond=%d flu_rt=%.2f "
+            "cntr=%.1f rsi=%s pct_b=%s vol_ratio=%.2f vwap=%s atr_pct=%s",
+            stk_cd,
+            signal_mode,
+            score,
+            cond_count,
+            flu_rt,
+            cntr_str,
+            f"{rsi_now:.1f}" if rsi_now else "n/a",
+            f"{pct_b:.3f}" if pct_b is not None else "n/a",
+            vol_ratio,
+            vwap_above,
+            f"{atr_pct:.2f}" if atr_pct else "n/a",
+        )
         results.append({
             "stk_cd":        stk_cd,
             "stk_nm":        stk_nm,
@@ -296,4 +341,14 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
             **tp_sl.to_signal_fields(),
         })
 
-    return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    logger.info(
+        "[S15][scan_summary] candidate_count=%d evaluated=%d pass=%d returned=%d rejects=%s samples=%s",
+        len(candidates),
+        evaluated_count,
+        len(results),
+        len(sorted_results),
+        dict(reject_counts),
+        {key: value for key, value in reject_samples.items()},
+    )
+    return sorted_results

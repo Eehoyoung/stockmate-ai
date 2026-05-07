@@ -23,6 +23,16 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
     List<TradingSignal> findBySignalStatusAndCreatedAtAfter(
             TradingSignal.SignalStatus status, LocalDateTime after);
 
+    @Query("""
+        SELECT s FROM TradingSignal s
+        WHERE s.signalStatus = :status
+          AND s.createdAt > :after
+          AND (s.positionStatus IS NULL OR s.positionStatus NOT IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT'))
+        """)
+    List<TradingSignal> findNonActiveSignalsByStatusAfter(
+            @Param("status") TradingSignal.SignalStatus status,
+            @Param("after") LocalDateTime after);
+
     Optional<TradingSignal> findTopByStkCdAndStrategyAndCreatedAtAfterOrderByCreatedAtDesc(
             String stkCd, TradingSignal.StrategyType strategy, LocalDateTime after);
 

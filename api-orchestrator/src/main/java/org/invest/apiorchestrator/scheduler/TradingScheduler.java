@@ -79,17 +79,37 @@ public class TradingScheduler {
     @Scheduled(cron = "0 50 7 * * MON-FRI", zone = "Asia/Seoul")
     public void preloadAuctionCandidates() {
         log.info("=== preload S1 candidate pools (07:50) ===");
-        try {
-            for (String market : new String[]{"001", "101"}) {
-                try {
-                    candidateService.getS1Candidates(market);
-                } catch (Exception e) {
-                    log.warn("[Pool] S1 {} error: {}", market, e.getMessage());
+        int totalLoaded = 0;
+        for (String market : new String[]{"001", "101"}) {
+            int count = candidateService.preloadS1Candidates(market);
+            if (count > 0) {
+                log.info("[Pool] S1 preload OK [market={}] count={}", market, count);
+                totalLoaded += count;
+            } else if (count == 0) {
+                log.warn("[Pool] S1 preload 결과 없음 [market={}] — 08:20 재시도 예정", market);
+            }
+        }
+        if (totalLoaded == 0) {
+            log.error("[Pool] S1 preload 전체 실패 — 양 시장 모두 0건, 08:20 재시도 예정");
+        } else {
+            log.info("[Pool] S1 preload complete total={}", totalLoaded);
+        }
+    }
+
+    /** S1 풀 비었을 때 08:20 재시도 */
+    @Scheduled(cron = "0 20 8 * * MON-FRI", zone = "Asia/Seoul")
+    public void retryS1PoolIfEmpty() {
+        for (String market : new String[]{"001", "101"}) {
+            Long llen = redis.opsForList().size("candidates:s1:" + market);
+            if (llen == null || llen == 0) {
+                log.warn("[Pool] S1 풀 비어 있음 [market={}] — 재적재 시도", market);
+                int count = candidateService.preloadS1Candidates(market);
+                if (count > 0) {
+                    log.info("[Pool] S1 재적재 성공 [market={}] count={}", market, count);
+                } else {
+                    log.error("[Pool] S1 재적재 실패 [market={}] count={} — 08:30 스캔 전 풀 없음 위험", market, count);
                 }
             }
-            log.info("[Pool] S1 preload complete");
-        } catch (Exception e) {
-            log.error("[Pool] S1 preload failed: {}", e.getMessage());
         }
     }
 

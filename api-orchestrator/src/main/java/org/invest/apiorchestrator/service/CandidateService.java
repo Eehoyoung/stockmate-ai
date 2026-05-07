@@ -119,6 +119,26 @@ public class CandidateService {
                 () -> fetchKa10029Codes(market, 3.0, 15.0, 100));
     }
 
+    /**
+     * 07:50 프리로드 전용 — isTradingActive() 가드 없이 ka10029를 직접 호출해 캐시에 적재.
+     * S1 스캐너는 08:30 시작이므로 시장 개시 전에 미리 풀을 채운다.
+     */
+    public int preloadS1Candidates(String market) {
+        String cacheKey = "candidates:s1:" + market;
+        try {
+            List<String> codes = fetchKa10029Codes(market, 3.0, 15.0, 100);
+            if (codes != null && !codes.isEmpty()) {
+                cacheCodes(cacheKey, codes, Duration.ofMinutes(90));
+                updateWatchlist(codes, 90);
+                return codes.size();
+            }
+            return 0;
+        } catch (Exception e) {
+            log.error("[Candidate] S1 프리로드 실패 [market={}]: {}", market, e.getMessage());
+            return -1;
+        }
+    }
+
     /** S4 장대양봉 + 거래량급증 (ka10023, sdninRt≥50 & 3~20%, TTL 5분) */
     public List<String> getS4Candidates(String market) {
         return loadCandidates("s4", market, S4_TTL, 5,

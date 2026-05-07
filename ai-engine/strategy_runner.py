@@ -44,6 +44,7 @@ INTRADAY_DEDUP_TTL_SEC = int(os.getenv("INTRADAY_SIGNAL_DEDUP_SEC", "1800"))
 STATUS_SIGNAL_TTL_SEC = int(os.getenv("STATUS_SIGNAL_TTL_SEC", "600"))
 MAX_CONCURRENT_STRATEGIES = int(os.getenv("MAX_CONCURRENT_STRATEGIES", "3"))
 _semaphore: asyncio.Semaphore | None = None
+_pg_pool = None  # set by run_strategy_scanner; used by _push_signals for active-position dedup
 
 
 def _env_flag(name: str, default: str = "false") -> bool:
@@ -60,7 +61,7 @@ def _get_semaphore() -> asyncio.Semaphore:
 
 
 _DEFAULT_STRATEGY_TIMEOUT_SEC = int(os.getenv("STRATEGY_TIMEOUT_SEC", "300"))
-_SLOW_STRATEGY_WARN_SEC = float(os.getenv("SLOW_STRATEGY_WARN_SEC", "30"))
+_SLOW_STRATEGY_WARN_SEC = float(os.getenv("SLOW_STRATEGY_WARN_SEC", "90"))
 ENABLE_STRATEGY_LATENCY_METRICS = _env_flag("ENABLE_STRATEGY_LATENCY_METRICS")
 ENABLE_STRATEGY_SESSION_FILTER = _env_flag("ENABLE_STRATEGY_SESSION_FILTER")
 STRATEGY_SESSION_DRY_RUN = _env_flag("STRATEGY_SESSION_DRY_RUN")
@@ -216,6 +217,19 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
         if not is_new:
             logger.debug("[Runner] 중복 무시 [%s %s] (dedup TTL %ds)", strategy_name, stk_cd, dedup_ttl)
             continue
+
+        if _pg_pool is not None:
+            try:
+                from db_reader import get_active_position
+                existing = await get_active_position(_pg_pool, stk_cd)
+                if existing is not None:
+                    logger.info(
+                        "[Runner] 활성 포지션 존재 — ENTER 발행 skip [%s %s]",
+                        strategy_name, stk_cd,
+                    )
+                    continue
+            except Exception as pos_err:
+                logger.debug("[Runner] 활성 포지션 확인 실패 (통과): %s", pos_err)
 
         if not sig.get("stk_nm"):
             try:
@@ -487,7 +501,9 @@ async def _run_once(rdb):
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def run_strategy_scanner(rdb):
+async def run_strategy_scanner(rdb, pg_pool=None):
+    global _pg_pool
+    _pg_pool = pg_pool
     logger.info(
         "[Runner] 전술 스캐너 시작 (interval=%.0fs, swing_dedup=%ss, intraday_dedup=%ss)",
         SCAN_INTERVAL_SEC,

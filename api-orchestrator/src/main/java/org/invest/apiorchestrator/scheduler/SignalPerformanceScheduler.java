@@ -89,8 +89,9 @@ public class SignalPerformanceScheduler {
     @Transactional
     public void expireSentSignals() {
         LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
+        // ACTIVE/PARTIAL_TP/OVERNIGHT position_status 신호는 포지션 모니터가 추적 중이므로 제외
         List<TradingSignal> sentSignals =
-                signalRepository.findBySignalStatusAndCreatedAtAfter(
+                signalRepository.findNonActiveSignalsByStatusAfter(
                         TradingSignal.SignalStatus.SENT, startOfDay);
 
         int expired = 0;

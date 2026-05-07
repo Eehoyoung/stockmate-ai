@@ -88,7 +88,8 @@ class TestFetchVolumeCompare:
                 raise AssertionError("Unexpected kiwoom_client() call")
             return clients.pop(0)
 
-        with patch("strategy_3_inst_foreign.kiwoom_client", side_effect=_client_factory), \
+        with patch("strategy_3_inst_foreign._KA10055_REQUIRE_COMPLETE", False), \
+             patch("strategy_3_inst_foreign.kiwoom_client", side_effect=_client_factory), \
              patch("strategy_3_inst_foreign.validate_kiwoom_response", return_value=True), \
              patch("strategy_3_inst_foreign.datetime") as mock_datetime, \
              patch("strategy_3_inst_foreign.asyncio.sleep", new=AsyncMock()):
@@ -119,7 +120,7 @@ class TestFetchVolumeCompare:
         from strategy_3_inst_foreign import Ka10055RunStats
 
         stats = Ka10055RunStats()
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("INFO"):
             stats.warn("page_cap", ("005930", "1"), "warn %s", "once")
             stats.warn("page_cap", ("005930", "1"), "warn %s", "twice")
             stats.log_summary()
@@ -128,3 +129,29 @@ class TestFetchVolumeCompare:
         assert messages.count("warn once") == 1
         assert not any(message == "warn twice" for message in messages)
         assert any("ka10055 summary page_cap=2" in message for message in messages)
+
+    def test_page_cap_uses_partial_volume_by_default(self):
+        from strategy_3_inst_foreign import fetch_volume_compare
+
+        today_client = _MockClient([
+            _MockResponse([{"cntr_tm": "091000", "cntr_qty": "+100"}], cont_yn="Y", next_key="T1"),
+            _MockResponse([{"cntr_tm": "091001", "cntr_qty": "+100"}], cont_yn="Y", next_key="T2"),
+            _MockResponse([{"cntr_tm": "091002", "cntr_qty": "+100"}], cont_yn="Y", next_key="T3"),
+        ])
+        prev_client = _MockClient([
+            _MockResponse([{"cntr_tm": "091000", "cntr_qty": "+100"}]),
+        ])
+        clients = [today_client, prev_client]
+
+        def _client_factory():
+            return clients.pop(0)
+
+        with patch("strategy_3_inst_foreign._KA10055_REQUIRE_COMPLETE", False), \
+             patch("strategy_3_inst_foreign.kiwoom_client", side_effect=_client_factory), \
+             patch("strategy_3_inst_foreign.validate_kiwoom_response", return_value=True), \
+             patch("strategy_3_inst_foreign.datetime") as mock_datetime, \
+             patch("strategy_3_inst_foreign.asyncio.sleep", new=AsyncMock()):
+            mock_datetime.now.return_value.strftime.return_value = "093856"
+            ratio = _run(fetch_volume_compare("token", "005930"))
+
+        assert ratio == pytest.approx(3.0)

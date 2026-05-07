@@ -1071,16 +1071,31 @@ async def process_one(rdb, pg_pool=None) -> bool:
 
         if pg_pool:
             if rule_only_payload is not None and not signal_id:
-                await insert_rule_cancel_signal(
-                    pg_pool,
-                    signal_id=None,
-                    stk_cd=stk_cd,
-                    strategy=strategy,
-                    rule_score=r_score,
-                    cancel_type=cancel_type or "RULE_ONLY",
-                    reason=display_reason,
-                    raw_payload=rule_only_payload,
-                )
+                # cancel_type=None → AI가 명시적으로 CANCEL → ai_cancel_signal에만 기록
+                # cancel_type 있음 → AI 불가/한도 → rule_cancel_signal 유지
+                if cancel_type is None:
+                    await insert_ai_cancel_signal(
+                        pg_pool,
+                        signal_id=None,
+                        stk_cd=stk_cd,
+                        strategy=strategy,
+                        ai_score=ai_score_val,
+                        confidence=confidence,
+                        reason=display_reason,
+                        cancel_reason="RULE_ONLY_ALERT",
+                        raw_payload=rule_only_payload,
+                    )
+                else:
+                    await insert_rule_cancel_signal(
+                        pg_pool,
+                        signal_id=None,
+                        stk_cd=stk_cd,
+                        strategy=strategy,
+                        rule_score=r_score,
+                        cancel_type=cancel_type,
+                        reason=display_reason,
+                        raw_payload=rule_only_payload,
+                    )
                 return True
 
             db_id = signal_id

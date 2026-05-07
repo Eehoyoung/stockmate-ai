@@ -770,49 +770,125 @@ function formatUserSettings(filter, watchlist) {
  *   { stk_cd, stk_nm, no_match, matched_count, results, skipped, data }
  * @returns {string[]}  텔레그램 메시지 배열 (전략별 1개 + 요약 헤더 1개)
  */
-function formatStockScore(scoreData) {
-    const { stk_cd, stk_nm, no_match, matched_count, results, skipped, data } = scoreData;
-    const stkLabel = stk_nm ? `${stk_nm}(${stk_cd})` : stk_cd;
+function _formatClaudeFull(cf, stkLabel) {
+    if (!cf || cf.error) return null;
+    const actionLabels = { ENTER: '진입 우세', HOLD: '보유/관망', SELL: '매도/회피' };
+    const daily   = cf.daily_indicators  || {};
+    const minute  = cf.minute_indicators || {};
+    const hoga    = cf.hoga || {};
+    const tp      = cf.tp_sl || {};
+    const pools   = Array.isArray(cf.strategies_in_pool) ? cf.strategies_in_pool : [];
+    const reasons = Array.isArray(cf.reasons)      ? cf.reasons      : [];
+    const risks   = Array.isArray(cf.risk_factors)  ? cf.risk_factors  : [];
+    const guide   = Array.isArray(cf.action_guide)  ? cf.action_guide  : [];
+    const conf    = String(cf.confidence || 'LOW').toUpperCase();
 
-    // ── 공통 헤더 (참고 지표) ────────────────────────────────────
-    const d         = data || {};
-    const curPrc    = Number(d.cur_prc  ?? 0);
-    const fluRt     = Number(d.flu_rt   ?? 0);
-    const fluSign   = fluRt > 0 ? '+' : '';
-    const rsi       = d.rsi14  != null ? Number(d.rsi14).toFixed(1) : 'N/A';
-    const ma5       = d.ma5    ? Number(d.ma5).toLocaleString()  : 'N/A';
-    const ma20      = d.ma20   ? Number(d.ma20).toLocaleString() : 'N/A';
-    const ma60      = d.ma60   ? Number(d.ma60).toLocaleString() : 'N/A';
-    const strength  = d.avg_strength != null ? Number(d.avg_strength).toFixed(0) : 'N/A';
-    const bidRatio  = d.bid_ratio != null ? Number(d.bid_ratio).toFixed(2) : 'N/A';
+    const lines = [
+        `🧠 <b>Claude 종합 분석 | ${escapeHtml(stkLabel)}</b>`,
+        `판단: <b>${actionLabels[cf.action] || cf.action || '—'}</b>  |  신뢰도: <b>${conf}</b>`,
+    ];
 
-    const header =
-        `🔍 <b>[전략 심사] ${stkLabel}</b>\n` +
-        `💰 현재가: <b>${curPrc.toLocaleString()}원</b>  <b>${fluSign}${fluRt}%</b>\n` +
-        `📈 MA5: ${ma5} | MA20: ${ma20} | MA60: ${ma60}\n` +
-        `RSI(14): ${rsi}  |  체결강도: ${strength}  |  호가비율: ${bidRatio}`;
-
-    // ── 전략없음 ─────────────────────────────────────────────────
-    if (no_match || !results || results.length === 0) {
-        const skipSample = (skipped || []).slice(0, 5).join('\n  • ');
-        return [
-            header + '\n\n' +
-            `📭 <b>매칭 전략 없음</b>\n` +
-            `현재 시점 기준 15개 전략 중 진입 조건을 충족하는 전략이 없습니다.\n\n` +
-            (skipSample ? `<i>주요 탈락 사유:\n  • ${skipSample}</i>` : ''),
-        ];
+    if (pools.length > 0) {
+        lines.push(`전략 후보군: ${escapeHtml(pools.join(', '))}`);
     }
 
-    // ── 매칭 전략 요약 헤더 ──────────────────────────────────────
+    const dailyLine = [
+        daily.ma5  ? `MA5 ${Number(daily.ma5).toLocaleString()}`  : null,
+        daily.ma20 ? `MA20 ${Number(daily.ma20).toLocaleString()}` : null,
+        daily.ma60 ? `MA60 ${Number(daily.ma60).toLocaleString()}` : null,
+        daily.rsi14   != null ? `RSI ${Number(daily.rsi14).toFixed(1)}`   : null,
+        daily.atr_pct != null ? `ATR ${Number(daily.atr_pct).toFixed(2)}%` : null,
+    ].filter(Boolean).join(' | ');
+    if (dailyLine) lines.push('', '<b>일봉 지표</b>', dailyLine);
+
+    const minLine = [
+        `${minute.tic_scope || 5}분봉`,
+        minute.rsi14      != null ? `RSI ${Number(minute.rsi14).toFixed(1)}`      : null,
+        minute.macd       != null ? `MACD ${Number(minute.macd).toFixed(3)}`      : null,
+        minute.stoch_k    != null ? `Stoch ${Number(minute.stoch_k).toFixed(1)}/${Number(minute.stoch_d ?? 0).toFixed(1)}` : null,
+        minute.atr_pct    != null ? `ATR ${Number(minute.atr_pct).toFixed(2)}%`   : null,
+    ].filter(Boolean).join(' | ');
+    if (minLine) lines.push('', '<b>분봉 지표</b>', minLine);
+
+    const hogaLine = [
+        hoga.total_buy_bid_req != null ? `매수잔량 ${Number(hoga.total_buy_bid_req).toLocaleString()}` : null,
+        hoga.total_sel_bid_req != null ? `매도잔량 ${Number(hoga.total_sel_bid_req).toLocaleString()}` : null,
+        hoga.buy_to_sell_ratio != null ? `매수/매도비 ${Number(hoga.buy_to_sell_ratio).toFixed(2)}` : null,
+    ].filter(Boolean).join(' | ');
+    if (hogaLine) lines.push('', '<b>호가</b>', hogaLine);
+
+    if (reasons.length > 0) {
+        lines.push('', '<b>핵심 근거</b>');
+        reasons.forEach((r) => lines.push(`• ${escapeHtml(String(r))}`));
+    }
+    if (risks.length > 0) {
+        lines.push('', '<b>리스크</b>');
+        risks.forEach((r) => lines.push(`• ${escapeHtml(String(r))}`));
+    }
+    if (guide.length > 0) {
+        lines.push('', '<b>실행 가이드</b>');
+        guide.forEach((g) => lines.push(`• ${escapeHtml(String(g))}`));
+    }
+
+    const tpLine = [
+        tp.take_profit != null ? `목표가 ${formatWon(tp.take_profit)}` : null,
+        tp.stop_loss   != null ? `손절가 ${formatWon(tp.stop_loss)}`   : null,
+    ].filter(Boolean).join(' | ');
+    if (tpLine) lines.push('', `<b>TP / SL</b>  ${tpLine}`);
+
+    if (cf.summary) lines.push('', `<b>한 줄 결론</b>  ${escapeHtml(cf.summary)}`);
+
+    return lines.join('\n');
+}
+
+function formatStockScore(scoreData) {
+    const { stk_cd, stk_nm, no_match, matched_count, results, skipped, data, claude_full } = scoreData;
+    const stkLabel = stk_nm ? `${stk_nm}(${stk_cd})` : stk_cd;
+
+    // ── 공통 헤더 (실시간 지표) ─────────────────────────────────
+    const d        = data || {};
+    const cf       = claude_full || {};
+    const curPrc   = Number(cf.cur_prc  ?? d.cur_prc  ?? 0);
+    const fluRt    = Number(cf.flu_rt   ?? d.flu_rt   ?? 0);
+    const fluSign  = fluRt > 0 ? '+' : '';
+    const rsi      = d.rsi14 != null ? Number(d.rsi14).toFixed(1) : 'N/A';
+    const ma5      = d.ma5   ? Number(d.ma5).toLocaleString()  : 'N/A';
+    const ma20     = d.ma20  ? Number(d.ma20).toLocaleString() : 'N/A';
+    const ma60     = d.ma60  ? Number(d.ma60).toLocaleString() : 'N/A';
+    const strength = d.avg_strength != null ? Number(d.avg_strength).toFixed(0) : 'N/A';
+    const bidRatio = d.bid_ratio    != null ? Number(d.bid_ratio).toFixed(2)    : 'N/A';
+
+    const header =
+        `🔍 <b>[통합 분석] ${stkLabel}</b>\n` +
+        `💰 현재가: <b>${curPrc.toLocaleString()}원</b>  <b>${fluSign}${fluRt}%</b>\n` +
+        `MA5: ${ma5} | MA20: ${ma20} | MA60: ${ma60}\n` +
+        `RSI(14): ${rsi}  |  체결강도: ${strength}  |  호가비율: ${bidRatio}`;
+
+    const claudeBlock = _formatClaudeFull(cf, stkLabel);
+
+    // ── 전략없음: Claude 분석만 반환 ────────────────────────────
+    if (no_match || !results || results.length === 0) {
+        const skipSample = (skipped || []).slice(0, 5).join('\n  • ');
+        const noMatchNote =
+            `\n\n📭 <b>매칭 전략 없음</b>\n` +
+            `15개 전략 조건 미충족 — Claude 실시간 데이터 단독 분석 결과입니다.\n` +
+            (skipSample ? `<i>주요 탈락 사유:\n  • ${skipSample}</i>` : '');
+        const firstMsg = header + noMatchNote;
+        return claudeBlock
+            ? [firstMsg, claudeBlock]
+            : [firstMsg];
+    }
+
+    // ── 전략 매칭: 요약 헤더 + 전략 카드 + Claude 분석 ──────────
     const summaryHeader =
         header + '\n\n' +
-        `✅ <b>${matched_count}개 전략 매칭</b> — 전략별 신호 아래 참조\n` +
-        `<i>AI 점수 높은 순으로 정렬됩니다</i>`;
+        `✅ <b>${matched_count}개 전략 매칭</b> — AI 점수 높은 순\n` +
+        `<i>아래 전략 카드 + Claude 종합 분석 참조</i>`;
 
-    // ── 전략별 formatSignal 출력 ─────────────────────────────────
     const signalMessages = results.map((sig) => formatSignal(sig));
-
-    return [summaryHeader, ...signalMessages];
+    return claudeBlock
+        ? [summaryHeader, ...signalMessages, claudeBlock]
+        : [summaryHeader, ...signalMessages];
 }
 
 /**

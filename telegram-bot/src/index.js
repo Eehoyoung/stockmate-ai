@@ -191,6 +191,20 @@ bot.catch((err, ctx) => {
 
 async function main() {
     logger.info('[Bot] StockMate AI Telegram Bot start');
+
+    if (process.env.THREADS_ENABLED === 'true') {
+        const threadsMissing = [];
+        if (!process.env.THREADS_APP_ID)  threadsMissing.push('THREADS_APP_ID');
+        if (!process.env.THREADS_USER_ID) threadsMissing.push('THREADS_USER_ID');
+        if (threadsMissing.length > 0) {
+            logger.warn('[Bot] THREADS_ENABLED=true but required vars missing — Threads disabled', {
+                missing: threadsMissing,
+            });
+        } else {
+            logger.info('[Bot] Threads integration enabled', { user_id: process.env.THREADS_USER_ID });
+        }
+    }
+
     bot.launch();
     startPolling(bot);
 

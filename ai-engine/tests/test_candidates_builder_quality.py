@@ -77,3 +77,26 @@ def test_priority_score_handles_string_and_bytes_quality_values():
     )
 
     assert score > 0
+
+
+@pytest.mark.asyncio
+async def test_s1_ka10029_uses_all_market_fallback_when_market_empty(monkeypatch):
+    import candidates_builder as cb
+
+    calls = []
+
+    async def fake_fetch(token, market):
+        calls.append(market)
+        if market == "001":
+            return []
+        if market == "000":
+            return [{"stk_cd": "005930", "flu_rt": "+4.2", "exp_cntr_pric": "72000"}]
+        raise AssertionError(f"unexpected market {market}")
+
+    monkeypatch.setattr(cb, "_fetch_ka10029", fake_fetch)
+
+    items, source_market = await cb._fetch_s1_ka10029_items("token", "001")
+
+    assert calls == ["001", "000"]
+    assert source_market == "000"
+    assert items[0]["stk_cd"] == "005930"

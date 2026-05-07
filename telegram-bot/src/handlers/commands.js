@@ -224,94 +224,6 @@ function buildHogaSummary(tick, hoga) {
     };
 }
 
-function formatClaudeResponse(result) {
-    const actionLabels = {
-        ENTER: '진입 우세',
-        HOLD: '보유 관점 유지',
-        SELL: '매도/회피 우세',
-    };
-    const confidence = String(result.confidence || 'LOW').toUpperCase();
-    const stockLabel = result.stk_nm ? `${result.stk_nm} (${result.stk_cd})` : result.stk_cd;
-    const pools = normalizeList(result.strategies_in_pool);
-    const reasons = normalizeList(result.reasons);
-    const risks = normalizeList(result.risk_factors);
-    const actionGuide = normalizeList(result.action_guide);
-    const daily = result.daily_indicators || {};
-    const minute = result.minute_indicators || {};
-    const hoga = result.hoga || {};
-    const tp = result.tp_sl || {};
-
-    const lines = [
-        `🧠 <b>Claude 종목 분석 | ${escapeHtml(stockLabel)}</b>`,
-        `판단: <b>${actionLabels[result.action] || (result.action || '분석 실패')}</b> | 신뢰도 <b>${confidence}</b>`,
-        `현재가: <b>${formatWon(result.cur_prc)}</b> | 등락률 ${formatSignedPercent(result.flu_rt)} | 체결강도 ${formatFixed(result.cntr_str, 1)}`,
-        '포트폴리오 연동: <b>사용 안 함</b>',
-    ];
-
-    if (pools.length > 0) {
-        lines.push(`전략 후보군: ${escapeHtml(pools.join(', '))}`);
-    }
-
-    const dailyLine = [
-        `MA5 ${formatWon(daily.ma5)}`,
-        `MA20 ${formatWon(daily.ma20)}`,
-        `MA60 ${formatWon(daily.ma60)}`,
-        `RSI ${formatFixed(daily.rsi14, 1)}`,
-        `ATR ${formatFixed(daily.atr_pct, 2)}%`,
-    ].join(' | ');
-    lines.push('', `<b>일봉 요약</b>`, dailyLine);
-
-    const minuteLine = [
-        `${minute.tic_scope || '5'}분봉`,
-        `RSI ${formatFixed(minute.rsi14, 1)}`,
-        `MACD ${formatFixed(minute.macd, 3)}`,
-        `Signal ${formatFixed(minute.macd_signal, 3)}`,
-        `Stoch ${formatFixed(minute.stoch_k, 1)}/${formatFixed(minute.stoch_d, 1)}`,
-        `ATR ${formatFixed(minute.atr_pct, 2)}%`,
-    ].join(' | ');
-    lines.push('', `<b>분봉 요약</b>`, minuteLine);
-
-    const hogaLine = [
-        `매수잔량 ${toFiniteNumber(hoga.total_buy_bid_req)?.toLocaleString() ?? '-'}`,
-        `매도잔량 ${toFiniteNumber(hoga.total_sel_bid_req)?.toLocaleString() ?? '-'}`,
-        `매수/매도 ${formatFixed(hoga.buy_to_sell_ratio, 2)}`,
-        `최우선 ${formatWon(hoga.best_bid, '-')}/${formatWon(hoga.best_ask, '-')}`,
-    ].join(' | ');
-    lines.push('', `<b>호가 요약</b>`, hogaLine);
-
-    if (reasons.length > 0) {
-        lines.push('', '<b>핵심 근거</b>');
-        reasons.forEach((reason) => lines.push(`• ${escapeHtml(reason)}`));
-    }
-
-    if (risks.length > 0) {
-        lines.push('', '<b>리스크</b>');
-        risks.forEach((risk) => lines.push(`• ${escapeHtml(risk)}`));
-    }
-
-    if (actionGuide.length > 0) {
-        lines.push('', '<b>실행 가이드</b>');
-        actionGuide.forEach((step) => lines.push(`• ${escapeHtml(step)}`));
-    }
-
-    const tpLine = [
-        tp.take_profit != null ? `목표가 ${formatWon(tp.take_profit)}` : null,
-        tp.stop_loss != null ? `손절가 ${formatWon(tp.stop_loss)}` : null,
-    ].filter(Boolean).join(' | ');
-    if (tpLine) {
-        lines.push('', `<b>TP / SL</b>`, tpLine);
-    }
-
-    if (result.summary) {
-        lines.push('', `<b>한 줄 결론</b>`, escapeHtml(result.summary));
-    }
-
-    if (result.claude_analysis && !result.summary) {
-        lines.push('', escapeHtml(result.claude_analysis));
-    }
-
-    return lines.join('\n');
-}
 
 function formatNewsBriefResponse(brief) {
     const analysis = brief?.analysis || {};
@@ -957,21 +869,18 @@ const sectorStatus = guard(async (ctx) => {
 });
 
 /**
- * /score {종목코드} — 15전략 심사 + 규칙/AI 스코어링
- * S1~S15 전략 조건을 실시간 데이터 기반으로 경량 심사 후
- * 매칭 전략별 규칙점수 + Claude AI 점수를 계산하여 결과 반환.
- *
- * 전략 미매칭 → "전략없음" 반환
- * 매칭 → 전략별 신호 카드 (formatSignal 포맷) 순서대로 전송
+ * /score {종목코드} — 실시간 데이터 수집 → 15전략 심사 + AI 스코어링 + Claude 종합 분석
+ * 전략 매칭 시: 전략별 rule_score + AI 스코어링 카드 + Claude 종합 의견
+ * 전략 미매칭 시: Claude 실시간 데이터 단독 AI 분석 반환 (후보풀 무관 동작)
  */
 const scoreStock = guard(async (ctx) => {
-    const parsed = parseStockCodeArg(ctx, 'claude');
+    const parsed = parseStockCodeArg(ctx, 'score');
     if (!parsed.ok) return ctx.reply(parsed.message);
-    if (!stkCd) return ctx.reply('Usage: /score 005930');
-    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /score 005930');
+    const stkCd = parsed.stkCd;
+    if (!stkCd || !/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /score 005930');
 
     await ctx.reply(
-        `🔍 <b>${stkCd}</b> 전략 심사 중...\nS1~S15 조건 체크 + AI 스코어링 (최대 60초 소요)`,
+        `🔍 <b>${stkCd}</b> 분석 중...\n실시간 데이터 수집 → 15전략 심사 → Claude 종합 분석 (최대 90초 소요)`,
         { parse_mode: 'HTML' },
     );
 
@@ -982,120 +891,57 @@ const scoreStock = guard(async (ctx) => {
         return ctx.reply(`❌ ai-engine 심사 실패: ${e.message}`);
     }
 
-    // 데이터 수집 자체 실패 (토큰 없음 등)
     if (d.skipped && d.skipped.length === 1 && d.skipped[0].includes('데이터 수집 실패')) {
         return ctx.reply(
-            `❓ <b>${stkCd}</b> – 데이터 조회 불가\n` +
-            `Kiwoom 토큰 유효성 또는 ai-engine 연결을 확인하세요.\n` +
-            `사유: ${d.skipped[0]}`,
+            `❓ <b>${stkCd}</b> – 데이터 조회 불가\nKiwoom 토큰 또는 ai-engine 연결을 확인하세요.\n사유: ${d.skipped[0]}`,
             { parse_mode: 'HTML' },
         );
     }
 
     const messages = formatStockScore(d);
-
-    // 메시지 배열 순서대로 전송 (전략없음은 1건)
     for (const msg of messages) {
         if (msg && msg.trim()) {
-            await ctx.reply(msg, { parse_mode: 'HTML' });
+            if (msg.length <= 4096) {
+                await ctx.reply(msg, { parse_mode: 'HTML' });
+            } else {
+                await ctx.reply(msg.slice(0, 4000), { parse_mode: 'HTML' });
+                if (msg.slice(4000).trim()) await ctx.reply(msg.slice(4000), { parse_mode: 'HTML' });
+            }
         }
     }
 });
 
-/**
- * /claude {종목코드} — Claude AI 종목 종합 분석
- * ai-engine /analyze/{code} 엔드포인트 호출 → 기술적 분석 + 전략 후보 풀 정보 + Claude 의견
- */
+/** /claude — /score 와 동일 (이전 호환) */
 const claudeAnalyze = guard(async (ctx) => {
     const parsed = parseStockCodeArg(ctx, 'claude');
     if (!parsed.ok) return ctx.reply(parsed.message);
     const stkCd = parsed.stkCd;
+    if (!stkCd || !/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /claude 005930');
 
-    await ctx.reply(`🧠 <b>${stkCd}</b> 종목을 Claude로 분석 중입니다. 호가, 일봉, 분봉, 보조지표를 함께 점검합니다.`, { parse_mode: 'HTML' });
-
-    let result;
-    try {
-        result = await kiwoom.analyzeStockWithClaude(stkCd);
-    } catch (e) {
-        return ctx.reply(`??ai-engine 분석 실패: ${e.message}`);
-    }
-
-    if (result.error && !result.action && !result.claude_analysis) {
-        return ctx.reply(`??분석 오류: ${result.error}`);
-    }
-
-    const message = formatClaudeResponse(result);
-    if (message.length <= 4096) {
-        return ctx.reply(message, { parse_mode: 'HTML' });
-    }
-
-    await ctx.reply(message.slice(0, 3800), { parse_mode: 'HTML' });
-    if (message.slice(3800).trim()) {
-        await ctx.reply(message.slice(3800), { parse_mode: 'HTML' });
-    }
-    return;
-    if (!/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /claude 005930');
-
-    await ctx.reply(`🔍 <b>${stkCd}</b> Claude 분석 중... (최대 30초 소요)`, { parse_mode: 'HTML' });
+    await ctx.reply(
+        `🔍 <b>${stkCd}</b> 분석 중...\n실시간 데이터 수집 → 15전략 심사 → Claude 종합 분석 (최대 90초 소요)`,
+        { parse_mode: 'HTML' },
+    );
 
     let d;
     try {
-        d = await kiwoom.analyzeStockWithClaude(stkCd);
+        d = await kiwoom.scoreStockFull(stkCd);
     } catch (e) {
         return ctx.reply(`❌ ai-engine 분석 실패: ${e.message}`);
     }
 
-    if (d.error && !d.claude_analysis) {
-        return ctx.reply(`❌ 분석 오류: ${d.error}`);
-    }
-
-    const stk_nm = d.stk_nm || stkCd;
-    const curPrc = Number(d.cur_prc ?? 0);
-    const fluRt  = Number(d.flu_rt ?? 0);
-    const fluSign = fluRt > 0 ? '+' : '';
-
-    // 후보 풀 전략 목록
-    const pools = (d.strategies_in_pool || []);
-    const poolStr = pools.length > 0
-        ? pools.map(s => `  • ${s}`).join('\n')
-        : '  (현재 후보 풀에 없음)';
-
-    // 기술지표 요약
-    const ma5  = d.ma5  ? `${Number(d.ma5).toLocaleString()}원`  : 'N/A';
-    const ma20 = d.ma20 ? `${Number(d.ma20).toLocaleString()}원` : 'N/A';
-    const ma60 = d.ma60 ? `${Number(d.ma60).toLocaleString()}원` : 'N/A';
-    const rsi  = d.rsi14 != null ? `${d.rsi14}` : 'N/A';
-    const bbU  = d.bb_upper ? `${Number(d.bb_upper).toLocaleString()}` : 'N/A';
-    const bbL  = d.bb_lower ? `${Number(d.bb_lower).toLocaleString()}` : 'N/A';
-
-    const header =
-        `🤖 <b>Claude 종목 분석 — ${stk_nm}(${stkCd})</b>\n\n` +
-        `💰 현재가: <b>${curPrc.toLocaleString()}원</b>  <b>${fluSign}${fluRt}%</b>\n\n` +
-        `📊 <b>전략 후보 풀</b>\n${poolStr}\n\n` +
-        `📈 <b>기술지표 요약</b>\n` +
-        `MA5: ${ma5} | MA20: ${ma20} | MA60: ${ma60}\n` +
-        `RSI(14): ${rsi} | BB: ${bbL} ~ ${bbU}\n` +
-        `──────────────────────\n`;
-
-    const analysis = d.claude_analysis || '분석 결과 없음';
-
-    // Telegram 메시지 4096자 제한 — 길면 분할 전송
-    const full = header + analysis;
-    if (full.length <= 4096) {
-        await ctx.reply(full, { parse_mode: 'HTML' });
-    } else {
-        await ctx.reply(header, { parse_mode: 'HTML' });
-        // 분석 텍스트는 HTML 태그 없이 일반 텍스트로 분할 전송
-        const chunks = [];
-        for (let i = 0; i < analysis.length; i += 4000) {
-            chunks.push(analysis.slice(i, i + 4000));
-        }
-        for (const chunk of chunks) {
-            await ctx.reply(chunk);
+    const messages = formatStockScore(d);
+    for (const msg of messages) {
+        if (msg && msg.trim()) {
+            if (msg.length <= 4096) {
+                await ctx.reply(msg, { parse_mode: 'HTML' });
+            } else {
+                await ctx.reply(msg.slice(0, 4000), { parse_mode: 'HTML' });
+                if (msg.slice(4000).trim()) await ctx.reply(msg.slice(4000), { parse_mode: 'HTML' });
+            }
         }
     }
 });
-
 /** /history {종목코드} */
 const signalHistory = guard(async (ctx) => {
     const args  = ctx.message.text.split(' ');
