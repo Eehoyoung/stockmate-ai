@@ -9,6 +9,7 @@ MA5/MA20/MA60/MA120 계산, 정배열 판단, 지지/저항 근접도 검사,
 모든 함수는 실패 시 안전 기본값을 반환하여 호출처의 예외 처리 부담을 줄인다.
 """
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -371,6 +372,131 @@ def build_weekly_candles(daily_candles: list[dict]) -> list[dict]:
         })
 
     return result
+
+
+# ──────────────────────────────────────────────────────────────
+# Phase 2: 진행봉/확정봉 분리 + 멀티타임프레임 provider
+# ──────────────────────────────────────────────────────────────
+
+def _is_intraday_kst() -> bool:
+    """장중(09:00~15:30 KST 평일)이면 True."""
+    now = datetime.now(KST)
+    if now.weekday() >= 5:
+        return False
+    t_min = now.hour * 60 + now.minute
+    return 540 <= t_min < 930  # 09:00=540, 15:30=930
+
+
+def get_confirmed_candles(candles: list[dict]) -> list[dict]:
+    """
+    확정봉만 반환한다.
+
+    장중(09:00~15:30): index 0은 진행 중인 봉이므로 제외하고 index 1+를 반환.
+    장후(15:30~): index 0이 이미 확정봉이므로 전체 반환.
+    """
+    if not candles:
+        return []
+    return candles[1:] if _is_intraday_kst() else candles
+
+
+def get_current_bar(candles: list[dict]) -> dict | None:
+    """장중이면 진행봉(index 0)을, 장후이면 None을 반환한다."""
+    if not candles:
+        return None
+    return candles[0] if _is_intraday_kst() else None
+
+
+async def fetch_daily_candles_with_status(
+    token: str,
+    stk_cd: str,
+    target_count: int = 120,
+) -> tuple[list[dict], dict]:
+    """
+    fetch_daily_candles 와 동일하지만 장중/장마감 상태 메타데이터도 반환한다.
+
+    Returns:
+        (candles, status_dict) where status_dict = {
+            scope               : "1d",
+            candle_count        : int,
+            cache_hit           : bool,
+            cache_ttl_remaining_ms : int,
+            source              : "CACHE" | "REST" | "EMPTY",
+            source_date         : str  (조회 기준일 YYYYMMDD),
+            computed_at         : str  (KST ISO 8601),
+            is_final_daily_bar  : bool (장마감 확정봉 여부),
+            intraday_day_bar    : bool (장중 진행봉 포함 여부),
+        }
+    """
+    now_kst = datetime.now(KST)
+    intraday = _is_intraday_kst()
+
+    now_mono = _time.monotonic()
+    cached = _CANDLE_CACHE.get(stk_cd)
+    cache_hit = (
+        cached is not None
+        and now_mono < cached[1]
+        and len(cached[0]) >= target_count
+    )
+
+    if cache_hit:
+        candles = cached[0]
+        ttl_remaining_ms = int((cached[1] - now_mono) * 1000)
+        source = "CACHE"
+    else:
+        candles = await fetch_daily_candles(token, stk_cd, target_count)
+        ttl_remaining_ms = int(_CANDLE_CACHE_TTL * 1000) if candles else 0
+        source = "REST" if candles else "EMPTY"
+
+    return candles, {
+        "scope": "1d",
+        "candle_count": len(candles),
+        "cache_hit": cache_hit,
+        "cache_ttl_remaining_ms": ttl_remaining_ms,
+        "source": source,
+        "source_date": now_kst.strftime("%Y%m%d"),
+        "computed_at": now_kst.isoformat(),
+        "is_final_daily_bar": not intraday,
+        "intraday_day_bar": intraday,
+    }
+
+
+async def fetch_multi_scope_candles(
+    token: str,
+    stk_cd: str,
+    scopes: tuple[str, ...] = ("5", "30", "60"),
+) -> dict[str, tuple[list[dict], dict]]:
+    """
+    복수 분봉 scope를 병렬로 조회한다.
+
+    Args:
+        token : Kiwoom API 토큰
+        stk_cd: 종목 코드
+        scopes: 조회할 분봉 scope 목록 (예: ("1", "5", "30", "60"))
+
+    Returns:
+        {scope_str: (candles, status_dict)} — 키는 scope 문자열 ("1", "5" 등).
+        scope별 오류는 빈 candles + source="ERROR" status로 안전하게 처리한다.
+    """
+    results = await asyncio.gather(
+        *[fetch_minute_candles_with_status(token, stk_cd, s) for s in scopes],
+        return_exceptions=True,
+    )
+    out: dict[str, tuple[list[dict], dict]] = {}
+    for scope, res in zip(scopes, results):
+        if isinstance(res, Exception):
+            out[scope] = ([], {
+                "scope": f"{scope}m",
+                "candle_count": 0,
+                "cache_hit": False,
+                "cache_ttl_remaining_ms": 0,
+                "source": "ERROR",
+                "latest_ts": "",
+                "is_current_bar_closed": True,
+                "error": str(res),
+            })
+        else:
+            out[scope] = res
+    return out
 
 
 # ──────────────────────────────────────────────────────────────
