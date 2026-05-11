@@ -124,7 +124,18 @@ _CANDLE_CACHE_TTL = int(os.getenv("MA_CACHE_TTL_SEC", "3600"))
 
 # 분봉 캐시: {(stk_cd, tic_scope): (candles, expire_at)}
 _MIN_CANDLE_CACHE: dict[tuple[str, str], tuple[list[dict], float]] = {}
-_MIN_CACHE_TTL = int(os.getenv("RSI_MIN_CACHE_TTL_SEC", "300"))
+# scope 별 캐시 TTL – 단기 프레임일수록 짧게 유지해 stale 봉 사용을 방지
+_MIN_CACHE_TTL_BY_SCOPE: dict[str, int] = {
+    "1":  int(os.getenv("RSI_MIN_CACHE_TTL_1M_SEC",  "15")),
+    "5":  int(os.getenv("RSI_MIN_CACHE_TTL_5M_SEC",  "45")),
+    "30": int(os.getenv("RSI_MIN_CACHE_TTL_30M_SEC", "240")),
+    "60": int(os.getenv("RSI_MIN_CACHE_TTL_60M_SEC", "600")),
+}
+_MIN_CACHE_TTL_DEFAULT = int(os.getenv("RSI_MIN_CACHE_TTL_SEC", "300"))
+
+
+def _min_cache_ttl(tic_scope: str) -> int:
+    return _MIN_CACHE_TTL_BY_SCOPE.get(str(tic_scope), _MIN_CACHE_TTL_DEFAULT)
 
 
 def _candle_cache_get(stk_cd: str) -> list[dict] | None:
@@ -244,11 +255,122 @@ async def fetch_minute_candles(
                 return []
             candles = data.get("stk_min_pole_chart_qry", [])
             if candles:
-                _MIN_CANDLE_CACHE[key] = (candles, _time.monotonic() + _MIN_CACHE_TTL)
+                _MIN_CANDLE_CACHE[key] = (candles, _time.monotonic() + _min_cache_ttl(tic_scope))
             return candles
     except Exception as e:
         logger.debug("[ma] ka10080 실패 [%s/%s]: %s", stk_cd, tic_scope, e)
         return []
+
+
+def _is_bar_closed(tic_scope: str) -> bool:
+    """현재봉(index 0)이 확정봉인지 추정한다.
+    봉 경계 기준 30초 이상 경과했으면 True (이전 봉 확정, 새 봉 형성 중)."""
+    try:
+        scope_min = int(tic_scope)
+        now = datetime.now(KST)
+        secs_into_bar = (now.minute % scope_min) * 60 + now.second
+        return secs_into_bar >= 30
+    except Exception:
+        return True
+
+
+async def fetch_minute_candles_with_status(
+    token: str,
+    stk_cd: str,
+    tic_scope: str = "5",
+) -> tuple[list[dict], dict]:
+    """
+    fetch_minute_candles 와 동일하지만 캐시·데이터 품질 메타데이터도 함께 반환한다.
+
+    Returns:
+        (candles, status_dict) where status_dict = {
+            scope          : "1m" | "5m" | "30m" | "60m",
+            candle_count   : int,
+            cache_hit      : bool,
+            cache_ttl_remaining_ms : int | None,
+            source         : "CACHE" | "REST" | "EMPTY",
+            latest_ts      : str (봉 기준시각, 없으면 ""),
+            is_current_bar_closed : bool,
+        }
+    """
+    key = (stk_cd, tic_scope)
+    now_mono = _time.monotonic()
+    entry = _MIN_CANDLE_CACHE.get(key)
+
+    if entry and now_mono < entry[1]:
+        candles = entry[0]
+        return candles, {
+            "scope": f"{tic_scope}m",
+            "candle_count": len(candles),
+            "cache_hit": True,
+            "cache_ttl_remaining_ms": int((entry[1] - now_mono) * 1000),
+            "source": "CACHE",
+            "latest_ts": (candles[0].get("cntr_tm") or candles[0].get("stk_clcl_dt") or "") if candles else "",
+            "is_current_bar_closed": _is_bar_closed(tic_scope),
+        }
+
+    candles = await fetch_minute_candles(token, stk_cd, tic_scope)
+    return candles, {
+        "scope": f"{tic_scope}m",
+        "candle_count": len(candles),
+        "cache_hit": False,
+        "cache_ttl_remaining_ms": int(_min_cache_ttl(tic_scope) * 1000) if candles else 0,
+        "source": "REST" if candles else "EMPTY",
+        "latest_ts": (candles[0].get("cntr_tm") or candles[0].get("stk_clcl_dt") or "") if candles else "",
+        "is_current_bar_closed": _is_bar_closed(tic_scope),
+    }
+
+
+def build_weekly_candles(daily_candles: list[dict]) -> list[dict]:
+    """
+    일봉 리스트를 ISO 주 단위로 집계해 주봉을 반환한다 (최신 주가 index 0).
+
+    Args:
+        daily_candles: ka10081 응답 형식 (최신순). 필드: dt 또는 stk_bsic_dt, stk_opnpric,
+                       stk_hgpric, stk_lwpric, stk_clpr, acml_vol
+    Returns:
+        주봉 리스트 [{week_key, dt_start, dt_end, open, high, low, close, volume, candle_count}]
+    """
+    from datetime import date as _date
+    from collections import defaultdict
+
+    weeks: dict[str, list[dict]] = defaultdict(list)
+    for c in daily_candles:
+        dt_str = str(c.get("dt") or c.get("stk_bsic_dt") or "")
+        if len(dt_str) < 8:
+            continue
+        try:
+            d = _date(int(dt_str[:4]), int(dt_str[4:6]), int(dt_str[6:8]))
+            iso_year, iso_week, _ = d.isocalendar()
+            weeks[f"{iso_year}-W{iso_week:02d}"].append({"dt": dt_str, **c})
+        except ValueError:
+            continue
+
+    result = []
+    for week_key, days in sorted(weeks.items(), reverse=True):
+        days_sorted = sorted(days, key=lambda x: x["dt"])
+        try:
+            open_price  = float(days_sorted[0].get("stk_opnpric") or 0)
+            close_price = float(days_sorted[-1].get("stk_clpr") or 0)
+            high_price  = max(float(d.get("stk_hgpric") or 0) for d in days_sorted)
+            lows = [float(d.get("stk_lwpric") or 0) for d in days_sorted if float(d.get("stk_lwpric") or 0) > 0]
+            low_price   = min(lows) if lows else 0.0
+            total_vol   = sum(int(d.get("acml_vol") or 0) for d in days_sorted)
+        except (ValueError, TypeError):
+            continue
+        result.append({
+            "week_key": week_key,
+            "dt_start": days_sorted[0]["dt"],
+            "dt_end": days_sorted[-1]["dt"],
+            "open": open_price,
+            "high": high_price,
+            "low": low_price,
+            "close": close_price,
+            "volume": total_vol,
+            "candle_count": len(days_sorted),
+        })
+
+    return result
 
 
 # ──────────────────────────────────────────────────────────────

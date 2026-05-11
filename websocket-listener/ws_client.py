@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, time as dtime, timedelta, timezone
 
 import websockets
@@ -108,6 +109,7 @@ MAX_RECONNECT_SEC    = 300    # 최대 재연결 대기 5분
 WATCHLIST_POLL_SEC   = 5      # candidates:watchlist 폴링 간격 (/score 호출 후 빠른 구독 반영)
 HEARTBEAT_INTERVAL   = 30     # 초 (ws:py_heartbeat Redis 갱신 주기)
 MIN_CONNECTED_SEC    = 30     # 이 미만으로 연결이 유지되면 "즉시 종료" 로 간주
+WS_SILENCE_TIMEOUT_SEC = 90  # 이 초 이상 메시지 없으면 dead connection 판정 후 강제 종료
 
 
 async def _replace_subscription_set(rdb, key: str, codes: list[str]):
@@ -431,9 +433,25 @@ async def _heartbeat_writer(rdb):
 
 
 
-async def _run_message_loop(ws, rdb, pg_pool=None):
+async def _silence_watchdog(ws, last_msg_holder: list):
+    """90초 무메시지 감지 시 ws.close() 로 reconnect 유도.
+    Kiwoom 서버가 close frame 없이 TCP를 끊는 경우를 대비한 데드 커넥션 탐지."""
+    while True:
+        await asyncio.sleep(30)
+        elapsed = time.monotonic() - last_msg_holder[0]
+        if elapsed > WS_SILENCE_TIMEOUT_SEC:
+            logger.warning(
+                "[WS] %.0f초 무메시지 — dead connection 판정, 강제 종료하여 재연결 유도", elapsed
+            )
+            await ws.close()
+            return
+
+
+async def _run_message_loop(ws, rdb, pg_pool=None, last_msg_holder=None):
     """메시지 수신 루프 – 서버 PING 포함 모든 메시지 즉시 처리"""
     async for message in ws:
+        if last_msg_holder is not None:
+            last_msg_holder[0] = time.monotonic()
         await _handle_message(message, ws, rdb, pg_pool)
     logger.info("[WS] 서버 정상 종료 (clean close)")
 
@@ -539,7 +557,8 @@ async def run_ws_loop(rdb, pg_pool=None):
 
                 # ── 메시지 루프를 구독보다 먼저 시작 ──────────────────────
                 # 구독(REG) 도중 서버가 PING을 보내도 즉시 PONG 응답 가능
-                message_task = asyncio.create_task(_run_message_loop(ws, rdb, pg_pool))
+                last_msg_holder = [time.monotonic()]
+                message_task = asyncio.create_task(_run_message_loop(ws, rdb, pg_pool, last_msg_holder))
 
                 # BYPASS keeps the process alive, but it must not force a trading subscription session.
                 initial_phase = _get_market_session()
@@ -555,6 +574,7 @@ async def run_ws_loop(rdb, pg_pool=None):
                 watchlist_task = asyncio.create_task(_watchlist_poller(ws, rdb, subscribed_set))
                 heartbeat_task = asyncio.create_task(_heartbeat_writer(rdb))
                 phase_task     = asyncio.create_task(_phase_watcher(ws, rdb))
+                silence_task   = asyncio.create_task(_silence_watchdog(ws, last_msg_holder))
 
                 try:
                     await message_task  # 서버가 연결을 닫을 때까지 대기
@@ -562,6 +582,7 @@ async def run_ws_loop(rdb, pg_pool=None):
                     watchlist_task.cancel()
                     heartbeat_task.cancel()
                     phase_task.cancel()
+                    silence_task.cancel()
                     message_task.cancel()
                     set_ws_connected(False)
 

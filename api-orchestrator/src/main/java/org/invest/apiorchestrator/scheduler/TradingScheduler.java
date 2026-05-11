@@ -86,11 +86,11 @@ public class TradingScheduler {
                 log.info("[Pool] S1 preload OK [market={}] count={}", market, count);
                 totalLoaded += count;
             } else if (count == 0) {
-                log.warn("[Pool] S1 preload 결과 없음 [market={}] — 08:20 재시도 예정", market);
+                log.warn("[Pool] S1 preload 결과 없음 [market={}] — 08:20/08:25 재시도 예정", market);
             }
         }
         if (totalLoaded == 0) {
-            log.error("[Pool] S1 preload 전체 실패 — 양 시장 모두 0건, 08:20 재시도 예정");
+            log.error("[Pool] S1 preload 전체 실패 — 양 시장 모두 0건, 08:20/08:25 재시도 예정");
         } else {
             log.info("[Pool] S1 preload complete total={}", totalLoaded);
         }
@@ -107,7 +107,24 @@ public class TradingScheduler {
                 if (count > 0) {
                     log.info("[Pool] S1 재적재 성공 [market={}] count={}", market, count);
                 } else {
-                    log.error("[Pool] S1 재적재 실패 [market={}] count={} — 08:30 스캔 전 풀 없음 위험", market, count);
+                    log.error("[Pool] S1 재적재 실패 [market={}] count={} — 08:25 최종 재시도 예정", market, count);
+                }
+            }
+        }
+    }
+
+    /** S1 풀 비었을 때 08:25 최종 재시도 (08:30 스캔 직전 마지막 기회) */
+    @Scheduled(cron = "0 25 8 * * MON-FRI", zone = "Asia/Seoul")
+    public void finalRetryS1PoolBeforeScan() {
+        for (String market : new String[]{"001", "101"}) {
+            Long llen = redis.opsForList().size("candidates:s1:" + market);
+            if (llen == null || llen == 0) {
+                log.warn("[Pool] S1 풀 비어 있음 [market={}] — 08:25 최종 재시도", market);
+                int count = candidateService.preloadS1Candidates(market);
+                if (count > 0) {
+                    log.info("[Pool] S1 최종 재적재 성공 [market={}] count={}", market, count);
+                } else {
+                    log.error("[Pool] S1 최종 재적재 실패 [market={}] count={} — 08:30 스캔 풀 없음", market, count);
                 }
             }
         }

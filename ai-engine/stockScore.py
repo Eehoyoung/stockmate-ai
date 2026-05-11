@@ -38,6 +38,7 @@ from ma_utils import (
     detect_golden_cross, _calc_ma,
 )
 from indicator_rsi import calc_rsi as _calc_rsi_list
+from indicator_ichimoku import calc_ichimoku
 from redis_reader import get_tick_data, get_hoga_data, get_avg_cntr_strength, get_vi_status
 from scorer import rule_score as _rule_score, get_claude_threshold
 from analyzer import analyze_signal

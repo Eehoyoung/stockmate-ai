@@ -831,8 +831,8 @@ function _formatClaudeFull(cf, stkLabel) {
     }
 
     const tpLine = [
-        tp.take_profit != null ? `목표가 ${formatWon(tp.take_profit)}` : null,
-        tp.stop_loss   != null ? `손절가 ${formatWon(tp.stop_loss)}`   : null,
+        tp.take_profit != null ? `목표가 ${_formatWon(tp.take_profit)}` : null,
+        tp.stop_loss   != null ? `손절가 ${_formatWon(tp.stop_loss)}`   : null,
     ].filter(Boolean).join(' | ');
     if (tpLine) lines.push('', `<b>TP / SL</b>  ${tpLine}`);
 

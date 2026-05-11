@@ -463,9 +463,10 @@ class TestS1Fallback:
 
         rdb = _make_rdb(lrange=[])
 
-        with patch("strategy_1_gap_opening.scan_gap_opening", new_callable=AsyncMock, return_value=[]) as scan_mock, patch(
-            "strategy_runner._push_signals", new_callable=AsyncMock
-        ):
+        # 900 (09:00) → S1_SCAN_START_HHMM(850)과 S1_SCAN_END_HHMM(903) 사이 – 시간 윈도우 통과
+        with patch("strategy_1_gap_opening.scan_gap_opening", new_callable=AsyncMock, return_value=[]) as scan_mock, \
+             patch("strategy_runner._push_signals", new_callable=AsyncMock), \
+             patch("strategy_runner._kst_hhmm", return_value=900):
             _run(_scan_s1(rdb, "valid-token"))
 
         scan_mock.assert_awaited_once()

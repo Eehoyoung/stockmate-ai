@@ -79,6 +79,9 @@ _S12_START_MINUTE = 14 * 60 + 30
 _S12_END_MINUTE = 15 * 60 + 10
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 RR_CAUTION_THRESHOLD = float(os.getenv("RR_CAUTION_THRESHOLD", "1.2"))
+S8_SUPPORT_ZONE_CAUTION_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_CAUTION_GAP_PCT", "1.5"))
+S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT", "3.5"))
+S8_MIN_ZONE_RR = float(os.getenv("S8_MIN_ZONE_RR", "1.4"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").lower() == "true"
 CLAUDE_HARD_RULE_CANCEL_TYPE = "CLAUDE_HARD_RULE"
@@ -497,6 +500,59 @@ def _hard_gate_failure(signal: dict, ctx: dict) -> str | None:
     return None
 
 
+def _s8_buy_zone_gate_failure(signal: dict) -> str | None:
+    if signal.get("strategy") != "S8_GOLDEN_CROSS":
+        return None
+
+    buy_zone = signal.get("buy_zone")
+    if not isinstance(buy_zone, dict):
+        return None
+
+    cur_prc = _fv(signal.get("cur_prc") or signal.get("entry_price"), None)
+    z_low = _fv(buy_zone.get("low"), None)
+    z_high = _fv(buy_zone.get("high"), None)
+    if cur_prc is None or z_low is None or z_high is None:
+        return None
+    if cur_prc <= 0 or z_low <= 0 or z_high <= 0 or z_low > z_high:
+        return None
+
+    signal["s8_buy_zone_role"] = signal.get("s8_buy_zone_role") or "support_zone"
+
+    if cur_prc < z_low:
+        signal["s8_zone_status"] = "hard_cancel"
+        signal["s8_zone_entry_policy"] = "no_entry"
+        return f"S8 support zone failed: price {cur_prc:.1f} below support low {z_low:.1f}"
+
+    gap_pct = max(0.0, (cur_prc - z_high) / z_high * 100.0)
+    signal["s8_buy_zone_high_gap_pct"] = round(gap_pct, 3)
+
+    zone_rr = _fv(signal.get("zone_rr"), None)
+    if zone_rr is not None and zone_rr < S8_MIN_ZONE_RR:
+        signal["s8_zone_status"] = "hard_cancel"
+        signal["s8_zone_entry_policy"] = "no_entry"
+        return f"S8 zone_rr {zone_rr:.2f} below {S8_MIN_ZONE_RR:.2f}"
+
+    if gap_pct > S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT:
+        signal["s8_zone_status"] = "hard_cancel"
+        signal["s8_zone_entry_policy"] = "no_entry"
+        return (
+            f"S8 support gap {gap_pct:.2f}% above "
+            f"{S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT:.2f}%"
+        )
+
+    if gap_pct > S8_SUPPORT_ZONE_CAUTION_GAP_PCT:
+        signal["s8_zone_status"] = "caution"
+        signal["s8_zone_entry_policy"] = "limit_pullback"
+        signal["s8_zone_caution_reason"] = (
+            f"support gap {gap_pct:.2f}% above "
+            f"{S8_SUPPORT_ZONE_CAUTION_GAP_PCT:.2f}%"
+        )
+    else:
+        signal["s8_zone_status"] = "pass"
+        signal["s8_zone_entry_policy"] = "current_or_limit"
+    return None
+
+
 def _freshness_cancel_reason(ctx: dict) -> str | None:
     freshness = ctx.get("freshness", {}) or {}
     for key in ("tick", "hoga", "strength"):
@@ -508,6 +564,119 @@ def _freshness_cancel_reason(ctx: dict) -> str | None:
     if vi and vi_status.get("state") == "cancel":
         return f"vi data stale: age_ms={vi_status.get('age_ms')}"
     return None
+
+
+def _compute_freshness_decision(freshness: dict, strategy: str) -> str:
+    """
+    실시간 Redis 데이터 신선도를 종합해 최종 결정을 반환한다.
+
+    전략별 정책 (문서 4.1):
+    - S1/S2/S4/S10/S12/S13: tick 또는 hoga cancel → CANCEL
+    - S3/S5/S11: REST 기반 – tick stale 이어도 SHADOW 허용
+    - 나머지: tick stale → SHADOW, hoga missing → caution
+
+    Returns: PASS | CAUTION | SHADOW | SIZE_DOWN | CANCEL
+    """
+    strict_strategies = {"S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE",
+                         "S10_NEW_HIGH", "S12_CLOSING", "S13_BOX_BREAKOUT"}
+    rest_strategies   = {"S3_INST_FRGN", "S5_PROG_FRGN", "S11_FRGN_CONT"}
+
+    tick_state     = (freshness.get("tick") or {}).get("state", "missing")
+    hoga_state     = (freshness.get("hoga") or {}).get("state", "missing")
+    strength_state = (freshness.get("strength") or {}).get("state", "missing")
+
+    if strategy in strict_strategies:
+        if tick_state == "cancel" or hoga_state == "cancel":
+            return "CANCEL"
+        if tick_state in ("caution", "missing") or hoga_state in ("caution", "missing"):
+            return "CAUTION"
+    elif strategy in rest_strategies:
+        if tick_state == "cancel":
+            return "SHADOW"
+        if hoga_state == "cancel":
+            return "SIZE_DOWN"
+    else:
+        if tick_state == "cancel":
+            return "SHADOW"
+        if hoga_state == "cancel":
+            return "CAUTION"
+        if strength_state == "cancel":
+            return "CAUTION"
+
+    if tick_state == "caution" or hoga_state == "caution":
+        return "CAUTION"
+
+    return "PASS"
+
+
+def _collect_missing_feature_flags(signal: dict, ctx: dict) -> list[str]:
+    """신호와 컨텍스트에서 누락된 필수 피처 목록을 반환한다."""
+    missing = []
+    # 현재가
+    if not _fv(signal.get("cur_prc"), None) and not _fv(signal.get("entry_price"), None):
+        missing.append("cur_prc")
+    # 체결강도
+    strength = ctx.get("strength")
+    if not strength:
+        missing.append("strength")
+    # 호가
+    hoga = ctx.get("hoga")
+    if not hoga:
+        missing.append("hoga")
+    # tick
+    tick = ctx.get("tick")
+    if not tick:
+        missing.append("tick")
+    # RSI
+    if signal.get("rsi") is None and signal.get("rsi14") is None:
+        missing.append("rsi")
+    # RR ratio
+    if signal.get("rr_ratio") is None:
+        missing.append("rr_ratio")
+    # 수급 (S3/S5/S11)
+    strategy = signal.get("strategy", "")
+    if strategy in ("S3_INST_FRGN", "S5_PROG_FRGN", "S11_FRGN_CONT"):
+        if not signal.get("inst_buy_amt") and not signal.get("frgn_buy_amt"):
+            missing.append("supply_demand")
+    return missing
+
+
+def _compute_data_quality(missing_flags: list[str], freshness_decision: str, signal: dict) -> dict:
+    """
+    data_quality_score (0~100)와 data_quality_decision을 계산한다.
+
+    하드 결측은 큰 감점, 소프트 결측은 소감점.
+    freshness_decision 도 반영한다.
+    Returns dict with data_quality_score, data_quality_decision, fallback_used.
+    """
+    score = 100.0
+    hard_missing = {"cur_prc", "rr_ratio"}
+    for flag in missing_flags:
+        if flag in hard_missing:
+            score -= 30.0
+        else:
+            score -= 10.0
+
+    freshness_penalty = {"CANCEL": 40.0, "SHADOW": 20.0, "SIZE_DOWN": 10.0, "CAUTION": 5.0, "PASS": 0.0}
+    score -= freshness_penalty.get(freshness_decision, 0.0)
+    score = max(0.0, min(100.0, score))
+
+    if score >= 80:
+        decision = "PASS"
+    elif score >= 60:
+        decision = "SHADOW"
+    elif score >= 40:
+        decision = "SIZE_DOWN"
+    else:
+        decision = "CANCEL"
+
+    fallback_used = bool(signal.get("fallback_source") or signal.get("fallback_used"))
+    return {
+        "data_quality_score": round(score, 1),
+        "data_quality_decision": decision,
+        "missing_feature_flags": missing_flags,
+        "fallback_used": fallback_used,
+    }
 
 
 def _rr_prefilter_reason(signal: dict, ctx: dict | None = None) -> str | None:
@@ -921,6 +1090,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             await _incr_pipeline(rdb, strategy, "cancel_score")
         else:
             rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
+            s8_zone_gate_reason = _s8_buy_zone_gate_failure(signal)
             hard_gate_reason = _hard_gate_failure(signal, ctx)
             stale_reason = _freshness_cancel_reason(ctx)
             if rr_prefilter_reason:
@@ -930,6 +1100,13 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 cancel_reason = rr_prefilter_reason
                 cancel_type = "RR_TOO_LOW"
                 await _incr_pipeline(rdb, strategy, "cancel_rr")
+            elif s8_zone_gate_reason:
+                action = "CANCEL"
+                confidence = "LOW"
+                reason = s8_zone_gate_reason
+                cancel_reason = s8_zone_gate_reason
+                cancel_type = "S8_BUY_ZONE"
+                await _incr_pipeline(rdb, strategy, "cancel_s8_buy_zone")
             elif hard_gate_reason:
                 action = "CANCEL"
                 confidence = "LOW"
@@ -990,6 +1167,11 @@ async def process_one(rdb, pg_pool=None) -> bool:
 
         display_reason = _resolve_display_reason(action, reason, cancel_reason)
 
+        # ── 데이터 품질·신선도 메타데이터 계산 (Phase 1 관측 가능성) ────────────
+        _freshness_dec = _compute_freshness_decision(ctx.get("freshness") or {}, strategy)
+        _missing_flags = _collect_missing_feature_flags(signal, ctx)
+        _dq = _compute_data_quality(_missing_flags, _freshness_dec, signal)
+
         enriched = {
             **item,
             "rule_score": r_score,
@@ -1006,6 +1188,9 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "tp2_price": None,
             "cancel_type": cancel_type or ai_result.get("cancel_type"),
             **quality,
+            # 데이터 신선도·품질 필드 (관측·검증용)
+            "freshness_decision": _freshness_dec,
+            **_dq,
         }
         if ENABLE_MODEL_RELATIVE_POSITION_SIZE:
             try:
@@ -1157,7 +1342,10 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 )
 
                 if action == "ENTER":
-                    entry_for_shadow = _fv(enriched.get("entry_price") or signal.get("entry_price"))
+                    entry_for_shadow = _fv(
+                        enriched.get("entry_price") or signal.get("entry_price") or
+                        enriched.get("cur_prc") or signal.get("cur_prc")
+                    )
                     tp1_for_shadow = _fv(enriched.get("claude_tp1") or enriched.get("tp1_price"))
                     tp2_for_shadow = _fv(enriched.get("claude_tp2") or enriched.get("tp2_price"))
                     sl_for_shadow = _fv(enriched.get("claude_sl") or enriched.get("sl_price"))
