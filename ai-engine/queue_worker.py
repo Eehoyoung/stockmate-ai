@@ -33,6 +33,7 @@ from redis_reader import (
     push_score_only_queue,
 )
 from scorer import check_daily_limit, get_claude_threshold, rule_score, should_skip_ai
+from shadow_features import compute_all_shadow_features
 from tp_sl_engine import compute_rr
 from utils import normalize_stock_code, safe_float as _fv
 
@@ -1172,6 +1173,13 @@ async def process_one(rdb, pg_pool=None) -> bool:
         _missing_flags = _collect_missing_feature_flags(signal, ctx)
         _dq = _compute_data_quality(_missing_flags, _freshness_dec, signal)
 
+        # ── Shadow features (Phase 3 관측 — gate 판단에 미사용) ─────────────────
+        try:
+            _shadow = compute_all_shadow_features(signal, ctx)
+        except Exception as _sf_err:
+            logger.debug("[Worker] shadow_features failed [%s %s]: %s", stk_cd, strategy, _sf_err)
+            _shadow = {}
+
         enriched = {
             **item,
             "rule_score": r_score,
@@ -1191,6 +1199,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
             # 데이터 신선도·품질 필드 (관측·검증용)
             "freshness_decision": _freshness_dec,
             **_dq,
+            # Shadow features (관측·EV 검증용 — gate 판단에 미사용)
+            "shadow_features": _shadow,
         }
         if ENABLE_MODEL_RELATIVE_POSITION_SIZE:
             try:
