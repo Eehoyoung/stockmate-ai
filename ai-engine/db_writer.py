@@ -769,7 +769,8 @@ async def insert_python_signal(
                         allow_overnight, allow_reentry, time_stop_deadline_at,
                         created_at, scored_at,
                         buy_zone_low, buy_zone_high, buy_zone_anchors, buy_zone_strength,
-                        sell_zone1_low, sell_zone1_high, zone_rr
+                        sell_zone1_low, sell_zone1_high, zone_rr,
+                        shadow_features
                     ) VALUES (
                         $1,$2,$3,$4,$5,
                         $6,$7,$8,$9,$10,
@@ -784,7 +785,8 @@ async def insert_python_signal(
                         $41,$42,$43,
                         $44,$45,$46,$47,$48,
                         $49,$50,$51,$52,
-                        $53,$54,$55
+                        $53,$54,$55,
+                        $56::jsonb
                     ) RETURNING id
                     """,
                     signal.get("stk_cd", ""),
@@ -837,6 +839,8 @@ async def insert_python_signal(
                     now,
                     # zone 필드 ($49~$55)
                     *_zone_insert_params(signal),
+                    # shadow_features ($56)
+                    json.dumps(signal.get("shadow_features")) if signal.get("shadow_features") else None,
                 )
                 if row:
                     signal_id = row["id"]

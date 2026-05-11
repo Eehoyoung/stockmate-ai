@@ -317,6 +317,9 @@ public class TradingSignal {
     @Column(name = "zone_rr", precision = 5, scale = 3)
     private BigDecimal zoneRr;
 
+    @Column(name = "shadow_features", columnDefinition = "jsonb")
+    private String shadowFeatures;
+
     // ── 도메인 메서드 ────────────────────────────────────────────────────
     public void updateStatus(SignalStatus status) {
         this.signalStatus = status;
