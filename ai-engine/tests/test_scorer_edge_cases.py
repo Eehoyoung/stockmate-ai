@@ -550,7 +550,8 @@ class TestCombinationScores:
         sig = _sig("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=2.0, rsi=55, cond_count=3)
         ctx = _ctx(strength=100, flu_rt=1.0, bid=4000, ask=1000)
         score, _ = rule_score(sig, ctx)
-        assert score >= 90.0
+        # 85 base; time_bonus +5 only during 10:00-13:00 KST
+        assert score >= 85.0
 
     def test_s4_is_new_high_bonus(self):
         """S4 신고가 플래그 +20점"""

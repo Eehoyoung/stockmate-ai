@@ -20,6 +20,7 @@ const {
     close: closeConfirmStore,
     rejectConfirmRequest,
 } = require('./services/confirmStore');
+const { close: closePositionsStore } = require('./services/positions');
 const { getLogger } = require('./utils/logger');
 const health = require('./health');
 
@@ -29,6 +30,8 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 let commands;
 let startPolling;
 let startConfirmPoller;
+let startActivePositionsScheduler;
+let stopActivePositionsScheduler;
 let kiwoom;
 
 function getAllowedChatIds() {
@@ -58,6 +61,7 @@ function validateRequiredEnv() {
 validateRequiredEnv();
 commands = require('./handlers/commands');
 ({ startPolling, startConfirmPoller } = require('./handlers/signals'));
+({ startActivePositionsScheduler, stopActivePositionsScheduler } = require('./handlers/activePositionsScheduler'));
 kiwoom = require('./services/kiwoom');
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -210,6 +214,7 @@ async function main() {
 
     const chatIds = getAllowedChatIds();
     startConfirmPoller(bot, chatIds);
+    startActivePositionsScheduler(bot);
 
     const healthPort = parseInt(process.env.TELEGRAM_HEALTH_PORT || process.env.HEALTH_PORT || '3001', 10);
     health.start(healthPort);
@@ -219,9 +224,11 @@ async function main() {
 async function shutdown(signal) {
     logger.info('[Bot] shutdown signal', { signal });
     try { bot.stop(signal); } catch (_) {}
+    try { stopActivePositionsScheduler(); } catch (_) {}
     try { health.stop(); } catch (_) {}
     try { await closeRedis(); } catch (_) {}
     try { await closeConfirmStore(); } catch (_) {}
+    try { await closePositionsStore(); } catch (_) {}
     process.exit(0);
 }
 

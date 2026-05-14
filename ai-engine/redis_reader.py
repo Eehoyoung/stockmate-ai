@@ -186,6 +186,50 @@ async def get_hoga_data(rdb, stk_cd: str) -> dict:
     return data or {}
 
 
+async def get_strength_with_status(
+    rdb,
+    stk_cd: str,
+    count: int = 5,
+    now_ms: int | None = None,
+) -> dict:
+    """
+    ws:strength_meta 의 freshness 를 확인한 뒤 리스트 값을 반환한다.
+    meta 가 missing/stale 이면 리스트 값이 있어도 stale/missing 으로 반환.
+    반환:
+    {
+        "data": float | None,          # 평균 체결강도
+        "status": {"state": "fresh|caution|cancel|missing", "age_ms": int, "kind": "strength"},
+        "source": "redis|missing"
+    }
+    """
+    now = _now_ms() if now_ms is None else int(now_ms)
+    meta = await rdb.hgetall(f"ws:strength_meta:{stk_cd}")
+    status = freshness_status(meta or {}, "strength", now_ms=now)
+
+    _missing = {"data": None, "status": status, "source": "missing"}
+
+    if status["state"] == "missing":
+        return _missing
+
+    if status["state"] == "cancel":
+        return {"data": None, "status": status, "source": "stale"}
+
+    # fresh or caution — 리스트에서 평균 계산
+    values = await rdb.lrange(f"ws:strength:{stk_cd}", 0, count - 1)
+    nums: list[float] = []
+    for v in (values or []):
+        try:
+            nums.append(float(str(v).replace(",", "").replace("+", "")))
+        except ValueError:
+            pass
+
+    if not nums:
+        return {"data": None, "status": status, "source": "missing"}
+
+    avg = round(sum(nums) / len(nums), 2)
+    return {"data": avg, "status": status, "source": "redis"}
+
+
 async def get_avg_cntr_strength(rdb, stk_cd: str, count: int = 5) -> float:
     """Return the average execution strength over the most recent N samples."""
     values = await rdb.lrange(f"ws:strength:{stk_cd}", 0, count - 1)

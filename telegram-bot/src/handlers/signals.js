@@ -16,22 +16,27 @@ const { getLogger } = require('../utils/logger');
 const logger = getLogger('signals');
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 2000);
-const MIN_AI_SCORE = Number(process.env.MIN_AI_SCORE ?? 65);
+const MIN_AI_SCORE = Number(process.env.MIN_AI_SCORE ?? 62);
 const HOLD_MIN_SCORE = 80;
 const MAX_SIGNALS_PER_MIN = Number(process.env.MAX_SIGNALS_PER_MIN ?? 20);
 const VALID_SIGNAL_STAGES = new Set(['WATCH', 'HOLD', 'ENTRY', 'CANCEL']);
 const THREADS_ENABLED = process.env.THREADS_ENABLED === 'true';
 const THREADS_MIN_MARKET_CAP_EOK = Number(process.env.THREADS_MIN_MARKET_CAP_EOK ?? 1000);
+// 내부 엔진 min_rr 하한(1.45)에 근접하는 Threads 전용 공개 게시 차단 기준
+const THREADS_MIN_RR = Number(process.env.THREADS_MIN_RR ?? 1.3);
+// Threads 게시 전 관리자 미리보기용 채팅 (THREADS_ENABLED 무관하게 동작)
+const THREADS_PREVIEW_CHAT_ID = process.env.TELEGRAM_THREADS_CHAT_ID || null;
 
 let _signalCount = 0;
 let _windowStart = Date.now();
 
-/** 시가총액 1,000억 미만 소형주 필터 (Threads 전용, 억 단위 비교) */
+/** 시가총액 1,000억 미만 소형주 필터 (Threads 전용, 억 단위 비교).
+ *  시가총액 정보가 없으면 보수적으로 차단(true) — fail-safe 설계. */
 function _isLowLiquidityStock(item) {
     const capEok = item.market_cap_eok != null
         ? Number(item.market_cap_eok)
         : (item.market_cap != null ? Number(item.market_cap) / 1e8 : null);
-    if (capEok === null || capEok <= 0) return false;
+    if (capEok === null || capEok <= 0) return true;  // 시가총액 정보 없음 → 차단
     return capEok < THREADS_MIN_MARKET_CAP_EOK;
 }
 
@@ -286,6 +291,13 @@ async function processItem(bot, item) {
                     logger.error('threads briefing post failed', { type: item.type }, e)
                 );
             }
+            // Threads 브리핑 관리자 미리보기 (THREADS_ENABLED 무관)
+            if (THREADS_PREVIEW_CHAT_ID && (item.type === 'STATUS_REPORT' || item.type === 'MIDDAY_REPORT')) {
+                const previewText = '[Threads 미리보기 — 브리핑]\n\n' + formatThreadsBriefing(item);
+                bot.telegram.sendMessage(THREADS_PREVIEW_CHAT_ID, previewText, {
+                    disable_web_page_preview: true,
+                }).catch((e) => logger.error('threads briefing preview failed', { type: item.type }, e));
+            }
             return;
         }
     }
@@ -342,7 +354,7 @@ async function processItem(bot, item) {
                 chat_id: chatId,
                 stk_cd: item.stk_cd,
                 strategy: item.strategy,
-                action,
+                action: isRuleOnly && action === 'ENTER' ? 'ENTER_RULE_ONLY' : action,
                 score: ai_score,
             });
         } catch (e) {
@@ -357,9 +369,11 @@ async function processItem(bot, item) {
         const slPrice    = Number(item.claude_sl  ?? item.sl_price  ?? 0);
         const rr = computeThreadsRR(item.stk_cd, entryPrice, tp1Price, slPrice);
 
-        if (rr !== null && rr < 1.0) {
-            logger.info('threads post skipped: R:R below 1.0', {
-                stk_cd: item.stk_cd, strategy: item.strategy, rr: rr.toFixed(2),
+        // rr === null: TP/SL 데이터 없는 신호 → 필터 적용 불가이므로 통과 허용 (의도적 설계)
+        if (rr !== null && rr < THREADS_MIN_RR) {
+            logger.info('threads post skipped: R:R below threshold', {
+                stk_cd: item.stk_cd, strategy: item.strategy,
+                rr: rr.toFixed(2), threshold: THREADS_MIN_RR,
             });
         } else if (_isLowLiquidityStock(item)) {
             logger.info('threads post skipped: low liquidity stock', {
@@ -375,6 +389,28 @@ async function processItem(bot, item) {
                 }, e)
             );
         }
+    }
+
+    // Threads 신호 관리자 미리보기 (THREADS_ENABLED 무관, ENTER + RULE_ONLY만)
+    if (THREADS_PREVIEW_CHAT_ID && (action === 'ENTER' || isRuleOnly)) {
+        const entryPrice = Number(item.cur_prc ?? item.entry_price ?? 0);
+        const tp1Price   = Number(item.claude_tp1 ?? item.tp1_price ?? 0);
+        const slPrice    = Number(item.claude_sl  ?? item.sl_price  ?? 0);
+        const rr = computeThreadsRR(item.stk_cd, entryPrice, tp1Price, slPrice);
+
+        let filterNote = '통과';
+        if (rr !== null && rr < THREADS_MIN_RR) {
+            filterNote = `차단 (R:R ${rr.toFixed(2)} < ${THREADS_MIN_RR})`;
+        } else if (_isLowLiquidityStock(item)) {
+            filterNote = `차단 (시총 ${item.market_cap_eok ?? '?'}억 < ${THREADS_MIN_MARKET_CAP_EOK}억)`;
+        }
+
+        const previewText = `[Threads 미리보기 — ${filterNote}]\n\n` + formatThreadsSignal(item);
+        bot.telegram.sendMessage(THREADS_PREVIEW_CHAT_ID, previewText, {
+            disable_web_page_preview: true,
+        }).catch((e) => logger.error('threads preview send failed', {
+            stk_cd: item.stk_cd, strategy: item.strategy,
+        }, e));
     }
 }
 

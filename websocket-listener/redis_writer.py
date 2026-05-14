@@ -25,6 +25,39 @@ _last_write_sig: dict[str, tuple[int, str]] = {}
 _strength_samples: dict[str, deque[float]] = {}
 _strength_sample_counts: dict[str, int] = {}
 
+# 5분 평균 거래량 산출용 누적 스냅샷 (S2 VI 거래량 배수 계산에 사용)
+_5MIN_MS = 5 * 60 * 1000
+_acc_qty_snapshots: dict[str, deque] = {}
+
+
+def _update_prev_5m_avg_qty(stk_cd: str, acc_qty: float, now_ms: int) -> int | None:
+    """acc_trde_qty 누적값으로 직전 5분 평균 거래량을 추정한다.
+
+    최근 5분 이상 된 스냅샷과의 누적 차분을 5분 단위로 정규화.
+    데이터 부족(5분 이상 스냅샷 없음) 시 None 반환.
+    """
+    if stk_cd not in _acc_qty_snapshots:
+        _acc_qty_snapshots[stk_cd] = deque(maxlen=120)
+    history = _acc_qty_snapshots[stk_cd]
+    history.append((now_ms, acc_qty))
+
+    cutoff = now_ms - _5MIN_MS
+    oldest = None
+    for ts, qty in history:
+        if ts <= cutoff:
+            oldest = (ts, qty)
+        else:
+            break
+
+    if oldest is None:
+        return None
+    elapsed = now_ms - oldest[0]
+    if elapsed <= 0:
+        return None
+    vol_diff = max(0.0, acc_qty - oldest[1])
+    avg_5m = vol_diff * (_5MIN_MS / elapsed)
+    return max(1, int(avg_5m))
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
@@ -251,6 +284,17 @@ async def write_tick(rdb, values: dict, stk_cd: str, pg_pool=None):
             "cntr_str": values.get("228", ""),
             "updated_at_ms": now_ms,
         }
+        # S2 VI 거래량 배수 산출을 위한 5분 평균 거래량 추적
+        try:
+            acc_qty_raw = values.get("13", "")
+            if acc_qty_raw:
+                acc_qty = float(str(acc_qty_raw).replace(",", "").replace("+", ""))
+                if acc_qty > 0:
+                    avg5 = _update_prev_5m_avg_qty(stk_cd, acc_qty, now_ms_int)
+                    if avg5 is not None:
+                        mapping["prev_5m_avg_qty"] = str(avg5)
+        except (TypeError, ValueError):
+            pass
         await _write_hash(rdb, key, mapping, 600, now_ms_int)
 
         cntr_str = str(values.get("228", "")).strip()

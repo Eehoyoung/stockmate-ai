@@ -21,6 +21,7 @@ from db_writer import (
 from price_utils import normalize_signal_prices
 from redis_reader import push_score_only_queue
 from scorer import check_daily_limit, rule_score
+from strategy_meta import get_hold_to_enter_threshold as _get_hold_threshold
 from tp_sl_engine import compute_rr
 from utils import safe_float as _fv
 
@@ -104,7 +105,7 @@ def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None)
     return reason
 
 
-def _maybe_promote_hold_to_enter(result: dict) -> dict:
+def _maybe_promote_hold_to_enter(result: dict, strategy: str = "") -> dict:
     """Promote high-score Claude HOLD decisions into actionable ENTER signals."""
     if str(result.get("action", "")).upper() != "HOLD":
         return result
@@ -112,7 +113,8 @@ def _maybe_promote_hold_to_enter(result: dict) -> dict:
         score = float(result.get("ai_score"))
     except (TypeError, ValueError):
         return result
-    if score < HOLD_TO_ENTER_MIN_AI_SCORE:
+    threshold = _get_hold_threshold(strategy) if strategy else HOLD_TO_ENTER_MIN_AI_SCORE
+    if score < threshold:
         return result
 
     promoted = dict(result)
@@ -122,7 +124,7 @@ def _maybe_promote_hold_to_enter(result: dict) -> dict:
     promoted["confidence"] = promoted.get("confidence") or "HIGH"
     promoted["reason"] = (
         f"{reason} | HOLD promoted to ENTER because ai_score "
-        f"{score:.1f} >= {HOLD_TO_ENTER_MIN_AI_SCORE:.1f}"
+        f"{score:.1f} >= {threshold:.1f}"
     )
     return promoted
 
@@ -259,7 +261,7 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
                 }
                 cancel_type = "AI_UNAVAILABLE"
 
-        result = _maybe_promote_hold_to_enter(result)
+        result = _maybe_promote_hold_to_enter(result, strategy=strategy)
         display_reason = _resolve_display_reason(
             result.get("action", "HOLD"),
             result.get("reason", ""),

@@ -15,10 +15,12 @@ StockMate AI – AI Engine (Python + Claude API)
 """
 
 import asyncio
+import glob
 import logging
 import os
 import signal
 import sys
+from datetime import datetime, timezone, timedelta
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -42,15 +44,71 @@ from config import (
 from utils import bool_env
 
 # ── 로깅 설정 ────────────────────────────────────────────────
+_KST = timezone(timedelta(hours=9))
+
+
+class _DailyKSTFileHandler(logging.Handler):
+    """KST 자정 기준 일별 로테이션 핸들러 — <log_dir>/<name>_YYMMDD.log"""
+
+    def __init__(self, log_dir: str, name: str, backup_count: int = 30, encoding: str = "utf-8"):
+        super().__init__()
+        self._log_dir = log_dir
+        self._name = name
+        self._backup_count = backup_count
+        self._encoding = encoding
+        self._current_date: str = ""
+        self._stream = None
+        os.makedirs(log_dir, exist_ok=True)
+        self._open_new()
+
+    def _today(self) -> str:
+        return datetime.now(tz=_KST).strftime("%y%m%d")
+
+    def _open_new(self) -> None:
+        if self._stream:
+            self._stream.flush()
+            self._stream.close()
+        self._current_date = self._today()
+        fpath = os.path.join(self._log_dir, f"{self._name}_{self._current_date}.log")
+        self._stream = open(fpath, "a", encoding=self._encoding)
+        if self._backup_count > 0:
+            files = sorted(glob.glob(os.path.join(self._log_dir, f"{self._name}_??????.log")))
+            for old in files[:-self._backup_count]:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if self._today() != self._current_date:
+                self._open_new()
+            self._stream.write(self.format(record) + "\n")
+            self._stream.flush()
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        self.acquire()
+        try:
+            if self._stream:
+                self._stream.flush()
+                self._stream.close()
+                self._stream = None
+        finally:
+            self.release()
+        super().close()
+
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-os.makedirs("logs", exist_ok=True)
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s – %(message)s")
+_file_hdl = _DailyKSTFileHandler("logs", "ai-engine")
+_file_hdl.setFormatter(_fmt)
+_cons_hdl = logging.StreamHandler(sys.stdout)
+_cons_hdl.setFormatter(_fmt)
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/ai-engine.log", encoding="utf-8"),
-    ],
+    handlers=[_cons_hdl, _file_hdl],
 )
 logger = logging.getLogger("engine")
 

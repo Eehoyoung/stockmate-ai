@@ -441,7 +441,7 @@ class TestQueueWorkerFailures:
         assert captured[1]["sl_price"] == 17480
 
     def test_s4_hard_gate_failure_cancels_before_ai(self):
-        item = _signal(strategy="S4_BIG_CANDLE", cntr_strength=124.9, bid_ratio=1.39)
+        item = _signal(strategy="S4_BIG_CANDLE", cntr_strength=114.9, bid_ratio=1.19)
         rdb = _make_rdb(json.dumps(item))
         captured = []
 
@@ -461,6 +461,99 @@ class TestQueueWorkerFailures:
         assert result is True
         assert captured[0]["action"] == "CANCEL"
         assert "Hard gate failed" in captured[0]["ai_reason"]
+        mock_limit.assert_not_awaited()
+        mock_analyze.assert_not_awaited()
+
+    def test_s8_far_above_support_zone_cancels_before_ai(self):
+        item = _signal(
+            strategy="S8_GOLDEN_CROSS",
+            cur_prc=10800,
+            rr_ratio=2.0,
+            buy_zone={"low": 9800, "high": 10400, "strength": 5, "anchors": ["ma5", "ma20", "vwap"]},
+        )
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(88.0, {"s8": 88.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
+             patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert captured[0]["action"] == "CANCEL"
+        assert captured[0]["cancel_type"] == "S8_BUY_ZONE"
+        assert "support gap" in captured[0]["cancel_reason"]
+        mock_limit.assert_not_awaited()
+        mock_analyze.assert_not_awaited()
+
+    def test_s8_moderately_above_support_zone_calls_ai_with_limit_pullback_policy(self):
+        item = _signal(
+            strategy="S8_GOLDEN_CROSS",
+            cur_prc=10600,
+            rr_ratio=2.0,
+            zone_rr=1.8,
+            buy_zone={"low": 9800, "high": 10400, "strength": 5, "anchors": ["ma5", "ma20", "vwap"]},
+        )
+        rdb = _make_rdb(json.dumps(item))
+        captured_signal = {}
+
+        async def fake_analyze(signal, ctx, rule_score, rdb=None):
+            captured_signal.update(signal)
+            return {"action": "HOLD", "ai_score": 72, "confidence": "MEDIUM", "reason": "wait pullback"}
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(88.0, {"s8": 88.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True) as mock_limit, \
+             patch("queue_worker.analyze_signal", side_effect=fake_analyze) as mock_analyze, \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert captured_signal["s8_zone_status"] == "caution"
+        assert captured_signal["s8_zone_entry_policy"] == "limit_pullback"
+        assert captured_signal["s8_buy_zone_role"] == "support_zone"
+        assert 1.8 < captured_signal["s8_buy_zone_high_gap_pct"] < 2.0
+        mock_limit.assert_awaited_once()
+        assert mock_analyze.await_count == 1
+
+    def test_s8_below_buy_zone_cancels_before_ai(self):
+        item = _signal(
+            strategy="S8_GOLDEN_CROSS",
+            cur_prc=9600,
+            rr_ratio=2.0,
+            buy_zone={"low": 9800, "high": 10400, "strength": 5, "anchors": ["ma5", "ma20", "vwap"]},
+        )
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(88.0, {"s8": 88.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
+             patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert captured[0]["action"] == "CANCEL"
+        assert captured[0]["cancel_type"] == "S8_BUY_ZONE"
+        assert "below support low" in captured[0]["cancel_reason"]
         mock_limit.assert_not_awaited()
         mock_analyze.assert_not_awaited()
 
@@ -979,3 +1072,239 @@ class TestQueueWorkerEmptyQueue:
         result = _run(process_one(rdb))
 
         assert result is False
+
+
+class TestFreshnessPhase0Defects:
+    """Phase 0 실패 재현 테스트 — 결함 5/6/7."""
+
+    def test_caution_freshness_deducts_signal_quality(self):
+        """결함 5: caution state가 signal quality freshness component를 감점시키는지 확인"""
+        from queue_worker import _compute_signal_quality
+
+        signal = {
+            "cur_prc": "50000", "flu_rt": "2.0",
+            "rr_ratio": "2.5", "vol_ratio": "2.0", "cond_count": "2", "rsi": "60"
+        }
+        ctx_fresh = {
+            "strength": 110.0, "hoga": {"total_buy_bid_req": 1.5, "total_sel_bid_req": 1.0},
+            "tick": {"cur_prc": 50000.0},
+            "freshness": {
+                "tick":     {"state": "fresh",   "age_ms": 100},
+                "hoga":     {"state": "fresh",   "age_ms": 100},
+                "strength": {"state": "fresh",   "age_ms": 100},
+            }
+        }
+        ctx_caution = {
+            "strength": 110.0, "hoga": {"total_buy_bid_req": 1.5, "total_sel_bid_req": 1.0},
+            "tick": {"cur_prc": 50000.0},
+            "freshness": {
+                "tick":     {"state": "caution", "age_ms": 1500},
+                "hoga":     {"state": "caution", "age_ms": 1500},
+                "strength": {"state": "caution", "age_ms": 6000},
+            }
+        }
+        rule_score = 70.0
+        result_fresh   = _compute_signal_quality(signal, ctx_fresh, rule_score)
+        result_caution = _compute_signal_quality(signal, ctx_caution, rule_score)
+        # caution 3개 → freshness component -1.5*3 = -4.5점 감점 → 전체 점수가 낮아져야 함
+        assert result_caution["signal_quality_score"] < result_fresh["signal_quality_score"]
+        fresh_fc   = result_fresh["quality_components"]["freshness"]
+        caution_fc = result_caution["quality_components"]["freshness"]
+        assert caution_fc < fresh_fc
+
+    def test_freshness_status_set_in_enriched(self):
+        """결함 6: enriched dict에 freshness_status가 명시적으로 세팅되는지 확인"""
+        from queue_worker import _freshness_status_from_decision
+
+        assert _freshness_status_from_decision("PASS") == "FRESH"
+        assert _freshness_status_from_decision("CAUTION") == "CAUTION"
+        assert _freshness_status_from_decision("SIZE_DOWN") == "CAUTION"
+        assert _freshness_status_from_decision("SHADOW") == "STALE"
+        assert _freshness_status_from_decision("CANCEL") == "STALE"
+
+    def test_lenient_strategy_not_canceled_on_hoga_cancel(self):
+        """결함 7: lenient 전략(S14)에서 hoga cancel state여도 pre-cancel 반환 안 함"""
+        from queue_worker import _freshness_cancel_reason
+
+        ctx = {
+            "freshness": {
+                "tick":     {"state": "fresh",  "age_ms": 100},
+                "hoga":     {"state": "cancel", "age_ms": 3000},
+                "strength": {"state": "fresh",  "age_ms": 100},
+            },
+            "vi": {}
+        }
+        # S14는 lenient → cancel 반환 없음
+        reason = _freshness_cancel_reason(ctx, "S14_OVERSOLD_BOUNCE")
+        assert reason is None, f"lenient 전략은 hoga cancel만으로 pre-cancel 안 됨, got: {reason}"
+
+    def test_strict_strategy_canceled_on_hoga_cancel(self):
+        """결함 7 반대: strict 전략(S1)은 hoga cancel → cancel reason 반환"""
+        from queue_worker import _freshness_cancel_reason
+
+        ctx = {
+            "freshness": {
+                "tick":     {"state": "fresh",  "age_ms": 100},
+                "hoga":     {"state": "cancel", "age_ms": 3000},
+                "strength": {"state": "fresh",  "age_ms": 100},
+            },
+            "vi": {}
+        }
+        reason = _freshness_cancel_reason(ctx, "S1_GAP_OPEN")
+        assert reason is not None, "strict 전략은 hoga cancel → cancel reason 반환해야 함"
+        assert "hoga" in reason
+
+    def test_stale_hoga_removes_bid_component(self):
+        """stale_hoga=True 시 bid_component가 0이 되어야 함"""
+        from queue_worker import _compute_signal_quality
+
+        signal = {
+            "cur_prc": "50000", "flu_rt": "2.0",
+            "rr_ratio": "2.5", "vol_ratio": "2.0", "cond_count": "2", "rsi": "60"
+        }
+        ctx = {
+            "strength": 110.0,
+            "hoga": {"total_buy_bid_req": 3.0, "total_sel_bid_req": 1.0},  # bid_ratio=3.0 → normally +10
+            "tick": {"cur_prc": 50000.0},
+            "freshness": {
+                "tick":     {"state": "fresh"},
+                "hoga":     {"state": "cancel"},
+                "strength": {"state": "fresh"},
+            },
+        }
+        rule_score = 70.0
+        result_fresh = _compute_signal_quality(signal, ctx, rule_score, stale_hoga=False)
+        result_stale = _compute_signal_quality(signal, ctx, rule_score, stale_hoga=True)
+        # stale_hoga → bid_component 제거
+        assert result_stale["quality_components"]["bid"] == 0.0
+        assert result_fresh["quality_components"]["bid"] == 10.0
+        assert result_stale["signal_quality_score"] < result_fresh["signal_quality_score"]
+
+
+class TestRefreshStaleCtxBypass:
+    """결함 1 재현 — _refresh_stale_ctx()가 stale Redis 재사용 없이 REST direct를 호출하는지 검증."""
+
+    def _make_rdb_with_token(self, token="test_token"):
+        rdb = MagicMock()
+        rdb.get = AsyncMock(return_value=token)
+        rdb.hincrby = AsyncMock(return_value=1)
+        rdb.expire = AsyncMock(return_value=True)
+        return rdb
+
+    def test_hoga_cancel_calls_rest_not_redis(self):
+        """hoga state=cancel → fetch_hoga_rest 호출, stale ws:hoga 재사용 없음 (결함 1)"""
+        ctx = {
+            "freshness": {
+                "tick":     {"state": "fresh",  "age_ms": 100},
+                "hoga":     {"state": "cancel", "age_ms": 12000},
+                "strength": {"state": "fresh",  "age_ms": 100},
+            },
+        }
+        signal = {"cur_prc": "50000", "flu_rt": "2.0"}
+        rdb = self._make_rdb_with_token()
+
+        with patch("queue_worker._fetch_hoga_rest", new_callable=AsyncMock, return_value=(1.8, {"latency_ms": 50})) as mock_hoga_rest, \
+             patch("queue_worker._fetch_str_rest", new_callable=AsyncMock) as mock_str_rest, \
+             patch("queue_worker.ENABLE_SCORING_DATA_RETRY", True), \
+             patch("queue_worker.ENABLE_TICK_REST_FALLBACK", False), \
+             patch("queue_worker.ENABLE_CHART_RETRY", False):
+            from queue_worker import _refresh_stale_ctx
+            _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S8_GOLDEN_CROSS"))
+
+        mock_hoga_rest.assert_awaited_once()
+        mock_str_rest.assert_not_awaited()
+        assert ctx["freshness"]["hoga"]["source"] == "rest"
+        assert ctx["freshness"]["hoga"]["state"] == "caution"
+
+    def test_strength_cancel_calls_rest_not_redis(self):
+        """strength state=cancel → fetch_cntr_strength_rest 호출, stale ws:strength 재사용 없음 (결함 1)"""
+        ctx = {
+            "freshness": {
+                "tick":     {"state": "fresh",  "age_ms": 100},
+                "hoga":     {"state": "fresh",  "age_ms": 100},
+                "strength": {"state": "cancel", "age_ms": 15000},
+            },
+        }
+        signal = {"cur_prc": "50000"}
+        rdb = self._make_rdb_with_token()
+
+        with patch("queue_worker._fetch_str_rest", new_callable=AsyncMock, return_value=(118.0, {"latency_ms": 40})) as mock_str_rest, \
+             patch("queue_worker._fetch_hoga_rest", new_callable=AsyncMock) as mock_hoga_rest, \
+             patch("queue_worker.ENABLE_SCORING_DATA_RETRY", True), \
+             patch("queue_worker.ENABLE_TICK_REST_FALLBACK", False), \
+             patch("queue_worker.ENABLE_CHART_RETRY", False):
+            from queue_worker import _refresh_stale_ctx
+            _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S9_PULLBACK_SWING"))
+
+        mock_str_rest.assert_awaited_once()
+        mock_hoga_rest.assert_not_awaited()
+        assert ctx["freshness"]["strength"]["source"] == "rest"
+        assert ctx["strength"] == 118.0
+
+    def test_hoga_signal_bid_takes_priority_over_rest(self):
+        """hoga cancel + signal에 bid_ratio 있음 → REST 호출 없이 signal fallback 사용"""
+        ctx = {
+            "freshness": {
+                "tick":     {"state": "fresh",  "age_ms": 100},
+                "hoga":     {"state": "cancel", "age_ms": 12000},
+                "strength": {"state": "fresh",  "age_ms": 100},
+            },
+        }
+        signal = {"cur_prc": "50000", "bid_ratio": 2.5}
+        rdb = self._make_rdb_with_token()
+
+        with patch("queue_worker._fetch_hoga_rest", new_callable=AsyncMock) as mock_hoga_rest, \
+             patch("queue_worker.ENABLE_SCORING_DATA_RETRY", True), \
+             patch("queue_worker.ENABLE_TICK_REST_FALLBACK", False), \
+             patch("queue_worker.ENABLE_CHART_RETRY", False):
+            from queue_worker import _refresh_stale_ctx
+            _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S7_ICHIMOKU_BREAKOUT"))
+
+        mock_hoga_rest.assert_not_awaited()
+        assert ctx["freshness"]["hoga"]["source"] == "signal_fallback"
+        assert ctx["hoga"]["total_buy_bid_req"] == 2.5
+
+    def test_fresh_data_early_returns_without_rest_call(self):
+        """tick/hoga/strength 모두 fresh → REST 호출 없이 즉시 반환 (불필요한 API 호출 방지)"""
+        ctx = {
+            "freshness": {
+                "tick":     {"state": "fresh", "age_ms": 200},
+                "hoga":     {"state": "fresh", "age_ms": 200},
+                "strength": {"state": "fresh", "age_ms": 200},
+            },
+        }
+        signal = {"cur_prc": "50000"}
+        rdb = self._make_rdb_with_token()
+
+        with patch("queue_worker._fetch_hoga_rest", new_callable=AsyncMock) as mock_hoga_rest, \
+             patch("queue_worker._fetch_str_rest", new_callable=AsyncMock) as mock_str_rest, \
+             patch("queue_worker.ENABLE_SCORING_DATA_RETRY", True), \
+             patch("queue_worker.ENABLE_TICK_REST_FALLBACK", False), \
+             patch("queue_worker.ENABLE_CHART_RETRY", False):
+            from queue_worker import _refresh_stale_ctx
+            _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S8_GOLDEN_CROSS"))
+
+        mock_hoga_rest.assert_not_awaited()
+        mock_str_rest.assert_not_awaited()
+
+    def test_retry_disabled_skips_all_rest(self):
+        """ENABLE_SCORING_DATA_RETRY=false → hoga/strength cancel이어도 REST 호출 안 함"""
+        ctx = {
+            "freshness": {
+                "tick":     {"state": "cancel", "age_ms": 20000},
+                "hoga":     {"state": "cancel", "age_ms": 20000},
+                "strength": {"state": "cancel", "age_ms": 20000},
+            },
+        }
+        signal = {"cur_prc": "50000"}
+        rdb = self._make_rdb_with_token()
+
+        with patch("queue_worker._fetch_hoga_rest", new_callable=AsyncMock) as mock_hoga_rest, \
+             patch("queue_worker._fetch_str_rest", new_callable=AsyncMock) as mock_str_rest, \
+             patch("queue_worker.ENABLE_SCORING_DATA_RETRY", False), \
+             patch("queue_worker.ENABLE_CHART_RETRY", False):
+            from queue_worker import _refresh_stale_ctx
+            _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S1_GAP_OPEN"))
+
+        mock_hoga_rest.assert_not_awaited()
+        mock_str_rest.assert_not_awaited()

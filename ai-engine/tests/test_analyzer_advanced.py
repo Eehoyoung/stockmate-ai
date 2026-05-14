@@ -289,14 +289,15 @@ class TestStrategyPrompts:
     def test_s1_uses_gap_open_system_prompt(self):
         import analyzer
         system_prompt = self._get_system_arg(_sig("S1_GAP_OPEN", gap_pct=4.0))
-        assert analyzer._S1_GAP_OPEN_SYS_PROMPT in system_prompt
-        assert analyzer._SYS_PROMPT not in system_prompt or analyzer._S1_GAP_OPEN_SYS_PROMPT == analyzer._SYS_PROMPT
+        # D8: _S1_GAP_OPEN_SYS_PROMPT → _STRATEGY_PROMPTS["S1_GAP_OPEN"]
+        assert analyzer._STRATEGY_PROMPTS["S1_GAP_OPEN"] in system_prompt
         assert "전략별 자동주입 페르소나" in system_prompt
 
-    def test_non_s1_uses_default_system_prompt(self):
+    def test_non_s1_uses_dedicated_strategy_prompt(self):
         import analyzer
+        # D8: 모든 전략이 개별 프롬프트를 가짐 — S2도 전용 프롬프트 사용
         system_prompt = self._get_system_arg(_sig("S2_VI_PULLBACK", pullback_pct=-1.5))
-        assert analyzer._SYS_PROMPT in system_prompt
+        assert analyzer._STRATEGY_PROMPTS["S2_VI_PULLBACK"] in system_prompt
         assert "VI 눌림목" in system_prompt
 
     def test_explicit_persona_overrides_default(self):
@@ -361,10 +362,12 @@ class TestStrategyPrompts:
 
 class TestS1SystemPromptStability:
     def test_s1_uses_dedicated_system_prompt(self):
-        from analyzer import _S1_GAP_OPEN_SYS_PROMPT, _SYS_PROMPT, _get_system_prompt
+        # D8: _S1_GAP_OPEN_SYS_PROMPT 삭제 → _STRATEGY_PROMPTS dict로 통합
+        from analyzer import _STRATEGY_PROMPTS, _get_system_prompt
 
-        assert _get_system_prompt("S1_GAP_OPEN") == _S1_GAP_OPEN_SYS_PROMPT
-        assert _get_system_prompt("S2_VI_PULLBACK") == _SYS_PROMPT
+        assert _get_system_prompt("S1_GAP_OPEN") == _STRATEGY_PROMPTS["S1_GAP_OPEN"]
+        # D8: S2도 개별 전용 프롬프트를 가짐 (_SYS_PROMPT가 아닌 S2 전용 반환)
+        assert _get_system_prompt("S2_VI_PULLBACK") == _STRATEGY_PROMPTS["S2_VI_PULLBACK"]
 
     def test_s1_prompt_requires_json_only_single_line_no_markdown(self):
         from analyzer import _get_system_prompt

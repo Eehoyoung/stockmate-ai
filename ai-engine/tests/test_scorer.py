@@ -4,7 +4,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from scorer import rule_score, get_claude_threshold, should_skip_ai, _safe_float
+from scorer import MIN_SCORE, rule_score, get_claude_threshold, should_skip_ai, _safe_float
 
 
 # ??????????????????????????????????????????????????????????????????
@@ -535,7 +535,8 @@ class TestS7IchimokuBreakout:
     def test_optimal_conditions_high_score(self):
         signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=2.0, rsi=55, cond_count=3)
         score, _ = rule_score(signal, _ctx(strength=100, flu_rt=3.0))
-        assert score >= 90
+        # 85 base (cloud20+chikou20+vol25+rsi15+cond5); time_bonus +5 only during 10:00-13:00
+        assert score >= 85
 
     def test_minimal_conditions_low_score(self):
         signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=False, vol_ratio=1.0, rsi=80, cond_count=0)
@@ -562,10 +563,11 @@ class TestS7IchimokuBreakout:
         score, _ = rule_score(signal, _ctx())
         assert score == 15.0
 
-    def test_condition_count_adds_five_each(self):
+    def test_condition_count_three_adds_five(self):
+        # cond_count==3 → flat +5 bonus; all other S7 components are 0 here
         signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=4.0, chikou_above=False, vol_ratio=1.0, rsi=80, cond_count=3)
         score, _ = rule_score(signal, _ctx())
-        assert score == 20.0
+        assert score == 5.0
 
 
 class TestThresholdAndSkipAi:
@@ -574,13 +576,13 @@ class TestThresholdAndSkipAi:
         assert get_claude_threshold("S2_VI_PULLBACK") == 65
         assert get_claude_threshold("S3_INST_FRGN") == 60
         assert get_claude_threshold("S4_BIG_CANDLE") == 65
-        assert get_claude_threshold("S5_PROG_FRGN") == 65
+        assert get_claude_threshold("S5_PROG_FRGN") == 55  # D1: net_amt 스케일 100억 기준 조정에 따라 65→55
         assert get_claude_threshold("S6_THEME_LAGGARD") == 60
         assert get_claude_threshold("S7_ICHIMOKU_BREAKOUT") == 62
         assert get_claude_threshold("S8_GOLDEN_CROSS") == 50
         assert get_claude_threshold("S9_PULLBACK_SWING") == 55
         assert get_claude_threshold("S10_NEW_HIGH") == 55
-        assert get_claude_threshold("S11_FRGN_CONT") == 58
+        assert get_claude_threshold("S11_FRGN_CONT") == 52
         assert get_claude_threshold("S12_CLOSING") == 60
         assert get_claude_threshold("S13_BOX_BREAKOUT") == 55
         assert get_claude_threshold("S14_OVERSOLD_BOUNCE") == 58
@@ -597,10 +599,9 @@ class TestThresholdAndSkipAi:
         assert should_skip_ai(75.0, "S1_GAP_OPEN") is False
 
     def test_should_skip_ai_no_strategy(self):
-        import os
-        min_score = float(os.getenv("AI_SCORE_THRESHOLD", "60.0"))
-        assert should_skip_ai(min_score - 1, "") is True
-        assert should_skip_ai(min_score + 1, "") is False
+        # D10: MIN_SCORE 기본값 62.0 (Telegram MIN_AI_SCORE와 동기화)
+        assert should_skip_ai(MIN_SCORE - 1, "") is True
+        assert should_skip_ai(MIN_SCORE + 1, "") is False
 
 
 # ??????????????????????????????????????????????????????????????????

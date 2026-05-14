@@ -30,6 +30,27 @@ def test_swing_strategy_emits_trailing_metadata():
     assert payload["strategy_version"]
 
 
+def test_s8_zone_exposes_support_gap_for_pre_ai():
+    result = calc_tp_sl(
+        strategy="S8_GOLDEN_CROSS",
+        cur_prc=100,
+        highs=[100, 118, 112, 119, 110, 108],
+        lows=[99, 96, 97, 95, 98, 94],
+        closes=[100, 99, 98, 97, 96, 95],
+        stk_cd="005930",
+        ma5=96.0,
+        ma20=95.0,
+        ma60=90.0,
+        bb_upper=120.0,
+        compute_zones=True,
+    )
+
+    payload = result.to_signal_fields()
+    assert payload["s8_buy_zone_role"] == "support_zone"
+    assert payload["buy_zone"]["high"] < 100
+    assert 3.0 < payload["s8_buy_zone_high_gap_pct"] < 6.0
+
+
 def test_macd_weakening_tightens_trailing_and_marks_method():
     highs = [100, 110, 116, 120, 124, 121, 119, 118, 117, 116, 115]
     lows = [98, 96, 97, 99, 102, 103, 104, 103, 102, 101, 100]
@@ -106,7 +127,7 @@ def test_day_strategy_emits_time_stop_policy():
     assert payload["time_stop_type"] == "intraday_minutes"
     assert payload["time_stop_minutes"] == 30
     assert payload["time_stop_session"] == "same_day_close"
-    assert payload["min_rr_ratio"] == 1.8
+    assert payload["min_rr_ratio"] == 1.5
     assert payload["allow_overnight"] is False
 
 

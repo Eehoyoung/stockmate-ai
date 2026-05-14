@@ -43,12 +43,27 @@ SWING_DEDUP_TTL_SEC = int(os.getenv("SWING_SIGNAL_DEDUP_SEC", "7200"))
 INTRADAY_DEDUP_TTL_SEC = int(os.getenv("INTRADAY_SIGNAL_DEDUP_SEC", "1800"))
 STATUS_SIGNAL_TTL_SEC = int(os.getenv("STATUS_SIGNAL_TTL_SEC", "600"))
 MAX_CONCURRENT_STRATEGIES = int(os.getenv("MAX_CONCURRENT_STRATEGIES", "3"))
+S1_MIN_READY_CANDIDATES = int(os.getenv("S1_MIN_READY_CANDIDATES", "3"))
+S1_SCAN_START_HHMM = int(os.getenv("S1_SCAN_START_HHMM", "850"))
+S1_SCAN_END_HHMM = int(os.getenv("S1_SCAN_END_HHMM", "903"))
 _semaphore: asyncio.Semaphore | None = None
 _pg_pool = None  # set by run_strategy_scanner; used by _push_signals for active-position dedup
 
 
 def _env_flag(name: str, default: str = "false") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _redis_text(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return str(value)
+
+
+def _kst_hhmm() -> int:
+    now = datetime.datetime.now(KST)
+    return now.hour * 100 + now.minute
+
 
 from strategy_meta import SWING_STRATEGIES as _SWING_STRATEGIES
 
@@ -271,7 +286,36 @@ async def _scan_s1(rdb, token):
 
         kospi = await rdb.lrange("candidates:s1:001", 0, 99)
         kosdaq = await rdb.lrange("candidates:s1:101", 0, 99)
-        candidates = list(dict.fromkeys(kospi + kosdaq))
+        candidates = list(
+            dict.fromkeys(
+                code
+                for code in (normalize_stock_code(_redis_text(raw)) for raw in kospi + kosdaq)
+                if code
+            )
+        )
+
+        now_hhmm = _kst_hhmm()
+        if now_hhmm < S1_SCAN_START_HHMM and len(candidates) < S1_MIN_READY_CANDIDATES:
+            meta = {}
+            try:
+                meta = {
+                    "001": {_redis_text(k): _redis_text(v) for k, v in (await rdb.hgetall("candidate:quality:meta:s1:001") or {}).items()},
+                    "101": {_redis_text(k): _redis_text(v) for k, v in (await rdb.hgetall("candidate:quality:meta:s1:101") or {}).items()},
+                }
+            except Exception as meta_err:
+                logger.debug("[Runner] S1 readiness meta read failed: %s", meta_err)
+            logger.info(
+                "[Runner] S1 SKIP_NOT_READY hhmm=%04d candidates=%d min=%d meta=%s",
+                now_hhmm,
+                len(candidates),
+                S1_MIN_READY_CANDIDATES,
+                meta,
+            )
+            return
+
+        if now_hhmm > S1_SCAN_END_HHMM:
+            logger.info("[Runner] S1 SKIP_WINDOW_CLOSED hhmm=%04d candidates=%d", now_hhmm, len(candidates))
+            return
         if not candidates:
             logger.warning("[Runner] S1 후보풀이 비어 fallback 스캔을 사용합니다")
         signals = await scan_gap_opening(token, candidates, rdb=rdb)
@@ -456,7 +500,7 @@ async def _scan_s15(rdb, token):
 
 
 _SCHEDULE: list[tuple[str, time, time, callable]] = [
-    ("S7", time(10, 0), time(14, 30), _scan_s7),
+    ("S7", time(10, 0), time(14,  0), _scan_s7),
     ("S1", time(8, 30), time(9, 10), _scan_s1),
     ("S3", time(9, 30), time(14, 30), _scan_s3),
     ("S4", time(10, 0), time(14, 30), _scan_s4),

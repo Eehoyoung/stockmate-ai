@@ -14,9 +14,9 @@
   진짜 바닥 = "일시적 과매도 + 추세 살아있음 + 반등 신호 2개 이상 + 매수세 유입"
 
 필수 조건 (AND):
-  1. RSI(14) 22~38 – 과매도 반등 정상 범위
-     · RSI < 22: 폭락/패닉 후보 → 자동 진입 금지
-     · RSI > 38: 약한 눌림/하락 초입 → 전략 철학과 불일치로 제외
+  1. RSI(14) 25~42 – 과매도 반등 정상 범위 (D3/D4: 22~38 → 25~42 완화)
+     · RSI < 25: 폭락/패닉 후보 → 자동 진입 금지
+     · RSI > 42: 약한 눌림/하락 초입 → 전략 철학과 불일치로 제외
   2. 현재가 ≥ MA60 × 0.88 – 장기 추세 아직 살아있음
   3. ATR%(14) ≤ 4.0% – 패닉 매물 소강, 변동성 정상화 중
   4. 당일 하락폭 ≤ 5% (낙폭과대 급락 당일은 제외 – 아직 추가 하락 가능)
@@ -77,6 +77,9 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         await asyncio.sleep(float(os.getenv("KIWOOM_API_INTERVAL", "0.25")))
 
         candles = await fetch_daily_candles(token, stk_cd, target_count=65)
+        if len(candles) < 60:
+            await asyncio.sleep(1.5)
+            candles = await fetch_daily_candles(token, stk_cd, target_count=65)
         if len(candles) < 60: continue
 
         # 데이터 파싱
@@ -86,13 +89,21 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         vols   = [_safe_vol(c.get("trde_qty")) for c in candles]
         cur_prc = closes[0]
 
-        # ── 필수 조건 1 & 2: RSI 과매도(22~38) & MA60 추세 생존 ──
-        # 22~38: 과매도 반등 정상 범위
-        # 18~22: 폭락/패닉 후보 — 바닥 탈출보다 추가 하락 위험이 크므로 자동 진입 금지
-        # 38~42: 과매도 반등이 아닌 약한 눌림 — 전략 철학과 불일치로 제외
+        # ── 필수 조건 1 & 2: RSI 과매도(25~42) & MA60 추세 생존 ──
+        # 25~42: 과매도 반등 정상 범위 (D3/D4: 22~38 → 25~42 완화)
+        # RSI < 25: 폭락/패닉 후보 — 자동 진입 금지
+        # RSI > 42: 약한 눌림/하락 초입 — 전략 철학과 불일치로 제외
         rsi_vals = calc_rsi(closes, 14)
-        rsi_now, rsi_prev = rsi_vals[0], rsi_vals[1]
-        if not (22 <= rsi_now <= 38): continue
+        rsi_now  = rsi_vals[0] if rsi_vals and rsi_vals[0] != 0.0 else None
+        rsi_prev = rsi_vals[1] if len(rsi_vals) > 1 else None
+        if rsi_now is None:
+            await asyncio.sleep(1.5)
+            candles = await fetch_daily_candles(token, stk_cd, target_count=65)
+            closes  = [_safe_price(c.get("cur_prc")) for c in candles]
+            rsi_vals = calc_rsi(closes, 14)
+            rsi_now  = rsi_vals[0] if rsi_vals and rsi_vals[0] != 0.0 else None
+            rsi_prev = rsi_vals[1] if len(rsi_vals) > 1 else None
+        if rsi_now is None or not (25 <= rsi_now <= 42): continue
 
         ma60 = sum(closes[:60]) / 60
         if cur_prc < ma60 * 0.88: continue # 추세 완전 붕괴 제외
@@ -142,9 +153,9 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         vol_ma20 = sum(vols[1:21]) / 20
         vol_ratio = vols[0] / vol_ma20 if vol_ma20 > 0 else 1.0
 
-        # 점수 산정
-        score = (38 - rsi_now) * 0.5 + (cond_count * 10)
-        if rsi_now > rsi_prev: score += 10
+        # 점수 산정 (RSI 42 상한 기준으로 거리 계산)
+        score = (42 - rsi_now) * 0.5 + (cond_count * 10)
+        if rsi_prev is not None and rsi_now > rsi_prev: score += 10
         if cond_count == 3: score += 15
         if vol_ratio >= 1.5: score += 8
         # cntr_str은 최소 조건으로 승격되어 여기서는 보너스 없이 조건 통과만 의미

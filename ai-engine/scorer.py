@@ -18,7 +18,7 @@ from strategy_meta import get_threshold as _meta_get_threshold
 
 logger    = logging.getLogger(__name__)
 KST       = timezone(timedelta(hours=9))
-MIN_SCORE = float(os.getenv("AI_SCORE_THRESHOLD", "60.0"))
+MIN_SCORE = float(os.getenv("AI_SCORE_THRESHOLD", "62.0"))  # Telegram MIN_AI_SCORE 기본값(62)과 동기화
 
 MAX_CLAUDE_CALLS_PER_DAY = int(os.getenv("MAX_CLAUDE_CALLS_PER_DAY", "100"))
 
@@ -150,8 +150,8 @@ def _time_bonus(strategy: str) -> float:
         if strategy == "S1_GAP_OPEN":
             return 5.0
 
-    # 10:00~13:30: 일목균형표 구름대 돌파 — 오전 돌파 확인 후 스윙 진입 최적
-    if 600 <= minute_of_day < 810:
+    # 10:00~13:00: 일목균형표 구름대 돌파 — 오전 돌파 확인 후 스윙 진입 최적
+    if 600 <= minute_of_day < 780:
         if strategy == "S7_ICHIMOKU_BREAKOUT":
             return 5.0
 
@@ -323,8 +323,10 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             s5_bid = bid_ratio if bid_ratio is not None else (
                 _safe_float(signal.get("bid_ratio", -1), -1) if signal.get("bid_ratio") is not None else None
             )
-            # net_buy_amt: 원(KRW) 기준. 1000억(100B) 이상에서 만점(40pt)
-            _net_sc = min(40, net_amt / 100_000_000_000 * 40)
+            # net_buy_amt: KOSPI 500억(50B), KOSDAQ 100억(10B) 기준에서 만점(40pt) — 시장별 현실 분포 반영
+            _market_s5 = str(signal.get("market_type", signal.get("market", ""))).strip()
+            _net_basis = 50_000_000_000 if _market_s5 == "001" else 10_000_000_000
+            _net_sc = min(40, net_amt / _net_basis * 40)
             # WS 오프라인 시 체결강도 미지 → 중립 10점 부여 (기회비용 방어)
             ws_online_s5 = market_ctx.get("ws_online", True)
             effective_strength = s5_strength if s5_strength > 0 else strength
@@ -394,9 +396,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _vol_sc = 25 if vol_ratio_s7 >= 2.0 else (15 if vol_ratio_s7 >= 1.5 else (5 if vol_ratio_s7 >= 1.2 else 0))
             # RSI 구간 (45~70: 추세 중반, 아직 과열 아님)
             _rsi_sc = 15 if 45 <= rsi_val <= 70 else (8 if 40 <= rsi_val < 45 else 0)
-            # 선택조건 충족 수
-            _cond_sc = cond_cnt * 5
-            score += _cloud_sc + _chikou_sc + _vol_sc + _rsi_sc + _cond_sc
+            # 선택조건 충족 수 — 공통 _cond_bonus 블록에서 합산하므로 여기서는 제외
+            score += _cloud_sc + _chikou_sc + _vol_sc + _rsi_sc
             _technical_score += _cloud_sc + _chikou_sc + _rsi_sc
             _vol_score       += _vol_sc
             _strategy_data = {
@@ -415,9 +416,9 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _vol_sc = 30 if vol_surge >= 300 else (20 if vol_surge >= 200 else (10 if vol_surge >= 100 else 0))
             flu_rt_s10 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
             _flu_sc = 20 if 2 <= flu_rt_s10 <= 8 else (10 if 0 < flu_rt_s10 <= 15 else (-10 if flu_rt_s10 > 15 else 0))
-            _base_bonus = 28
             cntr_sig_s10 = _safe_float(signal.get("cntr_strength", 0))
             effective_str_s10 = cntr_sig_s10 if cntr_sig_s10 > 0 else strength
+            _base_bonus = 12 if vol_surge >= 100 and effective_str_s10 > 100 else 0
             _str_sc = (30 if effective_str_s10 > 130 else 20 if effective_str_s10 > 110
                        else 12 if effective_str_s10 > 90 else 6 if effective_str_s10 > 70 else 0)
             _bid_sc = 0.0
@@ -437,7 +438,15 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             dm1 = _safe_float(signal.get("dm1", 0))
             dm2 = _safe_float(signal.get("dm2", 0))
             dm3 = _safe_float(signal.get("dm3", 0))
-            cont_days = sum(1 for d in (dm1, dm2, dm3) if d > 0)
+            # 중간에 음수가 껴도 count하는 버그 수정 — 실제 연속 양수 여부로 판정
+            if dm1 > 0 and dm2 > 0 and dm3 > 0:
+                cont_days = 3
+            elif dm1 > 0 and dm2 > 0:
+                cont_days = 2
+            elif dm1 > 0:
+                cont_days = 1
+            else:
+                cont_days = 0
             _cont_sc = 30 if cont_days >= 3 else (20 if cont_days >= 2 else 0)
             flu_rt_s11 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
             _flu_sc = 20 if flu_rt_s11 > 0 else (-10 if flu_rt_s11 < -3 else 0)
@@ -500,19 +509,24 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             effective_str = cntr_sig if cntr_sig > 0 else strength
             strategy_raw = _safe_float(signal.get("score", 0))
             _flu_sc = 30 if 0.5 <= flu_rt_s9 <= 3 else (20 if 3 < flu_rt_s9 <= 6 else (10 if 6 < flu_rt_s9 <= 10 else 0))
-            _str_sc = 35 if effective_str > 130 else (25 if effective_str > 110 else (10 if effective_str > 100 else 0))
+            # WS 오프라인이고 체결강도가 기본값(100)이면 중립 점수 — S5 패턴 동일 적용
+            ws_online_s9 = market_ctx.get("ws_online", True)
+            if not ws_online_s9 and abs(effective_str - 100.0) < 0.1:
+                _str_sc = 10
+            else:
+                _str_sc = 35 if effective_str > 130 else (25 if effective_str > 110 else (10 if effective_str > 100 else 0))
             _bid_sc = 0.0
             if bid_ratio is not None:
                 _bid_sc = 20 if bid_ratio > 1.5 else (10 if bid_ratio > 1.2 else 0)
             _rsi_sc = (15 if 40 <= rsi <= 52 else (8 if 52 < rsi <= 62 else (3 if 30 <= rsi < 40 else 0))) if rsi > 0 else 0
             pct_ma5 = _safe_float(signal.get("pct_ma5", 999))
+            # _ma_sc와 _setup_sc가 동일한 pct_ma5 조건 이중 합산하는 버그 수정 — _setup_sc 제거
             _ma_sc  = (15 if -1.0 <= pct_ma5 <= 2.0 else (8 if abs(pct_ma5) <= 4.0 else 0)) if pct_ma5 != 999 else 0
             _stoch_sc = 10 if bool(signal.get("stoch_gc", False)) else 0
-            _setup_sc = 15 if -1.0 <= pct_ma5 <= 2.0 else (10 if abs(pct_ma5) <= 4.0 else 0)
             _sig_sc = min(10, strategy_raw * 0.35)
-            score += _flu_sc + _str_sc + _bid_sc + _rsi_sc + _ma_sc + _stoch_sc + _setup_sc + _sig_sc
+            score += _flu_sc + _str_sc + _bid_sc + _rsi_sc + _ma_sc + _stoch_sc + _sig_sc
             _momentum_score  += _flu_sc + _str_sc
-            _technical_score += _rsi_sc + _ma_sc + _stoch_sc + _setup_sc + _sig_sc
+            _technical_score += _rsi_sc + _ma_sc + _stoch_sc + _sig_sc
             _demand_score    += _bid_sc
             _strategy_data   = {"pct_ma5": pct_ma5, "stoch_gc": bool(signal.get("stoch_gc")), "flu_rt": flu_rt_s9}
             _zd, _zi = _zone_bonus(signal, cur_prc_for_zone)
@@ -549,7 +563,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             effective_str = cntr_sig if cntr_sig > 0 else strength
             vol_ratio_s14 = _safe_float(signal.get("vol_ratio", 0))
             strategy_raw = _safe_float(signal.get("score", 0))
-            _rsi_sc = (40 if rsi < 25 else (30 if rsi < 30 else (20 if rsi < 35 else (10 if rsi < 40 else 0)))) if rsi > 0 else 15
+            # RSI 25~42 구간(전략 hard gate 통과 범위)에서 낮을수록 고점수. rsi==0 결측 시 0점.
+            _rsi_sc = (35 if rsi <= 30 else (25 if rsi <= 35 else (15 if rsi <= 38 else 5))) if rsi > 0 else 0
             _atr_sc = 15 if 1.0 <= atr_pct <= 2.5 else (5 if 0.5 <= atr_pct < 1.0 else (-5 if atr_pct > 3.0 else 0))
             _str_sc = 25 if effective_str > 120 else (15 if effective_str > 110 else (5 if effective_str > 100 else 0))
             _bid_sc = 0.0
@@ -572,7 +587,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             effective_str = cntr_sig if cntr_sig > 0 else strength
             vol_ratio_s15 = _safe_float(signal.get("vol_ratio", 0))
             flu_rt_s15 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
-            _rsi_sc = (35 if 50 <= rsi <= 65 else (25 if 65 < rsi <= 75 else (10 if 45 <= rsi < 50 else 0))) if rsi > 0 else 0
+            # cond_rsi 상한(72)과 일치하도록 scorer RSI 최고점 구간 상한 65→70 조정
+            _rsi_sc = (35 if 50 <= rsi <= 70 else (25 if 70 < rsi <= 75 else (10 if 45 <= rsi < 50 else 0))) if rsi > 0 else 0
             _vol_sc = 25 if vol_ratio_s15 >= 3.0 else (18 if vol_ratio_s15 >= 2.0 else (10 if vol_ratio_s15 >= 1.5 else 0))
             _str_sc = 25 if effective_str > 130 else (18 if effective_str > 110 else (8 if effective_str > 100 else 0))
             _bid_sc = 0.0

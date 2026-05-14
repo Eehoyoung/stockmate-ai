@@ -167,6 +167,13 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
             _reject("rsi_overheated", stk_cd, rsi=round(rsi_now, 1), flu_rt=round(flu_rt, 2))
             continue
 
+        # candidates_builder S15 풀 RSI 필터를 위해 캐시 (TTL 1200s)
+        if rdb and rsi_now is not None:
+            try:
+                await rdb.setex(f"stock:rsi14:{stk_cd}", 1200, str(round(rsi_now, 1)))
+            except Exception:
+                pass
+
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 선택 조건 A: MACD 모멘텀
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -196,7 +203,8 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 선택 조건 B: RSI 구간
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        cond_rsi = bool(rsi_now and 48 <= rsi_now <= 68)
+        # scorer RSI 최고점 구간 상한(70)과 일치시켜 cond_rsi 불일치 해소 (68→72)
+        cond_rsi = bool(rsi_now and 48 <= rsi_now <= 72)
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 선택 조건 C: 볼린저 %B 위치

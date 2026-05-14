@@ -118,18 +118,20 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
       3. gainers 중 inst_set 교집합 → 풀이 있으면 pool_set 추가 교집합
       4. 조건 검증(flu_rt/cntr_str) → 점수 산정
     """
-    # 0. candidates:s12:{market} 풀 로드 (TTL 600s, flu_rt>0 종목만 포함)
+    # 0. candidates:s12:{market} 풀 로드 — market="000" 시 001+101 모두 로드
     pool_set: set[str] = set()
-    if rdb and market in ("001", "101"):
-        try:
-            pool = await rdb.lrange(f"candidates:s12:{market}", 0, -1)
-            if pool:
-                pool_set = set(pool)
-                logger.debug("[S12] 풀 %d종목 로드 (candidates:s12:%s)", len(pool_set), market)
-            else:
-                logger.debug("[S12] candidates:s12:%s 풀 없음 — 전체 스캔 fallback", market)
-        except Exception as e:
-            logger.warning("[S12] 풀 조회 실패 (fallback): %s", e)
+    if rdb:
+        _markets = [market] if market in ("001", "101") else ["001", "101"]
+        for _m in _markets:
+            try:
+                pool = await rdb.lrange(f"candidates:s12:{_m}", 0, -1)
+                if pool:
+                    pool_set.update(pool)
+                    logger.debug("[S12] 풀 %d종목 로드 (candidates:s12:%s)", len(pool), _m)
+            except Exception as e:
+                logger.warning("[S12] 풀 조회 실패 (candidates:s12:%s): %s", _m, e)
+        if not pool_set:
+            logger.debug("[S12] 모든 풀 없음 — 전체 스캔 fallback")
 
     # 1. 기관 순매수 세트와 등락률 상위 리스트 병렬 호출
     gainers_task = fetch_top_gainers_paged(token, market)

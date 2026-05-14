@@ -15,10 +15,15 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from analyzer import analyze_signal
-from http_utils import fetch_stk_nm
+from http_utils import (
+    fetch_stk_nm,
+    fetch_hoga_rest as _fetch_hoga_rest,
+    fetch_cntr_strength_rest as _fetch_str_rest,
+    fetch_tick_snapshot as _fetch_tick_snapshot,
+)
 from position_sizing import ENABLE_MODEL_RELATIVE_POSITION_SIZE, calculate_entry_size
 from price_utils import normalize_signal_prices
-from strategy_meta import get_persona
+from strategy_meta import get_persona, get_hold_to_enter_threshold as _get_hold_threshold
 from redis_reader import (
     get_avg_cntr_strength,
     get_hoga_data,
@@ -43,6 +48,13 @@ except Exception:
     MarketSession = None
     current_session = None
 
+try:
+    from ma_utils import fetch_daily_candles_with_status as _fetch_daily_candles_ws
+    from ma_utils import fetch_minute_candles_with_status as _fetch_minute_candles_ws
+except ImportError:
+    _fetch_daily_candles_ws = None
+    _fetch_minute_candles_ws = None
+
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL_SEC", "2.0"))
@@ -59,18 +71,32 @@ _PIPELINE_TTL_SEC = 172800
 # S1/S6/S13은 데이트레이딩 성격상 신규 추가.
 _HARD_GATES = {
     "S1_GAP_OPEN":        {"strength": 110.0, "bid_ratio": 1.3},
-    "S4_BIG_CANDLE":      {"strength": 125.0, "bid_ratio": 1.4},
+    "S4_BIG_CANDLE":      {"strength": 115.0, "bid_ratio": 1.2},
     "S6_THEME_LAGGARD":   {"strength": 120.0, "bid_ratio": 1.2},
     "S10_NEW_HIGH":       {"strength": 115.0, "bid_ratio": 1.2},
     "S12_CLOSING":        {"strength": 120.0, "bid_ratio": 1.5},
     "S13_BOX_BREAKOUT":   {"strength": 115.0, "bid_ratio": 1.3},
-    "S15_MOMENTUM_ALIGN": {"strength": 120.0, "bid_ratio": 1.3},
+    "S15_MOMENTUM_ALIGN": {"strength": 100.0, "bid_ratio": 1.1},
 }
 
 # bull: 임계값을 12% 완화, bear: 역방향 전략(S9/S14)은 gates 적용 안 함
 _REGIME_GATE_FACTOR = {"bull": 0.88, "sideways": 1.0, "bear": 1.0, "neutral": 1.0}
 # bear 장세에서 반등 전략은 weak momentum이 당연하므로 gate 면제
 _BEAR_GATE_EXEMPT = {"S9_PULLBACK_SWING", "S14_OVERSOLD_BOUNCE", "S11_FRGN_CONT"}
+
+# freshness 취소 게이트: tick/hoga cancel → CANCEL 판정하는 전략 집합 (문서 4.1)
+# _freshness_cancel_reason() 과 _compute_freshness_decision() 이 공유한다.
+_STRICT_CANCEL_GATE = {
+    "S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE",
+    "S10_NEW_HIGH", "S12_CLOSING", "S13_BOX_BREAKOUT",
+}
+
+# chart 보강 전략 분류 (P2 — ENABLE_CHART_RETRY=true 시에만 사용)
+_CHART_DAILY_STRATEGIES = {
+    "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S13_BOX_BREAKOUT",
+    "S14_OVERSOLD_BOUNCE", "S15_MOMENTUM_ALIGN",
+}
+_CHART_MINUTE_STRATEGIES = {"S4_BIG_CANDLE", "S12_CLOSING"}
 
 # ── R:R 사전필터 장세별 임계값 ─────────────────────────────────────────────
 # bull: 모멘텀이 슬리피지를 상쇄 → 0.65, bear: 리스크 엄격 → 0.80
@@ -85,6 +111,10 @@ S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_HARD_CANC
 S8_MIN_ZONE_RR = float(os.getenv("S8_MIN_ZONE_RR", "1.4"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").lower() == "true"
+ENABLE_SCORING_DATA_RETRY = os.getenv("ENABLE_SCORING_DATA_RETRY", "true").lower() == "true"
+ENABLE_TICK_REST_FALLBACK = os.getenv("ENABLE_TICK_REST_FALLBACK", "false").lower() == "true"
+STRICT_REST_ENTER_GUARD = os.getenv("STRICT_REST_ENTER_GUARD", "false").lower() == "true"
+ENABLE_CHART_RETRY = os.getenv("ENABLE_CHART_RETRY", "false").lower() == "true"
 CLAUDE_HARD_RULE_CANCEL_TYPE = "CLAUDE_HARD_RULE"
 _CLAUDE_PRICE_FIELDS = ("claude_tp1", "claude_tp2", "claude_sl")
 _SESSION_ENTER_BLOCKLIST = {
@@ -492,8 +522,11 @@ def _hard_gate_failure(signal: dict, ctx: dict) -> str | None:
     failures = []
     if strength < req_strength:
         failures.append(f"strength {strength:.1f} < {req_strength:.1f}({regime})")
+    # 스윙 전략은 WS 미구독 시 bid_ratio None이 정상 — gate 면제
+    _SWING_GATE_EXEMPT_BID = {"S15_MOMENTUM_ALIGN", "S9_PULLBACK_SWING", "S14_OVERSOLD_BOUNCE", "S4_BIG_CANDLE"}
     if bid_ratio is None:
-        failures.append(f"bid_ratio missing < {req_bid:.2f}({regime})")
+        if strategy not in _SWING_GATE_EXEMPT_BID:
+            failures.append(f"bid_ratio missing < {req_bid:.2f}({regime})")
     elif bid_ratio < req_bid:
         failures.append(f"bid_ratio {bid_ratio:.2f} < {req_bid:.2f}({regime})")
     if failures:
@@ -554,12 +587,263 @@ def _s8_buy_zone_gate_failure(signal: dict) -> str | None:
     return None
 
 
-def _freshness_cancel_reason(ctx: dict) -> str | None:
+async def _refresh_chart_if_needed(
+    ctx: dict,
+    stk_cd: str,
+    token: str | None,
+    strategy: str,
+    refresh_meta: dict,
+) -> None:
+    """
+    ENABLE_CHART_RETRY=true일 때 전략별 chart 데이터를 보강한다.
+    - daily candle: S8/S9/S13/S14/S15
+    - minute candle: S4/S12
+    chart fallback 사용 시 confidence를 MEDIUM 이하로 제한한다.
+    장중 현재가 대체재로 daily candle 사용 금지.
+    """
+    if not ENABLE_CHART_RETRY or not token:
+        return
+    if _fetch_daily_candles_ws is None:
+        return
+
+    refresh_sources = refresh_meta.get("market_data_sources", {})
+    retry_failures = refresh_meta.get("retry_failures", [])
+
+    if strategy in _CHART_DAILY_STRATEGIES:
+        try:
+            candles, status = await asyncio.wait_for(
+                _fetch_daily_candles_ws(token, stk_cd),
+                timeout=5.0,
+            )
+            if candles and status.get("source") != "EMPTY":
+                ctx.setdefault("chart", {})["daily"] = candles
+                ctx.setdefault("chart", {})["daily_status"] = status
+                refresh_sources["chart_daily"] = status.get("source", "rest").lower()
+                # 장중 미확정봉(intraday_day_bar=True) 시 메타데이터 경고
+                if status.get("intraday_day_bar"):
+                    ctx["chart"]["daily_intraday_bar"] = True
+                    retry_failures.append("chart_daily:intraday_bar_unconfirmed")
+                ctx["chart_fallback_used"] = True
+                logger.debug("[Worker] chart daily refreshed [%s %s]: %d candles src=%s",
+                             stk_cd, strategy, len(candles), status.get("source"))
+            else:
+                retry_failures.append("chart_daily:empty")
+        except Exception as e:
+            retry_failures.append(f"chart_daily:{e}")
+            logger.debug("[Worker] chart daily refresh failed [%s %s]: %s", stk_cd, strategy, e)
+
+    elif strategy in _CHART_MINUTE_STRATEGIES and _fetch_minute_candles_ws is not None:
+        try:
+            candles, status = await asyncio.wait_for(
+                _fetch_minute_candles_ws(token, stk_cd, tic_scope="1"),
+                timeout=5.0,
+            )
+            if candles and status.get("source") != "EMPTY":
+                ctx.setdefault("chart", {})["minute"] = candles
+                ctx.setdefault("chart", {})["minute_status"] = status
+                refresh_sources["chart_minute"] = status.get("source", "rest").lower()
+                if not status.get("is_current_bar_closed"):
+                    ctx["chart"]["minute_bar_open"] = True
+                    retry_failures.append("chart_minute:current_bar_open")
+                ctx["chart_fallback_used"] = True
+                logger.debug("[Worker] chart minute refreshed [%s %s]: %d candles src=%s",
+                             stk_cd, strategy, len(candles), status.get("source"))
+            else:
+                retry_failures.append("chart_minute:empty")
+        except Exception as e:
+            retry_failures.append(f"chart_minute:{e}")
+            logger.debug("[Worker] chart minute refresh failed [%s %s]: %s", stk_cd, strategy, e)
+
+
+async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy: str = "") -> None:
+    """
+    tick/hoga/strength 중 stale/missing 항목을 갱신한다.
+
+    우선순위:
+      tick     → signal 보유 cur_prc/flu_rt 우선, 없으면 REST (ENABLE_TICK_REST_FALLBACK=true 시)
+      strength → REST direct (stale ws:strength Redis list 재사용 금지)
+      hoga     → signal bid_ratio 우선, REST direct fallback (stale ws:hoga 재사용 금지)
+
+    stale/missing → REST direct 함수 사용. Redis 캐시(ws:hoga, hoga:rest, ws:strength) 재사용 없음.
+    ctx["freshness"]와 ctx["refresh_meta"]를 갱신한다.
+    """
+    if not ENABLE_SCORING_DATA_RETRY:
+        return
+
+    freshness = ctx.get("freshness", {}) or {}
+    _refresh_attempted: dict[str, str] = {}
+    _refresh_sources: dict[str, str] = {}
+    _retry_failures: list[str] = []
+
+    # ── tick: signal 값 우선, 없으면 REST (ENABLE_TICK_REST_FALLBACK) ──────
+    tick_state = (freshness.get("tick") or {}).get("state", "fresh")
+    if tick_state in ("cancel", "missing"):
+        _refresh_attempted["tick"] = tick_state
+        _cur = float(signal.get("cur_prc") or 0)
+        _flu = float(signal.get("flu_rt") or signal.get("gap_pct") or 0)
+        if _cur > 0:
+            ctx["tick"] = {"cur_prc": _cur, "flu_rt": _flu}
+            freshness["tick"] = {
+                "state": "caution", "kind": "tick",
+                "age_ms": None, "source": "signal_fallback",
+            }
+            _refresh_sources["tick"] = "signal_fallback"
+            logger.debug("[Worker] tick_ctx refreshed from signal [%s]: prc=%.0f flu=%.2f",
+                         stk_cd, _cur, _flu)
+
+    # tick_state 재확인 (signal fallback 후 갱신 여부 반영)
+    tick_state_now = (freshness.get("tick") or {}).get("state", tick_state)
+
+    str_state  = (freshness.get("strength") or {}).get("state", "fresh")
+    hoga_state = (freshness.get("hoga") or {}).get("state", "fresh")
+
+    # tick REST fallback 대상 여부
+    _tick_needs_rest = (
+        ENABLE_TICK_REST_FALLBACK
+        and tick_state_now in ("cancel", "missing")
+    )
+
+    if (str_state not in ("cancel", "missing")
+            and hoga_state not in ("cancel", "missing")
+            and not _tick_needs_rest):
+        ctx["freshness"] = freshness
+        _early_meta = {
+            "market_data_sources": _refresh_sources,
+            "data_refresh_attempted": _refresh_attempted,
+            "retry_failures": _retry_failures,
+        }
+        ctx["refresh_meta"] = _early_meta
+        # ── chart 보강 (P2 — ENABLE_CHART_RETRY=true 시에만 실행) ────────
+        if ENABLE_CHART_RETRY and strategy:
+            try:
+                _early_token = await rdb.get("kiwoom:token")
+            except Exception:
+                _early_token = None
+            await _refresh_chart_if_needed(ctx, stk_cd, _early_token, strategy, _early_meta)
+        return
+
+    try:
+        token = await rdb.get("kiwoom:token")
+    except Exception:
+        token = None
+
+    # ── tick REST fallback (ENABLE_TICK_REST_FALLBACK=true, signal 값도 없을 때) ──
+    if _tick_needs_rest and token:
+        try:
+            tick_data, tick_meta = await asyncio.wait_for(
+                _fetch_tick_snapshot(token, stk_cd), timeout=3.0
+            )
+            if tick_data.get("cur_prc"):
+                ctx["tick"] = {
+                    "cur_prc": float(tick_data["cur_prc"]),
+                    "flu_rt": float(tick_data.get("flu_rt") or 0),
+                }
+                freshness["tick"] = {
+                    "state": "caution", "kind": "tick",
+                    "age_ms": tick_meta.get("latency_ms", 0), "source": "rest",
+                }
+                _refresh_sources["tick"] = "rest"
+                logger.debug("[Worker] tick refreshed via REST direct [%s]: prc=%s",
+                             stk_cd, tick_data["cur_prc"])
+            else:
+                _retry_failures.append("tick:rest_no_data")
+                logger.debug("[Worker] tick REST direct failed [%s]: %s", stk_cd, tick_meta.get("error"))
+        except Exception as e:
+            _retry_failures.append(f"tick:{e}")
+            logger.debug("[Worker] tick REST direct failed [%s]: %s", stk_cd, e)
+
+    # ── strength: REST direct — stale ws:strength Redis list 재사용 금지 ──
+    if str_state in ("cancel", "missing") and token:
+        _refresh_attempted["strength"] = str_state
+        try:
+            new_str, str_meta = await asyncio.wait_for(
+                _fetch_str_rest(token, stk_cd), timeout=3.0
+            )
+            if new_str is not None:
+                ctx["strength"] = new_str
+                freshness["strength"] = {
+                    "state": "caution", "kind": "strength",
+                    "age_ms": str_meta.get("latency_ms", 0), "source": "rest",
+                }
+                _refresh_sources["strength"] = "rest"
+                logger.debug("[Worker] strength refreshed via REST direct [%s]: %.1f", stk_cd, new_str)
+            else:
+                _retry_failures.append("strength:rest_no_data")
+                logger.debug("[Worker] strength REST direct failed [%s]: %s", stk_cd, str_meta.get("error"))
+        except Exception as e:
+            _retry_failures.append(f"strength:{e}")
+            logger.debug("[Worker] strength REST direct failed [%s]: %s", stk_cd, e)
+
+    # ── hoga: signal bid_ratio 우선, 없으면 REST direct — stale ws:hoga 재사용 금지 ──
+    if hoga_state in ("cancel", "missing"):
+        _refresh_attempted["hoga"] = hoga_state
+        sig_bid = signal.get("bid_ratio")
+        if sig_bid is not None:
+            _b = float(sig_bid)
+            ctx["hoga"] = {"total_buy_bid_req": _b, "total_sel_bid_req": 1.0}
+            freshness["hoga"] = {
+                "state": "caution", "kind": "hoga",
+                "age_ms": None, "source": "signal_fallback",
+            }
+            _refresh_sources["hoga"] = "signal_fallback"
+            logger.debug("[Worker] hoga_ctx refreshed from signal [%s]: bid=%.2f", stk_cd, _b)
+        elif token:
+            try:
+                new_bid, hoga_meta = await asyncio.wait_for(
+                    _fetch_hoga_rest(token, stk_cd), timeout=3.0
+                )
+                if new_bid is not None:
+                    ctx["hoga"] = {"total_buy_bid_req": float(new_bid), "total_sel_bid_req": 1.0}
+                    freshness["hoga"] = {
+                        "state": "caution", "kind": "hoga",
+                        "age_ms": hoga_meta.get("latency_ms", 0), "source": "rest",
+                    }
+                    _refresh_sources["hoga"] = "rest"
+                    logger.debug("[Worker] hoga refreshed via REST direct [%s]: %.2f", stk_cd, new_bid)
+                else:
+                    _retry_failures.append("hoga:rest_no_data")
+                    logger.debug("[Worker] hoga REST direct failed [%s]: %s", stk_cd, hoga_meta.get("error"))
+            except Exception as e:
+                _retry_failures.append(f"hoga:{e}")
+                logger.debug("[Worker] hoga REST direct failed [%s]: %s", stk_cd, e)
+        else:
+            _retry_failures.append("hoga:no_token")
+
+    ctx["freshness"] = freshness
+    _final_meta = {
+        "market_data_sources": _refresh_sources,
+        "data_refresh_attempted": _refresh_attempted,
+        "retry_failures": _retry_failures,
+    }
+    ctx["refresh_meta"] = _final_meta
+    # ── chart 보강 (P2 — ENABLE_CHART_RETRY=true 시에만 실행) ────────
+    await _refresh_chart_if_needed(ctx, stk_cd, token, strategy, _final_meta)
+    # ── 운영 metric: data_retry 결과 카운터 ────────────────────────────
+    if strategy:
+        try:
+            _dr_today = datetime.now(_KST).strftime("%Y-%m-%d")
+            sources = _final_meta.get("market_data_sources", {})
+            failures = _final_meta.get("retry_failures", [])
+            for _field, _src in sources.items():
+                await rdb.hincrby(f"status:data_retry:{_dr_today}:{strategy}:{_field}", _src, 1)
+                await rdb.expire(f"status:data_retry:{_dr_today}:{strategy}:{_field}", _PIPELINE_TTL_SEC)
+            for _fail in failures:
+                _fail_key = _fail.split(":")[0] if ":" in _fail else _fail
+                await rdb.hincrby(f"status:data_retry:{_dr_today}:{strategy}:{_fail_key}", "failed", 1)
+                await rdb.expire(f"status:data_retry:{_dr_today}:{strategy}:{_fail_key}", _PIPELINE_TTL_SEC)
+        except Exception:
+            pass
+
+
+def _freshness_cancel_reason(ctx: dict, strategy: str = "") -> str | None:
     freshness = ctx.get("freshness", {}) or {}
     for key in ("tick", "hoga", "strength"):
         status = freshness.get(key, {}) or {}
-        if status.get("state") == "cancel":
+        state = status.get("state")
+        if state == "cancel" and strategy in _STRICT_CANCEL_GATE:
             return f"{key} data stale: age_ms={status.get('age_ms')}"
+        if state == "missing" and key == "tick" and strategy in _STRICT_CANCEL_GATE:
+            return f"tick missing (WS unsubscribed) [{strategy}]"
     vi = ctx.get("vi", {}) or {}
     vi_status = freshness.get("vi", {}) or {}
     if vi and vi_status.get("state") == "cancel":
@@ -578,15 +862,13 @@ def _compute_freshness_decision(freshness: dict, strategy: str) -> str:
 
     Returns: PASS | CAUTION | SHADOW | SIZE_DOWN | CANCEL
     """
-    strict_strategies = {"S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE",
-                         "S10_NEW_HIGH", "S12_CLOSING", "S13_BOX_BREAKOUT"}
-    rest_strategies   = {"S3_INST_FRGN", "S5_PROG_FRGN", "S11_FRGN_CONT"}
+    rest_strategies = {"S3_INST_FRGN", "S5_PROG_FRGN", "S11_FRGN_CONT"}
 
     tick_state     = (freshness.get("tick") or {}).get("state", "missing")
     hoga_state     = (freshness.get("hoga") or {}).get("state", "missing")
     strength_state = (freshness.get("strength") or {}).get("state", "missing")
 
-    if strategy in strict_strategies:
+    if strategy in _STRICT_CANCEL_GATE:
         if tick_state == "cancel" or hoga_state == "cancel":
             return "CANCEL"
         if tick_state in ("caution", "missing") or hoga_state in ("caution", "missing"):
@@ -608,6 +890,20 @@ def _compute_freshness_decision(freshness: dict, strategy: str) -> str:
         return "CAUTION"
 
     return "PASS"
+
+
+def _freshness_status_from_decision(decision: str) -> str:
+    """
+    freshness_decision → position_sizing 이 사용하는 freshness_status 변환.
+    PASS          → FRESH
+    CAUTION/SIZE_DOWN → CAUTION
+    SHADOW/CANCEL → STALE
+    """
+    if decision == "PASS":
+        return "FRESH"
+    if decision in ("CAUTION", "SIZE_DOWN"):
+        return "CAUTION"
+    return "STALE"
 
 
 def _collect_missing_feature_flags(signal: dict, ctx: dict) -> list[str]:
@@ -736,17 +1032,24 @@ def _maybe_promote_hold_to_enter(
         score = float(ai_score)
     except (TypeError, ValueError):
         return action, confidence, reason, cancel_reason
-    if score < HOLD_TO_ENTER_MIN_AI_SCORE:
+    threshold = _get_hold_threshold(strategy) if strategy else HOLD_TO_ENTER_MIN_AI_SCORE
+    if score < threshold:
         return action, confidence, reason, cancel_reason
 
     promoted_reason = (
         f"{reason} | HOLD promoted to ENTER because ai_score "
-        f"{score:.1f} >= {HOLD_TO_ENTER_MIN_AI_SCORE:.1f}"
+        f"{score:.1f} >= {threshold:.1f}"
     )
     return "ENTER", confidence or "HIGH", promoted_reason, None
 
 
-def _compute_signal_quality(signal: dict, ctx: dict, rule_score_value: float) -> dict:
+def _compute_signal_quality(
+    signal: dict,
+    ctx: dict,
+    rule_score_value: float,
+    *,
+    stale_hoga: bool = False,
+) -> dict:
     """Current-signal quality score used before enough live performance data exists."""
     strength = _resolve_execution_strength(signal, ctx)
     bid_ratio = _resolve_bid_ratio(signal, ctx)
@@ -767,6 +1070,10 @@ def _compute_signal_quality(signal: dict, ctx: dict, rule_score_value: float) ->
             bid_component = 5.0
         elif bid_ratio >= 1.0:
             bid_component = 2.0
+
+    # stale hoga → lenient 전략은 bid_component 제거 (신선도 없는 호가 가점 금지)
+    if stale_hoga:
+        bid_component = 0.0
 
     if rr is None:
         rr_component = 3.0
@@ -792,7 +1099,7 @@ def _compute_signal_quality(signal: dict, ctx: dict, rule_score_value: float) ->
     freshness = ctx.get("freshness", {}) or {}
     for key in ("tick", "hoga", "strength"):
         status = freshness.get(key, {}) or {}
-        if status.get("state") == "warn":
+        if status.get("state") == "caution":
             freshness_component -= 1.5
         elif status.get("state") == "cancel":
             freshness_component -= 5.0
@@ -1061,6 +1368,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
         ctx = await _build_market_ctx(rdb, stk_cd, sector=sector, signal=signal)
         if ctx.get("market_type") and not signal.get("market_type"):
             signal["market_type"] = ctx["market_type"]
+        # stale/missing 항목을 signal 값 또는 REST로 갱신 (cancel보다 재조회 우선)
+        await _refresh_stale_ctx(ctx, stk_cd, rdb, signal, strategy)
         exact_strength = _resolve_execution_strength(signal, ctx)
         ctx["strength"] = exact_strength
         signal["cntr_strength"] = round(exact_strength, 2) if exact_strength > 0 else signal.get("cntr_strength")
@@ -1073,7 +1382,9 @@ async def process_one(rdb, pg_pool=None) -> bool:
 
         r_score, components = _coerce_rule_score_result(rule_score(signal, ctx))
         logger.info("[Worker] rule score [%s %s]: %.1f", stk_cd, strategy, r_score)
-        quality = _compute_signal_quality(signal, ctx, r_score)
+        _hoga_state = (ctx.get("freshness") or {}).get("hoga", {}).get("state", "fresh")
+        _stale_hoga = _hoga_state in ("cancel", "missing", "caution")
+        quality = _compute_signal_quality(signal, ctx, r_score, stale_hoga=_stale_hoga)
         signal.update(quality)
 
         threshold = get_claude_threshold(strategy)
@@ -1093,7 +1404,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
             s8_zone_gate_reason = _s8_buy_zone_gate_failure(signal)
             hard_gate_reason = _hard_gate_failure(signal, ctx)
-            stale_reason = _freshness_cancel_reason(ctx)
+            stale_reason = _freshness_cancel_reason(ctx, strategy)
             if rr_prefilter_reason:
                 action = "CANCEL"
                 confidence = "LOW"
@@ -1170,6 +1481,14 @@ async def process_one(rdb, pg_pool=None) -> bool:
 
         # ── 데이터 품질·신선도 메타데이터 계산 (Phase 1 관측 가능성) ────────────
         _freshness_dec = _compute_freshness_decision(ctx.get("freshness") or {}, strategy)
+        # 운영 metric: freshness_decision 분포 추적 (strategy 없는 bypass payload는 건너뜀)
+        if strategy:
+            try:
+                _fd_today = datetime.now(_KST).strftime("%Y-%m-%d")
+                await rdb.hincrby(f"status:freshness_decision:{_fd_today}:{strategy}", _freshness_dec, 1)
+                await rdb.expire(f"status:freshness_decision:{_fd_today}:{strategy}", _PIPELINE_TTL_SEC)
+            except Exception:
+                pass
         _missing_flags = _collect_missing_feature_flags(signal, ctx)
         _dq = _compute_data_quality(_missing_flags, _freshness_dec, signal)
 
@@ -1198,6 +1517,11 @@ async def process_one(rdb, pg_pool=None) -> bool:
             **quality,
             # 데이터 신선도·품질 필드 (관측·검증용)
             "freshness_decision": _freshness_dec,
+            # REST 보강 메타데이터 (관측·디버깅용)
+            "market_data_sources": (ctx.get("refresh_meta") or {}).get("market_data_sources", {}),
+            "data_refresh_attempted": (ctx.get("refresh_meta") or {}).get("data_refresh_attempted", {}),
+            "retry_failures": (ctx.get("refresh_meta") or {}).get("retry_failures", []),
+            "freshness_status": _freshness_status_from_decision(_freshness_dec),
             **_dq,
             # Shadow features (관측·EV 검증용 — gate 판단에 미사용)
             "shadow_features": _shadow,
@@ -1228,7 +1552,19 @@ async def process_one(rdb, pg_pool=None) -> bool:
             except Exception as _sizing_err:
                 logger.warning("[Worker] position_sizing failed [%s %s]: %s", stk_cd, strategy, _sizing_err)
 
+        # chart fallback 사용 시 confidence MEDIUM 이하로 제한
+        if ctx.get("chart_fallback_used") and enriched.get("confidence") == "HIGH":
+            enriched["confidence"] = "MEDIUM"
         normalize_signal_prices(enriched)
+        # REST fallback만으로 aggressive ENTER 금지 (STRICT_REST_ENTER_GUARD=true 시)
+        if (STRICT_REST_ENTER_GUARD
+                and enriched.get("action") == "ENTER"
+                and enriched.get("market_data_sources")
+                and all(v == "rest" for v in enriched["market_data_sources"].values())):
+            enriched["confidence"] = "LOW"
+            enriched["cancel_reason"] = "REST fallback data only — aggressive entry blocked"
+            enriched["cancel_type"] = "STRICT_REST_ENTER_GUARD"
+            enriched["action"] = "CANCEL"
         enriched = _apply_claude_postprocess_hard_rules(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)
         enriched = _apply_session_enter_guard(enriched, ctx)

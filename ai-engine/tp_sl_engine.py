@@ -49,7 +49,7 @@ _SWING_TRAILING_DEFAULT = {
 
 _STRATEGY_POLICY: dict[str, dict[str, object]] = {
     "S1_GAP_OPEN": {
-        "min_rr": 1.8,
+        "min_rr": 1.5,
         "stop_max_pct": 2.2,
         "time_stop_type": "intraday_minutes",
         "time_stop_minutes": 30,
@@ -101,7 +101,7 @@ _STRATEGY_POLICY: dict[str, dict[str, object]] = {
         "allow_reentry": False,
         "trail_activation_r": None,
     },
-    "S7_ICHIMOKU_BREAKOUT": {"min_rr": 1.55, "trail_activation_r": 1.5, "allow_overnight": True, "allow_reentry": True},
+    "S7_ICHIMOKU_BREAKOUT": {"min_rr": 1.80, "trail_activation_r": 1.5, "allow_overnight": True, "allow_reentry": True},
     "S8_GOLDEN_CROSS": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
     "S9_PULLBACK_SWING": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
     "S10_NEW_HIGH": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
@@ -179,6 +179,8 @@ class TpSlResult:
     sell_zone1:   Optional[object] = None   # TradingZone
     zone_rr:      Optional[float]  = None
     zone_rr_skip: bool             = False
+    s8_buy_zone_role: str          = ""
+    s8_buy_zone_high_gap_pct: Optional[float] = None
 
     def to_signal_fields(self) -> dict:
         """전략 결과 dict에 merge할 TP/SL 필드 반환"""
@@ -236,6 +238,10 @@ class TpSlResult:
             d["zone_rr"] = round(float(self.zone_rr), 3)
         if self.zone_rr_skip:
             d["zone_rr_skip"] = True
+        if self.s8_buy_zone_role:
+            d["s8_buy_zone_role"] = self.s8_buy_zone_role
+        if self.s8_buy_zone_high_gap_pct is not None:
+            d["s8_buy_zone_high_gap_pct"] = round(float(self.s8_buy_zone_high_gap_pct), 3)
         if self.buy_zone is not None:
             d["buy_zone"] = (
                 self.buy_zone.to_dict()
@@ -657,6 +663,8 @@ def calc_tp_sl(
     vi_price:    Optional[float] = None,   # S2: VI 발동가 (TP 목표)
     candle_low:  Optional[float] = None,   # S4: 장대양봉 저점 (SL 기준)
     candle_high: Optional[float] = None,   # S4: 장대양봉 고점 (TP 기준)
+    cloud_top:   Optional[float] = None,   # S7: 구름 상단 (SL 1순위)
+    kijun:       Optional[float] = None,   # S7: 기준선 (SL 2순위)
     # ── Zone 계산 옵트인 (Phase 1: S8/S9/S13/S14/S15) ─────────
     compute_zones: bool = False,
 ) -> TpSlResult:
@@ -720,6 +728,12 @@ def calc_tp_sl(
             buy, sell = zone_fn(cur_prc, highs, lows, closes, **_kwargs)
             result.buy_zone   = buy
             result.sell_zone1 = sell
+            if s == "S8_GOLDEN_CROSS" and buy:
+                result.s8_buy_zone_role = "support_zone"
+                if cur_prc > 0 and getattr(buy, "high", 0) > 0:
+                    result.s8_buy_zone_high_gap_pct = (
+                        (cur_prc - float(buy.high)) / float(buy.high) * 100.0
+                    )
 
             if buy and sell:
                 zone_rr, zone_skip = calc_zone_rr(buy, sell, slip, min_rr)
@@ -768,6 +782,7 @@ def calc_tp_sl(
     if "S7_" in s:
         return finalize(_tp_sl_ichimoku_breakout(
             cur_prc, highs, lows, closes, atr, slip, min_rr,
+            cloud_top=cloud_top, kijun=kijun,
             macd_line=macd_line, macd_signal=macd_signal, macd_hist=macd_hist,
         ))
 
@@ -850,10 +865,11 @@ def _tp_sl_gap_open(
     if sl_price >= cur_prc:
         sl_price  = int(cur_prc * 0.982)
         sl_method = "intraday_hard_cap_1.8%"
-    resistance_tp = _nearest_resistance(highs, cur_prc, lookback=15, min_pct=0.008)
+    # min_pct=0.025: 0.8% 근접 매물대 무시, 갭 모멘텀 목표로 의미 있는 저항(2.5%)만 사용
+    resistance_tp = _nearest_resistance(highs, cur_prc, lookback=15, min_pct=0.025)
     if resistance_tp:
         tp1_price = resistance_tp
-        tp_method = "first_resistance_intraday"
+        tp_method = "first_resistance_intraday(≥2.5%)"
     else:
         target_dist = _bounded_distance(cur_prc, min_pct=0.025, max_pct=0.045, atr=atr, atr_mult=2.0)
         tp1_price = int(cur_prc + target_dist)
@@ -1163,47 +1179,59 @@ def _tp_sl_ichimoku_breakout(
     atr:     Optional[float],
     slip:    float,
     min_rr:  float,
-    macd_line: Optional[float] = None,
+    cloud_top:   Optional[float] = None,
+    kijun:       Optional[float] = None,
+    macd_line:   Optional[float] = None,
     macd_signal: Optional[float] = None,
-    macd_hist: Optional[float] = None,
+    macd_hist:   Optional[float] = None,
 ) -> TpSlResult:
     """
     S7 일목균형표 구름대 돌파 TP/SL  (3~7거래일 스윙)
 
-    진입 근거: 기준선(Kijun/26) 지지 위 돌파 확인.
-    SL = max(swing_low_D20 × 0.998, cur_prc - ATR × 1.5)
-         → 기준선 하락 이탈 = 구름대 돌파 가설 무효화
-    TP1 = 가장 가까운 스윙 고점 (30봉 저항)
-    TP2 = Fibonacci 1.272 확장 (swing_low ~ tp1)
+    SL 우선순위 (진입 가설 무효화 가격 기준):
+      1. cloud_top × 0.998  — 구름 상단 이탈 = 가설 무효화
+      2. kijun × 0.998      — 기준선 이탈
+      3. ATR × 1.5          — 위 두 값이 1% 이내일 때 폴백
+      -4% hard cap          — 과도한 SL 방지, 초과 시 skip_entry 검토
+    TP1 = 가장 가까운 스윙 고점 저항 (30봉)
+    TP2 = Fibonacci 1.272 확장
     """
-    # ── SL: 스윙 저점 vs ATR×1.5 중 더 높은 값 ─────────────────
-    swing_lows = find_swing_lows(lows, cur_prc, lookback=20)
-    if swing_lows and swing_lows[0] > cur_prc * 0.88:
-        sl_swing  = int(swing_lows[0] * 0.998)
-        swing_ref = swing_lows[0]
-        sl_method = "swing_low_D20(×0.998)"
-    else:
-        sl_swing  = 0
-        swing_ref = lows[1] if len(lows) > 1 else cur_prc * 0.95
-        sl_method = ""
+    # ── SL: cloud_top > kijun > ATR×1.5 우선순위 ───────────────
+    _sl_candidates: list[tuple[int, str]] = []
 
-    if atr:
-        sl_atr = int(cur_prc - atr * 1.5)
-        if sl_swing > 0:
-            sl_price  = max(sl_swing, sl_atr)
-            sl_method = "swing_low_D20_or_ATR×1.5"
-        else:
-            sl_price  = sl_atr
-            sl_method = "ATR×1.5"
+    if cloud_top and cloud_top > 0 and cloud_top < cur_prc:
+        sl_cloud = int(cloud_top * 0.998)
+        if sl_cloud < cur_prc * 0.99:  # 최소 1% 이탈해야 의미 있음
+            _sl_candidates.append((sl_cloud, "cloud_top×0.998"))
+
+    if kijun and kijun > 0 and kijun < cur_prc:
+        sl_kijun = int(kijun * 0.998)
+        if sl_kijun < cur_prc * 0.99:
+            _sl_candidates.append((sl_kijun, "kijun×0.998"))
+
+    if _sl_candidates:
+        # 가장 높은(타이트한) 값 선택 — 구름 상단이 기준선보다 높으면 cloud_top 우선
+        sl_price, sl_method = max(_sl_candidates, key=lambda x: x[0])
+    elif atr:
+        sl_price  = int(cur_prc - atr * 1.5)
+        sl_method = "ATR×1.5"
     else:
-        sl_price = sl_swing if sl_swing > 0 else int(cur_prc * 0.95)
-        if not sl_method:
-            sl_method = "pct_5%_fallback"
+        sl_price  = int(cur_prc * 0.95)
+        sl_method = "pct_5%_fallback"
+
+    # -4% hard cap: SL이 너무 넓으면 강제 축소 (R:R 재검증)
+    _hard_cap = int(cur_prc * 0.960)
+    if sl_price < _hard_cap:
+        sl_price  = _hard_cap
+        sl_method = sl_method + "_4pct_cap"
 
     sl_price = max(sl_price, 1)
     if sl_price >= cur_prc:
-        sl_price  = int(cur_prc * 0.95)
-        sl_method = "pct_5%_fallback"
+        sl_price  = int(cur_prc * 0.960)
+        sl_method = "pct_4%_fallback"
+
+    # fib_base: SL 가격을 피보나치 확장의 저점 기준으로 사용
+    fib_base = sl_price
 
     # ── TP1: 가장 가까운 스윙 고점 저항 (30봉) ──────────────────
     swing_highs = find_swing_highs(highs, cur_prc, lookback=30)
@@ -1211,8 +1239,7 @@ def _tp_sl_ichimoku_breakout(
 
     if swing_highs and swing_highs[0] > cur_prc * 1.03:
         tp1_price = int(swing_highs[0])
-        # TP2: Fibonacci 1.272 (swing_low ~ tp1 레인지 기준)
-        fib_base = swing_ref if swing_ref < cur_prc else sl_price
+        # TP2: Fibonacci 1.272 (sl_price ~ tp1 레인지 기준)
         _, fib_1272, _ = calc_fibonacci_extension(fib_base, tp1_price)
         tp2_price = int(fib_1272) if fib_1272 > tp1_price else (
             int(swing_highs[1]) if len(swing_highs) > 1 else None
@@ -1220,7 +1247,6 @@ def _tp_sl_ichimoku_breakout(
         tp_method = "swing_resistance(D30)"
     else:
         # 스윙 고점 없음 → Fibonacci 확장
-        fib_base = swing_ref if swing_ref < cur_prc else sl_price
         _, fib_1272, fib_1618 = calc_fibonacci_extension(fib_base, cur_prc)
         tp1_price = int(fib_1272) if fib_1272 > cur_prc * 1.03 else int(cur_prc * 1.08)
         tp2_price = int(fib_1618) if fib_1618 > tp1_price else int(cur_prc * 1.15)
@@ -1503,10 +1529,10 @@ def _tp_sl_momentum_align(
     볼린저 상단은 단독 TP1으로 사용 금지 (너무 근접 — 스윙 목표 미달).
     """
     # ── SL: 구조적 지지 기반 ─────────────────────────────────
-    swing_lows = find_swing_lows(lows, cur_prc, lookback=15)
-    if swing_lows and swing_lows[0] > cur_prc * 0.87:   # 13% 이내 지지만 유효
+    swing_lows = find_swing_lows(lows, cur_prc, lookback=10)
+    if swing_lows and swing_lows[0] > cur_prc * 0.93:   # 7% 이내 지지만 유효
         sl_price  = int(swing_lows[0] * 0.99)
-        sl_method = "swing_low_D15(×0.99)"
+        sl_method = "swing_low_D10(×0.99)"
     elif ma20 and ma20 > 0:
         sl_price  = int(ma20 * 0.99)
         sl_method = "MA20_support(×0.99)"

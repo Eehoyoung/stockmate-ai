@@ -13,6 +13,7 @@ StockMate AI 공통 JSON 구조화 로거 – websocket-listener 모듈용.
   logger.info("연결 성공", extra={"request_id": rid, "stk_cd": "005930"})
 """
 
+import glob
 import json
 import logging
 import os
@@ -77,6 +78,59 @@ class JsonLineFormatter(logging.Formatter):
         return json.dumps(doc, ensure_ascii=False, default=str)
 
 
+class _DailyKSTFileHandler(logging.Handler):
+    """KST 자정 기준 일별 로테이션 핸들러 — <log_dir>/<name>_YYMMDD.log"""
+
+    def __init__(self, log_dir: str, name: str, backup_count: int = 30, encoding: str = "utf-8"):
+        super().__init__()
+        self._log_dir = log_dir
+        self._name = name
+        self._backup_count = backup_count
+        self._encoding = encoding
+        self._current_date: str = ""
+        self._stream = None
+        os.makedirs(log_dir, exist_ok=True)
+        self._open_new()
+
+    def _today(self) -> str:
+        return datetime.now(tz=KST).strftime("%y%m%d")
+
+    def _open_new(self) -> None:
+        if self._stream:
+            self._stream.flush()
+            self._stream.close()
+        self._current_date = self._today()
+        fpath = os.path.join(self._log_dir, f"{self._name}_{self._current_date}.log")
+        self._stream = open(fpath, "a", encoding=self._encoding)
+        if self._backup_count > 0:
+            files = sorted(glob.glob(os.path.join(self._log_dir, f"{self._name}_??????.log")))
+            for old in files[:-self._backup_count]:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if self._today() != self._current_date:
+                self._open_new()
+            self._stream.write(self.format(record) + "\n")
+            self._stream.flush()
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        self.acquire()
+        try:
+            if self._stream:
+                self._stream.flush()
+                self._stream.close()
+                self._stream = None
+        finally:
+            self.release()
+        super().close()
+
+
 def setup_logging(
     service: Optional[str] = None,
     level: str = "INFO",
@@ -87,7 +141,8 @@ def setup_logging(
     Args:
         service:  서비스 이름 (기본: 환경변수 SERVICE_NAME 또는 "websocket-listener")
         level:    로그 레벨 문자열 (DEBUG / INFO / WARNING / ERROR / CRITICAL)
-        log_file: 파일 출력 경로 (None 이면 stdout 만)
+        log_file: 파일 출력 기준 경로 (None 이면 stdout 만). 디렉터리와 서비스명을
+                  자동 추출해 <dir>/<name>_YYMMDD.log 형식으로 일별 로테이션.
     """
     global _SERVICE_NAME
     if service:
@@ -97,10 +152,10 @@ def setup_logging(
 
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     if log_file:
-        log_dir = os.path.dirname(log_file)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+        log_dir = os.path.dirname(log_file) or "."
+        name = os.path.splitext(os.path.basename(log_file))[0]
+        file_handler = _DailyKSTFileHandler(log_dir, name)
+        handlers.append(file_handler)
 
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))

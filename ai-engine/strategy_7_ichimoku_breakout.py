@@ -44,7 +44,7 @@ import asyncio
 import logging
 import os
 
-from ma_utils import fetch_daily_candles, _safe_price, _safe_vol, _calc_ma
+from ma_utils import fetch_daily_candles, fetch_minute_candles, _safe_price, _safe_vol, _calc_ma
 from indicator_ichimoku import calc_ichimoku
 from indicator_rsi import calc_rsi
 from indicator_atr import calc_atr
@@ -55,8 +55,9 @@ from tp_sl_engine import calc_tp_sl
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 
-# 일목균형표 최소 필요 봉 수
-_ICHIMOKU_MIN_BARS = 78  # senkou_b_period(52) + displacement(26)
+# 일목균형표 최소 필요 봉 수 (일봉 / 60분봉 동일)
+_ICHIMOKU_MIN_BARS    = 78   # 일봉: senkou_b_period(52) + displacement(26)
+_ICHIMOKU_MIN_BARS_60M = 78  # 60분봉: 동일 파라미터 적용
 
 
 async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
@@ -198,6 +199,65 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             pass
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 60분봉 Ichimoku 멀티타임프레임 정합 확인
+        # HARD GATE: 60분봉 price_above_cloud=False → 즉시 스킵
+        # BONUS +10: 60분봉 price_above_cloud + tenkan>kijun 완전 정합
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        h60_price_above_cloud  = False
+        h60_tenkan_above_kijun = False
+        h60_ichi_available     = False
+
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            h60_candles = await fetch_minute_candles(token, stk_cd, tic_scope="60")
+            if len(h60_candles) >= _ICHIMOKU_MIN_BARS_60M:
+                _h60_valid = [
+                    (_safe_price(c.get("high_pric")), _safe_price(c.get("low_pric")), _safe_price(c.get("cur_prc")))
+                    for c in h60_candles
+                    if _safe_price(c.get("cur_prc")) > 0
+                ]
+                if len(_h60_valid) >= _ICHIMOKU_MIN_BARS_60M:
+                    _h60_h, _h60_l, _h60_c = map(list, zip(*_h60_valid))
+                    h60_ichi = calc_ichimoku(_h60_h, _h60_l, _h60_c)
+                    if h60_ichi is not None:
+                        h60_ichi_available     = True
+                        h60_price_above_cloud  = h60_ichi.price_above_cloud
+                        h60_tenkan_above_kijun = h60_ichi.tenkan_above_kijun
+        except Exception as _h60_err:
+            logger.debug("[S7] %s 60분봉 Ichimoku 조회 실패 (무시): %s", stk_cd, _h60_err)
+
+        # hard gate: 60분봉 데이터가 있는데 구름 아래이면 가설 무효화
+        if h60_ichi_available and not h60_price_above_cloud:
+            logger.debug("[S7] %s SKIP — 60분봉 구름 아래 (MTF 가설 무효화)", stk_cd)
+            continue
+
+        # 60분봉 MTF 점수 — 데이터 부족 시 -10 패널티로 실질 임계값 상향
+        if not h60_ichi_available:
+            _h60_bonus = -10  # 봉 수 부족(최근 상장·저유동성) → MTF 검증 불가 패널티
+            logger.debug("[S7] %s MTF 검증 불가 (60분봉 부족) → -10pt", stk_cd)
+        elif h60_price_above_cloud and h60_tenkan_above_kijun:
+            _h60_bonus = 10   # 완전 정합 보너스
+        else:
+            _h60_bonus = 0
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 전일 종가 기준 구름 돌파 지속 확인 (미완성 봉 오판 방지)
+        # closes[1] = 전일 확정 종가; 전일도 cloud_top 위여야 신뢰도 상승
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        cloud_confirmed_prev = len(closes) > 1 and closes[1] > ichi.cloud_top
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 체결강도 보너스: 스윙 전략에서 과열 구간(>300%) 은 중립
+        # 400% 초과는 매수 소진 신호로 역방향 감점
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if 105.0 <= cntr_str <= 300.0:
+            _cntr_bonus = 8
+        elif cntr_str > 400.0:
+            _cntr_bonus = -5
+        else:
+            _cntr_bonus = 0
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 점수 계산
         # base_score=50 (필수 3개 통과), 선택조건 ×8, 보너스
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -207,15 +267,18 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             + (15 if cond_count == 4 else 0)
             + (12 if ichi.cloud_thickness_pct < 2.0 else 0)
             + (8  if atr_ok else 0)
-            + (8  if cntr_str >= 105.0 else 0)
+            + _cntr_bonus
             + (7  if vwap_above else 0)
             + (5  if 1.0 <= flu_rt <= 8.0 else 0)
+            + (0  if cloud_confirmed_prev else -10)   # 전일 미확인 패널티
+            + _h60_bonus                              # 60분봉 MTF 완전 정합 보너스
         )
 
         # ── 동적 TP/SL ──────────────────────────────────────────
         tp_sl = calc_tp_sl(
             "S7_ICHIMOKU_BREAKOUT", cur_prc, highs, lows, closes,
             stk_cd=stk_cd, atr=atr_now,
+            cloud_top=ichi.cloud_top, kijun=ichi.kijun,
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
@@ -238,6 +301,10 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             "score":                round(score, 2),
             "entry_type":           "당일종가_또는_익일시가",
             "holding_days":         "3~7거래일",
+            "h60_ichi_available":   h60_ichi_available,
+            "h60_price_above_cloud": h60_price_above_cloud,
+            "h60_tenkan_above_kijun": h60_tenkan_above_kijun,
+            "cloud_confirmed_prev": cloud_confirmed_prev,
             **tp_sl.to_signal_fields(),
         })
 

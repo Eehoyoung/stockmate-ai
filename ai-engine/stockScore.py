@@ -32,6 +32,7 @@ from typing import Optional
 from http_utils import (
     validate_kiwoom_response, kiwoom_client,
     fetch_cntr_strength, fetch_stk_nm,
+    fetch_cntr_strength_cached, fetch_hoga,
 )
 from ma_utils import (
     fetch_daily_candles, _safe_price, _safe_vol,
@@ -39,7 +40,7 @@ from ma_utils import (
 )
 from indicator_rsi import calc_rsi as _calc_rsi_list
 from indicator_ichimoku import calc_ichimoku
-from redis_reader import get_tick_data, get_hoga_data, get_avg_cntr_strength, get_vi_status
+from redis_reader import get_tick_data, get_hoga_data, get_avg_cntr_strength, get_vi_status, freshness_status
 from scorer import rule_score as _rule_score, get_claude_threshold
 from analyzer import analyze_signal
 from tp_sl_engine import calc_tp_sl
@@ -93,6 +94,10 @@ class StockSnapshot:
     # 호가 (Redis hoga)
     hoga:      dict            = field(default_factory=dict)
     bid_ratio: Optional[float] = None
+
+    # 데이터 신선도 플래그
+    ws_online:        bool = False  # tick이 실제 WS 데이터에서 왔는지
+    strength_from_ws: bool = False  # strength가 WS에서 왔는지 (False = REST fallback)
 
     # VI 이벤트
     vi_event:  dict = field(default_factory=dict)
@@ -154,10 +159,12 @@ class StockSnapshot:
     def market_ctx(self) -> dict:
         """scorer.rule_score / analyzer.analyze_signal 용 market_ctx 구성"""
         return {
-            "tick":     {"cur_prc": self.cur_prc, "flu_rt": self.flu_rt},
-            "hoga":     self.hoga,
-            "strength": self.avg_strength,
-            "vi":       self.vi_event,
+            "tick":             {"cur_prc": self.cur_prc, "flu_rt": self.flu_rt},
+            "hoga":             self.hoga,
+            "strength":         self.avg_strength,
+            "vi":               self.vi_event,
+            "ws_online":        self.ws_online,
+            "strength_from_ws": self.strength_from_ws,
         }
 
 
@@ -272,27 +279,62 @@ async def collect_snapshot(rdb, stk_cd: str) -> StockSnapshot:
             logger.warning("[stockScore] 일봉 수집 실패 [%s]: %s", stk_cd, e)
 
     # ── Redis 실시간 데이터 (비동기 동시 조회) ────────────────────
-    tick, hoga, strength, vi = await asyncio.gather(
+    tick, hoga, vi = await asyncio.gather(
         get_tick_data(rdb, stk_cd),
         get_hoga_data(rdb, stk_cd),
-        get_avg_cntr_strength(rdb, stk_cd, 5),
         get_vi_status(rdb, stk_cd),
         return_exceptions=True,
     )
 
-    if isinstance(tick, dict) and tick:
+    # ── tick 신선도 판정 ──────────────────────────────────────────
+    _tick_ok = isinstance(tick, dict) and bool(tick)
+    _tick_fresh = freshness_status(tick if _tick_ok else {}, "tick")
+    snap.ws_online = _tick_ok and _tick_fresh["state"] != "cancel"
+
+    if _tick_ok:
         snap.cur_prc = _sf(tick.get("cur_prc")) or snap.cur_prc
         snap.flu_rt  = _sf(tick.get("flu_rt"))
         snap.acc_vol = int(_sf(tick.get("acc_trde_qty")))
+        if _tick_fresh["state"] == "cancel":
+            logger.warning("[stockScore] tick stale [%s]: age=%sms", stk_cd, _tick_fresh.get("age_ms"))
+    else:
+        logger.info("[stockScore] tick missing [%s]: cur_prc/flu_rt from daily candle fallback", stk_cd)
 
-    if isinstance(hoga, dict):
+    # acc_vol 폴백: tick 없으면 당일 일봉 거래량 (부분거래량)
+    if snap.acc_vol == 0 and snap.vols:
+        snap.acc_vol = snap.vols[0]
+
+    # ── hoga: Redis 우선, REST fallback ──────────────────────────
+    if isinstance(hoga, dict) and hoga:
         snap.hoga = hoga
         bid = _sf(hoga.get("total_buy_bid_req", 0))
         ask = _sf(hoga.get("total_sel_bid_req", 1))
-        snap.bid_ratio = round(bid / ask, 2) if ask > 0 else None
+        if ask > 0:
+            snap.bid_ratio = round(bid / ask, 2)
 
-    if isinstance(strength, float):
-        snap.avg_strength = strength
+    if snap.bid_ratio is None and token:
+        try:
+            _rest_bid = await asyncio.wait_for(
+                fetch_hoga(token, stk_cd, rdb=rdb), timeout=5.0
+            )
+            if _rest_bid is not None:
+                snap.bid_ratio = round(_rest_bid, 2)
+        except Exception as e:
+            logger.debug("[stockScore] hoga REST fallback 실패 [%s]: %s", stk_cd, e)
+
+    # ── strength: WS Redis 우선, REST fallback ────────────────────
+    if token:
+        try:
+            _str_val, _str_src = await asyncio.wait_for(
+                fetch_cntr_strength_cached(token, stk_cd, rdb=rdb), timeout=5.0
+            )
+            snap.avg_strength     = _str_val
+            snap.strength_from_ws = (_str_src in ("redis", "tick"))
+        except Exception as e:
+            logger.debug("[stockScore] strength 조회 실패 [%s]: %s", stk_cd, e)
+    else:
+        _ws_str = await get_avg_cntr_strength(rdb, stk_cd, 5)
+        snap.avg_strength = _ws_str
 
     if isinstance(vi, dict):
         snap.vi_event = vi
@@ -394,15 +436,15 @@ def _check_s3(snap: StockSnapshot) -> Optional[dict]:
 
 
 def _check_s4(snap: StockSnapshot) -> Optional[dict]:
-    """S4 장대양봉: 등락률 3%+ + 거래량 3x+ + 체결강도 125+ + bid_ratio 1.4+"""
+    """S4 장대양봉: 등락률 3%+ + 거래량 3x+ + 체결강도 115+ + bid_ratio 1.2+"""
     if snap.flu_rt < 3.0:
         return None
     vol_ratio = snap.vol_ratio
     if vol_ratio is None or vol_ratio < 3.0:
         return None
-    if snap.avg_strength < 125:
+    if snap.avg_strength < 115:
         return None
-    if snap.bid_ratio is None or snap.bid_ratio < 1.4:
+    if snap.bid_ratio is not None and snap.bid_ratio < 1.2:
         return None
     # 바디비율 근사: 등락률 높을수록 장대양봉 가능성 높음
     body_ratio = min(0.9, snap.flu_rt / 10.0 + 0.5)
@@ -744,9 +786,9 @@ def _check_s15(snap: StockSnapshot) -> Optional[dict]:
         return None
     if snap.flu_rt < 0.5:
         return None
-    if snap.avg_strength < 120:
+    if snap.avg_strength < 100:
         return None
-    if snap.bid_ratio is None or snap.bid_ratio < 1.3:
+    if snap.bid_ratio is not None and snap.bid_ratio < 1.1:
         return None
 
     vol_ratio = snap.vol_ratio
@@ -947,14 +989,16 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
             "results":       [],
             "skipped":       skipped,
             "data": {
-                "cur_prc":      snap.cur_prc,
-                "flu_rt":       snap.flu_rt,
-                "rsi14":        snap.rsi14,
-                "ma5":          snap.ma5,
-                "ma20":         snap.ma20,
-                "ma60":         snap.ma60,
-                "avg_strength": snap.avg_strength,
-                "bid_ratio":    snap.bid_ratio,
+                "cur_prc":          snap.cur_prc,
+                "flu_rt":           snap.flu_rt,
+                "rsi14":            snap.rsi14,
+                "ma5":              snap.ma5,
+                "ma20":             snap.ma20,
+                "ma60":             snap.ma60,
+                "avg_strength":     snap.avg_strength,
+                "bid_ratio":        snap.bid_ratio,
+                "ws_online":        snap.ws_online,
+                "strength_from_ws": snap.strength_from_ws,
             },
         }
 

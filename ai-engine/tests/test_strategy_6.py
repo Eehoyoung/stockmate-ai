@@ -112,6 +112,25 @@ class TestBidRatioLookup:
         assert ratio == 1.23
 
 
+class TestAccVolumeLookup:
+    @pytest.mark.asyncio
+    async def test_redis_tick_bytes_are_decoded(self):
+        from strategy_6_theme import _get_acc_vol
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={
+            b"acc_trde_qty": b"1,666,969",
+        })
+
+        assert await _get_acc_vol(rdb, "005930") == 1_666_969.0
+
+    def test_daily_candle_fallback_volume(self):
+        from strategy_6_theme import _fallback_acc_vol_from_candles
+
+        candles = [{"trde_qty": "2,500,000"}]
+        assert _fallback_acc_vol_from_candles(candles) == 2_500_000.0
+
+
 # ── scan_theme_laggard integration (mocked APIs) ─────────────────────────
 
 @pytest.mark.asyncio

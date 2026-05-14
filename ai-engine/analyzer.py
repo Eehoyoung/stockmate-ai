@@ -64,16 +64,36 @@ except Exception:
         '"claude_tp1":null,"claude_tp2":null,"claude_sl":null}'
     )
 
-try:
-    _S1_GAP_OPEN_SYS_PROMPT = (_PROMPT_DIR / "signal_analysis_s1_gap_open.txt").read_text(encoding="utf-8")
-except Exception as exc:
-    logger.warning("[AI] S1 prompt load failed, using default prompt: %s", exc)
-    _S1_GAP_OPEN_SYS_PROMPT = _SYS_PROMPT
+_STRATEGY_PROMPT_FILES: dict[str, str] = {
+    "S1_GAP_OPEN":          "signal_analysis_s1_gap_open.txt",
+    "S2_VI_PULLBACK":       "signal_analysis_s2_vi_pullback.txt",
+    "S3_INST_FRGN":         "signal_analysis_s3_inst_frgn.txt",
+    "S4_BIG_CANDLE":        "signal_analysis_s4_big_candle.txt",
+    "S5_PROG_FRGN":         "signal_analysis_s5_prog_frgn.txt",
+    "S6_THEME_LAGGARD":     "signal_analysis_s6_theme_laggard.txt",
+    "S7_ICHIMOKU_BREAKOUT": "signal_analysis_s7_ichimoku_breakout.txt",
+    "S8_GOLDEN_CROSS":      "signal_analysis_s8_golden_cross.txt",
+    "S9_PULLBACK_SWING":    "signal_analysis_s9_pullback_swing.txt",
+    "S10_NEW_HIGH":         "signal_analysis_s10_new_high.txt",
+    "S11_FRGN_CONT":        "signal_analysis_s11_frgn_cont.txt",
+    "S12_CLOSING":          "signal_analysis_s12_closing.txt",
+    "S13_BOX_BREAKOUT":     "signal_analysis_s13_box_breakout.txt",
+    "S14_OVERSOLD_BOUNCE":  "signal_analysis_s14_oversold_bounce.txt",
+    "S15_MOMENTUM_ALIGN":   "signal_analysis_s15_momentum_align.txt",
+}
+
+_STRATEGY_PROMPTS: dict[str, str] = {}
+for _strat, _fname in _STRATEGY_PROMPT_FILES.items():
+    try:
+        _STRATEGY_PROMPTS[_strat] = (_PROMPT_DIR / _fname).read_text(encoding="utf-8")
+    except Exception as _exc:
+        logger.warning("[AI] %s prompt load failed, using default: %s", _strat, _exc)
+        _STRATEGY_PROMPTS[_strat] = _SYS_PROMPT
 
 
 def _get_system_prompt(strategy: str | None) -> str:
-    if strategy == "S1_GAP_OPEN":
-        return _S1_GAP_OPEN_SYS_PROMPT
+    if strategy and strategy in _STRATEGY_PROMPTS:
+        return _STRATEGY_PROMPTS[strategy]
     return _SYS_PROMPT
 
 
@@ -139,9 +159,14 @@ def _fmt_zone_ctx(signal: dict) -> str:
     if signal.get("strategy") not in _ZONE_ANALYZER_STRATEGIES:
         return ""
 
+    strategy   = signal.get("strategy")
     buy_zone   = signal.get("buy_zone")
     sell_zone1 = signal.get("sell_zone1")
     zone_rr    = signal.get("zone_rr")
+    is_s8_support_zone = (
+        strategy == "S8_GOLDEN_CROSS"
+        and signal.get("s8_buy_zone_role") == "support_zone"
+    )
 
     if not isinstance(buy_zone, dict):
         return ""
@@ -158,22 +183,44 @@ def _fmt_zone_ctx(signal: dict) -> str:
     # 현재가 위치 레이블
     if entry > 0:
         if entry < bz_low:
-            pos_label = "박스 미진입"
+            pos_label = "지지 구간 하단 이탈" if is_s8_support_zone else "박스 미진입"
         elif entry > bz_high:
-            pos_label = "박스 상단 초과"
+            if is_s8_support_zone:
+                gap_pct = (entry - bz_high) / max(bz_high, 1) * 100
+                pos_label = f"지지 구간 상단 {gap_pct:.1f}% 위"
+            else:
+                pos_label = "박스 상단 초과"
         else:
             pct = (entry - bz_low) / max(bz_high - bz_low, 1) * 100
             top_q = bz_low + 0.75 * (bz_high - bz_low)
-            pos_label = f"박스 내부 상단 ({pct:.0f}%)" if entry >= top_q else f"박스 내부 하단 ({pct:.0f}%)"
+            if is_s8_support_zone:
+                pos_label = f"지지 구간 내부 상단 ({pct:.0f}%)" if entry >= top_q else f"지지 구간 내부 하단 ({pct:.0f}%)"
+            else:
+                pos_label = f"박스 내부 상단 ({pct:.0f}%)" if entry >= top_q else f"박스 내부 하단 ({pct:.0f}%)"
     else:
         pos_label = "N/A"
 
-    lines = [
-        "[존 분석]",
-        f"매수 박스: {bz_low:,}원 ~ {bz_high:,}원 (강도 {bz_str}/5)",
-        f"  근거: {' · '.join(bz_anch) if bz_anch else 'N/A'}",
-        f"현재가 위치: {pos_label}",
-    ]
+    if is_s8_support_zone:
+        lines = [
+            "[S8 지지/눌림 분석]",
+            f"지지 구간: {bz_low:,}원 ~ {bz_high:,}원 (강도 {bz_str}/5)",
+            f"  근거: {' · '.join(bz_anch) if bz_anch else 'N/A'}",
+            f"현재가 위치: {pos_label}",
+            "해석: 이 구간은 즉시 매수 박스가 아니라 눌림 지정가와 손절 기준으로 사용합니다.",
+        ]
+        entry_policy = signal.get("s8_zone_entry_policy")
+        if entry_policy:
+            lines.append(f"S8 진입 정책: {entry_policy}")
+        caution = signal.get("s8_zone_caution_reason")
+        if caution:
+            lines.append(f"S8 주의: {caution}")
+    else:
+        lines = [
+            "[존 분석]",
+            f"매수 박스: {bz_low:,}원 ~ {bz_high:,}원 (강도 {bz_str}/5)",
+            f"  근거: {' · '.join(bz_anch) if bz_anch else 'N/A'}",
+            f"현재가 위치: {pos_label}",
+        ]
 
     if isinstance(sell_zone1, dict):
         sz_low  = int(sell_zone1.get("low", 0) or 0)
@@ -269,10 +316,16 @@ def _s8_body(sig, c) -> str:
     )
 
 def _s9_body(sig, c) -> str:
+    pct_ma5     = sig.get("pct_ma5", "N/A")
+    pct_zone    = sig.get("pct_ma5_zone", "N/A")
+    stoch_gc    = "골든크로스" if sig.get("stoch_gc") else "미확인"
+    vol_quality = "약함(1.1~1.3배)" if sig.get("vol_weak") else "정상"
     return (
         f"정배열 눌림목 스윙 신호 평가:\n"
-        f"종목: {c['stk_nm']}({c['stk_cd']}), MA5 근접 눌림 반등, 등락: {c['flu_rt']}%, "
-        f"RSI: {sig.get('rsi', 'N/A')}, 거래량비율: {sig.get('vol_ratio', 'N/A')}x, "
+        f"종목: {c['stk_nm']}({c['stk_cd']}), 등락: {c['flu_rt']}%\n"
+        f"MA 정렬: MA5>MA20>MA60 정배열, MA5 이격: {pct_ma5}%({pct_zone})\n"
+        f"RSI: {sig.get('rsi', 'N/A')}, 스토캐스틱: {stoch_gc}, "
+        f"거래량: {sig.get('vol_ratio', 'N/A')}x({vol_quality})\n"
         f"체결강도: {c['strength']}, 규칙점수: {c['rule_score']}/100\n"
     )
 

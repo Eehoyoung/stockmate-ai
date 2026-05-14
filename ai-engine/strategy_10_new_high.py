@@ -203,6 +203,12 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
                         item["flu_rt"]  = tick.get("flu_rt", "0")
                         item["cur_prc"] = tick.get("cur_prc", "0")
                         item["stk_nm"]  = tick.get("stk_nm", "")
+                    else:
+                        # ws:tick 미구독 종목 — ws:expected(예상체결) fallback
+                        exp = await rdb.hgetall(f"ws:expected:{item['stk_cd']}")
+                        if exp:
+                            item["flu_rt"]  = exp.get("exp_flu_rt", "0")
+                            item["cur_prc"] = exp.get("exp_cntr_pric", "0")
                 except Exception:
                     pass
     else:

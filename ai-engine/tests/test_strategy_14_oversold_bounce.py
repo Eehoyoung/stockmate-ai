@@ -41,8 +41,8 @@ def _make_rdb_with_pool(codes):
 
 
 @pytest.mark.asyncio
-async def test_s14_rsi_outside_22_38_excluded():
-    """RSI < 22 (폭락) 또는 RSI > 38은 제외"""
+async def test_s14_rsi_below_25_excluded():
+    """D3: 신범위 25~42 기준 — RSI < 25 (폭락/패닉)는 제외"""
     from strategy_14_oversold_bounce import scan_oversold_bounce
 
     rdb = _make_rdb_with_pool(["005930"])
@@ -61,13 +61,13 @@ async def test_s14_rsi_outside_22_38_excluded():
         mock_tp_sl.return_value.to_signal_fields.return_value = {}
         result = await scan_oversold_bounce("token", rdb=rdb)
 
-    # RSI 20 (< 22) → 폭락 후보로 제외
+    # RSI 20 (< 25) → 폭락/패닉 후보로 제외
     assert result == []
 
 
 @pytest.mark.asyncio
-async def test_s14_rsi_38_to_42_excluded():
-    """RSI 38~42 구간은 약한 눌림으로 제외"""
+async def test_s14_rsi_40_in_new_25_42_range_included():
+    """D3: 신범위 25~42 — RSI 40은 유효 과매도 구간으로 포함됨"""
     from strategy_14_oversold_bounce import scan_oversold_bounce
 
     rdb = _make_rdb_with_pool(["005930"])
@@ -86,8 +86,9 @@ async def test_s14_rsi_38_to_42_excluded():
         mock_tp_sl.return_value.to_signal_fields.return_value = {}
         result = await scan_oversold_bounce("token", rdb=rdb)
 
-    # RSI 40 (38~42 구간) → 약한 눌림으로 제외
-    assert result == []
+    # RSI 40 은 신범위(25~42) 내에 포함 → 신호 생성됨 (cond_wr+cond_mfi = count 2 → NORMAL)
+    assert len(result) >= 1
+    assert result[0]["rsi"] == 40.0
 
 
 @pytest.mark.asyncio

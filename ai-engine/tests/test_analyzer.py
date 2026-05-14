@@ -409,3 +409,38 @@ class TestStrategySignalValidity:
         signal = _signal("S7_ICHIMOKU_BREAKOUT", cloud_thickness_pct=0.8, chikou_above=True, vol_ratio=1.8, rsi=55, cond_count=3)
         assert "cloud_thickness_pct" in signal
         assert "chikou_above" in signal
+
+
+class TestS8ZonePrompt:
+    def test_s8_support_zone_is_not_described_as_buy_box(self):
+        from analyzer import _build_user_message
+
+        signal = _signal(
+            "S8_GOLDEN_CROSS",
+            cur_prc=10600,
+            rsi=58,
+            vol_ratio=2.0,
+            s8_buy_zone_role="support_zone",
+            s8_zone_entry_policy="limit_pullback",
+            s8_zone_caution_reason="support gap 1.92% above 1.50%",
+            buy_zone={
+                "low": 9800,
+                "high": 10400,
+                "strength": 5,
+                "anchors": ["MA5", "MA20"],
+            },
+            sell_zone1={
+                "low": 11200,
+                "high": 11600,
+                "anchors": ["SWING_HIGH"],
+            },
+            zone_rr=1.8,
+        )
+
+        msg = _build_user_message(signal, _ctx(), 88.0)
+
+        assert "[S8 지지/눌림 분석]" in msg
+        assert "지지 구간:" in msg
+        assert "즉시 매수 박스가 아니라" in msg
+        assert "S8 진입 정책: limit_pullback" in msg
+        assert "매수 박스:" not in msg

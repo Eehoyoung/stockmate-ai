@@ -47,14 +47,14 @@ CLAUDE_THRESHOLDS: dict[str, int] = {
     "S2_VI_PULLBACK":   65,
     "S3_INST_FRGN":     60,
     "S4_BIG_CANDLE":    65,
-    "S5_PROG_FRGN":     65,
+    "S5_PROG_FRGN":     55,   # 65 → 55 (net_amt 스케일 100억 기준 조정에 따른 임계 하향)
     "S6_THEME_LAGGARD": 60,
     "S7_ICHIMOKU_BREAKOUT": 62,
     # 스윙 전략 — signal 필드 보완 + bid_ratio 중립화 후 재조정
     "S8_GOLDEN_CROSS":     50,   # 65 → 50
     "S9_PULLBACK_SWING":   55,   # 60 → 45 → 55 (거래량 1.3배, pct_ma5 구간 제외 강화)
     "S10_NEW_HIGH":        55,   # 65 → 48 → 55 (등락률 구간 감점, 윗꼬리 필터)
-    "S11_FRGN_CONT":       58,   # 60 → 58
+    "S11_FRGN_CONT":       52,   # 60 → 58 → 52 (WS 오프라인 score 붕괴 안전망)
     "S12_CLOSING":         60,   # 65 → 60
     "S13_BOX_BREAKOUT":    55,   # 65 → 55
     "S14_OVERSOLD_BOUNCE": 58,   # 65 → 50 → 58 (RSI 범위 22~38, cntr≥105 필수화, cond≥2 강화)
@@ -141,6 +141,28 @@ DEFAULT_PERSONA = (
     "전략별 리스크 분석가. 전략 고유의 진입 논리와 현재 시장 데이터의 불일치를 "
     "우선 점검하고, 근거가 약하면 ENTER보다 HOLD/CANCEL을 우선한다."
 )
+
+
+# ── HOLD→ENTER 자동 승격 임계값 (전략별) ──────────────────────────────────────
+#: 전략 특성에 따른 HOLD→ENTER 승격 최소 ai_score.
+#: - 데이트레이딩 S1/S4/S6: 장 중 빠른 의사결정 필요 → 75
+#: - 수급 스윙 S3/S11: 연속 수급 확인 기준 엄격 → 85
+#: - 나머지: 기본값 80
+HOLD_TO_ENTER_THRESHOLDS: dict[str, float] = {
+    "S1_GAP_OPEN":    75.0,
+    "S4_BIG_CANDLE":  75.0,
+    "S6_THEME_LAGGARD": 75.0,
+    "S3_INST_FRGN":   85.0,
+    "S11_FRGN_CONT":  85.0,
+}
+_DEFAULT_HOLD_TO_ENTER = 80.0
+
+
+def get_hold_to_enter_threshold(strategy: str | None) -> float:
+    """전략별 HOLD→ENTER 자동 승격 최소 ai_score 반환."""
+    if not strategy:
+        return _DEFAULT_HOLD_TO_ENTER
+    return HOLD_TO_ENTER_THRESHOLDS.get(strategy, _DEFAULT_HOLD_TO_ENTER)
 
 
 def get_persona(strategy: str | None) -> str:

@@ -61,6 +61,7 @@ test('TC3  면책 문구 포함', () => {
     const t = formatThreadsSignal(BASE);
     assert(t.includes('투자권유가 아닙니다'), '면책 문구 없음');
     assert(t.includes('본인 책임입니다'), '책임 문구 없음');
+    assert(t.includes('과거 신호가 미래 수익을 보장하지 않습니다'), '과거 성과 면책 문구 없음');
 });
 
 // ── TC4: 해시태그 포함 ───────────────────────────────────────────────────
@@ -68,6 +69,11 @@ test('TC4  해시태그 포함', () => {
     const t = formatThreadsSignal(BASE);
     assert(t.includes('#'), '해시태그 없음');
     assert(t.includes('#국내주식'), '#국내주식 해시태그 없음');
+
+    // S11 해시태그 변경 확인 (#외국인매수 → #수급동향)
+    const s11 = formatThreadsSignal({ ...BASE, strategy: 'S11_FRGN_CONT' });
+    assert(s11.includes('#수급동향'), 'S11 #수급동향 없음');
+    assert(!s11.includes('#외국인매수'), 'S11 구 해시태그 #외국인매수 잔존');
 });
 
 // ── TC5: 금지 표현 없음 ──────────────────────────────────────────────────
@@ -88,19 +94,23 @@ test('TC6  S1 갭 오픈 — 갭 비율 및 전용 헤더', () => {
     assert(!t.includes('[기술적 신호 탐지]'), 'S1에 기본 헤더 혼용');
 });
 
-// ── TC7: claude_tp1 우선 적용 ────────────────────────────────────────────
-test('TC7  claude_tp1 우선 적용 (tp1_price 무시)', () => {
+// ── TC7: TP1/SL 가격 완전 미노출 (B-1 법무 권고 준수) ───────────────────
+test('TC7  TP1/SL 가격 미노출 — claude_tp1/tp1_price 모두 불표시', () => {
     const item = { ...BASE, claude_tp1: 77000, tp1_price: 76000 };
     const t = formatThreadsSignal(item);
-    assert(t.includes('77,000'), 'claude_tp1(77000) 미반영');
-    assert(!t.includes('76,000'), 'tp1_price(76000)가 우선됨 — claude_tp1이 덮어야 함');
+    // 자본시장법 §6⑥ — TP1 가격 수치 일절 표시 금지
+    assert(!t.includes('77,000'), 'claude_tp1(77000) 가격이 노출됨');
+    assert(!t.includes('76,000'), 'tp1_price(76000) 가격이 노출됨');
+    assert(!t.includes('목표 구간'), '목표 구간 라벨 잔존');
 });
 
-// ── TC8: claude_sl 우선 적용 ─────────────────────────────────────────────
-test('TC8  claude_sl 우선 적용 (sl_price 무시)', () => {
+// ── TC8: TP1/SL 가격 완전 미노출 — sl 수치 불표시 (B-1 법무 권고 준수) ──
+test('TC8  TP1/SL 가격 미노출 — claude_sl/sl_price 모두 불표시', () => {
     const item = { ...BASE, claude_sl: 70000, sl_price: 71200 };
     const t = formatThreadsSignal(item);
-    assert(t.includes('70,000'), 'claude_sl(70000) 미반영');
+    assert(!t.includes('70,000'), 'claude_sl(70000) 가격이 노출됨');
+    assert(!t.includes('71,200'), 'sl_price(71200) 가격이 노출됨');
+    assert(!t.includes('리스크 관리 구간'), '리스크 관리 구간 라벨 잔존');
 });
 
 // ── TC9: 가격 없는 경우 크래시 없음 ─────────────────────────────────────
@@ -128,12 +138,18 @@ test('TC11 전략 설명 문구 포함', () => {
     assert(t.includes('골든크로스'), '전략 설명 없음');
 });
 
-// ── TC12: 목표·리스크 구간 라벨 확인 + 퍼센트 미노출 ─────────────────────
-test('TC12 목표·리스크 구간 — 퍼센트 미노출 + 라벨 확인', () => {
+// ── TC12: TP1/SL 라벨·수치 완전 제거 확인 (B-1 법무 권고) ───────────────
+test('TC12 TP1/SL 완전 제거 — 라벨·수치·퍼센트 모두 미노출', () => {
     const t = formatThreadsSignal(BASE);
-    assert(t.includes('목표 구간 1'), '목표 구간 1 라벨 없음');
-    assert(t.includes('리스크 관리 구간'), '리스크 관리 구간 라벨 없음');
-    // 퍼센트 표시 없어야 함 (자본시장법 위반 방지)
+    // B-1: 목표가/리스크 관리 구간 라벨 제거
+    assert(!t.includes('목표 구간'), '목표 구간 라벨 잔존');
+    assert(!t.includes('리스크 관리 구간'), '리스크 관리 구간 라벨 잔존');
+    assert(!t.includes('상단 저항 구간'), '상단 저항 구간 라벨 잔존 (S1)');
+    assert(!t.includes('하단 지지 구간'), '하단 지지 구간 라벨 잔존 (S1)');
+    // 수치 미노출 (BASE: tp1=76000, sl=71200)
+    assert(!t.includes('76,000'), 'tp1 가격 수치 잔존');
+    assert(!t.includes('71,200'), 'sl 가격 수치 잔존');
+    // 퍼센트 표시도 없어야 함
     assert(!/\(\s*[+-]\d+\.\d+%\s*\)/.test(t), '퍼센트 표시 잔존');
 });
 
@@ -222,11 +238,13 @@ test('TC17 브리핑 — 면책 문구 포함', () => {
     assert(t.includes('자동 생성 시황 분석'), '브리핑 전용 면책 문구 없음');
 });
 
-// TC18: 브리핑 해시태그 포함
+// TC18: 브리핑 해시태그 포함 + #알고리즘트레이딩 → #자동생성브리핑 변경 확인
 test('TC18 브리핑 — 해시태그 포함', () => {
     const t = formatThreadsBriefing(BRIEFING_ITEM);
-    assert(t.includes('#시황브리핑'), '#시황브리핑 없음');
-    assert(t.includes('#자동기록'),   '#자동기록 없음');
+    assert(t.includes('#시황브리핑'),     '#시황브리핑 없음');
+    assert(t.includes('#자동기록'),       '#자동기록 없음');
+    assert(t.includes('#자동생성브리핑'), '#자동생성브리핑 없음 (구 #알고리즘트레이딩에서 변경됨)');
+    assert(!t.includes('#알고리즘트레이딩'), '구 해시태그 #알고리즘트레이딩 잔존');
 });
 
 // TC19: 긴 브리핑 → 말줄임 처리
@@ -284,37 +302,31 @@ test('TC22 시간대 레이블 — [개장 전]/[정오]/[마감 후]', () => {
     );
 });
 
-// TC23: R:R 두 단계 경고 — ⛔/⚠️ 표시
-test('TC23 R:R 두 단계 경고 — ⛔/⚠️ 표시', () => {
-    // BASE: entry=73500, tp1=76000, sl=71200, KOSPI → RR≈0.877 → ⛔
+// TC23: R:R 수치 게시물 미노출 확인 (자본시장법 §6⑥ — TP/SL 퍼센트 제거와 일관성)
+// computeThreadsRR는 signals.js 내부 필터로만 사용하고 게시물에는 표시하지 않음
+test('TC23 R:R 수치 게시물 미노출 — 자본시장법 준수', () => {
     const t1 = formatThreadsSignal(BASE);
-    assert(t1.includes('⛔'), 'RR < 1.0인데 ⛔ 없음');
+    assert(!t1.includes('R:R'), 'R:R 수치가 게시물에 노출됨');
+    assert(!t1.includes('⛔'), '차단 이모지(⛔) 게시물 노출');
+    assert(!t1.includes('⚠️'), '경고 이모지(⚠️) 게시물 노출');
 
-    // sl=72500 → effRisk=(1000/73500)+0.0035≈0.0171, effTarget=(2500/73500)-0.0035≈0.0305
-    // RR≈1.78 → 경고 없음
-    const highRR = { ...BASE, sl_price: 72500 };
+    // TP/SL이 있는 경우에도 R:R 미노출
+    const highRR = { ...BASE, tp1_price: 78000, sl_price: 72000 };
     const t2 = formatThreadsSignal(highRR);
-    assert(!t2.includes('⛔') && !t2.includes('⚠️'), 'RR ≥ 1.5인데 경고 있음');
-
-    // tp1=75500, sl=72500 → effTarget=(2000/73500)-0.0035≈0.0237, effRisk=(1000/73500)+0.0035≈0.0171
-    // RR≈1.39 → ⚠️
-    const midRR = { ...BASE, tp1_price: 75500, sl_price: 72500 };
-    const t3 = formatThreadsSignal(midRR);
-    assert(t3.includes('⚠️'), 'RR 1.0-1.5인데 ⚠️ 없음');
-    assert(!t3.includes('⛔'), 'RR ≥ 1.0인데 ⛔ 있음');
+    assert(!t2.includes('R:R'), '높은 RR 신호에서도 R:R 노출됨');
 });
 
-// TC23b: computeThreadsRR 계산 정확도
+// TC23b: computeThreadsRR 계산 정확도 (왕복 슬리피지 rt=slip*2)
 test('TC23b computeThreadsRR 계산 정확도 (KOSPI/KOSDAQ)', () => {
-    // KOSPI: stk_cd '005930' (starts '0'), slip=0.35%
+    // KOSPI: stk_cd '005930' (starts '0'), slip=0.35%, rt=0.007
     const rrKospi = computeThreadsRR('005930', 73500, 76000, 71200);
     assert(rrKospi !== null, 'KOSPI RR null');
-    // effTarget = 2500/73500 - 0.0035 ≈ 0.030514
-    // effRisk   = 2300/73500 + 0.0035 ≈ 0.034793
-    // RR ≈ 0.877
-    assert(Math.abs(rrKospi - 0.877) < 0.01, `KOSPI RR 계산 오차: ${rrKospi}`);
+    // effTarget = 2500/73500 - 0.007 ≈ 0.02701
+    // effRisk   = 2300/73500 + 0.007 ≈ 0.03829
+    // RR ≈ 0.705
+    assert(Math.abs(rrKospi - 0.705) < 0.01, `KOSPI RR 계산 오차: ${rrKospi}`);
 
-    // KOSDAQ: stk_cd '263750' (starts '2'), slip=0.45%
+    // KOSDAQ: stk_cd '263750' (starts '2'), slip=0.45%, rt=0.009
     const rrKosdaq = computeThreadsRR('263750', 73500, 76000, 71200);
     assert(rrKosdaq !== null, 'KOSDAQ RR null');
     assert(rrKosdaq < rrKospi, 'KOSDAQ R:R이 KOSPI보다 높음 (슬리피지 차이 반영 안 됨)');
@@ -338,6 +350,19 @@ test('TC24 브리핑 — 문장 경계 말줄임 처리', () => {
         textPart.endsWith('.') || textPart.endsWith('…'),
         `문장 경계 처리 없음: "${textPart.slice(-5)}"`
     );
+});
+
+// TC25: S1 갭 오픈도 TP1/SL 완전 제거 (B-1 법무 권고, S1 전용 분기)
+test('TC25 S1 갭 오픈 — 상단/하단 저항·지지 구간 미노출', () => {
+    const item = { ...BASE, strategy: 'S1_GAP_OPEN', gap_pct: 2.4, claude_tp1: 77000, claude_sl: 70000 };
+    const t = formatThreadsSignal(item);
+    assert(!t.includes('상단 저항 구간'), '상단 저항 구간 라벨 잔존');
+    assert(!t.includes('하단 지지 구간'), '하단 지지 구간 라벨 잔존');
+    assert(!t.includes('77,000'), 'S1 tp1 가격 노출됨');
+    assert(!t.includes('70,000'), 'S1 sl 가격 노출됨');
+    // 정상 필드는 유지되어야 함
+    assert(t.includes('[갭 오픈 패턴 감지]'), 'S1 헤더 없음');
+    assert(t.includes('+2.4%'), '갭 비율 없음');
 });
 
 // ── 결과 출력 ────────────────────────────────────────────────────────────

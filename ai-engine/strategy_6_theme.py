@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 
 from http_utils import (
     fetch_cntr_strength_cached,
@@ -30,6 +31,19 @@ logger = logging.getLogger(__name__)
 
 _API_INTERVAL   = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
+
+
+def _redis_text(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return str(value)
+
+
+def _redis_hash_text(data: dict | None) -> dict[str, str]:
+    decoded: dict[str, str] = {}
+    for key, value in (data or {}).items():
+        decoded[_redis_text(key)] = _redis_text(value)
+    return decoded
 
 # ── 모드 상수 ──────────────────────────────────────────────────────────────
 S6_MODE_LEADER    = "LEADER_PULLBACK"
@@ -82,7 +96,7 @@ async def _get_bid_ratio(token: str, rdb, stk_cd: str) -> float | None:
     """Redis ws:hoga에서 총매수잔량/총매도잔량. 데이터 없으면 None."""
     try:
         if rdb:
-            hoga = await rdb.hgetall(f"ws:hoga:{stk_cd}")
+            hoga = _redis_hash_text(await rdb.hgetall(f"ws:hoga:{stk_cd}"))
             if hoga:
                 buy  = clean_num(hoga.get("total_buy_bid_req", 0))
                 sell = clean_num(hoga.get("total_sel_bid_req", 0))
@@ -103,12 +117,19 @@ async def _get_acc_vol(rdb, stk_cd: str) -> float:
     if not rdb:
         return 0.0
     try:
-        tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+        tick = _redis_hash_text(await rdb.hgetall(f"ws:tick:{stk_cd}"))
         if tick:
             return clean_num(tick.get("acc_trde_qty", 0))
     except Exception:
         pass
     return 0.0
+
+
+def _fallback_acc_vol_from_candles(candles: list[dict]) -> float:
+    """Use today's daily candle volume when realtime tick volume is unavailable."""
+    if not candles:
+        return 0.0
+    return clean_num(candles[0].get("trde_qty", 0))
 
 
 def _log_reject(stk_cd: str, theme: str, mode: str, reason: str, **kv) -> None:
@@ -224,6 +245,18 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 continue
             _processed.add(stk_cd)
 
+            # ── 당일 반복 방지: 3회 이상 emit된 종목 건너뜀 ─────────────────
+            _today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+            _s6_skip_key = f"s6:skip:{stk_cd}:{_today}"
+            if rdb:
+                try:
+                    _skip_cnt = await rdb.get(_s6_skip_key)
+                    if _skip_cnt and int(_skip_cnt) >= 3:
+                        logger.debug("[S6][skip_cache] stk=%s today_emit=%s, skipping", stk_cd, int(_skip_cnt))
+                        continue
+                except Exception:
+                    pass
+
             rank_pct = _rank_pct(flu_rt)
             mode     = _classify_mode(flu_rt, rank_pct)
 
@@ -270,6 +303,8 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
 
             # ── 거래량비율 ───────────────────────────────────────────────
             acc_vol   = await _get_acc_vol(rdb, stk_cd)
+            if acc_vol <= 0:
+                acc_vol = _fallback_acc_vol_from_candles(candles)
             vol_ratio = _calc_volume_ratio(acc_vol, candles)
             min_vol   = _MIN_VOL_RATIO_LAGGARD if mode == S6_MODE_LAGGARD else _MIN_VOL_RATIO_COMMON
 
@@ -315,6 +350,13 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 "entry_type":     "지정가_1호가",
                 **tp_sl.to_signal_fields(),
             }
+
+            if rdb:
+                try:
+                    await rdb.incr(_s6_skip_key)
+                    await rdb.expire(_s6_skip_key, 86400)
+                except Exception:
+                    pass
 
     # 체결강도 + 거래량비율 복합 정렬
     sorted_results = sorted(

@@ -644,7 +644,17 @@ async def _build_s1(token: str, market: str, rdb) -> None:
         "source_market": source_market,
         "source_status": "EMPTY" if not codes else "OK",
     }
-    await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, ttl)
+    logger.info(
+        "[builder] S1 build market=%s source_market=%s raw=%d filtered=%d rejected=%d status=%s elapsed=%.2fs",
+        market,
+        source_market,
+        raw_count,
+        len(codes),
+        raw_count - len(codes),
+        meta["source_status"],
+        _time.monotonic() - started_at,
+    )
+    await _lpush_with_ttl(rdb, f"candidates:s1:{market}", codes, ttl, meta=meta)
     try:
         await rdb.hset(f"candidate:quality:meta:s1:{market}", mapping=meta)
         await rdb.expire(f"candidate:quality:meta:s1:{market}", ttl)
@@ -784,12 +794,20 @@ async def _build_s4(token: str, market: str, rdb) -> None:
         if not stk_cd:
             continue
 
-        # WS 체결강도 확인 (ws:strength는 LPUSH LIST → lindex 0으로 최신값 조회)
+        # WS 체결강도 확인 — 30초 이내 신선한 데이터만 strong 분류
         try:
             raw_str = await rdb.lindex(f"ws:strength:{stk_cd}", 0)
-            if raw_str is not None and float(raw_str) >= 120:
-                strong.append(stk_cd)
-                continue
+            if raw_str is not None and float(raw_str) >= 115:
+                # 신선도 체크: ws:strength_meta 타임스탬프 확인
+                _meta = await rdb.hgetall(f"ws:strength_meta:{stk_cd}")
+                _upd = _meta.get(b"updated_at_ms") or _meta.get("updated_at_ms") if _meta else None
+                _age_ok = (
+                    _upd is not None
+                    and (_time.time() * 1000 - float(_upd)) < 30_000
+                )
+                if _age_ok:
+                    strong.append(stk_cd)
+                    continue
         except Exception:
             pass
         normal.append(stk_cd)
@@ -1377,6 +1395,19 @@ async def _build_s15(token: str, market: str, rdb) -> None:
         if len(codes) >= 80:
             break
     codes = await _filter_individual_stocks(rdb, codes)
+    # RSI 필터: stock:rsi14:{stk_cd} 캐시가 있으면 RSI > 72 종목 제거 (fail-open)
+    if rdb:
+        rsi_ok = []
+        for code in codes:
+            try:
+                rsi_val = await rdb.get(f"stock:rsi14:{code}")
+                if rsi_val is not None and float(rsi_val) > 72.0:
+                    logger.debug("[S15] RSI 필터 제외 %s rsi=%.1f", code, float(rsi_val))
+                    continue
+            except Exception:
+                pass  # fail-open: RSI 데이터 없으면 포함
+            rsi_ok.append(code)
+        codes = rsi_ok
     await _lpush_with_ttl(rdb, f"candidates:s15:{market}", codes, 1200)
 
 

@@ -19,17 +19,14 @@ const _THREADS_SLIP = { KOSPI: 0.0035, KOSDAQ: 0.0045 };
  */
 function computeThreadsRR(stkCd, entry, tp1, sl) {
     if (!entry || !tp1 || !sl || sl >= entry) return null;
-    const slip      = String(stkCd ?? '').startsWith('0') ? _THREADS_SLIP.KOSPI : _THREADS_SLIP.KOSDAQ;
-    const effTarget = (tp1 - entry) / entry - slip;
-    const effRisk   = (entry - sl)  / entry + slip;
+    const slip = String(stkCd ?? '').startsWith('0') ? _THREADS_SLIP.KOSPI : _THREADS_SLIP.KOSDAQ;
+    // 내부 엔진(tp_sl_engine.py, analyzer.py)과 동일하게 왕복(진입+청산) 비용 반영
+    const rt        = slip * 2;
+    const effTarget = (tp1 - entry) / entry - rt;
+    const effRisk   = (entry - sl)  / entry + rt;
     return effRisk > 0 ? effTarget / effRisk : null;
 }
 
-function _formatThreadsRR(rr) {
-    if (rr === null) return null;
-    const warn = rr < 1.0 ? ' ⛔' : (rr < 1.5 ? ' ⚠️' : '');
-    return `R:R ${rr.toFixed(2)}${warn}`;
-}
 
 // ── 전략 설명 ─────────────────────────────────────────────────────────────
 
@@ -58,7 +55,7 @@ const HASHTAG_MAP = {
     S6_THEME_LAGGARD:    '#테마주 #국내주식 #자동기록',
     S8_GOLDEN_CROSS:     '#골든크로스 #국내주식 #자동기록',
     S10_NEW_HIGH:        '#신고가 #국내주식 #자동기록',
-    S11_FRGN_CONT:       '#외국인매수 #국내주식 #자동기록',
+    S11_FRGN_CONT:       '#수급동향 #국내주식 #자동기록',
     S13_BOX_BREAKOUT:    '#박스돌파 #국내주식 #자동기록',
     S14_OVERSOLD_BOUNCE: '#과매도반등 #국내주식 #자동기록',
 };
@@ -66,12 +63,15 @@ const DEFAULT_HASHTAG = '#기술적분석 #국내주식 #자동기록';
 
 const DISCLAIMER =
     '본 내용은 기술적 지표 조건 충족 사실을 자동 기록한 것입니다.' +
+    ' 과거 신호가 미래 수익을 보장하지 않습니다.' +
+    ' 자본시장법상 투자자문업·유사투자자문업에 해당하지 않습니다.' +
     ' 투자권유가 아닙니다. 투자 결정과 손익은 본인 책임입니다.';
 
 const BRIEFING_DISCLAIMER =
     '본 내용은 AI가 공개 데이터를 기반으로 작성한 자동 생성 시황 분석입니다.' +
+    ' 자본시장법상 투자자문업·유사투자자문업에 해당하지 않습니다.' +
     ' 투자권유가 아닙니다. 투자 결정과 손익은 본인 책임입니다.';
-const BRIEFING_HASHTAG = '#시황브리핑 #알고리즘트레이딩 #자동기록';
+const BRIEFING_HASHTAG = '#시황브리핑 #자동생성브리핑 #자동기록';
 
 // ── 금지 표현 (자본시장법 투자권유 금지 기준) ────────────────────────────
 
@@ -212,12 +212,8 @@ function formatThreadsSignal(item) {
         : (item.stk_cd || '-');
 
     const entryRaw = Number(item.cur_prc ?? item.entry_price ?? 0);
-    const tp1Raw   = item.claude_tp1 ?? item.tp1_price ?? null;
-    const slRaw    = item.claude_sl  ?? item.sl_price  ?? null;
 
     const curPrc = normalizeForDisplay(entryRaw);
-    const tp1    = tp1Raw != null ? normalizeForDisplay(tp1Raw) : null;
-    const sl     = slRaw  != null ? normalizeForDisplay(slRaw)  : null;
 
     const rsi      = item.rsi       != null ? Number(item.rsi).toFixed(1)       : null;
     const volRatio = item.vol_ratio != null ? Number(item.vol_ratio).toFixed(1) : null;
@@ -242,20 +238,7 @@ function formatThreadsSignal(item) {
 
     if (curPrc > 0) lines.push(`현재가: ${curPrc.toLocaleString()}원`);
 
-    if (isS1) {
-        if (tp1) lines.push(`상단 저항 구간: ${tp1.toLocaleString()}원`);
-        if (sl)  lines.push(`하단 지지 구간: ${sl.toLocaleString()}원`);
-    } else {
-        if (tp1) lines.push(`목표 구간 1: ${tp1.toLocaleString()}원`);
-        if (sl)  lines.push(`리스크 관리 구간: ${sl.toLocaleString()}원`);
-    }
-
-    // R:R 표시 (두 단계 경고: <1.0 ⛔, <1.5 ⚠️)
-    const rrVal  = computeThreadsRR(item.stk_cd, entryRaw, Number(tp1Raw ?? 0), Number(slRaw ?? 0));
-    const rrLine = _formatThreadsRR(rrVal);
-    if (rrLine) lines.push(rrLine);
-
-    // 기술 지표 (ai_score 제외 — 자본시장법 §6⑥)
+    // 기술 지표 (ai_score 및 R:R 수치 제외 — 자본시장법 §6⑥)
     const techParts = [];
     if (isS1 && strength) techParts.push(_strengthLabel(strength));
     if (rsi)               techParts.push(`RSI: ${rsi}`);

@@ -154,15 +154,10 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     if not is_breakout:
         return None
 
-    # 5. 실시간 체결강도 확인 (Redis)
+    # 5. 실시간 체결강도 확인 (Redis 우선, REST ka10046 fallback)
     avg_strength, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb, count=3)
-    if rdb:
-        # 최근 3분 평균을 위해 List 사용
-        strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 2)
-        if strength_data:
-            avg_strength = mean([float(s) for s in strength_data])
 
-    if avg_strength < 120:
+    if avg_strength < 115:
         return None
 
     # ── 윗꼬리 비율 계산 ──

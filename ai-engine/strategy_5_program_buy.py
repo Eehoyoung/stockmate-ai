@@ -161,8 +161,10 @@ async def check_extra_conditions(token: str, stk_cd: str, market: str = "001", r
         return value
 
     try:
-        # 전일 날짜 (단, 장 종료 후 호출 시 로직에 따라 당일/전일 조정 필요)
-        yesterday = (datetime.now(KST) - timedelta(days=1)).strftime("%Y%m%d")
+        # 최근 영업일 — 주말/공휴일 보정 (월요일 실행 시 일요일→금요일)
+        _today = datetime.now(KST)
+        _offset = 3 if _today.weekday() == 0 else (2 if _today.weekday() == 6 else 1)
+        yesterday = (_today - timedelta(days=_offset)).strftime("%Y%m%d")
         mrkt = "001" if market in ["KOSPI", "001", "000"] else "101"
 
         async with kiwoom_client() as client:

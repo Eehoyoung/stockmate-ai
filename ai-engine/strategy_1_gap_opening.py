@@ -35,6 +35,45 @@ async def get_expected_execution(rdb, stk_cd: str) -> dict:
         return {}
 
 
+async def _redis_expected_snapshots(rdb, limit: int = 100) -> dict[str, dict]:
+    """Build S1 fallback snapshots from ws:expected hashes when ka10029 is empty."""
+    if not rdb:
+        return {}
+
+    snapshots: dict[str, dict] = {}
+    try:
+        async for raw_key in rdb.scan_iter(match="ws:expected:*", count=200):
+            key = raw_key.decode("utf-8", errors="ignore") if isinstance(raw_key, bytes) else str(raw_key)
+            stk_cd = key.rsplit(":", 1)[-1].strip()
+            if not stk_cd:
+                continue
+
+            exp = await rdb.hgetall(key)
+            decoded = {}
+            for field, value in (exp or {}).items():
+                if isinstance(field, bytes):
+                    field = field.decode("utf-8", errors="ignore")
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="ignore")
+                decoded[str(field)] = str(value)
+
+            exp_price = clean_num(decoded.get("exp_cntr_pric", 0))
+            gap_pct = clean_num(decoded.get("exp_flu_rt", decoded.get("flu_rt", 0)))
+            if exp_price <= 0 or not (2.5 <= gap_pct <= 15.0):
+                continue
+
+            decoded["exp_cntr_pric"] = decoded.get("exp_cntr_pric", "")
+            decoded["exp_flu_rt"] = decoded.get("exp_flu_rt", decoded.get("flu_rt", ""))
+            snapshots[stk_cd] = decoded
+            if len(snapshots) >= limit:
+                break
+    except Exception as exc:
+        logger.debug("[S1] ws:expected fallback scan failed: %s", exc)
+        return {}
+
+    return snapshots
+
+
 def _snapshot_to_candidate_info(snapshot: dict, rank: int | None = None) -> dict:
     buy_req = clean_num(snapshot.get("buy_req", 0))
     sel_req = clean_num(snapshot.get("sel_req", 0))
@@ -341,7 +380,14 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
         if fallback_used:
             logger.warning("[S1] candidate pool empty; using ka10029 fallback (%d)", len(effective))
         else:
-            logger.warning("[S1] candidate pool empty and ka10029 fallback returned nothing")
+            rest_snapshots = await _redis_expected_snapshots(rdb)
+            effective = list(rest_snapshots.keys())
+            fallback_used = bool(effective)
+            stats["candidate_count"] = len(effective)
+            if fallback_used:
+                logger.warning("[S1] candidate pool empty; using ws:expected fallback (%d)", len(effective))
+            else:
+                logger.warning("[S1] candidate pool empty and fallbacks returned nothing")
 
     results: list[dict] = []
 

@@ -20,16 +20,51 @@ const path = require('path');
 
 const SERVICE_NAME = process.env.SERVICE_NAME || 'telegram-bot';
 const LOG_LEVEL    = (process.env.LOG_LEVEL  || 'INFO').toUpperCase();
-const LOG_FILE     = process.env.LOG_FILE    || path.join(__dirname, '../../logs/telegram-bot.log');
+const LOG_DIR      = process.env.LOG_DIR || path.join(__dirname, '../../logs');
 
 const LEVELS = { DEBUG: 0, INFO: 1, WARNING: 2, WARN: 2, ERROR: 3, CRITICAL: 4 };
 const currentLevel = LEVELS[LOG_LEVEL] ?? LEVELS.INFO;
 
-// 로그 디렉토리 생성
-const logDir = path.dirname(LOG_FILE);
-if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 
-const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a', encoding: 'utf8' });
+/** KST 기준 YYMMDD 문자열 반환 */
+function _kstDateStr() {
+    const kst = new Date(Date.now() + 9 * 3600 * 1000);
+    const y = String(kst.getUTCFullYear()).slice(-2);
+    const m = String(kst.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(kst.getUTCDate()).padStart(2, '0');
+    return y + m + d;
+}
+
+/** 30일 초과 이전 파일 삭제 */
+function _cleanupOldLogs() {
+    try {
+        const files = fs.readdirSync(LOG_DIR)
+            .filter(f => /^telegram-bot_\d{6}\.log$/.test(f))
+            .sort();
+        for (const f of files.slice(0, -30)) {
+            try { fs.unlinkSync(path.join(LOG_DIR, f)); } catch (_) {}
+        }
+    } catch (_) {}
+}
+
+let _currentDateStr = '';
+let _logStream = null;
+
+/** KST 날짜가 바뀌면 새 파일로 전환 */
+function _ensureStream() {
+    const today = _kstDateStr();
+    if (today !== _currentDateStr) {
+        if (_logStream) _logStream.end();
+        const logFile = path.join(LOG_DIR, `telegram-bot_${today}.log`);
+        _logStream = fs.createWriteStream(logFile, { flags: 'a', encoding: 'utf8' });
+        _currentDateStr = today;
+        _cleanupOldLogs();
+    }
+    return _logStream;
+}
+
+_ensureStream();
 
 /**
  * KST ISO-8601 타임스탬프 반환 (ms 포함).
@@ -68,7 +103,7 @@ function _write(level, module, msg, extra = {}, err = null) {
 
     const line = JSON.stringify(doc) + '\n';
     process.stdout.write(line);
-    logStream.write(line);
+    _ensureStream().write(line);
 }
 
 /**

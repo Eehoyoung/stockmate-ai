@@ -307,3 +307,101 @@ class TestMarketFreshness:
         assert result["strength"]["state"] == "caution"
         assert result["vi"]["state"] == "missing"
         assert rdb.hgetall.await_args_list[2][0][0] == "ws:strength_meta:005930"
+
+
+# ──────────────────────────────────────────────────────────────────
+# get_strength_with_status 테스트
+# ──────────────────────────────────────────────────────────────────
+
+import time
+
+
+class TestGetStrengthWithStatus:
+    @pytest.mark.asyncio
+    async def test_meta_stale_returns_cancel(self):
+        """strength list에 값이 있어도 meta가 stale이면 cancel 반환"""
+        from redis_reader import get_strength_with_status
+
+        now_ms = int(time.time() * 1000)
+        stale_ms = str(now_ms - 15_000)  # 15초 전 → cancel (> 10,000ms)
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={"updated_at_ms": stale_ms})
+        rdb.lrange = AsyncMock(return_value=["110.0", "105.0", "100.0"])
+
+        result = await get_strength_with_status(rdb, "005930", now_ms=now_ms)
+
+        assert result["status"]["state"] == "cancel"
+        assert result["data"] is None
+        assert result["source"] != "redis"
+        # cancel 이므로 lrange 를 호출하지 않아야 함
+        rdb.lrange.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_meta_missing_returns_missing(self):
+        """meta 키 없으면 missing 반환"""
+        from redis_reader import get_strength_with_status
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={})  # meta 없음
+        rdb.lrange = AsyncMock(return_value=["110.0"])
+
+        result = await get_strength_with_status(rdb, "005930")
+
+        assert result["status"]["state"] == "missing"
+        assert result["data"] is None
+        rdb.lrange.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fresh_meta_returns_average(self):
+        """meta fresh이면 list 평균 반환"""
+        from redis_reader import get_strength_with_status
+
+        now_ms = int(time.time() * 1000)
+        fresh_ms = str(now_ms - 500)  # 0.5초 전 → fresh
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={"updated_at_ms": fresh_ms})
+        rdb.lrange = AsyncMock(return_value=["120.0", "115.0", "110.0"])
+
+        result = await get_strength_with_status(rdb, "005930", count=3, now_ms=now_ms)
+
+        assert result["status"]["state"] == "fresh"
+        assert result["data"] == pytest.approx((120.0 + 115.0 + 110.0) / 3, rel=0.01)
+        assert result["source"] == "redis"
+        rdb.lrange.assert_awaited_once_with("ws:strength:005930", 0, 2)
+
+    @pytest.mark.asyncio
+    async def test_caution_meta_still_returns_data(self):
+        """meta caution(5~10초)이면 경고 상태지만 data는 반환"""
+        from redis_reader import get_strength_with_status
+
+        now_ms = int(time.time() * 1000)
+        caution_ms = str(now_ms - 7_000)  # 7초 전 → caution (> 5000ms, < 10000ms)
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={"updated_at_ms": caution_ms})
+        rdb.lrange = AsyncMock(return_value=["100.0", "95.0"])
+
+        result = await get_strength_with_status(rdb, "005930", now_ms=now_ms)
+
+        assert result["status"]["state"] == "caution"
+        assert result["data"] == pytest.approx(97.5, rel=0.01)
+        assert result["source"] == "redis"
+
+    @pytest.mark.asyncio
+    async def test_now_ms_defaults_to_current_time(self):
+        """now_ms=None 이면 현재 시각 기준으로 freshness 판정"""
+        from redis_reader import get_strength_with_status
+
+        # 방금(100ms 전) 기록된 meta → 반드시 fresh
+        fresh_ms = str(int(time.time() * 1000) - 100)
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={"updated_at_ms": fresh_ms})
+        rdb.lrange = AsyncMock(return_value=["105.0"])
+
+        result = await get_strength_with_status(rdb, "005930")  # now_ms 생략
+
+        assert result["status"]["state"] == "fresh"
+        assert result["data"] == pytest.approx(105.0)

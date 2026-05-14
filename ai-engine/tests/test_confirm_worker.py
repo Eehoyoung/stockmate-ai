@@ -13,9 +13,15 @@ for name in (
     "insert_rule_cancel_signal",
 ):
     setattr(db_writer_stub, name, None)
+_previous_db_writer = sys.modules.get("db_writer")
 sys.modules.setdefault("db_writer", db_writer_stub)
 
 from confirm_worker import _apply_claude_rr_override, _resolve_regime_rr_policy
+
+if _previous_db_writer is None:
+    sys.modules.pop("db_writer", None)
+else:
+    sys.modules["db_writer"] = _previous_db_writer
 
 
 def test_confirm_worker_bear_exempt_strategy_uses_bull_rr_threshold():

@@ -249,6 +249,153 @@ async def fetch_hoga(token: str, stk_cd: str, rdb=None) -> float | None:
         return None
 
 
+async def fetch_hoga_rest(
+    token: str,
+    stk_cd: str,
+    *,
+    timeout: float = 3.0,
+) -> tuple[float | None, dict]:
+    """
+    Redis를 읽지 않고 ka10004 REST API로 직접 bid_ratio를 조회한다.
+    stale Redis 우회 전용 — rdb 파라미터 없음.
+    반환: (bid_ratio | None, meta)
+    meta = {"source": "rest", "api_id": "ka10004",
+            "retry_count": int, "latency_ms": int, "error": str | None}
+    """
+    _sf = _sf_global
+    stk_cd = normalize_stock_code(stk_cd)
+    meta: dict = {
+        "source": "rest",
+        "api_id": "ka10004",
+        "retry_count": 0,
+        "latency_ms": 0,
+        "error": None,
+    }
+    if not stk_cd:
+        meta["error"] = "invalid stk_cd"
+        return None, meta
+
+    url = f"{KIWOOM_BASE_URL}/api/dostk/mrkcond"
+    headers = {
+        "api-id": "ka10004",
+        "authorization": f"Bearer {token}",
+        "Content-Type": "application/json;charset=UTF-8",
+    }
+    json_body = {"stk_cd": stk_cd}
+
+    t0 = _time.monotonic()
+    try:
+        resp = await kiwoom_post(url, headers, json_body, "ka10004", max_retries=2)
+        meta["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+        # kiwoom_post 내부에서 최대 2회 재시도하므로 retry_count는 최대 2
+        if resp is None:
+            meta["error"] = "kiwoom_post returned None"
+            return None, meta
+
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10004", logger):
+            rc = data.get("return_code", "?")
+            msg = data.get("return_msg", "")
+            meta["error"] = f"return_code={rc} msg={msg}"
+            return None, meta
+
+        # output1 리스트 형식과 최상위 필드 형식 모두 지원
+        output1 = data.get("output1", [])
+        if output1 and isinstance(output1, list):
+            row = output1[0]
+            bid = _sf(row.get("total_buy_bid_req", row.get("tot_buy_req", 0)))
+            ask = _sf(row.get("total_sel_bid_req", row.get("tot_sel_req", 0)))
+        else:
+            bid = _sf(data.get("total_buy_bid_req", data.get("tot_buy_req", 0)))
+            ask = _sf(data.get("total_sel_bid_req", data.get("tot_sel_req", 0)))
+
+        if ask <= 0:
+            meta["error"] = "ask=0 or missing"
+            return None, meta
+
+        return bid / ask, meta
+
+    except Exception as e:
+        meta["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+        meta["error"] = str(e)
+        logger.debug("[http_utils] fetch_hoga_rest [%s] 실패: %s", stk_cd, e)
+        return None, meta
+
+
+async def fetch_tick_snapshot(
+    token: str,
+    stk_cd: str,
+    *,
+    timeout: float = 3.0,
+) -> tuple[dict, dict]:
+    """
+    REST로 현재 tick(현재가/등락률) 스냅샷을 조회한다.
+    tick이 missing이고 signal에 cur_prc도 없을 때 사용하는 REST direct 조회 함수.
+
+    반환: (tick_dict, meta)
+    tick_dict = {"cur_prc": str, "flu_rt": str}  # 빈 dict이면 조회 실패
+    meta = {"source": "rest", "api_id": "ka10001",
+            "retry_count": int, "latency_ms": int, "error": str | None}
+    """
+    stk_cd = normalize_stock_code(stk_cd)
+    meta: dict = {
+        "source": "rest",
+        "api_id": "ka10001",
+        "retry_count": 0,
+        "latency_ms": 0,
+        "error": None,
+    }
+    if not stk_cd:
+        meta["error"] = "invalid stk_cd"
+        return {}, meta
+
+    url = f"{KIWOOM_BASE_URL}/api/dostk/stkinfo"
+    headers = {
+        "api-id": "ka10001",
+        "authorization": f"Bearer {token}",
+        "Content-Type": "application/json;charset=UTF-8",
+    }
+    json_body = {"stk_cd": stk_cd}
+
+    t0 = _time.monotonic()
+    try:
+        resp = await kiwoom_post(url, headers, json_body, "ka10001", max_retries=2)
+        meta["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+        if resp is None:
+            meta["error"] = "kiwoom_post returned None"
+            return {}, meta
+
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10001", logger):
+            rc = data.get("return_code", "?")
+            msg = data.get("return_msg", "")
+            meta["error"] = f"return_code={rc} msg={msg}"
+            return {}, meta
+
+        # 최상위 필드 우선, 없으면 stk_info[0] 서브배열에서 추출
+        cur_prc = str(data.get("cur_prc", "")).strip()
+        flu_rt = str(data.get("flu_rt", "")).strip()
+
+        if not cur_prc:
+            items = data.get("stk_info", [])
+            if items and isinstance(items, list):
+                row = items[0]
+                cur_prc = str(row.get("cur_prc", "")).strip()
+                flu_rt = str(row.get("flu_rt", "")).strip()
+
+        if not cur_prc:
+            meta["error"] = "cur_prc missing in response"
+            return {}, meta
+
+        return {"cur_prc": cur_prc, "flu_rt": flu_rt}, meta
+
+    except Exception as e:
+        meta["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+        meta["error"] = str(e)
+        logger.debug("[http_utils] fetch_tick_snapshot [%s] 실패: %s", stk_cd, e)
+        return {}, meta
+
+
 async def fetch_cntr_strength(token: str, stk_cd: str) -> float:
     """
     체결강도 조회 (ka10046 체결강도추이시간별요청).
@@ -330,3 +477,79 @@ async def fetch_cntr_strength_cached(token: str, stk_cd: str, rdb=None, count: i
             logger.debug("[http_utils] fetch_cntr_strength_cached tick [%s] failed: %s", stk_cd, e)
 
     return await fetch_cntr_strength(token, stk_cd), "rest"
+
+
+async def fetch_cntr_strength_rest(
+    token: str,
+    stk_cd: str,
+    *,
+    count: int = 5,
+    timeout: float = 3.0,
+) -> tuple[float | None, dict]:
+    """
+    Redis를 읽지 않고 ka10046 REST API로 직접 체결강도 평균을 조회한다.
+    stale Redis 우회 전용 — rdb 파라미터 없음.
+    반환: (strength | None, meta)
+    meta = {"source": "rest", "api_id": "ka10046",
+            "retry_count": int, "latency_ms": int, "error": str | None}
+    """
+    stk_cd = normalize_stock_code(stk_cd)
+    meta: dict = {
+        "source": "rest",
+        "api_id": "ka10046",
+        "retry_count": 0,
+        "latency_ms": 0,
+        "error": None,
+    }
+    if not stk_cd:
+        meta["error"] = "invalid stk_cd"
+        return None, meta
+
+    url = f"{KIWOOM_BASE_URL}/api/dostk/mrkcond"
+    headers = {
+        "api-id": "ka10046",
+        "authorization": f"Bearer {token}",
+        "Content-Type": "application/json;charset=UTF-8",
+    }
+    json_body = {"stk_cd": stk_cd}
+
+    t0 = _time.monotonic()
+    try:
+        resp = await kiwoom_post(url, headers, json_body, "ka10046", max_retries=2)
+        meta["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+        if resp is None:
+            meta["error"] = "kiwoom_post returned None"
+            return None, meta
+
+        data = resp.json()
+        if not validate_kiwoom_response(data, "ka10046", logger):
+            rc = data.get("return_code", "?")
+            msg = data.get("return_msg", "")
+            meta["error"] = f"return_code={rc} msg={msg}"
+            return None, meta
+
+        # output1 리스트 형식과 cntr_str_tm 필드 형식 모두 지원
+        records = data.get("output1") or data.get("cntr_str_tm", [])
+        if not records:
+            meta["error"] = "empty records"
+            return None, meta
+
+        values = []
+        for rec in records[:count]:
+            raw = rec.get("cntr_str", "")
+            try:
+                values.append(float(str(raw).replace("+", "").replace(",", "")))
+            except (ValueError, TypeError):
+                continue
+
+        if not values:
+            meta["error"] = "no valid cntr_str values"
+            return None, meta
+
+        return sum(values) / len(values), meta
+
+    except Exception as e:
+        meta["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+        meta["error"] = str(e)
+        logger.debug("[http_utils] fetch_cntr_strength_rest [%s] 실패: %s", stk_cd, e)
+        return None, meta

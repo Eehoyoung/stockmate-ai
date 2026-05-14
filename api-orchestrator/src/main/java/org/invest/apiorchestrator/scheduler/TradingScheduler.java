@@ -130,6 +130,35 @@ public class TradingScheduler {
         }
     }
 
+    /**
+     * S1 candidate ownership stays in Java. Kiwoom ka10029 can remain empty
+     * before the auction data is fully available, so keep retrying empty pools
+     * through 09:30. The Python scanner still controls the actual S1 entry
+     * window and should not treat this as permission to enter until 09:30.
+     */
+    @Scheduled(cron = "0 */2 8-9 * * MON-FRI", zone = "Asia/Seoul")
+    public void recoverS1PoolUntil0930() {
+        LocalTime now = KstClock.nowTime();
+        if (now.isBefore(LocalTime.of(8, 50)) || now.isAfter(LocalTime.of(9, 30))) {
+            return;
+        }
+
+        for (String market : new String[]{"001", "101"}) {
+            Long llen = redis.opsForList().size("candidates:s1:" + market);
+            if (llen != null && llen > 0) {
+                continue;
+            }
+
+            log.warn("[Pool] S1 empty [market={}] - Java recovery retry until 09:30", market);
+            int count = candidateService.preloadS1Candidates(market);
+            if (count > 0) {
+                log.info("[Pool] S1 Java recovery OK [market={}] count={}", market, count);
+            } else {
+                log.warn("[Pool] S1 Java recovery still empty [market={}] count={}", market, count);
+            }
+        }
+    }
+
     @Scheduled(cron = "0 45 8 * * MON-FRI", zone = "Asia/Seoul")
     public void preparePreOpenData() {
         log.info("=== prepare pre-open data (08:45) ===");
