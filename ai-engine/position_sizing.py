@@ -208,6 +208,9 @@ def calculate_entry_size(
     strategy_count: int = 1,
     sector_heat_score: float = 50.0,
     freshness_status: str = "FRESH",
+    rule_threshold_rescued: bool = False,
+    hard_gate_bid_ratio_rescued: bool = False,
+    s8_zone_entry_policy: str = "",
 ) -> dict:
     """
     비계좌 기반 진입 강도 산출.
@@ -310,10 +313,33 @@ def calculate_entry_size(
         flags.append("strategy_cap_applied")
         weight = _tier_to_weight(final_tier)
 
+    rescue_active = bool(
+        rule_threshold_rescued
+        or hard_gate_bid_ratio_rescued
+        or s8_zone_entry_policy == "momentum_chase_size_down"
+    )
+    if rescue_active:
+        flags.append("rescue_size_cap")
+        rescue_cap = "SIZE_1"
+        if (
+            s8_zone_entry_policy == "momentum_chase_size_down"
+            and rr_ratio >= 1.8
+            and rule_score >= 75.0
+            and quality_score >= 70.0
+        ):
+            rescue_cap = "SIZE_2"
+        if rr_ratio < 1.2:
+            final_tier = "SIZE_0"
+            flags.append("rescue_rr_too_low")
+        elif _TIER_ORDER.get(final_tier, 0) > _TIER_ORDER[rescue_cap]:
+            final_tier = rescue_cap
+        weight = _tier_to_weight(final_tier)
+
     return {
         "entry_size_score":     entry_size_score,
         "entry_size_tier":      final_tier,
         "entry_size_weight":    weight,
+        "position_scale":       weight,
         "entry_size_basis":     "model_relative_not_account",
         "size_downgrade_flags": flags,
     }

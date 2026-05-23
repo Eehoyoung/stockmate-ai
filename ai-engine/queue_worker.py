@@ -38,6 +38,7 @@ from redis_reader import (
     push_score_only_queue,
 )
 from scorer import check_daily_limit, get_claude_threshold, rule_score, should_skip_ai
+from score_utils import normalize_score_0_100
 from shadow_features import compute_all_shadow_features
 from tp_sl_engine import compute_rr
 from utils import normalize_stock_code, safe_float as _fv
@@ -83,6 +84,20 @@ _HARD_GATES = {
 _REGIME_GATE_FACTOR = {"bull": 0.88, "sideways": 1.0, "bear": 1.0, "neutral": 1.0}
 # bear 장세에서 반등 전략은 weak momentum이 당연하므로 gate 면제
 _BEAR_GATE_EXEMPT = {"S9_PULLBACK_SWING", "S14_OVERSOLD_BOUNCE", "S11_FRGN_CONT"}
+_RULE_THRESHOLD_RESCUE_FLOORS = {
+    "S1_GAP_OPEN": 10.0,
+    "S7_ICHIMOKU_BREAKOUT": 35.0,
+    "S8_GOLDEN_CROSS": 45.0,
+    "S9_PULLBACK_SWING": 40.0,
+    "S15_MOMENTUM_ALIGN": 50.0,
+}
+_BID_ONLY_RESCUE_STRATEGIES = {"S1_GAP_OPEN", "S8_GOLDEN_CROSS", "S15_MOMENTUM_ALIGN"}
+_BID_RATIO_ABSOLUTE_CANCEL = 0.30
+_BID_RATIO_RESCUE_FLOOR = {
+    "S1_GAP_OPEN": 0.60,
+    "S15_MOMENTUM_ALIGN": 0.50,
+    "S8_GOLDEN_CROSS": 0.70,
+}
 
 # freshness 취소 게이트: tick/hoga cancel → CANCEL 판정하는 전략 집합 (문서 4.1)
 # _freshness_cancel_reason() 과 _compute_freshness_decision() 이 공유한다.
@@ -108,7 +123,7 @@ RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 RR_CAUTION_THRESHOLD = float(os.getenv("RR_CAUTION_THRESHOLD", "1.2"))
 S8_SUPPORT_ZONE_CAUTION_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_CAUTION_GAP_PCT", "1.5"))
 S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT", "3.5"))
-S8_MIN_ZONE_RR = float(os.getenv("S8_MIN_ZONE_RR", "1.4"))
+S8_MIN_ZONE_RR = float(os.getenv("S8_MIN_ZONE_RR", "1.5"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").lower() == "true"
 ENABLE_SCORING_DATA_RETRY = os.getenv("ENABLE_SCORING_DATA_RETRY", "true").lower() == "true"
@@ -324,7 +339,7 @@ def _coerce_rule_score_result(result) -> tuple[float, dict]:
     if not isinstance(components, dict):
         components = {}
 
-    return score_val, components
+    return normalize_score_0_100(score_val), components
 
 
 def _build_failure_payload(item: dict, strategy: str, stk_cd: str, error: Exception) -> dict:
@@ -528,7 +543,30 @@ def _hard_gate_failure(signal: dict, ctx: dict) -> str | None:
         if strategy not in _SWING_GATE_EXEMPT_BID:
             failures.append(f"bid_ratio missing < {req_bid:.2f}({regime})")
     elif bid_ratio < req_bid:
-        failures.append(f"bid_ratio {bid_ratio:.2f} < {req_bid:.2f}({regime})")
+        rescue_floor = _BID_RATIO_RESCUE_FLOOR.get(strategy, req_bid)
+        rr = _fv(signal.get("rr_ratio"), None)
+        bid_only_rescue = (
+            strategy in _BID_ONLY_RESCUE_STRATEGIES
+            and strength >= req_strength
+            and bid_ratio >= _BID_RATIO_ABSOLUTE_CANCEL
+            and bid_ratio >= rescue_floor
+            and not any(f.startswith("strength ") for f in failures)
+        )
+        if strategy == "S1_GAP_OPEN":
+            bid_only_rescue = bid_only_rescue and strength >= req_strength * 1.25 and (rr is None or rr >= 1.2)
+        elif strategy == "S15_MOMENTUM_ALIGN":
+            bid_only_rescue = bid_only_rescue and (rr is None or rr >= 1.5)
+        if bid_only_rescue:
+            signal["hard_gate_bid_ratio_rescued"] = True
+            signal["decision_stage"] = "AI_REVIEW"
+            signal["rescue_entry_policy"] = (
+                "opening_momentum_size_down" if strategy == "S1_GAP_OPEN" else "limit_or_recheck"
+            )
+            signal["hard_gate_bid_ratio_rescue_reason"] = (
+                f"bid_ratio {bid_ratio:.2f} < {req_bid:.2f}({regime}) but strength {strength:.1f} passed"
+            )
+        else:
+            failures.append(f"bid_ratio {bid_ratio:.2f} < {req_bid:.2f}({regime})")
     if failures:
         return "; ".join(failures)
     return None
@@ -567,6 +605,43 @@ def _s8_buy_zone_gate_failure(signal: dict) -> str | None:
         return f"S8 zone_rr {zone_rr:.2f} below {S8_MIN_ZONE_RR:.2f}"
 
     if gap_pct > S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT:
+        rr = _fv(signal.get("rr_ratio"), None)
+        rule_score_value = _fv(signal.get("rule_score"), 0.0)
+        quality_score = _fv(signal.get("signal_quality_score"), 0.0)
+        strength = _resolve_execution_strength(signal, {})
+        bid_ratio = _fv(signal.get("bid_ratio"), None)
+        zone_strength = int(_fv(buy_zone.get("strength"), 0.0) or 0)
+        anchors = buy_zone.get("anchors") or []
+        anchor_count = len(anchors) if isinstance(anchors, list) else 0
+        zone_quality_ok = zone_strength >= 4 and anchor_count >= 3
+        demand_ok = (
+            bid_ratio is None
+            or bid_ratio >= _BID_RATIO_RESCUE_FLOOR["S8_GOLDEN_CROSS"]
+            or (strength >= 130.0 and bid_ratio >= 0.50)
+        )
+        extreme_gap_ok = (
+            gap_pct <= 8.0
+            or (
+                rr is not None and rr >= 2.2
+                and rule_score_value >= 82.0
+                and quality_score >= 75.0
+            )
+        )
+        momentum_ok = (
+            zone_quality_ok
+            and demand_ok
+            and extreme_gap_ok
+            and ((rr is not None and rr >= 1.5) or rule_score_value >= 75.0 or quality_score >= 70.0)
+        )
+        if momentum_ok:
+            signal["s8_zone_status"] = "caution"
+            signal["s8_zone_entry_policy"] = "momentum_chase_size_down"
+            signal["decision_stage"] = "SIZE_DOWN"
+            signal["s8_zone_caution_reason"] = (
+                f"support gap {gap_pct:.2f}% above "
+                f"{S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT:.2f}% but momentum/RR strong"
+            )
+            return None
         signal["s8_zone_status"] = "hard_cancel"
         signal["s8_zone_entry_policy"] = "no_entry"
         return (
@@ -1043,6 +1118,55 @@ def _maybe_promote_hold_to_enter(
     return "ENTER", confidence or "HIGH", promoted_reason, None
 
 
+def _rule_threshold_rescue_reason(
+    signal: dict,
+    ctx: dict,
+    *,
+    rule_score_value: float,
+    threshold: float,
+    quality: dict,
+) -> str | None:
+    strategy = signal.get("strategy", "")
+    floor = _RULE_THRESHOLD_RESCUE_FLOORS.get(strategy)
+    if floor is None or rule_score_value >= threshold or rule_score_value < floor:
+        return None
+
+    rr = _fv(signal.get("rr_ratio"), None)
+    strength = _resolve_execution_strength(signal, ctx)
+    bid_ratio = _resolve_bid_ratio(signal, ctx)
+    quality_score = _fv(quality.get("signal_quality_score"), 0.0)
+    vol_ratio = _fv(signal.get("vol_ratio") or signal.get("volume_ratio"), 0.0)
+
+    if bid_ratio is not None and bid_ratio < _BID_RATIO_ABSOLUTE_CANCEL:
+        return None
+
+    if strategy == "S7_ICHIMOKU_BREAKOUT":
+        cloud_thickness = _fv(signal.get("cloud_thickness_pct"), None)
+        chikou_above = bool(signal.get("chikou_above"))
+        cond_count = int(_fv(signal.get("cond_count"), 0.0) or 0)
+        structure_ok = (
+            (cloud_thickness is not None and cloud_thickness <= 1.5)
+            or chikou_above
+            or cond_count >= 2
+        )
+        if rr is not None and rr >= 1.8 and strength >= 115.0 and vol_ratio >= 1.5 and structure_ok:
+            return (
+                f"S7 rescue: rule_score {rule_score_value:.1f} below {threshold:.1f}, "
+                f"RR {rr:.2f}, strength {strength:.1f}, vol_ratio {vol_ratio:.2f}"
+            )
+        return None
+
+    if strategy not in ("S1_GAP_OPEN", "S15_MOMENTUM_ALIGN") and rr is not None and rr >= 1.5 and strength >= 100.0:
+        return f"rule_score {rule_score_value:.1f} below {threshold:.1f} but RR {rr:.2f} and strength {strength:.1f} are strong"
+    if strategy == "S1_GAP_OPEN" and rr is not None and rr >= 1.2 and strength >= 140.0 and (bid_ratio or 0.0) >= 1.5:
+        return f"S1 opening momentum rescue: strength {strength:.1f}, bid_ratio {(bid_ratio or 0.0):.2f}"
+    if strategy == "S15_MOMENTUM_ALIGN" and rr is not None and rr >= 1.3 and strength >= 90.0 and (bid_ratio or 0.0) >= 1.5:
+        return f"S15 momentum rescue: strength {strength:.1f}, bid_ratio {(bid_ratio or 0.0):.2f}"
+    if quality_score >= 70.0 and rr is not None and rr >= 1.2:
+        return f"signal quality {quality_score:.1f} offsets rule_score {rule_score_value:.1f} below {threshold:.1f}"
+    return None
+
+
 def _compute_signal_quality(
     signal: dict,
     ctx: dict,
@@ -1152,6 +1276,38 @@ def _build_rule_only_alert_payload(item: dict, rule_score_value: float, quality:
     }
     payload.pop("cancel_reason", None)
     return payload
+
+
+def _attach_rescue_shadow_metadata(payload: dict) -> None:
+    shadow = payload.get("shadow_features")
+    if not isinstance(shadow, dict):
+        shadow = {}
+
+    meta_keys = (
+        "decision_stage",
+        "rule_threshold_rescued",
+        "rule_threshold_rescue_reason",
+        "hard_gate_bid_ratio_rescued",
+        "hard_gate_bid_ratio_rescue_reason",
+        "rescue_entry_policy",
+        "s8_zone_status",
+        "s8_zone_entry_policy",
+        "s8_zone_caution_reason",
+        "s8_buy_zone_high_gap_pct",
+        "entry_size_score",
+        "entry_size_tier",
+        "entry_size_weight",
+        "position_scale",
+        "entry_size_basis",
+    )
+    meta = {
+        key: payload.get(key)
+        for key in meta_keys
+        if payload.get(key) is not None
+    }
+    if meta:
+        shadow["rescue_meta"] = meta
+        payload["shadow_features"] = shadow
 
 
 def _raw_rr(entry: float | None, tp: float | None, sl: float | None) -> float | None:
@@ -1381,6 +1537,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
         ctx["ws_online"] = ws_online
 
         r_score, components = _coerce_rule_score_result(rule_score(signal, ctx))
+        signal["rule_score"] = r_score
         logger.info("[Worker] rule score [%s %s]: %.1f", stk_cd, strategy, r_score)
         _hoga_state = (ctx.get("freshness") or {}).get("hoga", {}).get("state", "fresh")
         _stale_hoga = _hoga_state in ("cancel", "missing", "caution")
@@ -1393,7 +1550,19 @@ async def process_one(rdb, pg_pool=None) -> bool:
         cancel_type = None
         cancel_reason = None
 
-        if should_skip_ai(r_score, strategy):
+        skip_ai = should_skip_ai(r_score, strategy)
+        rescue_reason = (
+            _rule_threshold_rescue_reason(
+                signal,
+                ctx,
+                rule_score_value=r_score,
+                threshold=threshold,
+                quality=quality,
+            )
+            if skip_ai
+            else None
+        )
+        if skip_ai and not rescue_reason:
             action = "CANCEL"
             confidence = "LOW"
             reason = f"Rule score {r_score:.1f} below threshold"
@@ -1401,6 +1570,11 @@ async def process_one(rdb, pg_pool=None) -> bool:
             cancel_type = "RULE_THRESHOLD"
             await _incr_pipeline(rdb, strategy, "cancel_score")
         else:
+            if rescue_reason:
+                signal["rule_threshold_rescued"] = True
+                signal["decision_stage"] = "AI_REVIEW"
+                signal["rule_threshold_rescue_reason"] = rescue_reason
+                await _incr_pipeline(rdb, strategy, "rule_threshold_rescue")
             rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
             s8_zone_gate_reason = _s8_buy_zone_gate_failure(signal)
             hard_gate_reason = _hard_gate_failure(signal, ctx)
@@ -1439,7 +1613,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 if can_call:
                     try:
                         ai_result = await analyze_signal(signal, ctx, r_score, rdb=rdb)
-                        ai_score_val = ai_result.get("ai_score", r_score)
+                        ai_score_val = normalize_score_0_100(ai_result.get("ai_score", r_score))
                         action = ai_result.get("action", "ENTER")
                         confidence = ai_result.get("confidence", "HIGH")
                         reason = ai_result.get("reason", f"Rule score {r_score:.1f} passed")
@@ -1514,6 +1688,16 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "claude_sl": ai_result.get("claude_sl"),
             "tp2_price": None,
             "cancel_type": cancel_type or ai_result.get("cancel_type"),
+            "decision_stage": signal.get("decision_stage"),
+            "rule_threshold_rescued": signal.get("rule_threshold_rescued"),
+            "rule_threshold_rescue_reason": signal.get("rule_threshold_rescue_reason"),
+            "hard_gate_bid_ratio_rescued": signal.get("hard_gate_bid_ratio_rescued"),
+            "hard_gate_bid_ratio_rescue_reason": signal.get("hard_gate_bid_ratio_rescue_reason"),
+            "rescue_entry_policy": signal.get("rescue_entry_policy"),
+            "s8_zone_status": signal.get("s8_zone_status"),
+            "s8_zone_entry_policy": signal.get("s8_zone_entry_policy"),
+            "s8_zone_caution_reason": signal.get("s8_zone_caution_reason"),
+            "s8_buy_zone_high_gap_pct": signal.get("s8_buy_zone_high_gap_pct"),
             **quality,
             # 데이터 신선도·품질 필드 (관측·검증용)
             "freshness_decision": _freshness_dec,
@@ -1547,12 +1731,17 @@ async def process_one(rdb, pg_pool=None) -> bool:
                     strategy_count=enriched.get("strategy_count", 1),
                     sector_heat_score=enriched.get("sector_heat_score", 50),
                     freshness_status=enriched.get("freshness_status", "FRESH"),
+                    rule_threshold_rescued=bool(enriched.get("rule_threshold_rescued")),
+                    hard_gate_bid_ratio_rescued=bool(enriched.get("hard_gate_bid_ratio_rescued")),
+                    s8_zone_entry_policy=str(enriched.get("s8_zone_entry_policy") or ""),
                 )
                 enriched.update(sizing)
             except Exception as _sizing_err:
                 logger.warning("[Worker] position_sizing failed [%s %s]: %s", stk_cd, strategy, _sizing_err)
 
         # chart fallback 사용 시 confidence MEDIUM 이하로 제한
+        _attach_rescue_shadow_metadata(enriched)
+
         if ctx.get("chart_fallback_used") and enriched.get("confidence") == "HIGH":
             enriched["confidence"] = "MEDIUM"
         normalize_signal_prices(enriched)
@@ -1643,6 +1832,12 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 )
 
             if db_id:
+                _flu_mkt = _normalize_market_type(signal.get("market_type") or ctx.get("market_type", ""))
+                _market_flu_rt = (
+                    ctx.get("kospi_flu_rt") if _flu_mkt == "001"
+                    else ctx.get("kosdaq_flu_rt") if _flu_mkt == "101"
+                    else None
+                )
                 await update_signal_score(
                     pg_pool,
                     db_id,
@@ -1662,9 +1857,9 @@ async def process_one(rdb, pg_pool=None) -> bool:
                     bb_upper=signal.get("bb_upper"),
                     bb_lower=signal.get("bb_lower"),
                     atr=signal.get("atr"),
-                    market_flu_rt=None,
-                    news_sentiment=None,
-                    news_ctrl=None,
+                    market_flu_rt=_market_flu_rt,
+                    news_sentiment=enriched.get("news_sentiment") or signal.get("news_sentiment"),
+                    news_ctrl=enriched.get("news_ctrl") or signal.get("news_ctrl"),
                     raw_rr=_fv(enriched.get("raw_rr")),
                     single_tp_rr=_fv(enriched.get("single_tp_rr")),
                     effective_rr=_fv(enriched.get("effective_rr")),
@@ -1677,6 +1872,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                     allow_overnight=enriched.get("allow_overnight"),
                     allow_reentry=enriched.get("allow_reentry"),
                     time_stop_deadline_at=None,
+                    stk_nm=enriched.get("stk_nm") or signal.get("stk_nm"),
                 )
                 await insert_score_components(
                     pg_pool,
@@ -1760,6 +1956,33 @@ async def process_one(rdb, pg_pool=None) -> bool:
                             raw_payload=enriched,
                         )
 
+                    entry_for_shadow = _fv(enriched.get("entry_price") or enriched.get("cur_prc"))
+                    tp1_for_shadow = _fv(enriched.get("claude_tp1") or enriched.get("tp1_price"))
+                    tp2_for_shadow = _fv(enriched.get("claude_tp2") or enriched.get("tp2_price"), None)
+                    sl_for_shadow = _fv(enriched.get("claude_sl") or enriched.get("sl_price"))
+                    await create_shadow_trade(
+                        pg_pool,
+                        signal_id=db_id,
+                        payload=enriched,
+                        entry_price=entry_for_shadow,
+                        tp1_price=tp1_for_shadow,
+                        tp2_price=tp2_for_shadow,
+                        sl_price=sl_for_shadow,
+                        data_quality="CANCEL_SHADOW",
+                        data_quality_detail={
+                            "cancel_type": cancel_type,
+                            "cancel_reason": cancel_reason,
+                            "decision_stage": enriched.get("decision_stage"),
+                            "rule_threshold_rescued": bool(enriched.get("rule_threshold_rescued")),
+                            "hard_gate_bid_ratio_rescued": bool(enriched.get("hard_gate_bid_ratio_rescued")),
+                            "s8_zone_entry_policy": enriched.get("s8_zone_entry_policy"),
+                            "entry_size_tier": enriched.get("entry_size_tier"),
+                            "entry_size_weight": enriched.get("entry_size_weight"),
+                            "position_scale": enriched.get("position_scale"),
+                            "rr_ratio": _fv(enriched.get("rr_ratio"), None),
+                            "effective_rr": _fv(enriched.get("effective_rr"), None),
+                        },
+                    )
                     await cancel_open_position_by_signal(pg_pool, db_id)
 
     except Exception as err:

@@ -163,9 +163,11 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         # 동적 TP/SL — swing_low/MA20/MA60 기반 구조적 손절 (tp_sl_engine)
         ma20_val = sum(closes[:20]) / 20 if len(closes) >= 20 else None
         bb_lower_val = None
+        bb_upper_val = None
         bands = calc_bollinger(closes, period=20, num_std=2.0)
         if bands and len(bands) > 0:
-            bb_lower_val = bands[0][2]  # (upper, middle, lower)
+            bb_upper_val = bands[0][0]  # (upper, middle, lower)
+            bb_lower_val = bands[0][2]
         tp_sl = calc_tp_sl(
             "S14_OVERSOLD_BOUNCE", cur_prc, highs, lows, closes,
             stk_cd=stk_cd, atr=atr_now, ma20=ma20_val, ma60=ma60,
@@ -179,6 +181,9 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
             "strategy": "S14_OVERSOLD_BOUNCE",
             "score": round(score, 2),
             "rsi": round(rsi_now, 1),
+            "atr": round(atr_now, 2) if atr_now is not None else None,
+            "bb_upper": round(bb_upper_val, 2) if bb_upper_val is not None else None,
+            "bb_lower": round(bb_lower_val, 2) if bb_lower_val is not None else None,
             "cond_count": cond_count,
             "cntr_strength": round(cntr_str, 1),
             "vol_ratio": round(vol_ratio, 2),

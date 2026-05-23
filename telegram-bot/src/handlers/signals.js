@@ -26,6 +26,8 @@ const THREADS_MIN_MARKET_CAP_EOK = Number(process.env.THREADS_MIN_MARKET_CAP_EOK
 const THREADS_MIN_RR = Number(process.env.THREADS_MIN_RR ?? 1.3);
 // Threads 게시 전 관리자 미리보기용 채팅 (THREADS_ENABLED 무관하게 동작)
 const THREADS_PREVIEW_CHAT_ID = process.env.TELEGRAM_THREADS_CHAT_ID || null;
+const USER_SEND_DEDUP_TTL_SEC = Number(process.env.USER_SEND_DEDUP_TTL_SEC ?? 7 * 24 * 60 * 60);
+const STATUS_SEND_DEDUP_TTL_SEC = Number(process.env.STATUS_SEND_DEDUP_TTL_SEC ?? 36 * 60 * 60);
 
 let _signalCount = 0;
 let _windowStart = Date.now();
@@ -114,6 +116,85 @@ async function isAllowedByWatchlist(chatId, stkCd) {
     }
 }
 
+function _stablePart(value, fallback = 'unknown') {
+    const normalized = String(value ?? '').trim();
+    return normalized || fallback;
+}
+
+function _stableDatePart(item) {
+    const raw = item.business_date || item.trade_date || item.date || item.report_date || item.created_at || item.timestamp;
+    if (raw) {
+        const value = String(raw).trim();
+        const dateMatch = value.match(/\d{4}-\d{2}-\d{2}/);
+        if (dateMatch) return dateMatch[0];
+        return value.slice(0, 10);
+    }
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(new Date());
+}
+
+function _statusLogicalSlot(item) {
+    return _stablePart(
+        item.logical_slot || item.slot || item.slot_name || item.brief_slot || item.report_slot || item.session,
+        'default'
+    ).toUpperCase();
+}
+
+function _sellExitType(item) {
+    return _stablePart(item.exit_type || item.recommendation_type || item.sell_type, 'UNKNOWN').toUpperCase();
+}
+
+function _fallbackSellIdentity(item) {
+    return [
+        item.position_id,
+        item.trade_id,
+        item.order_id,
+        item.stk_cd,
+        item.strategy,
+        item.entry_price,
+        item.exit_price || item.cur_prc,
+        item.realized_pnl_pct,
+    ].map((value) => _stablePart(value)).join(':');
+}
+
+function buildUserSendDedupKey(item) {
+    if (item.type === 'SELL_SIGNAL' || item.type === 'SELL_RECOMMENDATION') {
+        const eventType = _stablePart(item.event_type || item.type, item.type).toUpperCase();
+        const exitType = _sellExitType(item);
+        const identity = _stablePart(item.signal_id || item.signalId, _fallbackSellIdentity(item));
+        return `telegram:user-send:sell:${identity}:${eventType}:${exitType}`;
+    }
+    if (item.type === 'STATUS_REPORT' || item.type === 'MIDDAY_REPORT') {
+        return `telegram:user-send:status:${_stableDatePart(item)}:${_statusLogicalSlot(item)}`;
+    }
+    return null;
+}
+
+async function _claimUserSend(key, ttlSec = USER_SEND_DEDUP_TTL_SEC) {
+    if (!key) return true;
+    try {
+        const result = await getClient().set(key, String(Date.now()), 'EX', ttlSec, 'NX');
+        return result === 'OK';
+    } catch (e) {
+        logger.warn('user send dedup unavailable; sending without claim', { dedup_key: key, error: e.message });
+        return true;
+    }
+}
+
+async function _releaseUserSend(key) {
+    if (!key) return;
+    try {
+        const client = getClient();
+        if (typeof client.del === 'function') await client.del(key);
+    } catch (e) {
+        logger.warn('user send dedup release failed', { dedup_key: key, error: e.message });
+    }
+}
+
 function getRecipientGroup(chatIds, explicitGroup) {
     if (explicitGroup) return explicitGroup;
     if (chatIds) return 'primary';
@@ -165,6 +246,7 @@ async function _broadcast(bot, { type, text, logLabel, logMeta = {}, extraOpts =
         failed_count: failedCount,
         ...logMeta,
     });
+    return { sentCount, failedCount };
 }
 
 function _statusReportPayload(item) {
@@ -283,7 +365,26 @@ async function processItem(bot, item) {
     if (handler) {
         const payload = handler(item);
         if (payload) {
-            await _broadcast(bot, payload);
+            const dedupKey = buildUserSendDedupKey(item);
+            const dedupTtlSec = (item.type === 'STATUS_REPORT' || item.type === 'MIDDAY_REPORT')
+                ? STATUS_SEND_DEDUP_TTL_SEC
+                : USER_SEND_DEDUP_TTL_SEC;
+            const claimed = await _claimUserSend(dedupKey, dedupTtlSec);
+            if (!claimed) {
+                logger.info('duplicate user-facing broadcast skipped', {
+                    type: item.type,
+                    dedup_key: dedupKey,
+                    slot: item.slot || item.slot_name || item.brief_slot || item.report_slot,
+                    signal_id: item.signal_id || item.signalId,
+                    exit_type: item.exit_type || item.recommendation_type || item.sell_type,
+                });
+                return;
+            }
+
+            const result = await _broadcast(bot, payload);
+            if (dedupKey && result.sentCount === 0) {
+                await _releaseUserSend(dedupKey);
+            }
             // Threads 브리핑 동시 발행 (STATUS_REPORT / MIDDAY_REPORT, fire-and-forget)
             if (_shouldPostBriefingToThreads(item.type)) {
                 const threadsText = formatThreadsBriefing(item);
@@ -452,4 +553,10 @@ async function startPolling(bot) {
 
 const { startConfirmPoller } = require('./confirmGate');
 
-module.exports = { startPolling, startConfirmPoller, stripPersonaLines };
+module.exports = {
+    startPolling,
+    startConfirmPoller,
+    stripPersonaLines,
+    processItem,
+    buildUserSendDedupKey,
+};

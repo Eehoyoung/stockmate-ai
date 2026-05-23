@@ -11,6 +11,7 @@ import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.service.OvernightScoringService;
 import org.invest.apiorchestrator.util.KstClock;
+import org.invest.apiorchestrator.util.TradingDayWindow;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -288,16 +289,16 @@ public class TradingController {
     /** 오늘 신호 + 가상 P&L 목록 */
     @GetMapping("/signals/performance")
     public ResponseEntity<List<TradingSignal>> getSignalPerformance() {
-        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
-        List<TradingSignal> signals = signalRepository.findTodaySignals(startOfDay);
+        TradingDayWindow window = TradingDayWindow.of(KstClock.today());
+        List<TradingSignal> signals = signalRepository.findSignalsCreatedBetween(window.start(), window.end());
         return ResponseEntity.ok(signals);
     }
 
     /** 전략별 가상 성과 요약 */
     @GetMapping("/signals/performance/summary")
     public ResponseEntity<List<Object[]>> getPerformanceSummary() {
-        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
-        return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(startOfDay));
+        TradingDayWindow window = TradingDayWindow.of(KstClock.today());
+        return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(window.start(), window.end()));
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -351,8 +352,8 @@ public class TradingController {
     /** 전략별 성과 상세 (Feature 3 – /전략분석) */
     @GetMapping("/signals/strategy-analysis")
     public ResponseEntity<List<Object[]>> getStrategyAnalysis() {
-        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
-        return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(startOfDay));
+        TradingDayWindow window = TradingDayWindow.of(KstClock.today());
+        return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(window.start(), window.end()));
     }
 
     // ──────────────────────────────────────────────────────────────

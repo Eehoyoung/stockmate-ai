@@ -15,12 +15,25 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_TICK_TABLE = "ws_tick_data_partitioned"
+
 _TICK_MIN_INTERVAL_MS = {
     "0B": int(os.getenv("WS_DB_0B_MIN_INTERVAL_MS", "0")),
     "0D": int(os.getenv("WS_DB_0D_MIN_INTERVAL_MS", "0")),
     "0H": int(os.getenv("WS_DB_0H_MIN_INTERVAL_MS", "0")),
 }
 _last_tick_insert_ms: dict[tuple[str, str], int] = {}
+
+
+def _safe_relation_name(raw: str | None) -> str:
+    name = (raw or _DEFAULT_TICK_TABLE).strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", name):
+        return name
+    logger.warning("[DB] invalid WS_TICK_DATA_TABLE=%r; using %s", raw, _DEFAULT_TICK_TABLE)
+    return _DEFAULT_TICK_TABLE
+
+
+_WS_TICK_DATA_TABLE = _safe_relation_name(os.getenv("WS_TICK_DATA_TABLE"))
 
 
 def _normalize_stock_code(stk_cd: str | None) -> str:
@@ -73,6 +86,14 @@ def _should_persist_tick(tick_type: str, stk_cd: str) -> bool:
     return True
 
 
+def _must_persist_trade(values: dict) -> bool:
+    return _f(values.get("10")) is not None or _i(values.get("13")) is not None or _f(values.get("228")) is not None
+
+
+def _must_persist_expected(values: dict) -> bool:
+    return _f(values.get("10")) is not None or _i(values.get("15")) is not None
+
+
 async def mark_event_mode(rdb) -> None:
     try:
         await rdb.set("ws:db_writer:event_mode", "1", ex=120)
@@ -89,11 +110,11 @@ async def insert_tick_event(pg_pool, tick_type: str, stk_cd: str, values: dict) 
     try:
         if tick_type == "0B":
             await pg_pool.execute(
-                """
-                INSERT INTO ws_tick_data (
+                f"""
+                INSERT INTO {_WS_TICK_DATA_TABLE} (
                     stk_cd, cur_prc, pred_pre, flu_rt, acc_trde_qty,
-                    acc_trde_prica, cntr_str, tick_type, created_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+                    acc_trde_prica, cntr_str, tick_type, must_persist, created_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
                 """,
                 stk_cd,
                 _f(values.get("10")),
@@ -103,6 +124,7 @@ async def insert_tick_event(pg_pool, tick_type: str, stk_cd: str, values: dict) 
                 _i(values.get("14")),
                 _f(values.get("228")),
                 "0B",
+                _must_persist_trade(values),
             )
             return
 
@@ -111,8 +133,8 @@ async def insert_tick_event(pg_pool, tick_type: str, stk_cd: str, values: dict) 
             total_ask = _i(values.get("121"))
             ratio = (float(total_bid) / float(total_ask)) if total_bid is not None and total_ask not in (None, 0) else None
             await pg_pool.execute(
-                """
-                INSERT INTO ws_tick_data (
+                f"""
+                INSERT INTO {_WS_TICK_DATA_TABLE} (
                     stk_cd, total_bid_qty, total_ask_qty, bid_ask_ratio, tick_type, created_at
                 ) VALUES ($1,$2,$3,$4,$5,NOW())
                 """,
@@ -126,10 +148,10 @@ async def insert_tick_event(pg_pool, tick_type: str, stk_cd: str, values: dict) 
 
         if tick_type == "0H":
             await pg_pool.execute(
-                """
-                INSERT INTO ws_tick_data (
-                    stk_cd, cur_prc, pred_pre, flu_rt, acc_trde_qty, tick_type, created_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,NOW())
+                f"""
+                INSERT INTO {_WS_TICK_DATA_TABLE} (
+                    stk_cd, cur_prc, pred_pre, flu_rt, acc_trde_qty, tick_type, must_persist, created_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
                 """,
                 stk_cd,
                 _f(values.get("10")),
@@ -137,10 +159,12 @@ async def insert_tick_event(pg_pool, tick_type: str, stk_cd: str, values: dict) 
                 _f(values.get("12")),
                 _i(values.get("15")),
                 "0H",
+                _must_persist_expected(values),
             )
     except Exception as e:
         logger.warning(
-            "[DB] ws_tick_data insert failed [%s %s] %s: %r",
+            "[DB] %s insert failed [%s %s] %s: %r",
+            _WS_TICK_DATA_TABLE,
             tick_type,
             stk_cd,
             type(e).__name__,

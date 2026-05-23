@@ -94,6 +94,30 @@ class TestPushSignals:
         assert parsed["stk_cd"] == "005930"
         assert "삼성전자" in args[1]
 
+    def test_runner_normalizes_emitted_score_and_preserves_raw(self):
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        signals = [{"stk_cd": "005930", "strategy": "S12_CLOSING", "score": 15.0}]
+        _run(_push_signals(rdb, signals, "S12_CLOSING"))
+
+        payload = json.loads(rdb.lpush.call_args[0][1])
+        assert payload["score"] == 50.0
+        assert payload["runner_score"] == 50.0
+        assert payload["runner_score_raw"] == 15.0
+        assert payload["score_scale"] == "0_100"
+
+    def test_runner_clamps_normalized_score_to_100(self):
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        signals = [{"stk_cd": "005930", "strategy": "S12_CLOSING", "score": 90.0}]
+        _run(_push_signals(rdb, signals, "S12_CLOSING"))
+
+        payload = json.loads(rdb.lpush.call_args[0][1])
+        assert payload["score"] == 100.0
+        assert payload["runner_score_raw"] == 90.0
+
     def test_sets_queue_ttl(self):
         from strategy_runner import _push_signals
 

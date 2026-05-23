@@ -648,6 +648,28 @@ class TestSwingScoreBoosts:
         score, _ = rule_score(signal, _ctx(strength=120, flu_rt=2.0, bid_ratio=1.4))
         assert score >= 70.0
 
+    def test_rule_score_uses_preserved_runner_raw_score_for_strategy_bonus(self):
+        base_signal = _signal(
+            "S8_GOLDEN_CROSS",
+            flu_rt=2.0,
+            cntr_strength=120,
+            vol_ratio=1.5,
+            score=20,
+            rsi=55,
+            is_today_cross=True,
+        )
+        normalized_signal = {
+            **base_signal,
+            "score": 100.0,
+            "runner_score": 100.0,
+            "runner_score_raw": 20.0,
+            "score_scale": "0_100",
+        }
+
+        raw_score, _ = rule_score(base_signal, _ctx(strength=120, flu_rt=2.0, bid_ratio=1.4))
+        normalized_score, _ = rule_score(normalized_signal, _ctx(strength=120, flu_rt=2.0, bid_ratio=1.4))
+        assert normalized_score == raw_score
+
     def test_s13_strategy_payload_is_reflected_in_score(self):
         signal = _signal(
             "S13_BOX_BREAKOUT",

@@ -9,6 +9,7 @@ const START_HOUR = 9;
 const END_HOUR = 16;
 
 let timer = null;
+let lastSentSlotKey = null;
 
 function getPrimaryChatIds() {
     return String(process.env.TELEGRAM_PRIMARY_CHAT_ID ?? '')
@@ -17,7 +18,8 @@ function getPrimaryChatIds() {
         .filter(Boolean);
 }
 
-function nextHourlySlot(now = new Date()) {
+function nextHourlySlot(now = new Date(), options = {}) {
+    const includeCurrentExact = options.includeCurrentExact !== false;
     const parts = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Asia/Seoul',
         year: 'numeric',
@@ -35,7 +37,7 @@ function nextHourlySlot(now = new Date()) {
     const onExactHour = current.getUTCMinutes() === 0 && current.getUTCSeconds() === 0 && current.getUTCMilliseconds() === 0;
 
     let target = new Date(kstAsUtc);
-    if (!onExactHour) {
+    if (!onExactHour || !includeCurrentExact) {
         target.setUTCHours(target.getUTCHours() + 1, 0, 0, 0);
     }
 
@@ -51,6 +53,10 @@ function nextHourlySlot(now = new Date()) {
         delayMs: Math.max(0, offsetMs),
         kstSlot: target,
     };
+}
+
+function slotKey(kstSlot) {
+    return kstSlot.toISOString().replace('T', ' ').slice(0, 13);
 }
 
 async function sendActivePositionsReport(bot) {
@@ -87,11 +93,19 @@ async function sendActivePositionsReport(bot) {
     });
 }
 
-function scheduleNext(bot) {
-    const { delayMs, kstSlot } = nextHourlySlot();
+function scheduleNext(bot, includeCurrentExact = false) {
+    const { delayMs, kstSlot } = nextHourlySlot(new Date(), { includeCurrentExact });
+    const currentSlotKey = slotKey(kstSlot);
     timer = setTimeout(async () => {
         try {
-            await sendActivePositionsReport(bot);
+            if (lastSentSlotKey === currentSlotKey) {
+                logger.warn('active positions report duplicate slot skipped', {
+                    kst_slot: currentSlotKey,
+                });
+            } else {
+                lastSentSlotKey = currentSlotKey;
+                await sendActivePositionsReport(bot);
+            }
         } catch (e) {
             logger.error('active positions report failed', {}, e);
         } finally {
@@ -107,7 +121,7 @@ function scheduleNext(bot) {
 
 function startActivePositionsScheduler(bot) {
     if (timer) return;
-    scheduleNext(bot);
+    scheduleNext(bot, true);
 }
 
 function stopActivePositionsScheduler() {
@@ -115,11 +129,13 @@ function stopActivePositionsScheduler() {
         clearTimeout(timer);
         timer = null;
     }
+    lastSentSlotKey = null;
 }
 
 module.exports = {
     getPrimaryChatIds,
     nextHourlySlot,
+    slotKey,
     sendActivePositionsReport,
     startActivePositionsScheduler,
     stopActivePositionsScheduler,

@@ -21,6 +21,7 @@ from db_writer import (
 from price_utils import normalize_signal_prices
 from redis_reader import push_score_only_queue
 from scorer import check_daily_limit, rule_score
+from score_utils import normalize_score_0_100
 from strategy_meta import get_hold_to_enter_threshold as _get_hold_threshold
 from tp_sl_engine import compute_rr
 from utils import safe_float as _fv
@@ -226,9 +227,10 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
 
     if recompute_rule:
         r_score, _ = rule_score(item, ctx)
+        r_score = normalize_score_0_100(r_score)
         item["rule_score"] = r_score
     else:
-        r_score  = float(item.get("rule_score", 0))
+        r_score  = normalize_score_0_100(item.get("rule_score", 0))
 
     logger.info("[ConfirmWorker] Claude 분석 시작 [%s %s] rule_score=%.1f", stk_cd, strategy, r_score)
 
@@ -262,6 +264,7 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
                 cancel_type = "AI_UNAVAILABLE"
 
         result = _maybe_promote_hold_to_enter(result, strategy=strategy)
+        result["ai_score"] = normalize_score_0_100(result.get("ai_score", r_score))
         display_reason = _resolve_display_reason(
             result.get("action", "HOLD"),
             result.get("reason", ""),

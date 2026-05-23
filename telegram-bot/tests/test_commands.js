@@ -85,6 +85,7 @@ function buildCommands(overrides = {}) {
             getStrategyAnalysis: async () => overrides.strategyAnalysis || [],
             getLiveNewsBrief: async () => overrides.liveNewsBrief || null,
             analyzeStockWithClaude: async () => overrides.claudeAnalysis || { error: 'missing mock' },
+            scoreStockFull: async () => overrides.claudeAnalysis || { error: 'missing mock' },
         },
     };
 
@@ -102,7 +103,9 @@ function buildCommands(overrides = {}) {
             formatCalendarWeek: () => 'calendar',
             formatPerformanceDetail: () => 'track',
             formatUserSettings: (filter, watchlist) => `settings:${filter.length}:${watchlist.length}`,
-            formatStockScore: () => ['score'],
+            formatStockScore: (data) => data && data.action
+                ? ['진입 우세\n포트폴리오 연동\nTP / SL\n호가 요약']
+                : ['score'],
         },
     };
 

@@ -29,6 +29,7 @@ import time as _time
 from datetime import time, timedelta, timezone
 
 from market_session import current_session, is_trading_active
+from score_utils import normalize_runner_signal
 from utils import normalize_stock_code
 
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
@@ -221,6 +222,7 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
     for sig in signals:
         stk_cd = normalize_stock_code(sig.get("stk_cd", ""))
         sig["stk_cd"] = stk_cd
+        normalize_runner_signal(sig, strategy_name)
 
         dedup_ttl = SWING_DEDUP_TTL_SEC if strategy_name in _SWING_STRATEGIES else INTRADAY_DEDUP_TTL_SEC
         dedup_key = f"scanner:dedup:{strategy_name}:{stk_cd}"
@@ -269,6 +271,8 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
                     mapping={
                         "stk_cd": str(sig.get("stk_cd", "")),
                         "score": str(sig.get("score", "")),
+                        "runner_score_raw": str(sig.get("runner_score_raw", "")),
+                        "score_scale": str(sig.get("score_scale", "")),
                         "updated_at": str(int(_time.time())),
                     },
                 )
@@ -321,7 +325,7 @@ async def _scan_s1(rdb, token):
         signals = await scan_gap_opening(token, candidates, rdb=rdb)
         await _push_signals(rdb, signals, "S1_GAP_OPEN")
     except Exception as exc:
-        logger.error("[Runner] S1 스캔 오류: %s", exc)
+        logger.exception("[Runner] S1 스캔 오류")
 
 
 async def _scan_s2(rdb, token):
@@ -352,7 +356,7 @@ async def _scan_s2(rdb, token):
                 logger.debug("[Runner] S2 항목 처리 실패: %s", ve)
         await _push_signals(rdb, s2_signals, "S2_VI_PULLBACK")
     except Exception as exc:
-        logger.error("[Runner] S2 스캔 오류: %s", exc)
+        logger.exception("[Runner] S2 스캔 오류")
 
 
 async def _scan_s3(rdb, token):
@@ -363,7 +367,7 @@ async def _scan_s3(rdb, token):
             signals = await scan_inst_foreign(token, market, rdb=rdb)
             await _push_signals(rdb, signals, "S3_INST_FRGN")
     except Exception as exc:
-        logger.error("[Runner] S3 스캔 오류: %s", exc)
+        logger.exception("[Runner] S3 스캔 오류")
 
 
 async def _scan_s4(rdb, token):
@@ -383,7 +387,7 @@ async def _scan_s4(rdb, token):
                     break
         await _push_signals(rdb, s4_signals, "S4_BIG_CANDLE")
     except Exception as exc:
-        logger.error("[Runner] S4 스캔 오류: %s", exc)
+        logger.exception("[Runner] S4 스캔 오류")
 
 
 async def _scan_s5(rdb, token):
@@ -394,7 +398,7 @@ async def _scan_s5(rdb, token):
             signals = await scan_program_buy(token, market, rdb=rdb)
             await _push_signals(rdb, signals, "S5_PROG_FRGN")
     except Exception as exc:
-        logger.error("[Runner] S5 스캔 오류: %s", exc)
+        logger.exception("[Runner] S5 스캔 오류")
 
 
 async def _scan_s6(rdb, token):
@@ -404,7 +408,7 @@ async def _scan_s6(rdb, token):
         signals = await scan_theme_laggard(token, rdb=rdb)
         await _push_signals(rdb, signals, "S6_THEME_LAGGARD")
     except Exception as exc:
-        logger.error("[Runner] S6 스캔 오류: %s", exc)
+        logger.exception("[Runner] S6 스캔 오류")
 
 
 async def _scan_s7(rdb, token):
@@ -414,7 +418,7 @@ async def _scan_s7(rdb, token):
         signals = await scan_ichimoku_breakout(token, rdb=rdb)
         await _push_signals(rdb, signals, "S7_ICHIMOKU_BREAKOUT")
     except Exception as exc:
-        logger.error("[Runner] S7 스캔 오류: %s", exc)
+        logger.exception("[Runner] S7 스캔 오류")
 
 
 async def _scan_s8(rdb, token):
@@ -424,7 +428,7 @@ async def _scan_s8(rdb, token):
         signals = await scan_golden_cross(token, rdb=rdb)
         await _push_signals(rdb, signals, "S8_GOLDEN_CROSS")
     except Exception as exc:
-        logger.error("[Runner] S8 스캔 오류: %s", exc)
+        logger.exception("[Runner] S8 스캔 오류")
 
 
 async def _scan_s9(rdb, token):
@@ -434,7 +438,7 @@ async def _scan_s9(rdb, token):
         signals = await scan_pullback_swing(token, rdb=rdb)
         await _push_signals(rdb, signals, "S9_PULLBACK_SWING")
     except Exception as exc:
-        logger.error("[Runner] S9 스캔 오류: %s", exc)
+        logger.exception("[Runner] S9 스캔 오류")
 
 
 async def _scan_s10(rdb, token):
@@ -444,7 +448,7 @@ async def _scan_s10(rdb, token):
         signals = await scan_new_high_swing(token, "000", rdb=rdb)
         await _push_signals(rdb, signals, "S10_NEW_HIGH")
     except Exception as exc:
-        logger.error("[Runner] S10 스캔 오류: %s", exc)
+        logger.exception("[Runner] S10 스캔 오류")
 
 
 async def _scan_s11(rdb, token):
@@ -455,7 +459,7 @@ async def _scan_s11(rdb, token):
             signals = await scan_frgn_cont_swing(token, market, rdb=rdb)
             await _push_signals(rdb, signals, "S11_FRGN_CONT")
     except Exception as exc:
-        logger.error("[Runner] S11 스캔 오류: %s", exc)
+        logger.exception("[Runner] S11 스캔 오류")
 
 
 async def _scan_s12(rdb, token):
@@ -466,7 +470,7 @@ async def _scan_s12(rdb, token):
             signals = await scan_closing_buy(token, market, rdb=rdb)
             await _push_signals(rdb, signals, "S12_CLOSING")
     except Exception as exc:
-        logger.error("[Runner] S12 스캔 오류: %s", exc)
+        logger.exception("[Runner] S12 스캔 오류")
 
 
 async def _scan_s13(rdb, token):
@@ -476,7 +480,7 @@ async def _scan_s13(rdb, token):
         signals = await scan_box_breakout(token, rdb=rdb)
         await _push_signals(rdb, signals, "S13_BOX_BREAKOUT")
     except Exception as exc:
-        logger.error("[Runner] S13 스캔 오류: %s", exc)
+        logger.exception("[Runner] S13 스캔 오류")
 
 
 async def _scan_s14(rdb, token):
@@ -486,7 +490,7 @@ async def _scan_s14(rdb, token):
         signals = await scan_oversold_bounce(token, rdb=rdb)
         await _push_signals(rdb, signals, "S14_OVERSOLD_BOUNCE")
     except Exception as exc:
-        logger.error("[Runner] S14 스캔 오류: %s", exc)
+        logger.exception("[Runner] S14 스캔 오류")
 
 
 async def _scan_s15(rdb, token):
@@ -496,7 +500,7 @@ async def _scan_s15(rdb, token):
         signals = await scan_momentum_align(token, rdb=rdb)
         await _push_signals(rdb, signals, "S15_MOMENTUM_ALIGN")
     except Exception as exc:
-        logger.error("[Runner] S15 스캔 오류: %s", exc)
+        logger.exception("[Runner] S15 스캔 오류")
 
 
 _SCHEDULE: list[tuple[str, time, time, callable]] = [

@@ -163,6 +163,58 @@ def test_momentum_keeps_technical_stop_when_support_is_far():
     assert "risk_cap" not in result.sl_method
 
 
+def test_priority_strategies_fit_tp_to_strategy_rr():
+    cases = [
+        (
+            "S1_GAP_OPEN",
+            dict(cur_prc=1000, highs=[1000, 1026, 1015], lows=[], closes=[], atr=20.0, prev_close=980.0),
+            "s1_intraday",
+        ),
+        (
+            "S6_THEME_LAGGARD",
+            dict(
+                cur_prc=100,
+                highs=[100, 101, 102, 103, 104],
+                lows=[98, 97, 99, 100, 101],
+                closes=[99, 100, 101, 102, 103],
+                atr=2.0,
+                ma5=98.5,
+            ),
+            "s6_theme",
+        ),
+        (
+            "S12_CLOSING",
+            dict(
+                cur_prc=100,
+                highs=[100, 101, 102, 102.5],
+                lows=[98, 97, 99, 100, 101],
+                closes=[99, 100, 101, 102, 103],
+                atr=2.0,
+                ma5=98.5,
+                ma20=96.0,
+            ),
+            "s12_closing",
+        ),
+        (
+            "S15_MOMENTUM_ALIGN",
+            dict(
+                cur_prc=100,
+                highs=[100, 101, 102, 103],
+                lows=[98, 97, 99, 100, 101],
+                closes=[99, 100, 101, 102, 103],
+                atr=1.0,
+                ma20=96.0,
+            ),
+            "s15_momentum",
+        ),
+    ]
+
+    for strategy, kwargs, tag in cases:
+        result = calc_tp_sl(strategy=strategy, stk_cd="005930", **kwargs)
+        assert result.effective_rr >= result.min_rr_ratio
+        assert f"rr_fit_{tag}" in result.tp_method
+
+
 def test_strategy_specific_min_rr_is_advisory_for_day_trade():
     result = calc_tp_sl(
         strategy="S2_VI_PULLBACK",

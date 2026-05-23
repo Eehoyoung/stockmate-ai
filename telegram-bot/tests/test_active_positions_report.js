@@ -9,6 +9,7 @@ const {
 } = require(path.join(__dirname, '../src/utils/activePositionsFormatter'));
 const {
     nextHourlySlot,
+    slotKey,
 } = require(path.join(__dirname, '../src/handlers/activePositionsScheduler'));
 
 let passCount = 0;
@@ -85,6 +86,19 @@ test('nextHourlySlot schedules exact in-window hour immediately', () => {
     const result = nextHourlySlot(new Date('2026-05-14T12:00:00+09:00'));
     assert.strictEqual(result.delayMs, 0);
     assert.strictEqual(result.kstSlot.getUTCHours(), 12);
+});
+
+test('nextHourlySlot skips current exact hour when requested by recursive scheduler', () => {
+    const result = nextHourlySlot(new Date('2026-05-14T09:00:00+09:00'), {
+        includeCurrentExact: false,
+    });
+    assert.strictEqual(result.delayMs, 60 * 60 * 1000);
+    assert.strictEqual(result.kstSlot.getUTCHours(), 10);
+});
+
+test('slotKey is stable at hourly precision', () => {
+    assert.strictEqual(slotKey(new Date(Date.UTC(2026, 4, 14, 9, 0, 0))), '2026-05-14 09');
+    assert.strictEqual(slotKey(new Date(Date.UTC(2026, 4, 14, 9, 59, 59))), '2026-05-14 09');
 });
 
 test('nextHourlySlot schedules after 16:00 window to next day 09:00 KST', () => {

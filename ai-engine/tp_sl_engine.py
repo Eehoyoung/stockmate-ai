@@ -102,7 +102,7 @@ _STRATEGY_POLICY: dict[str, dict[str, object]] = {
         "trail_activation_r": None,
     },
     "S7_ICHIMOKU_BREAKOUT": {"min_rr": 1.80, "trail_activation_r": 1.5, "allow_overnight": True, "allow_reentry": True},
-    "S8_GOLDEN_CROSS": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
+    "S8_GOLDEN_CROSS": {"min_rr": 1.3, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
     "S9_PULLBACK_SWING": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
     "S10_NEW_HIGH": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
     "S11_FRGN_CONT": {"min_rr": 1.55, "trail_activation_r": 1.0, "allow_overnight": True, "allow_reentry": True},
@@ -464,6 +464,58 @@ def _nearest_resistance(highs: list[float], cur_prc: float, *, lookback: int, mi
 def _slip_fee(stk_cd: str) -> float:
     """종목코드 기반 슬리피지+수수료 비율 (편도)"""
     return SLIP_FEE_KOSPI if str(stk_cd).startswith("0") else SLIP_FEE_KOSDAQ
+
+
+def _required_tp_for_rr(cur_prc: float, sl_price: float, slip_fee: float, min_rr: float) -> int | None:
+    if cur_prc <= 0 or sl_price <= 0 or sl_price >= cur_prc:
+        return None
+    rt = 2 * slip_fee
+    risk = (cur_prc - sl_price) / cur_prc + rt
+    if risk <= 0:
+        return None
+    required_reward = min_rr * risk + rt
+    return int(cur_prc * (1.0 + required_reward)) + 1
+
+
+def _fit_tp_to_min_rr(
+    result: TpSlResult,
+    *,
+    cur_prc: float,
+    slip: float,
+    min_rr: float,
+    max_target_pct: float,
+    min_target_pct: float,
+    method_tag: str,
+) -> TpSlResult:
+    """
+    Lift TP only when the existing target is too close for the strategy R:R.
+
+    The cap keeps the target inside the strategy's expected holding horizon. If
+    the capped target still cannot reach min_rr, the downstream advisory/cancel
+    gate remains responsible for filtering the signal.
+    """
+    current_rr, _ = _calc_rr(cur_prc, result.tp1_price, result.sl_price, slip, min_rr)
+    if current_rr >= min_rr:
+        result.rr_ratio = current_rr
+        result.skip_entry = False
+        return result
+
+    required_tp = _required_tp_for_rr(cur_prc, result.sl_price, slip, min_rr)
+    if required_tp is None:
+        result.rr_ratio, result.skip_entry = _calc_rr(cur_prc, result.tp1_price, result.sl_price, slip, min_rr)
+        return result
+
+    min_tp = int(cur_prc * (1.0 + min_target_pct))
+    cap_tp = int(cur_prc * (1.0 + max_target_pct))
+    fitted_tp = min(max(required_tp, min_tp), cap_tp)
+    if fitted_tp > result.tp1_price:
+        result.tp1_price = fitted_tp
+        result.tp_method = f"{result.tp_method}+rr_fit_{method_tag}" if result.tp_method else f"rr_fit_{method_tag}"
+        if result.tp2_price is not None and result.tp2_price <= result.tp1_price:
+            result.tp2_price = int(result.tp1_price * 1.04)
+
+    result.rr_ratio, result.skip_entry = _calc_rr(cur_prc, result.tp1_price, result.sl_price, slip, min_rr)
+    return result
 
 
 def _resolve_strategy_min_rr(strategy: str, requested_min_rr: float) -> float:
@@ -876,9 +928,17 @@ def _tp_sl_gap_open(
         tp_method = "intraday_gap_target(2.5~4.5%)"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _fit_tp_to_min_rr(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        slip=slip,
+        min_rr=min_rr,
+        min_target_pct=0.032,
+        max_target_pct=0.055,
+        method_tag="s1_intraday",
+    )
 
 
 # ── S2: VI 눌림목 반등 ────────────────────────────────────────
@@ -1164,9 +1224,17 @@ def _tp_sl_theme(
         tp_method = "pct_4.5%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
-                      sl_method=sl_method, tp_method=tp_method,
-                      rr_ratio=rr_ratio, skip_entry=skip)
+    return _fit_tp_to_min_rr(
+        TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                   sl_method=sl_method, tp_method=tp_method,
+                   rr_ratio=rr_ratio, skip_entry=skip),
+        cur_prc=cur_prc,
+        slip=slip,
+        min_rr=min_rr,
+        min_target_pct=0.045,
+        max_target_pct=0.065,
+        method_tag="s6_theme",
+    )
 
 
 # ── S7: 일목균형표 구름대 돌파 스윙 ───────────────────────────
@@ -1315,13 +1383,17 @@ def _tp_sl_golden_cross(
         sl_method = "pct_5%_fallback"
 
     # ── TP 설정 ───────────────────────────────────────────────
-    swing_highs = find_swing_highs(highs, cur_prc, lookback=40)
+    # S8 전용: 현재가 대비 5% 미만 저항은 노이즈로 간주하고 제거.
+    # 골든크로스 스윙은 최소 5% 업사이드가 없으면 리스크 대비 매력이 없다.
+    _S8_MIN_TP_PCT = 0.05
+    all_swing_highs = find_swing_highs(highs, cur_prc, lookback=40)
+    swing_highs = [h for h in all_swing_highs if h > cur_prc * (1 + _S8_MIN_TP_PCT)]
     tp2_price   = None
     if swing_highs:
         tp1_price = int(swing_highs[0])
         tp2_price = int(swing_highs[1]) if len(swing_highs) > 1 else None
-        tp_method = "swing_resistance"
-    elif bb_upper and bb_upper > cur_prc:
+        tp_method = "swing_resistance_5pct+"
+    elif bb_upper and bb_upper > cur_prc * (1 + _S8_MIN_TP_PCT):
         tp1_price = int(bb_upper)
         tp_method = "bollinger_upper"
     elif atr:
@@ -1331,8 +1403,14 @@ def _tp_sl_golden_cross(
         tp1_price = int(cur_prc * 1.10)
         tp_method = "pct_10%_fallback"
 
+    # S8 전용 최소 TP 보정: 5% 하한 (공통 _finalize_swing_result의 3% 하한보다 우선 적용)
+    min_tp1_s8 = int(cur_prc * (1 + _S8_MIN_TP_PCT))
+    if tp1_price < min_tp1_s8:
+        tp1_price = min_tp1_s8
+        tp_method = f"{tp_method}+s8_min_5pct"
+
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return _finalize_swing_result(
+    result = _finalize_swing_result(
         TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
                    sl_method=sl_method, tp_method=tp_method,
                    rr_ratio=rr_ratio, skip_entry=skip),
@@ -1343,6 +1421,9 @@ def _tp_sl_golden_cross(
         macd_signal=macd_signal,
         macd_hist=macd_hist,
     )
+    # _finalize_swing_result 이후 RR을 재계산: 공통 함수가 tp1을 재조정할 수 있으므로
+    result.rr_ratio, result.skip_entry = _calc_rr(cur_prc, result.tp1_price, result.sl_price, slip, min_rr)
+    return result
 
 
 def _tp_sl_pullback(
@@ -1605,7 +1686,7 @@ def _tp_sl_momentum_align(
             tp_method += "+pct_10%_min"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return _finalize_swing_result(
+    result = _finalize_swing_result(
         TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
                    sl_method=sl_method, tp_method=tp_method,
                    rr_ratio=rr_ratio, skip_entry=skip),
@@ -1615,6 +1696,15 @@ def _tp_sl_momentum_align(
         macd_line=macd_line,
         macd_signal=macd_signal,
         macd_hist=macd_hist,
+    )
+    return _fit_tp_to_min_rr(
+        result,
+        cur_prc=cur_prc,
+        slip=slip,
+        min_rr=min_rr,
+        min_target_pct=0.055,
+        max_target_pct=0.125,
+        method_tag="s15_momentum",
     )
 
 
@@ -1852,7 +1942,7 @@ def _tp_sl_closing(
         tp_method = "pct_5%_fallback"
 
     rr_ratio, skip = _calc_rr(cur_prc, tp1_price, sl_price, slip, min_rr)
-    return _finalize_swing_result(
+    result = _finalize_swing_result(
         TpSlResult(sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
                    sl_method=sl_method, tp_method=tp_method,
                    rr_ratio=rr_ratio, skip_entry=skip),
@@ -1862,6 +1952,15 @@ def _tp_sl_closing(
         macd_line=macd_line,
         macd_signal=macd_signal,
         macd_hist=macd_hist,
+    )
+    return _fit_tp_to_min_rr(
+        result,
+        cur_prc=cur_prc,
+        slip=slip,
+        min_rr=min_rr,
+        min_target_pct=0.04,
+        max_target_pct=0.095,
+        method_tag="s12_closing",
     )
 
 

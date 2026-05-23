@@ -12,6 +12,7 @@ import org.invest.apiorchestrator.repository.PortfolioConfigRepository;
 import org.invest.apiorchestrator.repository.RiskEventRepository;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.util.KstClock;
+import org.invest.apiorchestrator.util.TradingDayWindow;
 import org.invest.apiorchestrator.util.StockCodeNormalizer;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
@@ -21,7 +22,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
@@ -121,8 +121,13 @@ public class SignalService {
             signalRepository.save(signal);
 
             try {
-                candidatePoolHistoryRepository.markLedToSignal(
-                        KstClock.today(), strategy, dto.getMarketType(), stkCd, signal.getId());
+                String normalizedMarket = normalizeMarketCode(dto.getMarketType());
+                if (normalizedMarket != null) {
+                    candidatePoolHistoryRepository.markLedToSignal(
+                            KstClock.today(), strategy, normalizedMarket, stkCd, signal.getId());
+                } else {
+                    log.debug("[Signal] market_type 정규화 실패, pool history 갱신 건너뜀 [{} {}]", stkCd, strategy);
+                }
             } catch (Exception e) {
                 log.debug("[Signal] pool history 갱신 실패 (무시): {}", e.getMessage());
             }
@@ -159,20 +164,20 @@ public class SignalService {
 
     @Transactional(readOnly = true)
     public List<TradingSignal> getTodaySignals() {
-        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
-        return signalRepository.findTodaySignals(startOfDay);
+        TradingDayWindow window = TradingDayWindow.of(KstClock.today());
+        return signalRepository.findSignalsCreatedBetween(window.start(), window.end());
     }
 
     @Transactional(readOnly = true)
     public List<Object[]> getTodayStats() {
-        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
-        return signalRepository.getStrategyStats(startOfDay);
+        TradingDayWindow window = TradingDayWindow.of(KstClock.today());
+        return signalRepository.getStrategyStats(window.start(), window.end());
     }
 
     @Transactional(readOnly = true)
     public List<Object[]> getPerformanceStats() {
-        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
-        return signalRepository.getStrategyPerformanceStats(startOfDay);
+        TradingDayWindow window = TradingDayWindow.of(KstClock.today());
+        return signalRepository.getStrategyPerformanceStats(window.start(), window.end());
     }
 
     @Transactional
@@ -234,6 +239,8 @@ public class SignalService {
                 .timeStopType(dto.getTimeStopType())
                 .timeStopMinutes(dto.getTimeStopMinutes())
                 .timeStopSession(dto.getTimeStopSession())
+                // TODO: 계좌 API 연동 후 실제 주문 수량 계산으로 교체 (계좌잔고 / 진입가 × 비중)
+                .entryQty(10)
                 .ruleScore(dto.getSignalScore() != null
                         ? BigDecimal.valueOf(dto.getSignalScore()).setScale(2, RoundingMode.HALF_UP)
                         : null)
@@ -354,6 +361,16 @@ public class SignalService {
         } catch (Exception e) {
             log.warn("[Signal] 섹터 과열 알림 발행 실패: {}", e.getMessage());
         }
+    }
+
+    private String normalizeMarketCode(String marketType) {
+        if (marketType == null) return null;
+        String t = marketType.trim().toUpperCase();
+        return switch (t) {
+            case "001", "0", "KOSPI", "P00101" -> "001";
+            case "101", "10", "KOSDAQ", "P10102" -> "101";
+            default -> null;
+        };
     }
 
     @FunctionalInterface

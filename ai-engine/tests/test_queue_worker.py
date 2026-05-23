@@ -464,7 +464,7 @@ class TestQueueWorkerFailures:
         mock_limit.assert_not_awaited()
         mock_analyze.assert_not_awaited()
 
-    def test_s8_far_above_support_zone_cancels_before_ai(self):
+    def test_s8_far_above_support_zone_calls_ai_when_rr_is_strong(self):
         item = _signal(
             strategy="S8_GOLDEN_CROSS",
             cur_prc=10800,
@@ -477,22 +477,30 @@ class TestQueueWorkerFailures:
         async def capture_push(_rdb, payload):
             captured.append(payload)
 
+        async def fake_analyze(signal, ctx, rule_score, rdb=None):
+            assert signal["s8_zone_status"] == "caution"
+            assert signal["s8_zone_entry_policy"] == "momentum_chase_size_down"
+            return {"action": "HOLD", "ai_score": 72, "confidence": "MEDIUM", "reason": "extended but strong"}
+
         with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
              patch("queue_worker.rule_score", return_value=(88.0, {"s8": 88.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
-             patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
-             patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True) as mock_limit, \
+             patch("queue_worker.analyze_signal", side_effect=fake_analyze) as mock_analyze, \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured[0]["action"] == "CANCEL"
-        assert captured[0]["cancel_type"] == "S8_BUY_ZONE"
-        assert "support gap" in captured[0]["cancel_reason"]
-        mock_limit.assert_not_awaited()
-        mock_analyze.assert_not_awaited()
+        assert captured[0]["action"] == "HOLD"
+        assert captured[0]["s8_zone_status"] == "caution"
+        assert captured[0]["s8_zone_entry_policy"] == "momentum_chase_size_down"
+        rescue_meta = captured[0]["shadow_features"]["rescue_meta"]
+        assert rescue_meta["decision_stage"] == "SIZE_DOWN"
+        assert rescue_meta["s8_zone_entry_policy"] == "momentum_chase_size_down"
+        mock_limit.assert_awaited_once()
+        assert mock_analyze.await_count == 1
 
     def test_s8_moderately_above_support_zone_calls_ai_with_limit_pullback_policy(self):
         item = _signal(
@@ -605,6 +613,69 @@ class TestQueueWorkerFailures:
         assert captured_signal["rr_quality_bucket"] == "caution"
         assert "signal_quality_score" in captured_signal
         assert captured_signal["performance_ev_status"] == "insufficient_data"
+
+    def test_priority_rule_threshold_rescue_calls_ai(self):
+        item = _signal(
+            strategy="S7_ICHIMOKU_BREAKOUT",
+            cur_prc=10000,
+            tp1_price=11800,
+            sl_price=9500,
+            rr_ratio=3.0,
+            cntr_strength=125.0,
+            bid_ratio=0.8,
+            vol_ratio=2.0,
+            chikou_above=True,
+        )
+        rdb = _make_rdb(json.dumps(item))
+        captured_signal = {}
+
+        async def fake_analyze(signal, ctx, rule_score, rdb=None):
+            captured_signal.update(signal)
+            return {"action": "HOLD", "ai_score": 70, "confidence": "MEDIUM", "reason": "rescued setup"}
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(40.0, {"s7": 40.0})), \
+             patch("queue_worker.should_skip_ai", return_value=True), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True) as mock_limit, \
+             patch("queue_worker.analyze_signal", side_effect=fake_analyze) as mock_analyze, \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert captured_signal["rule_threshold_rescued"] is True
+        assert "RR 3.00" in captured_signal["rule_threshold_rescue_reason"]
+        mock_limit.assert_awaited_once()
+        assert mock_analyze.await_count == 1
+
+    def test_s1_hard_gate_bid_ratio_is_rescued_when_strength_passes(self):
+        from queue_worker import _hard_gate_failure
+
+        signal = {"strategy": "S1_GAP_OPEN", "cntr_strength": 160.0, "bid_ratio": 0.7, "rr_ratio": 1.3}
+        reason = _hard_gate_failure(signal, _ctx())
+
+        assert reason is None
+        assert signal["hard_gate_bid_ratio_rescued"] is True
+
+    def test_s1_hard_gate_extreme_bid_ratio_cancels_even_when_strength_passes(self):
+        from queue_worker import _hard_gate_failure
+
+        signal = {"strategy": "S1_GAP_OPEN", "cntr_strength": 180.0, "bid_ratio": 0.25, "rr_ratio": 2.0}
+        reason = _hard_gate_failure(signal, _ctx())
+
+        assert reason is not None
+        assert "bid_ratio" in reason
+
+    def test_s1_hard_gate_bid_ratio_rescue_requires_floor(self):
+        from queue_worker import _hard_gate_failure
+
+        weak_bid = {"strategy": "S1_GAP_OPEN", "cntr_strength": 180.0, "bid_ratio": 0.59, "rr_ratio": 2.0}
+        pass_bid = {"strategy": "S1_GAP_OPEN", "cntr_strength": 180.0, "bid_ratio": 0.60, "rr_ratio": 2.0}
+
+        assert _hard_gate_failure(weak_bid, _ctx()) is not None
+        assert _hard_gate_failure(pass_bid, _ctx()) is None
+        assert pass_bid["hard_gate_bid_ratio_rescued"] is True
 
     def test_claude_tp_sl_recalculates_rr_in_published_payload(self):
         item = _signal(cur_prc=10000, tp1_price=10200, sl_price=9900, rr_ratio=0.9, min_rr_ratio=1.0)

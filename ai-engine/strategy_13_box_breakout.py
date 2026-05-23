@@ -263,6 +263,7 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
             "cntr_strength": round(cntr_str, 1),
             "vol_ratio": round(vol_ratio, 2),
             "rsi": round(rsi_now, 1),
+            "atr": round(atr_val, 2) if atr_val is not None else None,
             "is_monster_vol": is_monster_vol,
             "bollinger_squeeze": bollinger_squeeze,
             "mfi_confirmed": mfi_confirmed,

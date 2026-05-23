@@ -640,6 +640,7 @@ async def update_signal_score(
     allow_overnight: Optional[bool] = None,
     allow_reentry: Optional[bool] = None,
     time_stop_deadline_at: Optional[datetime] = None,
+    stk_nm: Optional[str] = None,
 ) -> bool:
     if not signal_id:
         return False
@@ -679,6 +680,7 @@ async def update_signal_score(
                 exit_policy_version = COALESCE($30, exit_policy_version),
                 allow_overnight  = COALESCE($31, allow_overnight),
                 allow_reentry    = COALESCE($32, allow_reentry),
+                stk_nm           = COALESCE($34, stk_nm),
                 time_stop_deadline_at = COALESCE($33, time_stop_deadline_at)
             WHERE id = $1
             """,
@@ -715,6 +717,7 @@ async def update_signal_score(
             _opt_bool(allow_overnight),
             _opt_bool(allow_reentry),
             time_stop_deadline_at,
+            stk_nm,
         )
         return True
     except Exception as e:
@@ -770,7 +773,8 @@ async def insert_python_signal(
                         created_at, scored_at,
                         buy_zone_low, buy_zone_high, buy_zone_anchors, buy_zone_strength,
                         sell_zone1_low, sell_zone1_high, zone_rr,
-                        shadow_features
+                        shadow_features, stk_nm,
+                        entry_qty
                     ) VALUES (
                         $1,$2,$3,$4,$5,
                         $6,$7,$8,$9,$10,
@@ -786,7 +790,8 @@ async def insert_python_signal(
                         $44,$45,$46,$47,$48,
                         $49,$50,$51,$52,
                         $53,$54,$55,
-                        $56::jsonb
+                        $56::jsonb, $57,
+                        $58
                     ) RETURNING id
                     """,
                     signal.get("stk_cd", ""),
@@ -841,6 +846,10 @@ async def insert_python_signal(
                     *_zone_insert_params(signal),
                     # shadow_features ($56)
                     json.dumps(signal.get("shadow_features")) if signal.get("shadow_features") else None,
+                    # stk_nm ($57)
+                    _clip_str(signal.get("stk_nm"), 40),
+                    # TODO: 계좌 API 연동 후 실제 주문 수량 계산으로 교체 (계좌잔고 / 진입가 × 비중)
+                    10,  # entry_qty ($58) — 임시 고정값
                 )
                 if row:
                     signal_id = row["id"]
@@ -874,6 +883,15 @@ async def insert_python_signal(
                             "effective_rr": _sf(signal.get("effective_rr")),
                         },
                     )
+                    mkt = signal.get("market_type", "")
+                    if signal_id and mkt:
+                        await mark_candidate_led_to_signal(
+                            pool,
+                            signal_id=signal_id,
+                            stk_cd=signal.get("stk_cd", ""),
+                            strategy=signal.get("strategy", ""),
+                            market_type=mkt,
+                        )
                 return row["id"] if row else None
     except asyncpg.ForeignKeyViolationError as e:
         logger.warning(
@@ -884,6 +902,39 @@ async def insert_python_signal(
     except Exception as e:
         logger.error("[DBWriter] insert_python_signal error [%s %s]: %s", signal.get("stk_cd"), signal.get("strategy"), e)
         return None
+
+
+async def mark_candidate_led_to_signal(
+    pool,
+    signal_id: int,
+    stk_cd: str,
+    strategy: str,
+    market_type: str,
+    date=None,
+) -> None:
+    if not signal_id or not stk_cd or not strategy or not market_type:
+        return
+    from datetime import date as _date
+    today = date or _date.today()
+    try:
+        await pool.execute(
+            """
+            UPDATE candidate_pool_history
+               SET led_to_signal = TRUE,
+                   signal_id     = $5
+             WHERE date      = $1
+               AND strategy  = $2
+               AND market    = $3
+               AND stk_cd    = $4
+            """,
+            today,
+            strategy,
+            market_type,
+            stk_cd,
+            signal_id,
+        )
+    except Exception as e:
+        logger.debug("[DBWriter] mark_candidate_led_to_signal error [%s %s]: %s", stk_cd, strategy, e)
 
 
 async def insert_score_components(

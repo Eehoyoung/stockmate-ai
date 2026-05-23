@@ -116,7 +116,7 @@ public class CandidateService {
     /** S1 갭상승 시초가 (ka10029, 3~15%, TTL 90분 — 08:30 Python 스캔 윈도우 커버) */
     public List<String> getS1Candidates(String market) {
         return loadCandidates("s1", market, Duration.ofMinutes(90), 90,
-                () -> fetchKa10029Codes(market, 3.0, 15.0, 100));
+                () -> fetchS1Ka10029Codes(market));
     }
 
     /**
@@ -126,7 +126,7 @@ public class CandidateService {
     public int preloadS1Candidates(String market) {
         String cacheKey = "candidates:s1:" + market;
         try {
-            List<String> codes = fetchKa10029Codes(market, 3.0, 15.0, 100);
+            List<String> codes = fetchS1Ka10029Codes(market);
             if (codes != null && !codes.isEmpty()) {
                 cacheCodes(cacheKey, codes, Duration.ofMinutes(90));
                 updateWatchlist(codes, 90);
@@ -251,13 +251,31 @@ public class CandidateService {
 
     /** ka10029 예상체결등락률 상위 → flu_rt 범위 필터. */
     private List<String> fetchKa10029Codes(String market, double fluMin, double fluMax, int limit) {
+        return fetchKa10029Codes(market, fluMin, fluMax, limit, "1");
+    }
+
+    private List<String> fetchS1Ka10029Codes(String market) {
+        List<String> codes = fetchKa10029Codes(market, 3.0, 15.0, 100, "16");
+        if (!codes.isEmpty() || "000".equals(market)) {
+            return codes;
+        }
+
+        List<String> fallback = fetchKa10029Codes("000", 3.0, 15.0, 200, "16");
+        if (!fallback.isEmpty()) {
+            log.info("[Candidate] S1 market-specific ka10029 empty; all-market fallback supplied {} rows [market={}]",
+                    fallback.size(), market);
+        }
+        return fallback.stream().limit(100).collect(Collectors.toList());
+    }
+
+    private List<String> fetchKa10029Codes(String market, double fluMin, double fluMax, int limit, String stkCnd) {
         KiwoomApiResponses.ExpCntrFluRtUpperResponse resp =
                 apiService.fetchKa10029(
                         StrategyRequests.ExpCntrFluRtUpperRequest.builder()
                                 .mrktTp(market)
                                 .sortTp("1")
                                 .trdeQtyCnd("10")
-                                .stkCnd("1")
+                                .stkCnd(stkCnd)
                                 .crdCnd("0")
                                 .pricCnd("8")
                                 .stexTp("3")

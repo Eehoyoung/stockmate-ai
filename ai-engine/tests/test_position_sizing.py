@@ -137,6 +137,43 @@ class TestStrategyCapS1MaxSize3:
         assert result["entry_size_weight"] == 0.75
         assert "strategy_cap_applied" in result["size_downgrade_flags"]
 
+    def test_rescue_signal_caps_to_size1(self):
+        result = calculate_entry_size(**_default_kwargs(
+            ai_score=100.0,
+            rule_score=100.0,
+            quality_score=100.0,
+            strategy_id="S3_INST_FRGN",
+            rr_ratio=2.5,
+            rule_threshold_rescued=True,
+            trde_amt=50_000_000_000,
+            spread_pct=0.01,
+            stop_pct=0.5,
+            sector_heat_score=0.0,
+        ))
+
+        assert result["entry_size_tier"] == "SIZE_1"
+        assert result["entry_size_weight"] == 0.25
+        assert result["position_scale"] == 0.25
+        assert "rescue_size_cap" in result["size_downgrade_flags"]
+
+    def test_strong_s8_zone_rescue_caps_to_size2(self):
+        result = calculate_entry_size(**_default_kwargs(
+            ai_score=100.0,
+            rule_score=85.0,
+            quality_score=80.0,
+            strategy_id="S8_GOLDEN_CROSS",
+            rr_ratio=2.0,
+            s8_zone_entry_policy="momentum_chase_size_down",
+            trde_amt=50_000_000_000,
+            spread_pct=0.01,
+            stop_pct=0.5,
+            sector_heat_score=0.0,
+        ))
+
+        assert result["entry_size_tier"] == "SIZE_2"
+        assert result["entry_size_weight"] == 0.50
+        assert "rescue_size_cap" in result["size_downgrade_flags"]
+
 
 # ── Test 4: S10 기본 SIZE_2 ──────────────────────────────────────────────────
 

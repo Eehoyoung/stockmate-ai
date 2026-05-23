@@ -113,9 +113,34 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
                 flu_rt = float(str(tick.get("flu_rt", 0)).replace("+", ""))
                 cntr_str = float(str(tick.get("cntr_str", 100)).replace(",", ""))
 
-        # WS 미구독(flu_rt=0)이면 일봉 양봉 조건(t_close > t_open)으로 대체
-        # WS 구독 종목은 기존대로 마이너스 등락률 시 제외
-        if flu_rt < 0: continue  # 명시적 하락 확인 시 제외 (0은 미구독으로 허용)
+            # WS 미구독 종목(flu_rt=0): 시장 지수 등락률로 폴백 → 베어 장세 필터 보완
+            if flu_rt == 0.0:
+                try:
+                    # 1순위: Redis stock:market 키로 시장구분 판단
+                    mkt_raw = await rdb.get(f"stock:market:{stk_cd}")
+                    if mkt_raw:
+                        mkt = str(mkt_raw).strip()
+                        if mkt in ("001", "0", "KOSPI"):
+                            idx_key = "market:kospi_flu_rt"
+                        elif mkt in ("101", "10", "KOSDAQ"):
+                            idx_key = "market:kosdaq_flu_rt"
+                        else:
+                            idx_key = None
+                    else:
+                        # 2순위: 후보풀 소속으로 시장구분 추정
+                        pool_kospi = [str(x) for x in (await rdb.lrange("candidates:s9:001", 0, -1))]
+                        idx_key = "market:kospi_flu_rt" if stk_cd in pool_kospi else "market:kosdaq_flu_rt"
+
+                    if idx_key:
+                        idx_flu = await rdb.get(idx_key)
+                        if idx_flu is not None:
+                            flu_rt = float(str(idx_flu).replace("+", "").replace(",", ""))
+                            logger.debug("[S9] %s WS 미구독 → 시장지수 폴백 flu_rt=%.2f", stk_cd, flu_rt)
+                except Exception as _e:
+                    logger.debug("[S9] %s 시장지수 폴백 실패 (무시): %s", stk_cd, _e)
+
+        # 명시적 하락 확인 시 제외 (시장지수 폴백이 포함되므로 베어 장세에서도 작동)
+        if flu_rt < 0: continue
 
         # 6. 최종 점수 산정
         # pct_ma5 구간별 처리:
@@ -155,6 +180,7 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
             "strategy": "S9_PULLBACK_SWING",
             "score": round(score, 2),
             "pct_ma5": round(pct_ma5, 2),
+            "ma5": round(ma5, 2) if ma5 is not None else None,
             "rsi": round(rsi_now, 1),
             "stoch_gc": stoch_gc,
             "cntr_strength": round(cntr_str, 1),

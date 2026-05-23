@@ -8,6 +8,7 @@ import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.repository.MarketDailyContextRepository;
 import org.invest.apiorchestrator.service.CandidateService;
+import org.invest.apiorchestrator.service.DailyAggregationService;
 import org.invest.apiorchestrator.service.EconomicCalendarService;
 import org.invest.apiorchestrator.service.KiwoomApiService;
 import org.invest.apiorchestrator.service.RedisMarketDataService;
@@ -48,6 +49,7 @@ public class TradingScheduler {
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
     private final MarketDailyContextRepository marketDailyContextRepository;
+    private final DailyAggregationService dailyAggregationService;
 
     private static final ExecutorService PRELOAD_POOL = Executors.newFixedThreadPool(5);
 
@@ -206,6 +208,68 @@ public class TradingScheduler {
         }
     }
 
+    @Scheduled(cron = "0 5 9 * * MON-FRI", zone = "Asia/Seoul")
+    public void updateMarketContextAtOpen() {
+        try {
+            LocalDate today = KstClock.today();
+            MarketDailyContext ctx = marketDailyContextRepository.findByDate(today).orElse(null);
+            if (ctx == null) return;
+            if (ctx.getKospiOpen() != null && ctx.getKospiOpen().compareTo(BigDecimal.ZERO) != 0) return;
+            MarketProxySnapshot kospi  = loadMarketProxy(KOSPI_PROXY_CODE);
+            MarketProxySnapshot kosdaq = loadMarketProxy(KOSDAQ_PROXY_CODE);
+            if (kospi.open() == null || kospi.open().compareTo(BigDecimal.ZERO) == 0) return;
+            BreadthSnapshot breadth = loadBreadthSnapshot();
+            MarketDailyContext updated = copyContext(ctx)
+                    .kospiOpen(kospi.open())
+                    .kosdaqOpen(kosdaq.open())
+                    .advancingStocks(breadth.advancing())
+                    .decliningStocks(breadth.declining())
+                    .unchangedStocks(breadth.unchanged())
+                    .advanceDeclineRatio(breadth.ratio())
+                    .vixEquivalent(breadth.vixEquivalent())
+                    .build();
+            marketDailyContextRepository.save(updated);
+            log.info("[MarketCtx] open snapshot updated kospiOpen={} advancing={}", kospi.open(), breadth.advancing());
+        } catch (Exception e) {
+            log.warn("[MarketCtx] open snapshot update failed: {}", e.getMessage());
+        }
+    }
+
+    @Scheduled(cron = "0 40 15 * * MON-FRI", zone = "Asia/Seoul")
+    public void updateMarketContextAtClose() {
+        try {
+            LocalDate today = KstClock.today();
+            MarketDailyContext ctx = marketDailyContextRepository.findByDate(today).orElse(null);
+            if (ctx == null) return;
+            MarketProxySnapshot kospi   = loadMarketProxy(KOSPI_PROXY_CODE);
+            MarketProxySnapshot kosdaq  = loadMarketProxy(KOSDAQ_PROXY_CODE);
+            BreadthSnapshot breadth     = loadBreadthSnapshot();
+            NetBuySnapshot kospiNetBuy  = loadNetBuySnapshot("001");
+            NetBuySnapshot kosdaqNetBuy = loadNetBuySnapshot("101");
+            MarketDailyContext updated = copyContext(ctx)
+                    .kospiClose(kospi.close())
+                    .kospiChangePct(kospi.changePct())
+                    .kospiVolume(kospi.volume())
+                    .kosdaqClose(kosdaq.close())
+                    .kosdaqChangePct(kosdaq.changePct())
+                    .kosdaqVolume(kosdaq.volume())
+                    .advancingStocks(breadth.advancing())
+                    .decliningStocks(breadth.declining())
+                    .unchangedStocks(breadth.unchanged())
+                    .advanceDeclineRatio(breadth.ratio())
+                    .vixEquivalent(breadth.vixEquivalent())
+                    .frgnNetBuyKospi(kospiNetBuy.foreignNetBuy())
+                    .instNetBuyKospi(kospiNetBuy.instNetBuy())
+                    .frgnNetBuyKosdaq(kosdaqNetBuy.foreignNetBuy())
+                    .instNetBuyKosdaq(kosdaqNetBuy.instNetBuy())
+                    .build();
+            marketDailyContextRepository.save(updated);
+            log.info("[MarketCtx] close snapshot updated kospiClose={} advancing={}", kospi.close(), breadth.advancing());
+        } catch (Exception e) {
+            log.warn("[MarketCtx] close snapshot update failed: {}", e.getMessage());
+        }
+    }
+
     @Scheduled(cron = "0 0 9 * * MON-FRI", zone = "Asia/Seoul")
     public void startMarketHours() {
         log.info("=== market open (09:00) / python websocket-listener owned ===");
@@ -322,26 +386,28 @@ public class TradingScheduler {
     public void compileDailySummary() {
         log.info("=== compile daily summary (15:35) ===");
         try {
-            List<Object[]> stats = signalService.getTodayStats();
+            LocalDate summaryDate = KstClock.today();
+            DailyAggregationService.DailyAggregation aggregation = dailyAggregationService.aggregate(summaryDate);
 
-            long totalSignals = 0;
+            long totalSignals = aggregation.totalSignals();
             double totalScore = 0;
             int scoreCount = 0;
             Map<String, Long> byStrategy = new java.util.LinkedHashMap<>();
 
-            for (Object[] row : stats) {
-                String strategy = String.valueOf(row[0]);
-                long count = row[1] instanceof Number ? ((Number) row[1]).longValue() : 0L;
-                totalSignals += count;
-                byStrategy.put(strategy, count);
-                if (row[2] instanceof Number) {
-                    totalScore += ((Number) row[2]).doubleValue() * count;
-                    scoreCount += (int) count;
+            for (Map.Entry<String, DailyAggregationService.StrategyAggregation> entry : aggregation.byStrategy().entrySet()) {
+                long count = entry.getValue().signals().size();
+                byStrategy.put(entry.getKey(), count);
+                for (org.invest.apiorchestrator.domain.TradingSignal signal : entry.getValue().signals()) {
+                    BigDecimal score = signal.getAiScore() != null ? signal.getAiScore() : signal.getRuleScore();
+                    if (score != null) {
+                        totalScore += score.doubleValue();
+                        scoreCount++;
+                    }
                 }
             }
             double avgScore = scoreCount > 0 ? totalScore / scoreCount : 0.0;
 
-            String today = KstClock.today().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+            String today = summaryDate.format(DateTimeFormatter.ofPattern("yyyyMMdd"));
             String summaryKey = "daily_summary:" + today;
 
             redis.opsForHash().put(summaryKey, "total_signals", String.valueOf(totalSignals));
@@ -353,27 +419,9 @@ public class TradingScheduler {
             }
             redis.expire(summaryKey, Duration.ofDays(7));
 
-            long totalWins = 0;
-            long totalLosses = 0;
-            double totalPnl = 0.0;
-            int pnlCount = 0;
-            try {
-                List<Object[]> perfStats = signalService.getPerformanceStats();
-                for (Object[] row : perfStats) {
-                    long wins = row[2] instanceof Number ? ((Number) row[2]).longValue() : 0L;
-                    long losses = row[3] instanceof Number ? ((Number) row[3]).longValue() : 0L;
-                    double pnl = row[4] instanceof Number ? ((Number) row[4]).doubleValue() : 0.0;
-                    totalWins += wins;
-                    totalLosses += losses;
-                    if (wins + losses > 0) {
-                        totalPnl += pnl;
-                        pnlCount++;
-                    }
-                }
-            } catch (Exception e) {
-                log.debug("[DailySummary] performance stat error ignored: {}", e.getMessage());
-            }
-            double avgPnl = pnlCount > 0 ? totalPnl / pnlCount : 0.0;
+            long totalWins = aggregation.tpHitCount();
+            long totalLosses = aggregation.slHitCount() + aggregation.forceCloseCount();
+            double avgPnl = aggregation.avgPnlPct() != null ? aggregation.avgPnlPct().doubleValue() : 0.0;
 
             try {
                 Map<String, Object> report = new java.util.LinkedHashMap<>();

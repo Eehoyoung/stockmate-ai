@@ -70,6 +70,23 @@ news:
   trading-control-enabled: ${NEWS_TRADING_CONTROL:true}
   sector-filter-enabled: ${NEWS_SECTOR_FILTER:true}
 
+maintenance:
+  ws-tick-partitions:
+    enabled: ${WS_TICK_PARTITIONS_ENABLED:true}
+    days-ahead: ${WS_TICK_PARTITIONS_DAYS_AHEAD:14}
+    cron: ${WS_TICK_PARTITIONS_CRON:0 10 6 * * *}
+  ws-tick-legacy-backfill:
+    enabled: ${WS_TICK_LEGACY_BACKFILL_ENABLED:false}
+    batch-size: ${WS_TICK_LEGACY_BACKFILL_BATCH_SIZE:100000}
+    cutoff-hours: ${WS_TICK_LEGACY_BACKFILL_CUTOFF_HOURS:1}
+    delete-after-copy: ${WS_TICK_LEGACY_BACKFILL_DELETE_AFTER_COPY:false}
+    cron: ${WS_TICK_LEGACY_BACKFILL_CRON:0 */10 0-6,16-23 * * *}
+  ws-tick-retention:
+    enabled: ${WS_TICK_RETENTION_ENABLED:false}
+    retain-days: ${WS_TICK_RETENTION_RETAIN_DAYS:3}
+    dry-run: ${WS_TICK_RETENTION_DRY_RUN:true}
+    cron: ${WS_TICK_RETENTION_CRON:0 50 23 * * *}
+
 telegram:
   bot-token: ${TELEGRAM_BOT_TOKEN}
   allowed-chat-ids: ${TELEGRAM_ALLOWED_CHAT_IDS}

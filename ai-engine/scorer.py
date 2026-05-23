@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from utils import safe_float as _safe_float
+from score_utils import normalize_score_0_100
 from strategy_meta import CLAUDE_THRESHOLDS as _META_CLAUDE_THRESHOLDS
 from strategy_meta import get_threshold as _meta_get_threshold
 
@@ -74,6 +75,10 @@ _ZONE_SCORE_STRATEGIES = frozenset({
     "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S13_BOX_BREAKOUT",
     "S14_OVERSOLD_BOUNCE", "S15_MOMENTUM_ALIGN",
 })
+
+
+def _strategy_raw_score(signal: dict) -> float:
+    return _safe_float(signal.get("runner_score_raw", signal.get("score", 0)))
 
 
 def _zone_bonus(signal: dict, cur_prc: float) -> tuple[float, dict]:
@@ -238,7 +243,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
     match strategy:
         case "S1_GAP_OPEN":
             gap = _safe_float(signal.get("gap_pct", 0))
-            strategy_raw = _safe_float(signal.get("score", 0))
+            strategy_raw = _strategy_raw_score(signal)
             _gap_sc = 20 if 3 <= gap < 5 else (15 if 5 <= gap < 8 else (10 if 8 <= gap < 15 else (-10 if gap >= 15 else 0)))
             _str_sc = 30 if strength > 150 else (20 if strength > 130 else (10 if strength > 110 else 0))
             s1_bid = bid_ratio if bid_ratio is not None else (
@@ -409,7 +414,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
 
         case "S10_NEW_HIGH":
             vol_surge = _safe_float(signal.get("vol_surge_rt", 0))
-            strategy_raw = _safe_float(signal.get("score", 0))
+            strategy_raw = _strategy_raw_score(signal)
             if vol_surge == 0:
                 vol_ratio_java = _safe_float(signal.get("vol_ratio", 0))
                 vol_surge = max(0.0, (vol_ratio_java - 1.0) * 100)
@@ -480,7 +485,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
             effective_str = cntr_sig if cntr_sig > 0 else strength
             vol_ratio_s8 = _safe_float(signal.get("vol_ratio", 0))
-            strategy_raw = _safe_float(signal.get("score", 0))
+            strategy_raw = _strategy_raw_score(signal)
             _flu_sc = 25 if 1 <= flu_rt_s8 <= 5 else (15 if 5 < flu_rt_s8 <= 10 else 0)
             _vol_sc = 20 if vol_ratio_s8 >= 3.0 else (12 if vol_ratio_s8 >= 1.5 else (5 if vol_ratio_s8 >= 1.0 else 0))
             _str_sc = 30 if effective_str > 130 else (20 if effective_str > 110 else (10 if effective_str > 100 else 0))
@@ -507,7 +512,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             flu_rt_s9 = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
             effective_str = cntr_sig if cntr_sig > 0 else strength
-            strategy_raw = _safe_float(signal.get("score", 0))
+            strategy_raw = _strategy_raw_score(signal)
             _flu_sc = 30 if 0.5 <= flu_rt_s9 <= 3 else (20 if 3 < flu_rt_s9 <= 6 else (10 if 6 < flu_rt_s9 <= 10 else 0))
             # WS 오프라인이고 체결강도가 기본값(100)이면 중립 점수 — S5 패턴 동일 적용
             ws_online_s9 = market_ctx.get("ws_online", True)
@@ -537,7 +542,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
             effective_str = cntr_sig if cntr_sig > 0 else strength
             vol_ratio_s13 = _safe_float(signal.get("vol_ratio", 0))
-            strategy_raw = _safe_float(signal.get("score", 0))
+            strategy_raw = _strategy_raw_score(signal)
             _flu_sc  = 30 if 3 <= flu_rt_s13 <= 8 else (20 if 8 < flu_rt_s13 <= 15 else 0)
             _str_sc  = 35 if effective_str > 150 else (25 if effective_str > 130 else (10 if effective_str > 110 else 0))
             _bid_sc  = 0.0
@@ -562,7 +567,7 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             cntr_sig = _safe_float(signal.get("cntr_strength", 0))
             effective_str = cntr_sig if cntr_sig > 0 else strength
             vol_ratio_s14 = _safe_float(signal.get("vol_ratio", 0))
-            strategy_raw = _safe_float(signal.get("score", 0))
+            strategy_raw = _strategy_raw_score(signal)
             # RSI 25~42 구간(전략 hard gate 통과 범위)에서 낮을수록 고점수. rsi==0 결측 시 0점.
             _rsi_sc = (35 if rsi <= 30 else (25 if rsi <= 35 else (15 if rsi <= 38 else 5))) if rsi > 0 else 0
             _atr_sc = 15 if 1.0 <= atr_pct <= 2.5 else (5 if 0.5 <= atr_pct < 1.0 else (-5 if atr_pct > 3.0 else 0))
@@ -687,9 +692,10 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
 
     score += _risk_penalty
 
-    score = round(max(0.0, min(100.0, score)), 1)
+    score = normalize_score_0_100(score)
 
     components = {
+        "base_score":      round(_vol_score + _momentum_score + _technical_score + _demand_score, 2),
         "vol_score":       round(_vol_score, 2),
         "momentum_score":  round(_momentum_score, 2),
         "technical_score": round(_technical_score, 2),

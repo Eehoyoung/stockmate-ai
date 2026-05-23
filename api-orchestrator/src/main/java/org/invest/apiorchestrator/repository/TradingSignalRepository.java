@@ -39,6 +39,16 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
     @Query("""
         SELECT s FROM TradingSignal s
         WHERE s.createdAt >= :startAt
+          AND s.createdAt < :endAt
+        ORDER BY s.signalScore DESC NULLS LAST, s.createdAt DESC
+        """)
+    List<TradingSignal> findSignalsCreatedBetween(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Query("""
+        SELECT s FROM TradingSignal s
+        WHERE s.createdAt >= :startAt
         ORDER BY s.signalScore DESC NULLS LAST, s.createdAt DESC
         """)
     List<TradingSignal> findTodaySignals(@Param("startAt") LocalDateTime startAt);
@@ -65,9 +75,12 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
         WHERE s.action = 'ENTER'
           AND s.signalStatus IN ('SENT','EXPIRED','WIN','LOSS')
           AND s.createdAt >= :startAt
+          AND s.createdAt < :endAt
         GROUP BY s.strategy
         """)
-    List<Object[]> getStrategyStats(@Param("startAt") LocalDateTime startAt);
+    List<Object[]> getStrategyStats(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
 
     boolean existsByStkCdAndStrategyAndCreatedAtAfter(
             String stkCd, TradingSignal.StrategyType strategy, LocalDateTime after);
@@ -84,10 +97,13 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
                AVG(CASE WHEN s.realizedPnl IS NOT NULL THEN s.realizedPnl ELSE 0 END)
         FROM TradingSignal s
         WHERE s.createdAt >= :startAt
+          AND s.createdAt < :endAt
           AND s.signalStatus IN ('WIN', 'LOSS', 'SENT', 'EXPIRED')
         GROUP BY s.strategy
         """)
-    List<Object[]> getStrategyPerformanceStats(@Param("startAt") LocalDateTime startAt);
+    List<Object[]> getStrategyPerformanceStats(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
 
     @Query("""
         SELECT COUNT(s) > 0 FROM TradingSignal s
