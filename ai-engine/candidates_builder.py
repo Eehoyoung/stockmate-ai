@@ -38,6 +38,31 @@ def _env_flag(name: str, default: str = "false") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _int_env(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(str(os.getenv(name, default)).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+CANDIDATE_LIMIT_S1 = _int_env("CANDIDATE_LIMIT_S1", 100)
+CANDIDATE_LIMIT_S2 = _int_env("CANDIDATE_LIMIT_S2", 50)
+CANDIDATE_LIMIT_S3 = _int_env("CANDIDATE_LIMIT_S3", 100)
+CANDIDATE_LIMIT_S4 = _int_env("CANDIDATE_LIMIT_S4", 100)
+CANDIDATE_LIMIT_S5 = _int_env("CANDIDATE_LIMIT_S5", 100)
+CANDIDATE_LIMIT_S6 = _int_env("CANDIDATE_LIMIT_S6", 150)
+CANDIDATE_LIMIT_S7 = _int_env("CANDIDATE_LIMIT_S7", 100)
+CANDIDATE_LIMIT_S8 = _int_env("CANDIDATE_LIMIT_S8", 150)
+CANDIDATE_LIMIT_S9 = _int_env("CANDIDATE_LIMIT_S9", 150)
+CANDIDATE_LIMIT_S10 = _int_env("CANDIDATE_LIMIT_S10", 100)
+CANDIDATE_LIMIT_S11 = _int_env("CANDIDATE_LIMIT_S11", 80)
+CANDIDATE_LIMIT_S12 = _int_env("CANDIDATE_LIMIT_S12", 50)
+CANDIDATE_LIMIT_S13 = _int_env("CANDIDATE_LIMIT_S13", 100)
+CANDIDATE_LIMIT_S14 = _int_env("CANDIDATE_LIMIT_S14", 100)
+CANDIDATE_LIMIT_S15 = _int_env("CANDIDATE_LIMIT_S15", 80)
+CANDIDATE_WATCHLIST_PRIORITY_LIMIT = _int_env("CANDIDATE_WATCHLIST_PRIORITY_LIMIT", 200)
+
+
 def now_kst_str() -> str:
     """현재 KST 시각을 ISO 포맷 문자열로 반환"""
     return datetime.now(KST).strftime("%Y-%m-%dT%H:%M:%S+09:00")
@@ -623,7 +648,7 @@ async def _build_s1(token: str, market: str, rdb) -> None:
         stk_cd = normalize_stock_code(item.get("stk_cd", ""))
         if 3.0 <= item["flu_rt"] <= 15.0 and item["exp_cntr_pric"] > 0:
             codes.append(stk_cd)
-        if len(codes) >= 100:
+        if len(codes) >= CANDIDATE_LIMIT_S1:
             break
     codes = await _persist_candidate_quality_batch(
         rdb,
@@ -642,7 +667,7 @@ async def _build_s1(token: str, market: str, rdb) -> None:
         "built_at": now_kst_str(),
         "source_api": "ka10029",
         "source_market": source_market,
-        "source_status": "EMPTY" if not codes else "OK",
+        "source_status": "EMPTY" if not codes else ("FALLBACK_ALL_MARKET" if source_market == "000" and market != "000" else "OK"),
     }
     logger.info(
         "[builder] S1 build market=%s source_market=%s raw=%d filtered=%d rejected=%d status=%s elapsed=%.2fs",
@@ -675,7 +700,7 @@ async def _build_s7(token: str, market: str, rdb) -> None:
             stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
-        if len(codes) >= 100:
+        if len(codes) >= CANDIDATE_LIMIT_S7:
             break
     meta = {
         "raw_count": raw_count,
@@ -812,10 +837,10 @@ async def _build_s4(token: str, market: str, rdb) -> None:
             pass
         normal.append(stk_cd)
 
-        if len(strong) + len(normal) >= 100:
+        if len(strong) + len(normal) >= CANDIDATE_LIMIT_S4:
             break
 
-    codes = (strong + normal)[:100]
+    codes = (strong + normal)[:CANDIDATE_LIMIT_S4]
     codes = await _persist_candidate_quality_batch(
         rdb,
         strategy_id="s4",
@@ -853,7 +878,7 @@ async def _build_s8(token: str, market: str, rdb) -> None:
             stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
-        if len(codes) >= 150:
+        if len(codes) >= CANDIDATE_LIMIT_S8:
             break
     await _lpush_with_ttl(rdb, f"candidates:s8:{market}", codes, 1800)
 
@@ -870,7 +895,7 @@ async def _build_s9(token: str, market: str, rdb) -> None:
             stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
-        if len(codes) >= 150:
+        if len(codes) >= CANDIDATE_LIMIT_S9:
             break
     await _lpush_with_ttl(rdb, f"candidates:s9:{market}", codes, 1800)
 
@@ -886,7 +911,7 @@ async def _build_s14(token: str, market: str, rdb) -> None:
             stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
-        if len(codes) >= 100:
+        if len(codes) >= CANDIDATE_LIMIT_S14:
             break
     await _lpush_with_ttl(rdb, f"candidates:s14:{market}", codes, 1800)
 
@@ -929,12 +954,12 @@ async def _build_s10(token: str, market: str, rdb) -> None:
         next_key = resp.headers.get("next-key", "").strip()
         if cont_yn != "Y" or not next_key:
             break
-        if len(results) >= 100:
+        if len(results) >= CANDIDATE_LIMIT_S10:
             break
 
     # [핵심 수정] 리스트 컴프리헨션 내부에서 정규화 함수 호출
     # 결과가 100개가 넘지 않도록 슬라이싱하고, 정제된 6자리 코드만 codes에 담깁니다.
-    codes = [normalize_stock_code(x.get("stk_cd")) for x in results if x.get("stk_cd")][:100]
+    codes = [normalize_stock_code(x.get("stk_cd")) for x in results if x.get("stk_cd")][:CANDIDATE_LIMIT_S10]
     codes = await _persist_candidate_quality_batch(
         rdb,
         strategy_id="s10",
@@ -999,7 +1024,7 @@ async def _build_s11(token: str, market: str, rdb) -> None:
             continue
         if dm1 > 0 and dm2 > 0 and dm3 > 0 and tot > 0:
             codes.append(stk_cd)
-        if len(codes) >= 80:
+        if len(codes) >= CANDIDATE_LIMIT_S11:
             break
     codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s11:{market}", codes, 2400)
@@ -1048,7 +1073,7 @@ async def _build_s12(token: str, market: str, rdb) -> None:
             stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
-        if len(codes) >= 50:
+        if len(codes) >= CANDIDATE_LIMIT_S12:
             break
     codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s12:{market}", codes, 1200)
@@ -1092,7 +1117,7 @@ async def _build_s2(token: str, market: str, rdb) -> None:
             open_flu = 0.0
         if open_flu > 0:
             codes.append(stk_cd)
-        if len(codes) >= 50:
+        if len(codes) >= CANDIDATE_LIMIT_S2:
             break
     codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s2:{market}", codes, 1200)
@@ -1137,7 +1162,7 @@ async def _build_s3(token: str, market: str, rdb) -> None:
             _fetch_ka10065_set(token, market, "9999"),
         )
         codes = await _filter_individual_stocks(rdb, list(frgn_set & inst_set))
-        codes = codes[:100]
+        codes = codes[:CANDIDATE_LIMIT_S3]
         await _lpush_with_ttl(rdb, f"candidates:s3:{market}", codes, ttl)
         elapsed_ms = int((_time.monotonic() - started_at) * 1000)
         state = "empty" if not codes else "ok"
@@ -1212,7 +1237,7 @@ async def _build_s5(token: str, market: str, rdb) -> None:
                         net = 0.0
                     if stk_cd and net > 0:
                         codes.append(stk_cd)
-                    if len(codes) >= 100:
+                    if len(codes) >= CANDIDATE_LIMIT_S5:
                         break
                 codes = await _filter_individual_stocks(rdb, codes)
                 await _lpush_with_ttl(rdb, f"candidates:s5:{market}", codes, ttl)
@@ -1310,10 +1335,10 @@ async def _build_s6(token: str, rdb) -> None:
             # flu_rt 기준 사전 제외 없음 — strategy_6_theme.py에서 모드별 분류
             all_codes.append(stk_cd)
             seen.add(stk_cd)
-        if len(all_codes) >= 150:
+        if len(all_codes) >= CANDIDATE_LIMIT_S6:
             break
 
-    codes = await _filter_individual_stocks(rdb, all_codes[:150])
+    codes = await _filter_individual_stocks(rdb, all_codes[:CANDIDATE_LIMIT_S6])
     # S6는 테마 기반으로 시장 구분 없이 동일 풀 적재
     for market in MARKETS:
         await _lpush_with_ttl(rdb, f"candidates:s6:{market}", codes, 1200)
@@ -1335,7 +1360,7 @@ async def _build_s13(token: str, market: str, rdb) -> None:
             stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
-        if len(codes) >= 100:
+        if len(codes) >= CANDIDATE_LIMIT_S13:
             break
     codes = await _persist_candidate_quality_batch(
         rdb,
@@ -1392,7 +1417,7 @@ async def _build_s15(token: str, market: str, rdb) -> None:
             stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
-        if len(codes) >= 80:
+        if len(codes) >= CANDIDATE_LIMIT_S15:
             break
     codes = await _filter_individual_stocks(rdb, codes)
     # RSI 필터: stock:rsi14:{stk_cd} 캐시가 있으면 RSI > 72 종목 제거 (fail-open)
@@ -1569,19 +1594,19 @@ async def _refresh_watchlist(rdb, ttl: int = 900) -> None:
                 zset_pipe.zadd(zset_key, zadd_mapping)
                 zset_pipe.expire(zset_key, zset_ttl)
 
-            # zset 상위 200개를 candidates:watchlist:priority SET에도 백필
-            # (기존 priority는 이미 SET으로 갱신됨 — ZSET 기반 priority는 추가 백필)
-            top200 = sorted(scored_items, key=lambda x: x[0], reverse=True)[:200]
-            top200_codes = [stk_cd for _, stk_cd in top200]
-            if top200_codes:
+            # zset top-ranked symbols are also backfilled into candidates:watchlist:priority.
+            top_priority = sorted(scored_items, key=lambda x: x[0], reverse=True)[:CANDIDATE_WATCHLIST_PRIORITY_LIMIT]
+            top_priority_codes = [stk_cd for _, stk_cd in top_priority]
+            if top_priority_codes:
                 zset_pipe.delete("candidates:watchlist:priority")
-                zset_pipe.sadd("candidates:watchlist:priority", *top200_codes)
+                zset_pipe.sadd("candidates:watchlist:priority", *top_priority_codes)
                 zset_pipe.expire("candidates:watchlist:priority", ttl)
 
             await zset_pipe.execute()
             logger.info(
-                "[builder] candidates:watchlist:z 갱신 – %d종목 (top200 priority 백필)",
+                "[builder] candidates:watchlist:z updated %d items (top%d priority cached)",
                 len(scored_items),
+                CANDIDATE_WATCHLIST_PRIORITY_LIMIT,
             )
         except Exception as zset_err:
             logger.warning("[builder] watchlist ZSET 갱신 실패: %s", zset_err)

@@ -482,21 +482,21 @@ class TestGatherErrorHandling:
 
 
 class TestS1Fallback:
-    def test_scan_s1_runs_even_when_candidate_pool_empty(self):
+    def test_scan_s1_skips_when_candidate_pool_empty(self):
         from strategy_runner import _scan_s1
 
         rdb = _make_rdb(lrange=[])
 
         # 900 (09:00) → S1_SCAN_START_HHMM(850)과 S1_SCAN_END_HHMM(903) 사이 – 시간 윈도우 통과
         with patch("strategy_1_gap_opening.scan_gap_opening", new_callable=AsyncMock, return_value=[]) as scan_mock, \
-             patch("strategy_runner._push_signals", new_callable=AsyncMock), \
+             patch("strategy_runner._push_signals", new_callable=AsyncMock) as push_mock, \
+             patch("strategy_runner._incr_pipeline_daily", new_callable=AsyncMock) as metric_mock, \
              patch("strategy_runner._kst_hhmm", return_value=900):
             _run(_scan_s1(rdb, "valid-token"))
 
-        scan_mock.assert_awaited_once()
-        args = scan_mock.await_args.args
-        assert args[0] == "valid-token"
-        assert args[1] == []
+        scan_mock.assert_not_awaited()
+        push_mock.assert_not_awaited()
+        metric_mock.assert_awaited_once_with(rdb, "S1_GAP_OPEN", "skip_empty_pool")
 
 
 class TestS2ShadowPublishing:

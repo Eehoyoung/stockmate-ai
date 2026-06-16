@@ -55,6 +55,19 @@ def _env_flag(name: str, default: str = "false") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _int_env(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(str(os.getenv(name, default)).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+RUNNER_POOL_READ_LIMIT_S1 = _int_env("RUNNER_POOL_READ_LIMIT_S1", 100)
+RUNNER_POOL_READ_LIMIT_S4 = _int_env("RUNNER_POOL_READ_LIMIT_S4", 100)
+RUNNER_SCAN_LIMIT_S4 = _int_env("RUNNER_SCAN_LIMIT_S4", 30)
+RUNNER_SIGNAL_LIMIT_S4 = _int_env("RUNNER_SIGNAL_LIMIT_S4", 5)
+
+
 def _redis_text(value) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="ignore")
@@ -288,8 +301,9 @@ async def _scan_s1(rdb, token):
     try:
         from strategy_1_gap_opening import scan_gap_opening
 
-        kospi = await rdb.lrange("candidates:s1:001", 0, 99)
-        kosdaq = await rdb.lrange("candidates:s1:101", 0, 99)
+        pool_stop = RUNNER_POOL_READ_LIMIT_S1 - 1
+        kospi = await rdb.lrange("candidates:s1:001", 0, pool_stop)
+        kosdaq = await rdb.lrange("candidates:s1:101", 0, pool_stop)
         candidates = list(
             dict.fromkeys(
                 code
@@ -321,8 +335,22 @@ async def _scan_s1(rdb, token):
             logger.info("[Runner] S1 SKIP_WINDOW_CLOSED hhmm=%04d candidates=%d", now_hhmm, len(candidates))
             return
         if not candidates:
-            logger.warning("[Runner] S1 후보풀이 비어 fallback 스캔을 사용합니다")
+            logger.warning("[Runner] S1 SKIP_EMPTY_POOL hhmm=%04d; fallback scan disabled", now_hhmm)
+            await _incr_pipeline_daily(rdb, "S1_GAP_OPEN", "skip_empty_pool")
+            return
         signals = await scan_gap_opening(token, candidates, rdb=rdb)
+        try:
+            fallback_markets = []
+            for market in ("001", "101"):
+                meta = {_redis_text(k): _redis_text(v) for k, v in (await rdb.hgetall(f"candidate:quality:meta:s1:{market}") or {}).items()}
+                if meta.get("source_market") == "000":
+                    fallback_markets.append(market)
+            if fallback_markets:
+                for sig in signals:
+                    sig["candidate_source_status"] = "FALLBACK_ALL_MARKET"
+                    sig["candidate_source_markets"] = ",".join(fallback_markets)
+        except Exception as meta_err:
+            logger.debug("[Runner] S1 fallback meta annotate failed: %s", meta_err)
         await _push_signals(rdb, signals, "S1_GAP_OPEN")
     except Exception as exc:
         logger.exception("[Runner] S1 스캔 오류")
@@ -374,16 +402,17 @@ async def _scan_s4(rdb, token):
     try:
         from strategy_4_big_candle import check_big_candle
 
-        kospi = await rdb.lrange("candidates:s4:001", 0, 99)
-        kosdaq = await rdb.lrange("candidates:s4:101", 0, 99)
-        candidates = list(dict.fromkeys(kospi + kosdaq))[:30]
+        pool_stop = RUNNER_POOL_READ_LIMIT_S4 - 1
+        kospi = await rdb.lrange("candidates:s4:001", 0, pool_stop)
+        kosdaq = await rdb.lrange("candidates:s4:101", 0, pool_stop)
+        candidates = list(dict.fromkeys(kospi + kosdaq))[:RUNNER_SCAN_LIMIT_S4]
         s4_signals = []
         for stk_cd in candidates:
             await asyncio.sleep(_API_INTERVAL)
             result = await check_big_candle(token, stk_cd, rdb=rdb)
             if result:
                 s4_signals.append(result)
-                if len(s4_signals) >= 5:
+                if len(s4_signals) >= RUNNER_SIGNAL_LIMIT_S4:
                     break
         await _push_signals(rdb, s4_signals, "S4_BIG_CANDLE")
     except Exception as exc:
