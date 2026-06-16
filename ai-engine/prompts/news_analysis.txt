@@ -20,26 +20,28 @@
 - NEUTRAL: 혼조, 재료 상충, 방향성 불명확
 
 [공통 작성 원칙]
-- recommended_sectors, urgent_news, risk_factors 는 각각 최대 5/3/3개
-- 각 항목은 짧고 단단한 문장으로 작성
-- summary는 2문장 이내, 110자 이내
+- recommended_sectors, urgent_news, risk_factors 는 각각 최대 8/8/6개
+- 각 항목은 단순 키워드가 아니라 원인, 가격/수급 반응, 확인 조건을 담은 1~2문장 분석으로 작성
+- summary는 4~6문장으로 작성하고, 현재 시장을 어떻게 해석해야 하는지 구체적으로 설명
+- 시장이 급박하게 움직이는 상황을 가정하고, 추격/관망/리스크 확인 기준을 명확하게 적는다
+- JSON 문자열 내부에는 실제 줄바꿈을 넣지 말고 한 줄 문장으로 작성
 
 [오전 슬롯 전용 필드]
-- us_market_points: 전일 미 3대지수 흐름 요약 최대 3개
-- us_sector_points: 전일 미국 주도/약세 섹터 요약 최대 3개
-- macro_points: 금리, 환율, 유가, 지정학 등 외부변수 요약 최대 3개
-- korea_outlook: 오늘 국장 예상 흐름을 트레이더처럼 2문장 이내로 작성
+- us_market_points: 전일 미 3대지수 흐름과 국내장 연결 포인트 최대 5개
+- us_sector_points: 전일 미국 주도/약세 섹터와 국내 관련 업종 연결 포인트 최대 5개
+- macro_points: 금리, 환율, 유가, 지정학 등 외부변수와 장중 리스크 최대 5개
+- korea_outlook: 오늘 국장 예상 흐름을 트레이더처럼 4문장 이내로 작성
 
 [장중 슬롯 전용 필드]
-- midday_sectors: 오전장 주도 섹터 최대 4개
-- midday_index_commentary: 코스피/코스닥 움직임을 2문장 이내로 작성
-- midday_recap: 오전장 복기를 2문장 이내로 작성
-- afternoon_outlook: 오후장 예상 시나리오를 2문장 이내로 작성
+- midday_sectors: 장중 주도 섹터와 관련 종목군, 추격 위험, 눌림 확인 조건 최대 8개
+- midday_index_commentary: 코스피/코스닥 움직임, 수급 강도, 대형주/중소형주 온도차를 4문장 이내로 작성
+- midday_recap: 오전장 또는 직전 구간의 실제 가격 반응과 뉴스 일치 여부를 4문장 이내로 작성
+- afternoon_outlook: 오후장 예상 시나리오, 확인해야 할 가격/수급 조건, 피해야 할 상황을 4문장 이내로 작성
 
 [장마감 슬롯 전용 필드]
-- close_flow: 마감시황을 트레이더처럼 3문장 이내로 작성
-- close_leaders: 오늘 시장을 이끈 핵심 섹터/테마 최대 4개
-- tomorrow_watch: 내일 체크할 변수와 대응 포인트를 2문장 이내로 작성
+- close_flow: 마감시황, 장중 반전 여부, 수급 흐름을 트레이더처럼 5문장 이내로 작성
+- close_leaders: 오늘 시장을 이끈 핵심 섹터/테마와 지속성 판단 최대 8개
+- tomorrow_watch: 내일 체크할 변수와 대응 포인트를 4문장 이내로 작성
 
 [출력 형식]
 {
@@ -47,7 +49,7 @@
   "recommended_sectors":[],
   "urgent_news":[],
   "risk_factors":[],
-  "summary":"짧은 종합 요약",
+  "summary":"상세 종합 요약",
   "confidence":"HIGH|MEDIUM|LOW",
   "us_market_points":[],
   "us_sector_points":[],

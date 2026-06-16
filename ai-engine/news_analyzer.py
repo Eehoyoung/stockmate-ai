@@ -20,8 +20,8 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
-NEWS_MAX_TOKENS = 900
-NEWS_CLAUDE_TIMEOUT = 30
+NEWS_MAX_TOKENS = int(os.getenv("NEWS_MAX_TOKENS", "2400"))
+NEWS_CLAUDE_TIMEOUT = int(os.getenv("NEWS_CLAUDE_TIMEOUT_SEC", "45"))
 MAX_NEWS_CLAUDE_CALLS = int(os.getenv("MAX_NEWS_CLAUDE_CALLS", "5"))
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -38,7 +38,9 @@ except Exception:
 _NEWS_CALLS_KEY_PREFIX = "claude_news_calls:"
 _SLOT_LABELS = {
     "MORNING": "08:00 오전 브리핑",
+    "MIDMORNING": "10:30 장중 오전 브리핑",
     "MIDDAY": "12:30 장중 브리핑",
+    "AFTERNOON": "14:00 장중 오후 브리핑",
     "CLOSE": "15:40 장마감 브리핑",
 }
 _LIST_KEYS = (
@@ -51,6 +53,16 @@ _LIST_KEYS = (
     "midday_sectors",
     "close_leaders",
 )
+_LIST_LIMITS = {
+    "recommended_sectors": 8,
+    "urgent_news": 8,
+    "risk_factors": 6,
+    "us_market_points": 5,
+    "us_sector_points": 5,
+    "macro_points": 5,
+    "midday_sectors": 8,
+    "close_leaders": 8,
+}
 _TEXT_KEYS = (
     "summary",
     "korea_outlook",
@@ -87,9 +99,11 @@ def _build_news_prompt(news_list: List[Dict], slot_name: str) -> str:
         "슬롯별 핵심 필드를 우선 채우세요. "
         "오전은 전일 미국장, 미국 주도 섹터, 외부 변수, 오늘 국장 전망. "
         "장중은 코스피/코스닥 흐름, 오전장 복기, 오후장 전망. "
-        "장마감은 마감시황, 주도 섹터, 내일 체크포인트."
+        "장마감은 마감시황, 주도 섹터, 내일 체크포인트. "
+        "각 항목은 시장을 이해할 수 있도록 원인, 수급/가격 반응, 확인 조건을 함께 적으세요. "
+        "짧은 키워드 나열을 피하고, 각 리스트 항목은 1~2문장의 구체적인 분석 문장으로 작성하세요."
     )
-    lines.append("JSON만 반환하세요.")
+    lines.append("JSON만 반환하세요. 문자열 안에는 실제 줄바꿈을 넣지 말고 한 줄 문장으로 작성하세요.")
     return "\n".join(lines)
 
 
@@ -145,7 +159,11 @@ def _normalize_result(result: Dict) -> Dict:
         value = result.get(key, [])
         if not isinstance(value, list):
             value = [str(value)] if value else []
-        result[key] = [str(item).strip() for item in value if str(item).strip()][:5]
+        result[key] = [
+            str(item).replace("\n", " ").strip()
+            for item in value
+            if str(item).strip()
+        ][:_LIST_LIMITS.get(key, 5)]
 
     for key in _TEXT_KEYS:
         result[key] = str(result.get(key, "") or "").strip()
@@ -181,18 +199,25 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
             timeout=NEWS_CLAUDE_TIMEOUT,
         )
         raw_text = response.content[0].text.strip()
+        stop_reason = getattr(response, "stop_reason", "")
 
         if raw_text.startswith("```"):
             lines = raw_text.splitlines()
             raw_text = "\n".join(line for line in lines if not line.startswith("```")).strip()
 
+        json_start = raw_text.find("{")
+        json_end = raw_text.rfind("}")
+        if json_start >= 0 and json_end > json_start:
+            raw_text = raw_text[json_start:json_end + 1]
+
         result = _normalize_result(json.loads(raw_text))
         logger.info(
-            "[NewsAnalyzer] done slot=%s sentiment=%s sectors=%s confidence=%s",
+            "[NewsAnalyzer] done slot=%s sentiment=%s sectors=%s confidence=%s stop_reason=%s",
             slot_name,
             result["market_sentiment"],
             result["recommended_sectors"],
             result["confidence"],
+            stop_reason,
         )
         return result
     except asyncio.TimeoutError:

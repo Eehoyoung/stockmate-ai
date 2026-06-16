@@ -26,7 +26,9 @@ NEWS_ENABLED = os.getenv("NEWS_ENABLED", "true").lower() == "true"
 
 _SLOTS: list[dict[str, object]] = [
     {"time": (8, 0), "name": "MORNING"},
+    {"time": (10, 30), "name": "MIDMORNING"},
     {"time": (12, 30), "name": "MIDDAY"},
+    {"time": (14, 0), "name": "AFTERNOON"},
     {"time": (15, 40), "name": "CLOSE"},
 ]
 
@@ -102,7 +104,9 @@ def _normalize_lines(values: list[str] | None, limit: int) -> list[str]:
 def _slot_header(slot_name: str) -> str:
     return {
         "MORNING": "🧠 <b>[오전 시황 브리핑 08:00]</b>",
+        "MIDMORNING": "📍 <b>[장중 오전 브리핑 10:30]</b>",
         "MIDDAY": "📊 <b>[장중 시황 브리핑 12:30]</b>",
+        "AFTERNOON": "📌 <b>[장중 오후 브리핑 14:00]</b>",
         "CLOSE": "📘 <b>[장마감 브리핑 15:40]</b>",
     }.get(slot_name, "📰 <b>[뉴스 브리핑]</b>")
 
@@ -140,6 +144,11 @@ def _build_morning_message(analysis: dict) -> str:
     if sectors:
         lines.extend(["", f"<b>5) 오늘 볼 섹터</b>\n{', '.join(sectors)}"])
 
+    urgent_news = _normalize_lines(analysis.get("urgent_news", []), 6)
+    if urgent_news:
+        lines.extend(["", "<b>6) 영향 뉴스</b>"])
+        lines.extend([f"• {item}" for item in urgent_news])
+
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
         lines.extend([f"• {item}" for item in risk_factors])
@@ -151,7 +160,7 @@ def _build_morning_message(analysis: dict) -> str:
     return "\n".join(lines).strip()
 
 
-def _build_midday_message(analysis: dict) -> str:
+def _build_midday_message(analysis: dict, slot_name: str = "MIDDAY") -> str:
     sentiment_label = _sentiment_label(str(analysis.get("market_sentiment", "NEUTRAL")))
     midday_sectors = _normalize_lines(analysis.get("midday_sectors", []), 4)
     sectors = midday_sectors or _normalize_lines(analysis.get("recommended_sectors", []), 4)
@@ -159,9 +168,10 @@ def _build_midday_message(analysis: dict) -> str:
     index_commentary = str(analysis.get("midday_index_commentary", "") or "").strip()
     recap = str(analysis.get("midday_recap", "") or "").strip()
     outlook = str(analysis.get("afternoon_outlook", "") or "").strip()
+    urgent_news = _normalize_lines(analysis.get("urgent_news", []), 6)
 
     lines = [
-        _slot_header("MIDDAY"),
+        _slot_header(slot_name),
         "",
         f"시장 온도: <b>{sentiment_label}</b>",
     ]
@@ -177,6 +187,10 @@ def _build_midday_message(analysis: dict) -> str:
 
     if outlook:
         lines.extend(["", "<b>4) 오후장 예상</b>", outlook])
+
+    if urgent_news:
+        lines.extend(["", "<b>5) 영향 뉴스 / 장중 변수</b>"])
+        lines.extend([f"• {item}" for item in urgent_news])
 
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
@@ -195,6 +209,7 @@ def _build_close_message(analysis: dict) -> str:
     risk_factors = _normalize_lines(analysis.get("risk_factors", []), 3)
     close_flow = str(analysis.get("close_flow", "") or "").strip()
     tomorrow_watch = str(analysis.get("tomorrow_watch", "") or "").strip()
+    urgent_news = _normalize_lines(analysis.get("urgent_news", []), 6)
 
     lines = [
         _slot_header("CLOSE"),
@@ -211,6 +226,10 @@ def _build_close_message(analysis: dict) -> str:
     if tomorrow_watch:
         lines.extend(["", "<b>3) 내일 체크포인트</b>", tomorrow_watch])
 
+    if urgent_news:
+        lines.extend(["", "<b>4) 장중 영향 뉴스</b>"])
+        lines.extend([f"• {item}" for item in urgent_news])
+
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
         lines.extend([f"• {item}" for item in risk_factors])
@@ -225,8 +244,8 @@ def _build_close_message(analysis: dict) -> str:
 def _build_brief_message(analysis: dict, slot_name: str) -> str:
     if slot_name == "MORNING":
         return _build_morning_message(analysis)
-    if slot_name == "MIDDAY":
-        return _build_midday_message(analysis)
+    if slot_name in {"MIDMORNING", "MIDDAY", "AFTERNOON"}:
+        return _build_midday_message(analysis, slot_name)
     if slot_name == "CLOSE":
         return _build_close_message(analysis)
     return _build_morning_message(analysis)
@@ -260,15 +279,19 @@ async def _load_cached_analysis(rdb) -> dict | None:
 
 def _resolve_slot_name(slot_name: str | None = None, now: datetime | None = None) -> str:
     normalized = str(slot_name or "").strip().upper()
-    if normalized in {"MORNING", "MIDDAY", "CLOSE"}:
+    if normalized in {"MORNING", "MIDMORNING", "MIDDAY", "AFTERNOON", "CLOSE"}:
         return normalized
 
     current = _ensure_kst(now)
     current_minutes = current.hour * 60 + current.minute
-    if current_minutes < 12 * 60:
+    if current_minutes < 10 * 60 + 30:
         return "MORNING"
-    if current_minutes < 15 * 60 + 40:
+    if current_minutes < 12 * 60 + 30:
+        return "MIDMORNING"
+    if current_minutes < 14 * 60:
         return "MIDDAY"
+    if current_minutes < 15 * 60 + 40:
+        return "AFTERNOON"
     return "CLOSE"
 
 

@@ -230,7 +230,9 @@ function formatNewsBriefResponse(brief) {
     const slotName = String(brief?.slot_name || analysis?.brief_slot || 'MORNING').toUpperCase();
     const slotLabel = {
         MORNING: '08:00 브리핑',
+        MIDMORNING: '10:30 브리핑',
         MIDDAY: '12:30 브리핑',
+        AFTERNOON: '14:00 브리핑',
         CLOSE: '15:40 브리핑',
     }[slotName] || '실시간 브리핑';
 
@@ -241,7 +243,7 @@ function formatNewsBriefResponse(brief) {
     }[String(analysis.market_sentiment || 'NEUTRAL').toUpperCase()] || String(analysis.market_sentiment || 'NEUTRAL');
 
     const sectors = normalizeList(
-        slotName === 'MIDDAY'
+        ['MIDMORNING', 'MIDDAY', 'AFTERNOON'].includes(slotName)
             ? (analysis.midday_sectors || analysis.recommended_sectors)
             : slotName === 'CLOSE'
                 ? (analysis.close_leaders || analysis.recommended_sectors)
@@ -253,7 +255,7 @@ function formatNewsBriefResponse(brief) {
     let marketLine = '';
     if (slotName === 'MORNING') {
         marketLine = String(analysis.korea_outlook || '').trim();
-    } else if (slotName === 'MIDDAY') {
+    } else if (['MIDMORNING', 'MIDDAY', 'AFTERNOON'].includes(slotName)) {
         marketLine = String(analysis.midday_index_commentary || analysis.midday_recap || '').trim();
     } else {
         marketLine = String(analysis.close_flow || '').trim();
@@ -270,7 +272,7 @@ function formatNewsBriefResponse(brief) {
 
     if (sectors.length > 0) {
         lines.push('', '<b>2) 주요 섹터</b>');
-        sectors.slice(0, 5).forEach((sector) => lines.push(`• ${escapeHtml(sector)}`));
+        sectors.slice(0, 8).forEach((sector) => lines.push(`• ${escapeHtml(sector)}`));
     }
 
     const macroLines = slotName === 'MORNING'
@@ -278,10 +280,10 @@ function formatNewsBriefResponse(brief) {
         : urgentNews;
     if (macroLines.length > 0) {
         lines.push('', '<b>3) 영향 뉴스 / 외부 변수</b>');
-        macroLines.slice(0, 5).forEach((item) => lines.push(`• ${escapeHtml(item)}`));
+        macroLines.slice(0, 8).forEach((item) => lines.push(`• ${escapeHtml(item)}`));
     }
 
-    const outlook = slotName === 'MIDDAY'
+    const outlook = ['MIDMORNING', 'MIDDAY', 'AFTERNOON'].includes(slotName)
         ? String(analysis.afternoon_outlook || '').trim()
         : slotName === 'CLOSE'
             ? String(analysis.tomorrow_watch || '').trim()
@@ -292,11 +294,11 @@ function formatNewsBriefResponse(brief) {
 
     if (risks.length > 0) {
         lines.push('', '<b>5) 리스크</b>');
-        risks.slice(0, 4).forEach((risk) => lines.push(`• ${escapeHtml(risk)}`));
+        risks.slice(0, 6).forEach((risk) => lines.push(`• ${escapeHtml(risk)}`));
     }
 
     if (analysis.summary) {
-        lines.push('', '<b>한 줄 결론</b>', escapeHtml(String(analysis.summary).trim()));
+        lines.push('', '<b>상세 결론</b>', escapeHtml(String(analysis.summary).trim()));
     }
 
     if (brief?.used_cached_analysis) {
