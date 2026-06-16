@@ -590,6 +590,39 @@ class TestQueueWorkerFailures:
         mock_limit.assert_not_awaited()
         mock_analyze.assert_not_awaited()
 
+    def test_s8_low_rr_waits_for_pullback_before_ai(self):
+        item = _signal(
+            strategy="S8_GOLDEN_CROSS",
+            cur_prc=4645,
+            tp1_price=4920,
+            sl_price=3700,
+            rr_ratio=0.29,
+            buy_zone={"low": 4200, "high": 4500, "strength": 4, "anchors": ["ma20", "box", "vwap"]},
+        )
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(100.0, {"s8": 100.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
+             patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert captured[0]["action"] == "HOLD"
+        assert captured[0]["cancel_type"] == "S8_WAIT_PULLBACK"
+        assert captured[0]["s8_zone_entry_policy"] == "wait_pullback"
+        assert "wait for support-zone pullback" in captured[0]["ai_reason"]
+        mock_limit.assert_not_awaited()
+        mock_analyze.assert_not_awaited()
+
     def test_borderline_rr_calls_ai_with_quality_metadata(self):
         item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=0.9, vol_ratio=1.5)
         rdb = _make_rdb(json.dumps(item))
@@ -676,6 +709,21 @@ class TestQueueWorkerFailures:
         assert _hard_gate_failure(weak_bid, _ctx()) is not None
         assert _hard_gate_failure(pass_bid, _ctx()) is None
         assert pass_bid["hard_gate_bid_ratio_rescued"] is True
+
+    def test_s1_fallback_quality_requires_live_strength_and_bid(self):
+        from queue_worker import _s1_fallback_quality_failure
+
+        signal = {
+            "strategy": "S1_GAP_OPEN",
+            "candidate_source_status": "FALLBACK_ALL_MARKET",
+            "cntr_strength": 120.0,
+            "bid_ratio": 0.7,
+        }
+        reason = _s1_fallback_quality_failure(signal, _ctx())
+
+        assert reason is not None
+        assert "S1 fallback quality failed" in reason
+        assert signal["s1_fallback_entry_policy"] == "skip_fallback_candidate"
 
     def test_claude_tp_sl_recalculates_rr_in_published_payload(self):
         item = _signal(cur_prc=10000, tp1_price=10200, sl_price=9900, rr_ratio=0.9, min_rr_ratio=1.0)
@@ -1224,6 +1272,22 @@ class TestFreshnessPhase0Defects:
         reason = _freshness_cancel_reason(ctx, "S1_GAP_OPEN")
         assert reason is not None, "strict 전략은 hoga cancel → cancel reason 반환해야 함"
         assert "hoga" in reason
+
+    def test_vi_stale_does_not_cancel_non_vi_strategy(self):
+        from queue_worker import _freshness_cancel_reason
+
+        ctx = {
+            "freshness": {
+                "tick": {"state": "fresh", "age_ms": 100},
+                "hoga": {"state": "fresh", "age_ms": 100},
+                "strength": {"state": "fresh", "age_ms": 100},
+                "vi": {"state": "cancel", "age_ms": 120000},
+            },
+            "vi": {"status": "released"},
+        }
+
+        assert _freshness_cancel_reason(ctx, "S15_MOMENTUM_ALIGN") is None
+        assert "vi data stale" in _freshness_cancel_reason(ctx, "S2_VI_PULLBACK")
 
     def test_stale_hoga_removes_bid_component(self):
         """stale_hoga=True 시 bid_component가 0이 되어야 함"""

@@ -569,6 +569,38 @@ class TestS7IchimokuBreakout:
         score, _ = rule_score(signal, _ctx())
         assert score == 5.0
 
+    def test_runner_bridge_adds_capped_bonus_when_rr_and_flow_confirm(self):
+        signal = _signal(
+            "S7_ICHIMOKU_BREAKOUT",
+            cloud_thickness_pct=4.0,
+            chikou_above=False,
+            vol_ratio=0.8,
+            rsi=80,
+            cond_count=3,
+            runner_score=95.0,
+            effective_rr=1.8,
+        )
+        score, components = rule_score(signal, _ctx(strength=100))
+
+        assert components["strategy_specific"]["runner_bridge_bonus"] == 12.0
+        assert score >= 17.0
+
+    def test_runner_bridge_requires_flow_confirmation(self):
+        signal = _signal(
+            "S7_ICHIMOKU_BREAKOUT",
+            cloud_thickness_pct=4.0,
+            chikou_above=False,
+            vol_ratio=0.2,
+            rsi=80,
+            cond_count=3,
+            runner_score=95.0,
+            effective_rr=1.8,
+            bid_ratio=0.5,
+        )
+        _, components = rule_score(signal, _ctx(strength=100))
+
+        assert components["strategy_specific"]["runner_bridge_bonus"] == 0.0
+
 
 class TestThresholdAndSkipAi:
     def test_known_strategy_thresholds(self):

@@ -393,6 +393,10 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             chikou    = bool(signal.get("chikou_above", False))
             vol_ratio_s7 = _safe_float(signal.get("vol_ratio", 0))
             rsi_val   = _safe_float(signal.get("rsi", 0))
+            runner_score = max(_strategy_raw_score(signal), _safe_float(signal.get("runner_score", 0)))
+            rr_s7 = _safe_float(signal.get("effective_rr", signal.get("rr_ratio", 0)))
+            signal_bid_ratio = _safe_float(signal.get("bid_ratio"), -1.0)
+            effective_bid_ratio = signal_bid_ratio if signal_bid_ratio >= 0 else bid_ratio
             # 구름 두께 — 얇을수록 돌파 저항 최소
             _cloud_sc = 20 if cld_thick < 1.0 else (15 if cld_thick < 2.0 else (8 if cld_thick < 3.5 else 0))
             # 후행스팬 확인 — 추세 견고성 신호
@@ -402,14 +406,25 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             # RSI 구간 (45~70: 추세 중반, 아직 과열 아님)
             _rsi_sc = 15 if 45 <= rsi_val <= 70 else (8 if 40 <= rsi_val < 45 else 0)
             # 선택조건 충족 수 — 공통 _cond_bonus 블록에서 합산하므로 여기서는 제외
-            score += _cloud_sc + _chikou_sc + _vol_sc + _rsi_sc
-            _technical_score += _cloud_sc + _chikou_sc + _rsi_sc
+            _runner_bridge = 0.0
+            _has_demand_or_flow = (
+                vol_ratio_s7 >= 0.8
+                or (effective_bid_ratio is not None and effective_bid_ratio >= 1.2)
+                or strength >= 150.0
+            )
+            if runner_score >= 90.0 and cond_cnt >= 3 and rr_s7 >= 1.8 and _has_demand_or_flow:
+                _runner_bridge = 12.0 if runner_score >= 95.0 else 8.0
+            score += _cloud_sc + _chikou_sc + _vol_sc + _rsi_sc + _runner_bridge
+            _technical_score += _cloud_sc + _chikou_sc + _rsi_sc + _runner_bridge
             _vol_score       += _vol_sc
             _strategy_data = {
                 "cloud_thickness_pct": cld_thick,
                 "chikou_above": chikou,
                 "vol_ratio": vol_ratio_s7,
                 "rsi": rsi_val,
+                "runner_score": runner_score,
+                "runner_bridge_bonus": _runner_bridge,
+                "effective_rr": rr_s7,
             }
 
         case "S10_NEW_HIGH":

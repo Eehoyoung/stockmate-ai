@@ -105,6 +105,7 @@ _STRICT_CANCEL_GATE = {
     "S1_GAP_OPEN", "S2_VI_PULLBACK", "S4_BIG_CANDLE",
     "S10_NEW_HIGH", "S12_CLOSING", "S13_BOX_BREAKOUT",
 }
+_VI_STALE_CANCEL_STRATEGIES = {"S2_VI_PULLBACK"}
 
 # chart 보강 전략 분류 (P2 — ENABLE_CHART_RETRY=true 시에만 사용)
 _CHART_DAILY_STRATEGIES = {
@@ -124,6 +125,8 @@ RR_CAUTION_THRESHOLD = float(os.getenv("RR_CAUTION_THRESHOLD", "1.2"))
 S8_SUPPORT_ZONE_CAUTION_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_CAUTION_GAP_PCT", "1.5"))
 S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT", "3.5"))
 S8_MIN_ZONE_RR = float(os.getenv("S8_MIN_ZONE_RR", "1.5"))
+S1_FALLBACK_MIN_STRENGTH = float(os.getenv("S1_FALLBACK_MIN_STRENGTH", "130.0"))
+S1_FALLBACK_MIN_BID_RATIO = float(os.getenv("S1_FALLBACK_MIN_BID_RATIO", "0.8"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").lower() == "true"
 ENABLE_SCORING_DATA_RETRY = os.getenv("ENABLE_SCORING_DATA_RETRY", "true").lower() == "true"
@@ -572,6 +575,43 @@ def _hard_gate_failure(signal: dict, ctx: dict) -> str | None:
     return None
 
 
+def _s1_fallback_quality_failure(signal: dict, ctx: dict) -> str | None:
+    if signal.get("strategy") != "S1_GAP_OPEN":
+        return None
+    source_status = str(
+        signal.get("candidate_source_status")
+        or signal.get("s1_candidate_source_status")
+        or ""
+    ).upper()
+    if "FALLBACK" not in source_status:
+        return None
+
+    strength = _resolve_execution_strength(signal, ctx)
+    bid_ratio = _resolve_bid_ratio(signal, ctx)
+    freshness = ctx.get("freshness", {}) or {}
+    failures = []
+    if strength < S1_FALLBACK_MIN_STRENGTH:
+        failures.append(f"strength {strength:.1f} < {S1_FALLBACK_MIN_STRENGTH:.1f}")
+    if bid_ratio is None:
+        failures.append(f"bid_ratio missing < {S1_FALLBACK_MIN_BID_RATIO:.2f}")
+    elif bid_ratio < S1_FALLBACK_MIN_BID_RATIO:
+        failures.append(f"bid_ratio {bid_ratio:.2f} < {S1_FALLBACK_MIN_BID_RATIO:.2f}")
+    for key in ("tick", "hoga"):
+        state = (freshness.get(key) or {}).get("state")
+        if state in ("cancel", "missing"):
+            failures.append(f"{key} freshness {state}")
+    vi_state = (freshness.get("vi") or {}).get("state")
+    if ctx.get("vi") and vi_state == "cancel":
+        failures.append("vi freshness cancel")
+
+    if not failures:
+        signal["s1_fallback_quality_status"] = "pass"
+        return None
+    signal["s1_fallback_quality_status"] = "failed"
+    signal["s1_fallback_entry_policy"] = "skip_fallback_candidate"
+    return "S1 fallback quality failed: " + "; ".join(failures)
+
+
 def _s8_buy_zone_gate_failure(signal: dict) -> str | None:
     if signal.get("strategy") != "S8_GOLDEN_CROSS":
         return None
@@ -921,9 +961,59 @@ def _freshness_cancel_reason(ctx: dict, strategy: str = "") -> str | None:
             return f"tick missing (WS unsubscribed) [{strategy}]"
     vi = ctx.get("vi", {}) or {}
     vi_status = freshness.get("vi", {}) or {}
-    if vi and vi_status.get("state") == "cancel":
+    if vi and vi_status.get("state") == "cancel" and strategy in _VI_STALE_CANCEL_STRATEGIES:
         return f"vi data stale: age_ms={vi_status.get('age_ms')}"
     return None
+
+
+def _freshness_age_diagnostics(ctx: dict) -> dict:
+    freshness = ctx.get("freshness", {}) or {}
+    result = {}
+    stale_sources = []
+    for key in ("tick", "hoga", "strength", "vi"):
+        status = freshness.get(key, {}) or {}
+        state = status.get("state")
+        age_ms = status.get("age_ms")
+        result[f"{key}_freshness_state"] = state
+        result[f"{key}_age_ms"] = age_ms
+        if state == "cancel":
+            stale_sources.append(key)
+    result["stale_sources"] = stale_sources
+    result["stale_source"] = stale_sources[0] if stale_sources else None
+    return result
+
+
+def _build_failed_gate_diagnostics(
+    *,
+    rule_score_value: float,
+    threshold: float,
+    skip_ai: bool,
+    rescue_reason: str | None,
+    rr_reason: str | None,
+    s8_zone_reason: str | None,
+    s1_fallback_reason: str | None,
+    hard_gate_reason: str | None,
+    freshness_reason: str | None,
+) -> list[dict]:
+    failures = []
+    if skip_ai and not rescue_reason:
+        failures.append({
+            "gate": "RULE_THRESHOLD",
+            "reason": f"rule_score {rule_score_value:.1f} < threshold {threshold:.1f}",
+            "actual": round(rule_score_value, 2),
+            "threshold": round(threshold, 2),
+            "score_margin": round(rule_score_value - threshold, 2),
+        })
+    for gate, reason in (
+        ("RR_TOO_LOW", rr_reason),
+        ("S8_BUY_ZONE", s8_zone_reason),
+        ("S1_FALLBACK_QUALITY", s1_fallback_reason),
+        ("HARD_GATE", hard_gate_reason),
+        ("FRESHNESS_STALE", freshness_reason),
+    ):
+        if reason:
+            failures.append({"gate": gate, "reason": reason})
+    return failures
 
 
 def _compute_freshness_decision(freshness: dict, strategy: str) -> str:
@@ -1563,6 +1653,29 @@ async def process_one(rdb, pg_pool=None) -> bool:
             else None
         )
         if skip_ai and not rescue_reason:
+            rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
+            s8_zone_gate_reason = _s8_buy_zone_gate_failure(dict(signal))
+            s1_fallback_quality_reason = _s1_fallback_quality_failure(dict(signal), ctx)
+            hard_gate_reason = _hard_gate_failure(dict(signal), ctx)
+            stale_reason = _freshness_cancel_reason(ctx, strategy)
+        else:
+            rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
+            s8_zone_gate_reason = _s8_buy_zone_gate_failure(signal)
+            s1_fallback_quality_reason = _s1_fallback_quality_failure(signal, ctx)
+            hard_gate_reason = _hard_gate_failure(signal, ctx)
+            stale_reason = _freshness_cancel_reason(ctx, strategy)
+        failed_gates = _build_failed_gate_diagnostics(
+            rule_score_value=r_score,
+            threshold=threshold,
+            skip_ai=skip_ai,
+            rescue_reason=rescue_reason,
+            rr_reason=rr_prefilter_reason,
+            s8_zone_reason=s8_zone_gate_reason,
+            s1_fallback_reason=s1_fallback_quality_reason,
+            hard_gate_reason=hard_gate_reason,
+            freshness_reason=stale_reason,
+        )
+        if skip_ai and not rescue_reason:
             action = "CANCEL"
             confidence = "LOW"
             reason = f"Rule score {r_score:.1f} below threshold"
@@ -1575,16 +1688,20 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 signal["decision_stage"] = "AI_REVIEW"
                 signal["rule_threshold_rescue_reason"] = rescue_reason
                 await _incr_pipeline(rdb, strategy, "rule_threshold_rescue")
-            rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
-            s8_zone_gate_reason = _s8_buy_zone_gate_failure(signal)
-            hard_gate_reason = _hard_gate_failure(signal, ctx)
-            stale_reason = _freshness_cancel_reason(ctx, strategy)
             if rr_prefilter_reason:
-                action = "CANCEL"
+                if strategy == "S8_GOLDEN_CROSS":
+                    action = "HOLD"
+                    signal["s8_zone_status"] = signal.get("s8_zone_status") or "wait_pullback"
+                    signal["s8_zone_entry_policy"] = "wait_pullback"
+                    reason = f"{rr_prefilter_reason}; wait for support-zone pullback"
+                    cancel_reason = reason
+                    cancel_type = "S8_WAIT_PULLBACK"
+                else:
+                    action = "CANCEL"
+                    reason = rr_prefilter_reason
+                    cancel_reason = rr_prefilter_reason
+                    cancel_type = "RR_TOO_LOW"
                 confidence = "LOW"
-                reason = rr_prefilter_reason
-                cancel_reason = rr_prefilter_reason
-                cancel_type = "RR_TOO_LOW"
                 await _incr_pipeline(rdb, strategy, "cancel_rr")
             elif s8_zone_gate_reason:
                 action = "CANCEL"
@@ -1593,6 +1710,13 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 cancel_reason = s8_zone_gate_reason
                 cancel_type = "S8_BUY_ZONE"
                 await _incr_pipeline(rdb, strategy, "cancel_s8_buy_zone")
+            elif s1_fallback_quality_reason:
+                action = "CANCEL"
+                confidence = "LOW"
+                reason = s1_fallback_quality_reason
+                cancel_reason = s1_fallback_quality_reason
+                cancel_type = "S1_FALLBACK_QUALITY"
+                await _incr_pipeline(rdb, strategy, "cancel_s1_fallback_quality")
             elif hard_gate_reason:
                 action = "CANCEL"
                 confidence = "LOW"
@@ -1665,6 +1789,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 pass
         _missing_flags = _collect_missing_feature_flags(signal, ctx)
         _dq = _compute_data_quality(_missing_flags, _freshness_dec, signal)
+        _freshness_diag = _freshness_age_diagnostics(ctx)
 
         # ── Shadow features (Phase 3 관측 — gate 판단에 미사용) ─────────────────
         try:
@@ -1688,6 +1813,9 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "claude_sl": ai_result.get("claude_sl"),
             "tp2_price": None,
             "cancel_type": cancel_type or ai_result.get("cancel_type"),
+            "threshold_used": threshold,
+            "score_margin": round(r_score - threshold, 2),
+            "failed_gates": failed_gates,
             "decision_stage": signal.get("decision_stage"),
             "rule_threshold_rescued": signal.get("rule_threshold_rescued"),
             "rule_threshold_rescue_reason": signal.get("rule_threshold_rescue_reason"),
@@ -1698,6 +1826,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "s8_zone_entry_policy": signal.get("s8_zone_entry_policy"),
             "s8_zone_caution_reason": signal.get("s8_zone_caution_reason"),
             "s8_buy_zone_high_gap_pct": signal.get("s8_buy_zone_high_gap_pct"),
+            "s1_fallback_quality_status": signal.get("s1_fallback_quality_status"),
+            "s1_fallback_entry_policy": signal.get("s1_fallback_entry_policy"),
             **quality,
             # 데이터 신선도·품질 필드 (관측·검증용)
             "freshness_decision": _freshness_dec,
@@ -1706,6 +1836,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "data_refresh_attempted": (ctx.get("refresh_meta") or {}).get("data_refresh_attempted", {}),
             "retry_failures": (ctx.get("refresh_meta") or {}).get("retry_failures", []),
             "freshness_status": _freshness_status_from_decision(_freshness_dec),
+            **_freshness_diag,
             **_dq,
             # Shadow features (관측·EV 검증용 — gate 판단에 미사용)
             "shadow_features": _shadow,
@@ -1828,7 +1959,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                     rule_score=r_score,
                     ai_score=ai_score_val,
                     ai_reason=display_reason,
-                    skip_entry=(action == "CANCEL"),
+                    skip_entry=(action != "ENTER"),
                 )
 
             if db_id:
@@ -1849,7 +1980,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                     ai_reason=display_reason,
                     tp_method=enriched.get("tp_method"),
                     sl_method=enriched.get("sl_method"),
-                    skip_entry=(action == "CANCEL"),
+                    skip_entry=(action != "ENTER"),
                     ma5=signal.get("ma5"),
                     ma20=signal.get("ma20"),
                     ma60=signal.get("ma60"),
