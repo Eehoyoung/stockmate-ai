@@ -70,6 +70,32 @@ news:
   trading-control-enabled: ${NEWS_TRADING_CONTROL:true}
   sector-filter-enabled: ${NEWS_SECTOR_FILTER:true}
 
+cleanup:
+  cron: ${DATA_CLEANUP_CRON:0 30 20 * * *}
+  ws-tick-data:
+    legacy-truncate-enabled: ${CLEANUP_WS_TICK_LEGACY_TRUNCATE_ENABLED:true}
+    partition-retention-enabled: ${CLEANUP_WS_TICK_PARTITION_RETENTION_ENABLED:true}
+    partition-retention-dry-run: ${CLEANUP_WS_TICK_PARTITION_RETENTION_DRY_RUN:false}
+    retain-days: ${CLEANUP_WS_TICK_RETAIN_DAYS:3}
+  vi-events:
+    retain-days: ${CLEANUP_VI_EVENTS_RETAIN_DAYS:3}
+  candidate-pool-history:
+    retain-days: ${CLEANUP_CANDIDATE_POOL_HISTORY_RETAIN_DAYS:7}
+  daily-indicators:
+    retain-days: ${CLEANUP_DAILY_INDICATORS_RETAIN_DAYS:30}
+  ai-cancel-signal:
+    retain-days: ${CLEANUP_AI_CANCEL_SIGNAL_RETAIN_DAYS:30}
+  rule-cancel-signal:
+    retain-days: ${CLEANUP_RULE_CANCEL_SIGNAL_RETAIN_DAYS:30}
+  overnight-evaluations:
+    retain-days: ${CLEANUP_OVERNIGHT_EVALUATIONS_RETAIN_DAYS:90}
+  kiwoom-tokens:
+    inactive-retain-days: ${CLEANUP_INACTIVE_TOKEN_RETAIN_DAYS:7}
+  log-files:
+    enabled: ${CLEANUP_LOG_FILES_ENABLED:true}
+    directory: ${CLEANUP_LOG_DIR:/app/logs}
+    retain-days: ${CLEANUP_LOG_RETAIN_DAYS:2}
+
 maintenance:
   ws-tick-partitions:
     enabled: ${WS_TICK_PARTITIONS_ENABLED:true}
