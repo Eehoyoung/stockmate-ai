@@ -14,6 +14,8 @@ def _run(coro):
 def _rdb():
     rdb = MagicMock()
     rdb.get = AsyncMock(return_value=None)
+    rdb.incrby = AsyncMock(return_value=1)
+    rdb.expire = AsyncMock(return_value=True)
     rdb.hgetall = AsyncMock(return_value={})
     rdb.lrange = AsyncMock(return_value=[])
     return rdb
@@ -55,8 +57,9 @@ def _payload(**overrides):
 def test_evaluate_hold_item_promotes_high_score_ai_hold_to_enter():
     rdb = _rdb()
 
-    with patch("hold_monitor_worker.qw._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
-         patch("hold_monitor_worker.qw._refresh_stale_ctx", new_callable=AsyncMock), \
+    with patch("hold_monitor_worker.HOLD_MONITOR_USE_REST_FALLBACK", False), \
+         patch("hold_monitor_worker.qw._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+         patch("hold_monitor_worker.qw._refresh_stale_ctx", new_callable=AsyncMock) as mock_refresh, \
          patch("hold_monitor_worker.rule_score", return_value=(92.0, {"s8": 92.0})), \
          patch("hold_monitor_worker.should_skip_ai", return_value=False), \
          patch("hold_monitor_worker.qw._rr_prefilter_reason", return_value=None), \
@@ -84,6 +87,37 @@ def test_evaluate_hold_item_promotes_high_score_ai_hold_to_enter():
     assert result["hold_monitor_promoted"] is True
     assert result["hold_promoted_to_enter"] is True
     assert result["cur_prc"] == 9900
+    mock_refresh.assert_not_awaited()
+
+
+def test_refresh_ctx_uses_rest_only_when_enabled_and_budget_available():
+    rdb = _rdb()
+    ctx = _ctx()
+
+    with patch("hold_monitor_worker.HOLD_MONITOR_USE_REST_FALLBACK", True), \
+         patch("hold_monitor_worker.HOLD_MONITOR_MAX_REST_CALLS_PER_MIN", 30), \
+         patch("hold_monitor_worker.qw._refresh_stale_ctx", new_callable=AsyncMock) as mock_refresh:
+        from hold_monitor_worker import _refresh_ctx_for_hold_monitor
+
+        _run(_refresh_ctx_for_hold_monitor(ctx, "005930", rdb, _payload(), "S8_GOLDEN_CROSS"))
+
+    mock_refresh.assert_awaited_once()
+
+
+def test_refresh_ctx_skips_rest_when_budget_exhausted():
+    rdb = _rdb()
+    rdb.get = AsyncMock(return_value="30")
+    ctx = _ctx()
+
+    with patch("hold_monitor_worker.HOLD_MONITOR_USE_REST_FALLBACK", True), \
+         patch("hold_monitor_worker.HOLD_MONITOR_MAX_REST_CALLS_PER_MIN", 30), \
+         patch("hold_monitor_worker.qw._refresh_stale_ctx", new_callable=AsyncMock) as mock_refresh:
+        from hold_monitor_worker import _refresh_ctx_for_hold_monitor
+
+        _run(_refresh_ctx_for_hold_monitor(ctx, "005930", rdb, _payload(), "S8_GOLDEN_CROSS"))
+
+    mock_refresh.assert_not_awaited()
+    assert "hold_monitor_rest_budget_exhausted" in ctx["refresh_meta"]["retry_failures"]
 
 
 def test_is_after_close_deletes_from_1530():

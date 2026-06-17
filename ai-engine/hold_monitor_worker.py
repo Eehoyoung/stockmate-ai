@@ -29,6 +29,9 @@ HOLD_MONITOR_RECHECK_SEC = float(os.getenv("HOLD_MONITOR_RECHECK_SEC", "10.0"))
 HOLD_MONITOR_AI_COOLDOWN_SEC = float(os.getenv("HOLD_MONITOR_AI_COOLDOWN_SEC", "60.0"))
 HOLD_MONITOR_BATCH_LIMIT = int(os.getenv("HOLD_MONITOR_BATCH_LIMIT", "20"))
 HOLD_MONITOR_CLOSE_HHMM = os.getenv("HOLD_MONITOR_CLOSE_HHMM", "15:30")
+HOLD_MONITOR_USE_REST_FALLBACK = os.getenv("HOLD_MONITOR_USE_REST_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
+HOLD_MONITOR_MAX_REST_CALLS_PER_MIN = int(os.getenv("HOLD_MONITOR_MAX_REST_CALLS_PER_MIN", "30"))
+_REST_CALL_FIELDS = ("tick", "strength", "hoga")
 
 
 def _close_time() -> time:
@@ -88,6 +91,61 @@ def _recent_ai_call(payload: dict) -> bool:
     return (_now_kst().timestamp() - last) < HOLD_MONITOR_AI_COOLDOWN_SEC
 
 
+def _rest_budget_key(now: datetime | None = None) -> str:
+    target = now or _now_kst()
+    return f"hold_monitor:rest_budget:{target.strftime('%Y%m%d%H%M')}"
+
+
+def _count_rest_attempts(meta: dict | None) -> int:
+    attempted = (meta or {}).get("data_refresh_attempted") or {}
+    sources = (meta or {}).get("market_data_sources") or {}
+    count = 0
+    for field in _REST_CALL_FIELDS:
+        if field in attempted or sources.get(field) == "rest":
+            count += 1
+    return count
+
+
+async def _rest_budget_available(rdb, *, needed: int = 1) -> bool:
+    if HOLD_MONITOR_MAX_REST_CALLS_PER_MIN <= 0:
+        return False
+    key = _rest_budget_key()
+    current = await rdb.get(key)
+    try:
+        used = int(current or 0)
+    except (TypeError, ValueError):
+        used = 0
+    return used + max(1, needed) <= HOLD_MONITOR_MAX_REST_CALLS_PER_MIN
+
+
+async def _record_rest_budget(rdb, count: int) -> None:
+    if count <= 0:
+        return
+    key = _rest_budget_key()
+    await rdb.incrby(key, count)
+    await rdb.expire(key, 90)
+
+
+async def _refresh_ctx_for_hold_monitor(ctx: dict, stk_cd: str, rdb, payload: dict, strategy: str) -> None:
+    if not HOLD_MONITOR_USE_REST_FALLBACK:
+        ctx["refresh_meta"] = {
+            "market_data_sources": {},
+            "data_refresh_attempted": {},
+            "retry_failures": ["hold_monitor_rest_disabled"],
+        }
+        return
+    if not await _rest_budget_available(rdb):
+        ctx["refresh_meta"] = {
+            "market_data_sources": {},
+            "data_refresh_attempted": {},
+            "retry_failures": ["hold_monitor_rest_budget_exhausted"],
+        }
+        return
+
+    await qw._refresh_stale_ctx(ctx, stk_cd, rdb, payload, strategy)
+    await _record_rest_budget(rdb, _count_rest_attempts(ctx.get("refresh_meta")))
+
+
 async def _requeue(rdb, payload: dict, reason: str) -> None:
     payload["hold_monitor_last_reason"] = reason
     payload["hold_monitor_attempts"] = int(_fv(payload.get("hold_monitor_attempts"), 0) or 0) + 1
@@ -104,7 +162,7 @@ async def evaluate_hold_item(rdb, payload: dict) -> dict:
     payload["stk_cd"] = stk_cd
 
     ctx = await qw._build_market_ctx(rdb, stk_cd, sector=payload.get("sector", "") or "", signal=payload)
-    await qw._refresh_stale_ctx(ctx, stk_cd, rdb, payload, strategy)
+    await _refresh_ctx_for_hold_monitor(ctx, stk_cd, rdb, payload, strategy)
 
     current_price = _current_price_from_ctx(ctx, payload.get("cur_prc") or payload.get("entry_price"))
     if current_price:
