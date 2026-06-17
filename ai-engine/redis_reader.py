@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 HOLD_MONITOR_QUEUE = "hold_monitor_queue"
 HOLD_MONITOR_ITEMS = "hold_monitor:items"
+HOLD_MONITOR_WATCHLIST = "hold_monitor:watchlist"
 HOLD_MONITOR_TTL_SEC = int(os.getenv("HOLD_MONITOR_TTL_SEC", "43200"))
 
 
@@ -352,6 +353,7 @@ async def push_hold_monitor_queue(rdb, payload: dict, *, delay_sec: float = 0.0)
     """Store a HOLD payload in the dedicated monitor queue."""
     try:
         item = dict(payload)
+        stk_cd = str(item.get("stk_cd") or "").strip()
         key = str(item.get("hold_monitor_key") or _hold_monitor_key(item))
         now = time.time()
         item["hold_monitor_key"] = key
@@ -366,6 +368,9 @@ async def push_hold_monitor_queue(rdb, payload: dict, *, delay_sec: float = 0.0)
     await rdb.zadd(HOLD_MONITOR_QUEUE, {key: item["hold_monitor_next_check_at"]})
     await rdb.expire(HOLD_MONITOR_ITEMS, HOLD_MONITOR_TTL_SEC)
     await rdb.expire(HOLD_MONITOR_QUEUE, HOLD_MONITOR_TTL_SEC)
+    if stk_cd:
+        await rdb.sadd(HOLD_MONITOR_WATCHLIST, stk_cd)
+        await rdb.expire(HOLD_MONITOR_WATCHLIST, HOLD_MONITOR_TTL_SEC)
     return key
 
 
@@ -406,6 +411,7 @@ async def remove_hold_monitor_item(rdb, key: str) -> None:
 async def clear_hold_monitor_queue(rdb) -> None:
     await rdb.delete(HOLD_MONITOR_QUEUE)
     await rdb.delete(HOLD_MONITOR_ITEMS)
+    await rdb.delete(HOLD_MONITOR_WATCHLIST)
 
 
 async def get_sector_overheat_count(rdb, sector: str) -> int:

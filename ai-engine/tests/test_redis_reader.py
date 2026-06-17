@@ -405,3 +405,29 @@ class TestGetStrengthWithStatus:
 
         assert result["status"]["state"] == "fresh"
         assert result["data"] == pytest.approx(105.0)
+
+
+class TestHoldMonitorWatchlist:
+    def test_push_hold_monitor_queue_tracks_watchlist_code(self):
+        rdb = _make_rdb(hset=1, zadd=1, expire=True, sadd=1)
+        payload = {"strategy": "S8_GOLDEN_CROSS", "stk_cd": "005930", "action": "HOLD"}
+
+        from redis_reader import HOLD_MONITOR_TTL_SEC, push_hold_monitor_queue
+
+        key = _run(push_hold_monitor_queue(rdb, payload))
+
+        assert key == "S8_GOLDEN_CROSS:005930"
+        rdb.sadd.assert_awaited_once_with("hold_monitor:watchlist", "005930")
+        rdb.expire.assert_any_await("hold_monitor:watchlist", HOLD_MONITOR_TTL_SEC)
+
+    def test_clear_hold_monitor_queue_deletes_watchlist(self):
+        rdb = _make_rdb(delete=1)
+
+        from redis_reader import clear_hold_monitor_queue
+
+        _run(clear_hold_monitor_queue(rdb))
+
+        deleted = [call.args[0] for call in rdb.delete.await_args_list]
+        assert "hold_monitor_queue" in deleted
+        assert "hold_monitor:items" in deleted
+        assert "hold_monitor:watchlist" in deleted

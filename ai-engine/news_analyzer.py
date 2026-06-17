@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 NEWS_MAX_TOKENS = int(os.getenv("NEWS_MAX_TOKENS", "12000"))
 NEWS_CLAUDE_TIMEOUT = int(os.getenv("NEWS_CLAUDE_TIMEOUT_SEC", "180"))
-MAX_NEWS_CLAUDE_CALLS = int(os.getenv("MAX_NEWS_CLAUDE_CALLS", "5"))
+MAX_NEWS_CLAUDE_CALLS = int(os.getenv("MAX_NEWS_CLAUDE_CALLS", "12"))
 NEWS_RETRY_ON_MAX_TOKENS = os.getenv("NEWS_RETRY_ON_MAX_TOKENS", "true").lower() in {"1", "true", "yes", "on"}
 NEWS_RETRY_MAX_TOKENS = int(os.getenv("NEWS_RETRY_MAX_TOKENS", "6000"))
 

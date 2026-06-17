@@ -164,11 +164,12 @@ async def _get_candidates(rdb, market: str = "001") -> list[str]:
 
 async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
     """ZSET 우선순위 후보를 앞에 배치한 전체/상위 100개 목록을 반환한다."""
+    hold_codes = await _get_hold_monitor_watchlist(rdb)
     try:
         zset_codes = await rdb.zrevrange("candidates:watchlist:z", 0, 199)
         if zset_codes:
             ranked = [c.decode("utf-8") if isinstance(c, bytes) else c for c in zset_codes if c]
-            ranked = ranked[:200]
+            ranked = _merge_hold_codes(ranked, hold_codes, limit=200)
             return ranked, ranked[:100]
     except Exception:
         pass
@@ -199,8 +200,34 @@ async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
     }
     priority_list = sorted(c for c in priority_codes if c)
     remaining = sorted(c for c in watchlist if c and c not in priority_codes)
-    ranked = (priority_list + remaining)[:200]
+    ranked = _merge_hold_codes(priority_list + remaining, hold_codes, limit=200)
     return ranked, ranked[:100]
+
+
+async def _get_hold_monitor_watchlist(rdb) -> list[str]:
+    try:
+        codes = await rdb.smembers("hold_monitor:watchlist")
+    except Exception:
+        return []
+    return [
+        c.decode("utf-8") if isinstance(c, bytes) else c
+        for c in (codes or [])
+        if c
+    ]
+
+
+def _merge_hold_codes(codes: list[str], hold_codes: list[str], *, limit: int) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for code in sorted(hold_codes):
+        if code and code not in seen:
+            merged.append(code)
+            seen.add(code)
+    for code in codes:
+        if code and code not in seen:
+            merged.append(code)
+            seen.add(code)
+    return merged[:limit]
 
 
 def _get_market_session() -> str:
