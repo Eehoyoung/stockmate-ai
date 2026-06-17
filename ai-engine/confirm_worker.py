@@ -19,7 +19,7 @@ from db_writer import (
     insert_rule_cancel_signal,
 )
 from price_utils import normalize_signal_prices
-from redis_reader import push_score_only_queue
+from redis_reader import push_hold_monitor_queue, push_score_only_queue
 from scorer import check_daily_limit, rule_score
 from score_utils import normalize_score_0_100
 from strategy_meta import get_hold_to_enter_threshold as _get_hold_threshold
@@ -290,7 +290,11 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
         normalize_signal_prices(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)
         enriched.pop("market_ctx", None)
-        await push_score_only_queue(rdb, enriched)
+        if enriched.get("action") == "HOLD":
+            await push_hold_monitor_queue(rdb, enriched)
+            logger.info("[ConfirmWorker] HOLD routed to monitor queue [%s %s]", stk_cd, strategy)
+        else:
+            await push_score_only_queue(rdb, enriched)
         if pg_pool:
             signal_id = enriched.get("id")
             action    = enriched.get("action", "")

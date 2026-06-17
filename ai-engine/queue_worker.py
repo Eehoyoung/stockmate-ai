@@ -35,6 +35,7 @@ from redis_reader import (
     get_tick_data,
     get_vi_status,
     pop_telegram_queue,
+    push_hold_monitor_queue,
     push_score_only_queue,
 )
 from scorer import check_daily_limit, get_claude_threshold, rule_score, should_skip_ai
@@ -1637,6 +1638,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
         threshold = get_claude_threshold(strategy)
         ai_score_val = r_score
         ai_result = {}
+        hold_promoted_to_enter = False
         cancel_type = None
         cancel_reason = None
 
@@ -1738,7 +1740,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
                     try:
                         ai_result = await analyze_signal(signal, ctx, r_score, rdb=rdb)
                         ai_score_val = normalize_score_0_100(ai_result.get("ai_score", r_score))
-                        action = ai_result.get("action", "ENTER")
+                        original_ai_action = str(ai_result.get("action", "ENTER") or "ENTER").upper()
+                        action = original_ai_action
                         confidence = ai_result.get("confidence", "HIGH")
                         reason = ai_result.get("reason", f"Rule score {r_score:.1f} passed")
                         cancel_reason = ai_result.get("cancel_reason")
@@ -1750,6 +1753,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                             cancel_reason=cancel_reason,
                             ai_score=ai_score_val,
                         )
+                        hold_promoted_to_enter = original_ai_action == "HOLD" and action == "ENTER"
                         if action == "ENTER":
                             await _incr_pipeline(rdb, strategy, "ai_pass")
                         else:
@@ -1818,6 +1822,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "failed_gates": failed_gates,
             "decision_stage": signal.get("decision_stage"),
             "rule_threshold_rescued": signal.get("rule_threshold_rescued"),
+            "hold_promoted_to_enter": hold_promoted_to_enter,
             "rule_threshold_rescue_reason": signal.get("rule_threshold_rescue_reason"),
             "hard_gate_bid_ratio_rescued": signal.get("hard_gate_bid_ratio_rescued"),
             "hard_gate_bid_ratio_rescue_reason": signal.get("hard_gate_bid_ratio_rescue_reason"),
@@ -1895,11 +1900,16 @@ async def process_one(rdb, pg_pool=None) -> bool:
         reason = enriched.get("ai_reason", reason)
         display_reason = _resolve_display_reason(action, reason, cancel_reason)
         enriched["ai_reason"] = display_reason
-        await push_score_only_queue(rdb, enriched)
+        if action == "HOLD":
+            await push_hold_monitor_queue(rdb, enriched)
+            await _incr_pipeline(rdb, strategy, "hold_monitor")
+            logger.info("[Worker] HOLD routed to monitor queue [%s %s]", stk_cd, strategy)
+        else:
+            await push_score_only_queue(rdb, enriched)
 
         rule_only_payload = None
         if cancel_type in ("AI_UNAVAILABLE", "AI_DAILY_LIMIT") or (
-            action != "ENTER" and cancel_type is None and not should_skip_ai(r_score, strategy)
+            action == "CANCEL" and cancel_type is None and not should_skip_ai(r_score, strategy)
         ):
             rule_only_payload = _build_rule_only_alert_payload(signal, r_score, quality)
             normalize_signal_prices(rule_only_payload)

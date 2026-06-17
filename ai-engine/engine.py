@@ -37,6 +37,7 @@ from position_reassessment import run_position_reassessment
 from overnight_worker import run_overnight_worker
 from vi_watch_worker import run_vi_watch_worker
 from candidates_builder import run_candidate_builder
+from hold_monitor_worker import run_hold_monitor_worker
 from config import (
     REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
     PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD, PG_ENABLED,
@@ -192,6 +193,7 @@ async def main():
     enable_overnight    = bool_env("ENABLE_OVERNIGHT_WORKER",   True)
     enable_vi_watch     = bool_env("ENABLE_VI_WATCH_WORKER",    True)   # S2 VI 눌림목 감시
     enable_cand_builder = bool_env("ENABLE_CANDIDATE_BUILDER",  True)   # 후보 풀 적재
+    enable_hold_monitor = bool_env("ENABLE_HOLD_MONITOR_WORKER", True)
     health_port      = int(os.getenv("AI_HEALTH_PORT", "8082"))
     logger.info("[Engine] AI Engine ready – telegram_queue 폴링 시작")
     if enable_confirm:
@@ -220,6 +222,11 @@ async def main():
         logger.info("[Engine] 후보 풀 빌더 활성화 (ENABLE_CANDIDATE_BUILDER=true, 주기=%ss)",
                     os.getenv("CANDIDATE_BUILD_INTERVAL_SEC", "600"))
 
+    if enable_hold_monitor:
+        logger.info("[Engine] HOLD monitor worker enabled (interval=%ss, close=%s)",
+                    os.getenv("HOLD_MONITOR_INTERVAL_SEC", "5.0"),
+                    os.getenv("HOLD_MONITOR_CLOSE_HHMM", "15:30"))
+
     tasks = [
         asyncio.create_task(run_worker(rdb, pg_pool)),
         asyncio.create_task(stop_event.wait()),
@@ -245,6 +252,8 @@ async def main():
         tasks.append(asyncio.create_task(run_vi_watch_worker(rdb)))
     if enable_cand_builder:
         tasks.append(asyncio.create_task(run_candidate_builder(rdb)))
+    if enable_hold_monitor:
+        tasks.append(asyncio.create_task(run_hold_monitor_worker(rdb)))
 
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for t in pending:

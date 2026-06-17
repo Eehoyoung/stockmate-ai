@@ -254,6 +254,15 @@ test('formatSignal keeps non-S1 ENTER wording unchanged', () => {
     assert.ok(msg.includes('진입 체크포인트'));
 });
 
+test('formatSignal prefixes hold-promoted ENTER strategy with H tag', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S2_VI_PULLBACK',
+        signal_stage: 'ENTRY',
+        hold_promoted_to_enter: true,
+    }));
+    assert.ok(msg.includes('[H][S2_VI_PULLBACK]'));
+});
+
 test('formatForceClose renders stock code and strategy', () => {
     const msg = formatForceClose({ stk_cd: '005930', stk_nm: '삼성전자', strategy: 'S1_GAP_OPEN' });
     assert.ok(msg.includes('005930'));

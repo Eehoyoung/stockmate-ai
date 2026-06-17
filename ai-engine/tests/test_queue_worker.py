@@ -18,8 +18,15 @@ def _make_rdb(rpop_value=None):
     rdb.expire = AsyncMock(return_value=True)
     rdb.incr = AsyncMock(return_value=1)
     rdb.hgetall = AsyncMock(return_value={})
+    rdb.hget = AsyncMock(return_value=None)
+    rdb.hset = AsyncMock(return_value=1)
+    rdb.hdel = AsyncMock(return_value=1)
     rdb.hincrby = AsyncMock(return_value=1)
     rdb.lrange = AsyncMock(return_value=[])
+    rdb.zadd = AsyncMock(return_value=1)
+    rdb.zrangebyscore = AsyncMock(return_value=[])
+    rdb.zrem = AsyncMock(return_value=1)
+    rdb.delete = AsyncMock(return_value=1)
     rdb.get = AsyncMock(return_value=None)
     return rdb
 
@@ -282,6 +289,7 @@ class TestQueueWorkerHappyPath:
         assert captured[0]["action"] == "ENTER"
         assert captured[0]["ai_score"] == 80.0
         assert captured[0]["cancel_reason"] is None
+        assert captured[0]["hold_promoted_to_enter"] is True
         assert "HOLD promoted to ENTER" in captured[0]["ai_reason"]
 
 
@@ -487,12 +495,14 @@ class TestQueueWorkerFailures:
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True) as mock_limit, \
              patch("queue_worker.analyze_signal", side_effect=fake_analyze) as mock_analyze, \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock) as mock_score_push, \
+             patch("queue_worker.push_hold_monitor_queue", side_effect=capture_push):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
+        mock_score_push.assert_not_awaited()
         assert captured[0]["action"] == "HOLD"
         assert captured[0]["s8_zone_status"] == "caution"
         assert captured[0]["s8_zone_entry_policy"] == "momentum_chase_size_down"
@@ -610,12 +620,14 @@ class TestQueueWorkerFailures:
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
              patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock) as mock_score_push, \
+             patch("queue_worker.push_hold_monitor_queue", side_effect=capture_push):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
+        mock_score_push.assert_not_awaited()
         assert captured[0]["action"] == "HOLD"
         assert captured[0]["cancel_type"] == "S8_WAIT_PULLBACK"
         assert captured[0]["s8_zone_entry_policy"] == "wait_pullback"

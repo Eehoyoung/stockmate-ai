@@ -8,12 +8,17 @@ Redis helpers for queue I/O and realtime market cache access.
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Optional
 
 import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
+
+HOLD_MONITOR_QUEUE = "hold_monitor_queue"
+HOLD_MONITOR_ITEMS = "hold_monitor:items"
+HOLD_MONITOR_TTL_SEC = int(os.getenv("HOLD_MONITOR_TTL_SEC", "43200"))
 
 
 FRESHNESS_CUTOFFS_MS = {
@@ -333,6 +338,74 @@ async def push_score_only_queue(rdb, payload: dict):
         return
     await rdb.lpush("ai_scored_queue", serialized)
     await rdb.expire("ai_scored_queue", 43200)
+
+
+def _hold_monitor_key(payload: dict) -> str:
+    strategy = str(payload.get("strategy") or "UNKNOWN").strip() or "UNKNOWN"
+    stk_cd = str(payload.get("stk_cd") or "").strip()
+    signal_id = str(payload.get("id") or "").strip()
+    suffix = signal_id or stk_cd or str(int(time.time() * 1000))
+    return f"{strategy}:{suffix}"
+
+
+async def push_hold_monitor_queue(rdb, payload: dict, *, delay_sec: float = 0.0) -> str | None:
+    """Store a HOLD payload in the dedicated monitor queue."""
+    try:
+        item = dict(payload)
+        key = str(item.get("hold_monitor_key") or _hold_monitor_key(item))
+        now = time.time()
+        item["hold_monitor_key"] = key
+        item.setdefault("hold_monitor_enqueued_at", now)
+        item["hold_monitor_next_check_at"] = now + max(0.0, float(delay_sec))
+        serialized = json.dumps(item, ensure_ascii=False, default=str)
+    except Exception as exc:
+        logger.error("[Reader] hold_monitor_queue serialization failed: %s", exc)
+        return None
+
+    await rdb.hset(HOLD_MONITOR_ITEMS, key, serialized)
+    await rdb.zadd(HOLD_MONITOR_QUEUE, {key: item["hold_monitor_next_check_at"]})
+    await rdb.expire(HOLD_MONITOR_ITEMS, HOLD_MONITOR_TTL_SEC)
+    await rdb.expire(HOLD_MONITOR_QUEUE, HOLD_MONITOR_TTL_SEC)
+    return key
+
+
+async def pop_due_hold_monitor_items(rdb, *, limit: int = 20, now: float | None = None) -> list[dict]:
+    """Pop due HOLD monitor items from the sorted queue."""
+    score_now = time.time() if now is None else float(now)
+    keys = await rdb.zrangebyscore(HOLD_MONITOR_QUEUE, "-inf", score_now, start=0, num=limit)
+    items: list[dict] = []
+    for key in keys or []:
+        key_text = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+        removed = await rdb.zrem(HOLD_MONITOR_QUEUE, key_text)
+        if not removed:
+            continue
+        raw = await rdb.hget(HOLD_MONITOR_ITEMS, key_text)
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+            item["hold_monitor_key"] = key_text
+            items.append(item)
+        except json.JSONDecodeError as exc:
+            logger.warning("[Reader] hold monitor JSON parse failed: %s / key=%s", exc, key_text)
+            await rdb.hdel(HOLD_MONITOR_ITEMS, key_text)
+    return items
+
+
+async def requeue_hold_monitor_item(rdb, payload: dict, *, delay_sec: float) -> str | None:
+    return await push_hold_monitor_queue(rdb, payload, delay_sec=delay_sec)
+
+
+async def remove_hold_monitor_item(rdb, key: str) -> None:
+    if not key:
+        return
+    await rdb.zrem(HOLD_MONITOR_QUEUE, key)
+    await rdb.hdel(HOLD_MONITOR_ITEMS, key)
+
+
+async def clear_hold_monitor_queue(rdb) -> None:
+    await rdb.delete(HOLD_MONITOR_QUEUE)
+    await rdb.delete(HOLD_MONITOR_ITEMS)
 
 
 async def get_sector_overheat_count(rdb, sector: str) -> int:

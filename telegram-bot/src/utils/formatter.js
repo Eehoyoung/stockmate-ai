@@ -296,8 +296,9 @@ function formatSignal(item) {
     const stockLabel = item.stk_nm
         ? `${item.stk_nm} (${item.stk_cd})`
         : item.stk_cd;
+    const strategyTag = item.hold_promoted_to_enter ? `[H][${item.strategy}]` : `[${item.strategy}]`;
     const lines = [
-        `${emoji} <b>[${item.strategy}] ${stockLabel}</b>`,
+        `${emoji} <b>${strategyTag} ${stockLabel}</b>`,
     ];
     if (stratDesc) lines.push(`<i>${stratDesc}</i>`);
 
