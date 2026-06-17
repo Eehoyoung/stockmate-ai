@@ -20,9 +20,11 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
-NEWS_MAX_TOKENS = int(os.getenv("NEWS_MAX_TOKENS", "2400"))
-NEWS_CLAUDE_TIMEOUT = int(os.getenv("NEWS_CLAUDE_TIMEOUT_SEC", "45"))
+NEWS_MAX_TOKENS = int(os.getenv("NEWS_MAX_TOKENS", "12000"))
+NEWS_CLAUDE_TIMEOUT = int(os.getenv("NEWS_CLAUDE_TIMEOUT_SEC", "180"))
 MAX_NEWS_CLAUDE_CALLS = int(os.getenv("MAX_NEWS_CLAUDE_CALLS", "5"))
+NEWS_RETRY_ON_MAX_TOKENS = os.getenv("NEWS_RETRY_ON_MAX_TOKENS", "true").lower() in {"1", "true", "yes", "on"}
+NEWS_RETRY_MAX_TOKENS = int(os.getenv("NEWS_RETRY_MAX_TOKENS", "6000"))
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 try:
@@ -104,7 +106,94 @@ def _build_news_prompt(news_list: List[Dict], slot_name: str) -> str:
         "짧은 키워드 나열을 피하고, 각 리스트 항목은 1~2문장의 구체적인 분석 문장으로 작성하세요."
     )
     lines.append("JSON만 반환하세요. 문자열 안에는 실제 줄바꿈을 넣지 말고 한 줄 문장으로 작성하세요.")
+    lines.append("")
+    lines.append("[OUTPUT BUDGET - mandatory]")
+    lines.append("- Return valid JSON only. No markdown, no explanations outside JSON.")
+    lines.append("- recommended_sectors max 6 items, urgent_news max 6 items, risk_factors max 4 items.")
+    lines.append("- us_market_points/us_sector_points/macro_points max 4 items each.")
+    lines.append("- midday_sectors/close_leaders max 6 items each.")
+    lines.append("- Each list item must be one Korean sentence under 180 Korean characters.")
+    lines.append("- summary must be 3-4 Korean sentences under 500 Korean characters.")
+    lines.append("- korea_outlook/midday_index_commentary/midday_recap/afternoon_outlook/close_flow/tomorrow_watch must each be under 450 Korean characters.")
     return "\n".join(lines)
+
+
+def _build_compact_retry_prompt(news_list: List[Dict], slot_name: str) -> str:
+    slot_label = _SLOT_LABELS.get(slot_name, slot_name)
+    lines = [
+        f"[RETRY SLOT] {slot_label}",
+        "The previous response was too long and was truncated. Re-analyze the news and return compact valid JSON only.",
+        "Hard output limits:",
+        "- recommended_sectors max 4, urgent_news max 4, risk_factors max 3.",
+        "- us_market_points/us_sector_points/macro_points max 3 each.",
+        "- midday_sectors/close_leaders max 4 each.",
+        "- Each array item: one Korean sentence, under 130 Korean characters.",
+        "- summary: 2-3 Korean sentences, under 320 Korean characters.",
+        "- All other text fields: under 260 Korean characters.",
+        "- No newline characters inside JSON strings.",
+        "- Fill every key from the output schema, using empty arrays/strings when not relevant.",
+        "",
+        "[NEWS]",
+    ]
+    for i, news in enumerate(news_list[:20], 1):
+        title = str(news.get("title", "") or "")
+        desc = str(news.get("description", "") or "")
+        src = str(news.get("source", "") or "")
+        line = f"{i}. [{src}] {title}"
+        if desc:
+            line += f" / {desc[:90]}"
+        lines.append(line)
+
+    lines.extend([
+        "",
+        "[OUTPUT JSON SCHEMA]",
+        "{",
+        '  "market_sentiment":"BULLISH|NEUTRAL|BEARISH",',
+        '  "recommended_sectors":[],',
+        '  "urgent_news":[],',
+        '  "risk_factors":[],',
+        '  "summary":"",',
+        '  "confidence":"HIGH|MEDIUM|LOW",',
+        '  "us_market_points":[],',
+        '  "us_sector_points":[],',
+        '  "macro_points":[],',
+        '  "korea_outlook":"",',
+        '  "midday_sectors":[],',
+        '  "midday_index_commentary":"",',
+        '  "midday_recap":"",',
+        '  "afternoon_outlook":"",',
+        '  "close_flow":"",',
+        '  "close_leaders":[],',
+        '  "tomorrow_watch":""',
+        "}",
+    ])
+    return "\n".join(lines)
+
+
+async def _call_claude(client, user_message: str, max_tokens: int) -> tuple[str, str]:
+    response = await asyncio.wait_for(
+        client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            system=_NEWS_SYS_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        ),
+        timeout=NEWS_CLAUDE_TIMEOUT,
+    )
+    return response.content[0].text.strip(), getattr(response, "stop_reason", "")
+
+
+def _parse_news_json(raw_text: str) -> Dict:
+    if raw_text.startswith("```"):
+        lines = raw_text.splitlines()
+        raw_text = "\n".join(line for line in lines if not line.startswith("```")).strip()
+
+    json_start = raw_text.find("{")
+    json_end = raw_text.rfind("}")
+    if json_start >= 0 and json_end > json_start:
+        raw_text = raw_text[json_start:json_end + 1]
+
+    return _normalize_result(json.loads(raw_text))
 
 
 async def _check_daily_news_limit(rdb) -> bool:
@@ -123,7 +212,7 @@ async def _check_daily_news_limit(rdb) -> bool:
         return True
 
 
-def _fallback_analysis() -> Dict:
+def _fallback_analysis(reason: str = "unknown") -> Dict:
     return {
         "market_sentiment": "NEUTRAL",
         "recommended_sectors": [],
@@ -143,12 +232,14 @@ def _fallback_analysis() -> Dict:
         "close_leaders": [],
         "tomorrow_watch": "",
         "_fallback": True,
+        "_fallback_reason": reason,
     }
 
 
 def _normalize_result(result: Dict) -> Dict:
     defaults = _fallback_analysis()
     defaults.pop("_fallback", None)
+    defaults.pop("_fallback_reason", None)
     for key, value in defaults.items():
         result.setdefault(key, value)
 
@@ -179,38 +270,33 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
     api_key = os.getenv("CLAUDE_API_KEY")
     if not api_key:
         logger.error("[NewsAnalyzer] CLAUDE_API_KEY missing")
-        return _fallback_analysis()
+        return _fallback_analysis("missing_api_key")
 
     if not await _check_daily_news_limit(rdb):
-        return _fallback_analysis()
+        return _fallback_analysis("daily_limit_exceeded")
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
     user_message = _build_news_prompt(news_list, slot_name)
     raw_text = ""
+    stop_reason = ""
 
     try:
-        response = await asyncio.wait_for(
-            client.messages.create(
-                model=CLAUDE_MODEL,
-                max_tokens=NEWS_MAX_TOKENS,
-                system=_NEWS_SYS_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            ),
-            timeout=NEWS_CLAUDE_TIMEOUT,
-        )
-        raw_text = response.content[0].text.strip()
-        stop_reason = getattr(response, "stop_reason", "")
-
-        if raw_text.startswith("```"):
-            lines = raw_text.splitlines()
-            raw_text = "\n".join(line for line in lines if not line.startswith("```")).strip()
-
-        json_start = raw_text.find("{")
-        json_end = raw_text.rfind("}")
-        if json_start >= 0 and json_end > json_start:
-            raw_text = raw_text[json_start:json_end + 1]
-
-        result = _normalize_result(json.loads(raw_text))
+        raw_text, stop_reason = await _call_claude(client, user_message, NEWS_MAX_TOKENS)
+        try:
+            result = _parse_news_json(raw_text)
+        except json.JSONDecodeError:
+            if stop_reason != "max_tokens" or not NEWS_RETRY_ON_MAX_TOKENS:
+                raise
+            if not await _check_daily_news_limit(rdb):
+                return _fallback_analysis("retry_daily_limit_exceeded")
+            logger.warning(
+                "[NewsAnalyzer] primary response truncated; retrying compact JSON slot=%s max_tokens=%d",
+                slot_name,
+                NEWS_RETRY_MAX_TOKENS,
+            )
+            retry_prompt = _build_compact_retry_prompt(news_list, slot_name)
+            raw_text, stop_reason = await _call_claude(client, retry_prompt, NEWS_RETRY_MAX_TOKENS)
+            result = _parse_news_json(raw_text)
         logger.info(
             "[NewsAnalyzer] done slot=%s sentiment=%s sectors=%s confidence=%s stop_reason=%s",
             slot_name,
@@ -222,13 +308,13 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
         return result
     except asyncio.TimeoutError:
         logger.warning("[NewsAnalyzer] Claude timeout (%ds)", NEWS_CLAUDE_TIMEOUT)
-        return _fallback_analysis()
+        return _fallback_analysis("timeout")
     except json.JSONDecodeError as e:
-        logger.error("[NewsAnalyzer] JSON parse failed: %s / raw=%.300s", e, raw_text)
-        return _fallback_analysis()
+        logger.error("[NewsAnalyzer] JSON parse failed: %s stop_reason=%s / raw=%.300s", e, stop_reason, raw_text)
+        return _fallback_analysis("json_parse_failed")
     except anthropic.APIError as e:
         logger.warning("[NewsAnalyzer] Claude API error: %s", e)
-        return _fallback_analysis()
+        return _fallback_analysis("api_error")
     except Exception as e:
         logger.warning("[NewsAnalyzer] unexpected error: %s", e)
-        return _fallback_analysis()
+        return _fallback_analysis("unexpected_error")

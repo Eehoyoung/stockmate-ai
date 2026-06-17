@@ -11,14 +11,14 @@ def test_next_run_slot_morning():
 
 def test_next_run_slot_midday():
     info = _next_run_slot(datetime(2026, 4, 20, 8, 1, 0, tzinfo=KST))
-    assert info["slot"]["name"] == "MIDDAY"
-    assert info["run_at"] == datetime(2026, 4, 20, 12, 30, 0, tzinfo=KST)
+    assert info["slot"]["name"] == "MIDMORNING"
+    assert info["run_at"] == datetime(2026, 4, 20, 10, 30, 0, tzinfo=KST)
 
 
 def test_next_run_slot_close():
     info = _next_run_slot(datetime(2026, 4, 20, 12, 31, 0, tzinfo=KST))
-    assert info["slot"]["name"] == "CLOSE"
-    assert info["run_at"] == datetime(2026, 4, 20, 15, 40, 0, tzinfo=KST)
+    assert info["slot"]["name"] == "AFTERNOON"
+    assert info["run_at"] == datetime(2026, 4, 20, 14, 0, 0, tzinfo=KST)
 
 
 def test_next_run_slot_next_business_day():

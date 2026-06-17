@@ -296,6 +296,7 @@ def _resolve_slot_name(slot_name: str | None = None, now: datetime | None = None
 
 
 async def _emit_scheduled_brief(rdb, analysis: dict, slot_name: str, slot_time: tuple[int, int]) -> None:
+    fallback_reason = str(analysis.get("_fallback_reason") or "").strip()
     payload = {
         "type": "SCHEDULED_NEWS_BRIEF",
         "slot": f"{slot_time[0]:02d}:{slot_time[1]:02d}",
@@ -306,14 +307,30 @@ async def _emit_scheduled_brief(rdb, analysis: dict, slot_name: str, slot_time: 
         "risk_factors": analysis.get("risk_factors", []),
         "summary": analysis.get("summary", ""),
         "message": _build_brief_message(analysis, slot_name),
+        "used_fallback_analysis": bool(analysis.get("_fallback")),
+        "fallback_reason": fallback_reason,
         "ts": time.time(),
     }
     await rdb.lpush(_KEY_SCORED_QUEUE, json.dumps(payload, ensure_ascii=False))
     await rdb.expire(_KEY_SCORED_QUEUE, _TTL_ALERT_Q)
-    await rdb.set("ops:scheduler:news_scheduler:last_status", "OK", ex=_TTL_ANALYSIS)
+    if analysis.get("_fallback"):
+        await rdb.set("ops:scheduler:news_scheduler:last_status", "WARN", ex=_TTL_ANALYSIS)
+        await rdb.set(
+            "ops:scheduler:news_scheduler:last_error",
+            f"AI_FALLBACK:{fallback_reason or 'unknown'}",
+            ex=_TTL_ANALYSIS,
+        )
+    else:
+        await rdb.set("ops:scheduler:news_scheduler:last_status", "OK", ex=_TTL_ANALYSIS)
+        await rdb.delete("ops:scheduler:news_scheduler:last_error")
     await rdb.set("ops:scheduler:news_scheduler:last_success_at", _now_kst().isoformat(), ex=_TTL_ANALYSIS)
     await rdb.set("ops:scheduler:news_scheduler:last_slot", slot_name, ex=_TTL_ANALYSIS)
-    logger.info("[NewsScheduler] scheduled brief published slot=%s", payload["slot"])
+    logger.info(
+        "[NewsScheduler] scheduled brief published slot=%s fallback=%s reason=%s",
+        payload["slot"],
+        payload["used_fallback_analysis"],
+        fallback_reason,
+    )
 
 
 async def build_live_brief(rdb, slot_name: str | None = None, publish_queue: bool = False) -> dict:
