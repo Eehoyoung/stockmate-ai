@@ -2,8 +2,11 @@ package org.invest.apiorchestrator.config;
 
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
@@ -32,6 +35,12 @@ public class KiwoomRateLimiter {
 
     /** 토큰 버킷 세마포어 – 초기 MAX 토큰 */
     private final Semaphore semaphore = new Semaphore(MAX_REQUESTS_PER_SECOND, true);
+    private final StringRedisTemplate redisTemplate;
+    private final boolean globalEnabled;
+    private final long globalIntervalMs;
+    private final long globalWaitMs;
+    private final String globalKey;
+    private volatile long globalDisabledUntilMs = 0L;
 
     private final ScheduledExecutorService refillExecutor =
             Executors.newSingleThreadScheduledExecutor(r -> {
@@ -39,6 +48,20 @@ public class KiwoomRateLimiter {
                 t.setDaemon(true);
                 return t;
             });
+
+    public KiwoomRateLimiter(
+            StringRedisTemplate redisTemplate,
+            @Value("${KIWOOM_GLOBAL_RATE_LIMIT_ENABLED:true}") boolean globalEnabled,
+            @Value("${KIWOOM_GLOBAL_RATE_LIMIT_INTERVAL_MS:333}") long globalIntervalMs,
+            @Value("${KIWOOM_GLOBAL_RATE_LIMIT_WAIT_MS:5000}") long globalWaitMs,
+            @Value("${KIWOOM_GLOBAL_RATE_LIMIT_KEY:kiwoom:global_rate_limit:lock}") String globalKey
+    ) {
+        this.redisTemplate = redisTemplate;
+        this.globalEnabled = globalEnabled;
+        this.globalIntervalMs = Math.max(globalIntervalMs, 1L);
+        this.globalWaitMs = Math.max(globalWaitMs, 0L);
+        this.globalKey = globalKey;
+    }
 
     @PostConstruct
     public void startRefiller() {
@@ -63,6 +86,7 @@ public class KiwoomRateLimiter {
             Thread.currentThread().interrupt();
             log.warn("[RateLimiter] acquire 인터럽트: {}", e.getMessage());
         }
+        acquireGlobal();
     }
 
     /** 현재 사용 가능한 토큰 수 (모니터링용) */
@@ -73,6 +97,44 @@ public class KiwoomRateLimiter {
     private void refillOne() {
         if (semaphore.availablePermits() < MAX_REQUESTS_PER_SECOND) {
             semaphore.release(1);
+        }
+    }
+
+    private void acquireGlobal() {
+        if (!globalEnabled) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now < globalDisabledUntilMs) {
+            return;
+        }
+        long deadline = now + globalWaitMs;
+        while (true) {
+            try {
+                Boolean ok = redisTemplate.opsForValue().setIfAbsent(
+                        globalKey,
+                        "java",
+                        Duration.ofMillis(globalIntervalMs)
+                );
+                if (Boolean.TRUE.equals(ok)) {
+                    return;
+                }
+            } catch (Exception e) {
+                globalDisabledUntilMs = System.currentTimeMillis() + 30_000L;
+                log.warn("[RateLimiter] Redis 전역 limiter 사용 불가 – 30초 fail-open: {}", e.getMessage());
+                return;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                log.warn("[RateLimiter] Redis 전역 limiter 대기 {}ms 초과 – fail-open", globalWaitMs);
+                return;
+            }
+            try {
+                Thread.sleep(25L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("[RateLimiter] Redis 전역 limiter 대기 인터럽트: {}", e.getMessage());
+                return;
+            }
         }
     }
 }

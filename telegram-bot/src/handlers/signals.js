@@ -28,6 +28,8 @@ const THREADS_MIN_RR = Number(process.env.THREADS_MIN_RR ?? 1.3);
 const THREADS_PREVIEW_CHAT_ID = process.env.TELEGRAM_THREADS_CHAT_ID || null;
 const USER_SEND_DEDUP_TTL_SEC = Number(process.env.USER_SEND_DEDUP_TTL_SEC ?? 7 * 24 * 60 * 60);
 const STATUS_SEND_DEDUP_TTL_SEC = Number(process.env.STATUS_SEND_DEDUP_TTL_SEC ?? 36 * 60 * 60);
+const RATE_LIMIT_DEFER_MS = Number(process.env.SIGNAL_RATE_LIMIT_DEFER_MS ?? 60_000);
+const RATE_LIMIT_MAX_DEFER_COUNT = Number(process.env.SIGNAL_RATE_LIMIT_MAX_DEFER_COUNT ?? 3);
 
 let _signalCount = 0;
 let _windowStart = Date.now();
@@ -63,6 +65,34 @@ function _checkRateLimit() {
     if (_signalCount >= MAX_SIGNALS_PER_MIN) return false;
     _signalCount++;
     return true;
+}
+
+function _deferScoredItem(item, reason) {
+    const deferCount = Number(item.defer_count || 0);
+    if (deferCount >= RATE_LIMIT_MAX_DEFER_COUNT) {
+        logger.warn('rate limited signal defer budget exhausted', {
+            stk_cd: item.stk_cd,
+            strategy: item.strategy,
+            defer_count: deferCount,
+            reason,
+        });
+        return;
+    }
+    const payload = {
+        ...item,
+        defer_count: deferCount + 1,
+        deferred_reason: reason,
+        deferred_at: new Date().toISOString(),
+    };
+    setTimeout(() => {
+        getClient().lpush('ai_scored_queue', JSON.stringify(payload)).catch((e) => {
+            logger.error('deferred signal requeue failed', {
+                stk_cd: item.stk_cd,
+                strategy: item.strategy,
+                reason,
+            }, e);
+        });
+    }, Math.max(RATE_LIMIT_DEFER_MS, 1000));
 }
 
 function getAllowedChatIds() {
@@ -442,6 +472,7 @@ async function processItem(bot, item) {
             strategy: item.strategy,
             max_per_min: MAX_SIGNALS_PER_MIN,
         });
+        _deferScoredItem(item, 'telegram_rate_limit');
         return;
     }
 

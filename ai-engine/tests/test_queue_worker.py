@@ -29,6 +29,7 @@ def _make_rdb(rpop_value=None):
     rdb.sadd = AsyncMock(return_value=1)
     rdb.delete = AsyncMock(return_value=1)
     rdb.get = AsyncMock(return_value=None)
+    rdb.set = AsyncMock(return_value=True)
     return rdb
 
 
@@ -1151,6 +1152,44 @@ class TestSessionEnterGuard:
         assert captured[0]["action"] == "HOLD"
         assert captured[0]["execution_decision"] == "WATCH"
         assert "HOLD promoted to ENTER" not in captured[0]["ai_reason"]
+
+
+class TestCrossStrategyArbitration:
+    def test_first_enter_claims_stock_arbitration_key(self):
+        from queue_worker import _apply_cross_strategy_arbitration
+
+        rdb = _make_rdb()
+        payload = {
+            "stk_cd": "005930",
+            "strategy": "S8_GOLDEN_CROSS",
+            "action": "ENTER",
+            "execution_decision": "ENTER",
+        }
+
+        result = _run(_apply_cross_strategy_arbitration(rdb, payload))
+
+        assert result["execution_decision"] == "ENTER"
+        rdb.set.assert_awaited_once()
+        assert rdb.set.await_args.args[0] == "arbitration:enter:005930"
+
+    def test_second_strategy_for_same_stock_is_blocked(self):
+        from queue_worker import _apply_cross_strategy_arbitration
+
+        rdb = _make_rdb()
+        rdb.get = AsyncMock(return_value="S8_GOLDEN_CROSS")
+        payload = {
+            "stk_cd": "005930",
+            "strategy": "S13_BOX_BREAKOUT",
+            "action": "ENTER",
+            "execution_decision": "ENTER",
+        }
+
+        result = _run(_apply_cross_strategy_arbitration(rdb, payload))
+
+        assert result["action"] == "CANCEL"
+        assert result["execution_decision"] == "BLOCK"
+        assert result["cancel_type"] == "CROSS_STRATEGY_ARBITRATION"
+        assert result["representative_strategy"] == "S8_GOLDEN_CROSS"
 
 
 class TestPipelineDailyCounter:

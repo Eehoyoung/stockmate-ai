@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL_SEC", "2.0"))
 STATUS_DECISION_TTL_SEC = int(os.getenv("STATUS_DECISION_TTL_SEC", "600"))
+STOCK_ARBITRATION_TTL_SEC = int(os.getenv("STOCK_ARBITRATION_TTL_SEC", "1800"))
 REDIS_TOKEN_KEY = "kiwoom:token"
 FAILURE_ACTION = "FAILED"
 FAILURE_TYPE = "PROCESSING_ERROR"
@@ -1467,6 +1468,40 @@ def _attach_rescue_shadow_metadata(payload: dict) -> None:
         payload["shadow_features"] = shadow
 
 
+async def _apply_cross_strategy_arbitration(rdb, payload: dict) -> dict:
+    """Allow only the first ENTER for a stock during a short cross-strategy window."""
+    if payload.get("execution_decision") != "ENTER":
+        return payload
+    stk_cd = normalize_stock_code(payload.get("stk_cd", ""))
+    strategy = str(payload.get("strategy") or "")
+    if not stk_cd or not strategy or STOCK_ARBITRATION_TTL_SEC <= 0:
+        return payload
+    key = f"arbitration:enter:{stk_cd}"
+    try:
+        existing = await rdb.get(key)
+        if existing and str(existing) != strategy:
+            blocked = dict(payload)
+            blocked["action"] = "CANCEL"
+            blocked["execution_decision"] = "BLOCK"
+            blocked["confidence"] = "LOW"
+            blocked["skip_entry"] = True
+            blocked["cancel_type"] = "CROSS_STRATEGY_ARBITRATION"
+            blocked["representative_strategy"] = str(existing)
+            blocked["supporting_strategies"] = list(dict.fromkeys([
+                *(blocked.get("supporting_strategies") or []),
+                strategy,
+            ]))
+            reason = f"Cross-strategy arbitration: {stk_cd} already represented by {existing}"
+            blocked["cancel_reason"] = reason
+            blocked["ai_reason"] = reason
+            return blocked
+        if not existing:
+            await rdb.set(key, strategy, ex=STOCK_ARBITRATION_TTL_SEC, nx=True)
+    except Exception as arb_err:
+        logger.debug("[Worker] cross-strategy arbitration skipped [%s %s]: %s", stk_cd, strategy, arb_err)
+    return payload
+
+
 def _raw_rr(entry: float | None, tp: float | None, sl: float | None) -> float | None:
     entry_f = _fv(entry, None)
     tp_f = _fv(tp, None)
@@ -1989,6 +2024,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
         enriched = _apply_claude_postprocess_hard_rules(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)
         enriched = _apply_session_enter_guard(enriched, ctx)
+        enriched = _canonicalize_execution_payload(enriched)
+        enriched = await _apply_cross_strategy_arbitration(rdb, enriched)
         enriched = _canonicalize_execution_payload(enriched)
         action = enriched.get("action", action)
         execution_decision = enriched.get("execution_decision", _execution_decision_from_action(action, cancel_type=cancel_type))

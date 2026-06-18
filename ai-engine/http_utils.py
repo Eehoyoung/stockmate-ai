@@ -6,11 +6,13 @@ http_utils.py
 
 import asyncio
 import logging
+import os
 import time as _time
 
 import httpx
+import redis.asyncio as redis_async
 
-from config import KIWOOM_BASE_URL
+from config import KIWOOM_BASE_URL, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
 from utils import safe_float as _sf_global, normalize_stock_code
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,12 @@ class _KiwoomRateLimiter:
         self._interval = 1.0 / rate  # seconds per request
         self._lock = asyncio.Lock()
         self._last = 0.0
+        self._global_enabled = os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+        self._global_interval_ms = int(os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_INTERVAL_MS", "333"))
+        self._global_key = os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_KEY", "kiwoom:global_rate_limit:lock")
+        self._global_wait_ms = int(os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_WAIT_MS", "5000"))
+        self._redis = None
+        self._global_disabled_until = 0.0
 
     async def acquire(self) -> None:
         async with self._lock:
@@ -36,6 +44,41 @@ class _KiwoomRateLimiter:
             if wait > 0:
                 await asyncio.sleep(wait)
             self._last = _time.monotonic()
+        await self._acquire_global()
+
+    def _redis_client(self):
+        if self._redis is None:
+            self._redis = redis_async.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                password=REDIS_PASSWORD,
+                decode_responses=True,
+                socket_connect_timeout=0.2,
+                socket_timeout=0.2,
+            )
+        return self._redis
+
+    async def _acquire_global(self) -> None:
+        if not self._global_enabled:
+            return
+        now = _time.monotonic()
+        if now < self._global_disabled_until:
+            return
+        deadline = now + max(self._global_wait_ms, 0) / 1000.0
+        client = self._redis_client()
+        while True:
+            try:
+                ok = await client.set(self._global_key, "python", nx=True, px=max(self._global_interval_ms, 1))
+                if ok:
+                    return
+            except Exception as exc:
+                self._global_disabled_until = _time.monotonic() + 30.0
+                logger.warning("[http_utils] global Kiwoom rate limiter unavailable; fail-open for 30s: %s", exc)
+                return
+            if _time.monotonic() >= deadline:
+                logger.warning("[http_utils] global Kiwoom rate limiter wait exceeded %.0fms; fail-open", self._global_wait_ms)
+                return
+            await asyncio.sleep(0.025)
 
 
 # 전역 싱글턴 – 모든 Kiwoom API 호출에서 공유
