@@ -38,7 +38,7 @@ class TestScanProgramBuy:
         assert result == []
         assert check_extra.await_count == 20
 
-    def test_two_stage_flag_uses_configured_module_limit(self, monkeypatch):
+    def test_two_stage_flag_uses_runtime_env_limit(self, monkeypatch):
         from strategy_5_program_buy import scan_program_buy
 
         monkeypatch.setenv("S5_TWO_STAGE_ENABLED", "1")
@@ -52,4 +52,4 @@ class TestScanProgramBuy:
             result = _run(scan_program_buy("token"))
 
         assert result == []
-        assert check_extra.await_count == 15
+        assert check_extra.await_count == 8

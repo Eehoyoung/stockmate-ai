@@ -54,6 +54,8 @@ from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
+_S14_POOL_READ_LIMIT = int(os.getenv("S14_POOL_READ_LIMIT", "180"))
+_S14_SCAN_LIMIT = int(os.getenv("S14_SCAN_LIMIT", "60"))
 
 async def scan_oversold_bounce(token: str, rdb=None) -> list:
     """
@@ -64,9 +66,9 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
     if rdb:
         try:
             # S14 전용 풀 (과매도 후보군)
-            kospi = await rdb.lrange("candidates:s14:001", 0, 49)
-            kosdaq = await rdb.lrange("candidates:s14:101", 0, 49)
-            candidates = list(dict.fromkeys(kospi + kosdaq))[:40]
+            kospi = await rdb.lrange("candidates:s14:001", 0, max(_S14_POOL_READ_LIMIT - 1, 0))
+            kosdaq = await rdb.lrange("candidates:s14:101", 0, max(_S14_POOL_READ_LIMIT - 1, 0))
+            candidates = list(dict.fromkeys(kospi + kosdaq))[:_S14_SCAN_LIMIT]
         except Exception as e:
             logger.warning(f"[S14] 후보 풀 로드 실패: {e}")
 

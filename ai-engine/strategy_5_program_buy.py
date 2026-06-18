@@ -26,6 +26,13 @@ _S5_CACHE_TTL = int(os.getenv("S5_SHARED_CACHE_TTL", "60"))
 _S5_OVERLAP_LIMIT = int(os.getenv("S5_OVERLAP_LIMIT", "25"))
 _S5_TWO_STAGE_LIMIT = int(os.getenv("S5_TWO_STAGE_LIMIT", "15"))
 
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
 async def fetch_progra_netbuy(token: str, market: str, rdb=None) -> dict:
     """ka90003 프로그램순매수상위50 조회 (연속조회 포함)"""
     cache_key = f"strategy:s5:ka90003:{market}"
@@ -219,7 +226,7 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
             fetch_frgn_inst_upper(token, market, rdb=rdb)
         )
 
-    # 2. 프로그램 순매수 & 외인 순매수 교집합 추출 (순매수 금액 상위 15종목으로 제한)
+    # 2. 프로그램 순매수 & 외인 순매수 교집합 추출 (환경값 기준 상위 N종목으로 제한)
     overlap_raw = set(prog_map.keys()) & frgn_set
     # 풀이 있으면 풀 종목으로 추가 필터
     if pool_codes:
@@ -228,14 +235,19 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
         logger.debug("[S5] 풀 필터 후 교집합 %d개", len(overlap_raw))
     else:
         logger.debug("[S5] 풀 없음 – ka90003 전수 조회")
-    overlap_limit = _S5_TWO_STAGE_LIMIT if flag_enabled("S5_TWO_STAGE_ENABLED") else _S5_OVERLAP_LIMIT
+    overlap_limit = (
+        _int_env("S5_TWO_STAGE_LIMIT", _S5_TWO_STAGE_LIMIT)
+        if flag_enabled("S5_TWO_STAGE_ENABLED")
+        else _int_env("S5_OVERLAP_LIMIT", _S5_OVERLAP_LIMIT)
+    )
     overlap = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:overlap_limit]
     if flag_enabled("S5_TWO_STAGE_SHADOW"):
-        shadow = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:_S5_TWO_STAGE_LIMIT]
+        shadow_limit = _int_env("S5_TWO_STAGE_LIMIT", _S5_TWO_STAGE_LIMIT)
+        shadow = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:shadow_limit]
         logger.info("[S5] two-stage shadow current=%d shadow=%d", len(overlap), len(shadow))
     results = []
 
-    # 3. 교집합 종목들에 대해 정밀 필터 적용 (ka10044+ka10080 × 15 = 30 calls max)
+    # 3. 교집합 종목들에 대해 정밀 필터 적용 (ka10044+ka10080 × overlap_limit)
     for stk_cd in overlap:
         await asyncio.sleep(_API_INTERVAL) # 과부하 방지
         async with perf_timer("s5_extra", rdb=rdb, fields={"market": market, "stk_cd": stk_cd}):

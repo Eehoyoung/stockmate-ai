@@ -18,7 +18,11 @@ for name in (
 _previous_db_writer = sys.modules.get("db_writer")
 sys.modules.setdefault("db_writer", db_writer_stub)
 
-from confirm_worker import _apply_claude_rr_override, _resolve_regime_rr_policy
+from confirm_worker import (
+    _apply_claude_postprocess_hard_rules,
+    _apply_claude_rr_override,
+    _resolve_regime_rr_policy,
+)
 
 if _previous_db_writer is None:
     sys.modules.pop("db_writer", None)
@@ -59,6 +63,28 @@ def test_confirm_worker_claude_rr_blocks_bear_signal_below_base_threshold():
     assert result["rr_regime"] == "bear"
     assert result["rr_regime_threshold"] == 1.45
     assert result["rr_ratio"] < result["rr_regime_threshold"]
+    assert result["cancel_type"] == "CLAUDE_HARD_RULE"
+    assert result["rr_quality_bucket"] == "POOR"
+    assert result["claude_tp1"] is None
+    assert result["claude_sl"] is None
+
+
+def test_confirm_worker_claude_postprocess_blocks_invalid_tp_sl_schema():
+    payload = {
+        "action": "ENTER",
+        "strategy": "S8_GOLDEN_CROSS",
+        "stk_cd": "005930",
+        "cur_prc": 10000,
+        "claude_tp1": 9900,
+        "claude_sl": 9700,
+    }
+
+    result = _apply_claude_postprocess_hard_rules(payload)
+
+    assert result["action"] == "CANCEL"
+    assert result["cancel_type"] == "CLAUDE_HARD_RULE"
+    assert result["skip_entry"] is True
+    assert result["claude_tp1"] is None
 
 
 def test_confirm_worker_cancel_is_kept_internal_not_published():

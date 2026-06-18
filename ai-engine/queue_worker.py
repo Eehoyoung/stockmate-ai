@@ -86,9 +86,9 @@ _HARD_GATES = {
     "S15_MOMENTUM_ALIGN": {"strength": 100.0, "bid_ratio": 1.1},
 }
 
-# bull: 임계값을 12% 완화, bear: 역방향 전략(S9/S14)은 gates 적용 안 함
+# bull: execution gate 임계값을 12% 완화, bear/sideways/neutral은 기본 gate 유지
 _REGIME_GATE_FACTOR = {"bull": 0.88, "sideways": 1.0, "bear": 1.0, "neutral": 1.0}
-# bear 장세에서 반등 전략은 weak momentum이 당연하므로 gate 면제
+# bear 장세에서 반등 전략은 일부 momentum gate 면제
 _BEAR_GATE_EXEMPT = {"S9_PULLBACK_SWING", "S14_OVERSOLD_BOUNCE", "S11_FRGN_CONT"}
 _RULE_THRESHOLD_RESCUE_FLOORS = {
     "S1_GAP_OPEN": 10.0,
@@ -410,6 +410,7 @@ def _build_failure_payload(item: dict, strategy: str, stk_cd: str, error: Except
         "error": str(error),
         "error_type": type(error).__name__,
         "failed_stage": "queue_worker",
+        "execution_decision": "BLOCK",
         "stk_cd": stk_cd,
         "strategy": strategy,
         "skip_entry": True,

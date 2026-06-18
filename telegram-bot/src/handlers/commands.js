@@ -298,7 +298,7 @@ function formatNewsBriefResponse(brief) {
     }
 
     if (analysis.summary) {
-        lines.push('', '<b>상세 결론</b>', escapeHtml(String(analysis.summary).trim()));
+        lines.push('', '<b>한 줄 결론</b>', escapeHtml(String(analysis.summary).trim()));
     }
 
     if (brief?.used_cached_analysis) {

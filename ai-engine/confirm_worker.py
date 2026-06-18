@@ -33,6 +33,8 @@ from utils import safe_float as _fv
 logger = logging.getLogger(__name__)
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
+CLAUDE_HARD_RULE_CANCEL_TYPE = "CLAUDE_HARD_RULE"
+_CLAUDE_PRICE_FIELDS = ("claude_tp1", "claude_tp2", "claude_sl")
 
 
 def _normalize_market_type(value) -> str:
@@ -136,6 +138,84 @@ def _raw_rr(entry, tp, sl) -> float | None:
     return round((tp_f - entry_f) / risk, 3)
 
 
+def _rr_quality_bucket(rr: float | None) -> str:
+    if rr is None:
+        return "UNKNOWN"
+    if rr >= 2.0:
+        return "EXCELLENT"
+    if rr >= 1.5:
+        return "GOOD"
+    if rr >= 1.0:
+        return "FAIR"
+    return "POOR"
+
+
+def _null_claude_prices(payload: dict) -> None:
+    for field in _CLAUDE_PRICE_FIELDS:
+        payload[field] = None
+
+
+def _cancel_by_claude_hard_rule(payload: dict, reason: str) -> dict:
+    payload["action"] = "CANCEL"
+    payload["confidence"] = "LOW"
+    payload["cancel_reason"] = reason
+    payload["ai_reason"] = reason
+    payload["skip_entry"] = True
+    payload["cancel_type"] = CLAUDE_HARD_RULE_CANCEL_TYPE
+    _null_claude_prices(payload)
+    return payload
+
+
+def _apply_claude_postprocess_hard_rules(payload: dict) -> dict:
+    action = str(payload.get("action") or "HOLD").upper()
+    payload["action"] = action
+
+    if action in ("HOLD", "CANCEL"):
+        _null_claude_prices(payload)
+        return payload
+    if action != "ENTER":
+        return payload
+
+    entry = _fv(payload.get("cur_prc") or payload.get("entry_price"), None)
+    claude_tp1 = _fv(payload.get("claude_tp1"), None)
+    claude_tp2 = _fv(payload.get("claude_tp2"), None)
+    claude_sl = _fv(payload.get("claude_sl"), None)
+
+    fallback_tp1 = _fv(payload.get("tp1_price") or payload.get("display_tp2_price"), None)
+    fallback_sl = _fv(payload.get("sl_price"), None)
+    effective_tp1 = claude_tp1 if claude_tp1 is not None else fallback_tp1
+    effective_sl = claude_sl if claude_sl is not None else fallback_sl
+
+    if payload.get("strategy") == "S1_GAP_OPEN" and (
+        entry is None or effective_tp1 is None or effective_sl is None
+    ):
+        return _cancel_by_claude_hard_rule(
+            payload,
+            "S1 TP/SL hard rule failed: ENTER requires entry, tp1, and sl",
+        )
+
+    if payload.get("strategy") == "S1_GAP_OPEN" and not (effective_tp1 > entry > effective_sl):
+        return _cancel_by_claude_hard_rule(
+            payload,
+            "S1 TP/SL hard rule failed: requires tp1 > entry > sl",
+        )
+
+    if entry is not None and (claude_tp1 is not None or claude_sl is not None):
+        if claude_tp1 is None or claude_sl is None or not (claude_tp1 > entry > claude_sl):
+            return _cancel_by_claude_hard_rule(
+                payload,
+                "Claude TP/SL hard rule failed: requires tp1 > entry > sl",
+            )
+
+    if claude_tp2 is not None and claude_tp1 is not None and claude_tp2 < claude_tp1:
+        return _cancel_by_claude_hard_rule(
+            payload,
+            "Claude TP/SL hard rule failed: tp2 must be greater than or equal to tp1",
+        )
+
+    return payload
+
+
 def _apply_claude_rr_override(payload: dict, ctx: dict | None = None) -> dict:
     if payload.get("action") != "ENTER":
         return payload
@@ -158,13 +238,17 @@ def _apply_claude_rr_override(payload: dict, ctx: dict | None = None) -> dict:
     payload["single_tp_rr"] = _raw_rr(entry, claude_tp, claude_sl)
     payload["raw_rr"] = payload["single_tp_rr"]
     payload["rr_basis"] = "claude_tp_sl"
+    payload["rr_quality_bucket"] = _rr_quality_bucket(rr)
     if rr < threshold:
         reason = f"Claude TP/SL R:R {rr:.2f} below market regime threshold {threshold:.2f}({regime})"
         payload["action"] = "CANCEL"
         payload["confidence"] = "LOW"
         payload["cancel_reason"] = reason
         payload["ai_reason"] = reason
+        payload["skip_entry"] = True
         payload["rr_skip_reason"] = reason
+        payload["cancel_type"] = CLAUDE_HARD_RULE_CANCEL_TYPE
+        _null_claude_prices(payload)
     elif skip and not payload.get("rr_skip_reason"):
         payload["rr_skip_reason"] = (
             f"Claude TP/SL effective_rr {rr:.2f} passed market regime threshold "
@@ -280,8 +364,15 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
         }
         # market_ctx 는 큰 데이터이므로 발행 전 제거
         normalize_signal_prices(enriched)
+        enriched = _apply_claude_postprocess_hard_rules(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)
         action = str(enriched.get("action") or "").upper()
+        display_reason = _resolve_display_reason(
+            action,
+            enriched.get("ai_reason", ""),
+            enriched.get("cancel_reason"),
+        )
+        cancel_type = enriched.get("cancel_type") or cancel_type
         if action == "ENTER":
             enriched["execution_decision"] = "ENTER"
         elif action == "HOLD":

@@ -54,6 +54,8 @@ from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_S7_POOL_READ_LIMIT = int(os.getenv("S7_POOL_READ_LIMIT", "180"))
+_S7_SCAN_LIMIT = int(os.getenv("S7_SCAN_LIMIT", "60"))
 
 # 일목균형표 최소 필요 봉 수 (일봉 / 60분봉 동일)
 _ICHIMOKU_MIN_BARS    = 78   # 일봉: senkou_b_period(52) + displacement(26)
@@ -69,9 +71,9 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
     candidates: list[str] = []
     if rdb:
         try:
-            kospi  = await rdb.lrange("candidates:s7:001", 0, 99)
-            kosdaq = await rdb.lrange("candidates:s7:101", 0, 99)
-            candidates = list(dict.fromkeys(kospi + kosdaq))[:30]
+            kospi  = await rdb.lrange("candidates:s7:001", 0, max(_S7_POOL_READ_LIMIT - 1, 0))
+            kosdaq = await rdb.lrange("candidates:s7:101", 0, max(_S7_POOL_READ_LIMIT - 1, 0))
+            candidates = list(dict.fromkeys(kospi + kosdaq))[:_S7_SCAN_LIMIT]
         except Exception as e:
             logger.warning("[S7] Redis candidates 조회 실패: %s", e)
 

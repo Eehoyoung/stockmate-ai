@@ -17,8 +17,8 @@ async def test_s14_empty_pool_returns_empty():
     result = await scan_oversold_bounce("token", rdb=rdb)
 
     assert result == []
-    assert rdb.lrange.await_args_list[0].args == ("candidates:s14:001", 0, 49)
-    assert rdb.lrange.await_args_list[1].args == ("candidates:s14:101", 0, 49)
+    assert rdb.lrange.await_args_list[0].args == ("candidates:s14:001", 0, 179)
+    assert rdb.lrange.await_args_list[1].args == ("candidates:s14:101", 0, 179)
 
 
 def _make_candles(n=65, close=10000, high=10200, low=9800, vol=500000):
