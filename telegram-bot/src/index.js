@@ -98,8 +98,11 @@ bot.command('settings', commands.userSettings);
 bot.command('filter', commands.filter);
 bot.command('watchAdd', commands.watchlistAdd);
 bot.command('watchRemove', commands.watchlistRemove);
-bot.command('confirmPending', commands.confirmPending);
-bot.command('reanalyze', commands.reanalyzeConfirm);
+const CONFIRM_GATE_ENABLED = String(process.env.ENABLE_CONFIRM_GATE || 'false').toLowerCase() === 'true';
+if (CONFIRM_GATE_ENABLED) {
+    bot.command('confirmPending', commands.confirmPending);
+    bot.command('reanalyze', commands.reanalyzeConfirm);
+}
 bot.command('pause', commands.pauseTrading);
 bot.command('resume', commands.resumeTrading);
 bot.command('errors', commands.systemErrors);
@@ -136,7 +139,7 @@ bot.action('cancel_pause', async (ctx) => {
     }
 });
 
-bot.action(/^confirm_yes:(.+)$/, async (ctx) => {
+if (CONFIRM_GATE_ENABLED) bot.action(/^confirm_yes:(.+)$/, async (ctx) => {
     if (!commands.isAllowed(ctx)) return ctx.answerCbQuery('Access denied');
     const requestKey = ctx.match[1];
     try {
@@ -170,7 +173,7 @@ bot.action(/^confirm_yes:(.+)$/, async (ctx) => {
     }
 });
 
-bot.action(/^confirm_no:(.+)$/, async (ctx) => {
+if (CONFIRM_GATE_ENABLED) bot.action(/^confirm_no:(.+)$/, async (ctx) => {
     if (!commands.isAllowed(ctx)) return ctx.answerCbQuery('Access denied');
     const requestKey = ctx.match[1];
     try {

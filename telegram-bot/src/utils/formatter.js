@@ -81,6 +81,10 @@ function _normalizeSignalStage(stage) {
 }
 
 function _effectiveAction(item) {
+    const decision = String(item.execution_decision || '').trim().toUpperCase();
+    if (decision === 'ENTER') return 'ENTER';
+    if (decision === 'WATCH') return 'HOLD';
+    if (decision === 'BLOCK') return 'CANCEL';
     const stage = _normalizeSignalStage(item.signal_stage);
     if (stage === 'ENTRY') return 'ENTER';
     if (stage === 'WATCH' || stage === 'HOLD') return 'HOLD';

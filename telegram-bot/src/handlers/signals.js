@@ -85,6 +85,10 @@ function normalizeSignalStage(stage) {
 }
 
 function getEffectiveAction(item) {
+    const decision = String(item.execution_decision || '').trim().toUpperCase();
+    if (decision === 'ENTER') return 'ENTER';
+    if (decision === 'WATCH') return 'HOLD';
+    if (decision === 'BLOCK') return 'CANCEL';
     const stage = normalizeSignalStage(item.signal_stage);
     if (stage === 'ENTRY') return 'ENTER';
     if (stage === 'WATCH' || stage === 'HOLD') return 'HOLD';
@@ -409,6 +413,22 @@ async function processItem(bot, item) {
     const isRuleOnly = item.signal_grade === 'RULE_ONLY'
         || item.validation_stage === 'RULE_ONLY'
         || item.type === 'RULE_ONLY_SIGNAL';
+    if (!isRuleOnly && String(item.execution_decision || '').toUpperCase() !== 'ENTER') {
+        logger.info('non-enter execution decision skipped', {
+            stk_cd: item.stk_cd,
+            strategy: item.strategy,
+            execution_decision: item.execution_decision,
+            action,
+        });
+        return;
+    }
+    if (isRuleOnly) {
+        logger.info('rule-only signal suppressed from user delivery', {
+            stk_cd: item.stk_cd,
+            strategy: item.strategy,
+        });
+        return;
+    }
     if (action === 'CANCEL' || signalStage === 'CANCEL') return;
     if (action === 'ENTER' && !isRuleOnly && ai_score < MIN_AI_SCORE) {
         logger.info('below score threshold', { stk_cd: item.stk_cd, strategy: item.strategy, score: ai_score });

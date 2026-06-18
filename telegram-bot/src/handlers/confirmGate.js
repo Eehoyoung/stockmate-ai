@@ -10,7 +10,7 @@ const logger = getLogger('confirmGate');
 const CONFIRM_POLL_INTERVAL_MS = Number(process.env.CONFIRM_POLL_INTERVAL_MS ?? 2000);
 
 function isConfirmGateEnabled() {
-    return false;
+    return String(process.env.ENABLE_CONFIRM_GATE || 'false').toLowerCase() === 'true';
 }
 
 function resolveChatIds(allowedChatIds = []) {
