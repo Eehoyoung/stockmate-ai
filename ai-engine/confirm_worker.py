@@ -22,15 +22,17 @@ from price_utils import normalize_signal_prices
 from redis_reader import push_hold_monitor_queue, push_score_only_queue
 from scorer import check_daily_limit, rule_score
 from score_utils import normalize_score_0_100
-from strategy_meta import get_hold_to_enter_threshold as _get_hold_threshold
+from strategy_meta import (
+    get_regime_rr_multiplier,
+    get_strategy_base_rr_gate,
+    get_strategy_rr_group,
+)
 from tp_sl_engine import compute_rr
 from utils import safe_float as _fv
 
 logger = logging.getLogger(__name__)
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
-_RR_BY_REGIME = {"bull": 0.65, "sideways": 0.75, "bear": 0.80, "neutral": 0.80}
-_BEAR_GATE_EXEMPT = {"S9_PULLBACK_SWING", "S14_OVERSOLD_BOUNCE", "S11_FRGN_CONT"}
 
 
 def _normalize_market_type(value) -> str:
@@ -87,17 +89,19 @@ def _detect_market_regime(ctx: dict, strategy: str = "") -> str:
 
 def _resolve_regime_rr_policy(ctx: dict | None, strategy: str = "") -> tuple[str, float]:
     regime = _detect_market_regime(ctx or {}, strategy) if ctx else "neutral"
-    if regime == "bear" and strategy in _BEAR_GATE_EXEMPT:
-        threshold = _RR_BY_REGIME["bull"]
-    else:
-        threshold = _RR_BY_REGIME.get(regime, RR_HARD_CANCEL_THRESHOLD)
+    threshold = get_strategy_base_rr_gate(strategy) * get_regime_rr_multiplier(strategy, regime)
     return regime, float(threshold)
 
 
 def _apply_regime_rr_metadata(payload: dict, regime: str, threshold: float) -> None:
-    payload["rr_policy"] = "market_regime"
+    strategy = str(payload.get("strategy") or "")
+    payload["rr_policy"] = "strategy_base_x_regime"
     payload["rr_regime"] = regime
+    payload["rr_strategy_group"] = get_strategy_rr_group(strategy)
+    payload["rr_strategy_base_gate"] = round(get_strategy_base_rr_gate(strategy), 2)
+    payload["rr_regime_multiplier"] = round(get_regime_rr_multiplier(strategy, regime), 3)
     payload["rr_regime_threshold"] = round(float(threshold), 2)
+    payload["final_rr_gate"] = round(float(threshold), 2)
 
 
 def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None) -> str:
@@ -107,27 +111,15 @@ def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None)
 
 
 def _maybe_promote_hold_to_enter(result: dict, strategy: str = "") -> dict:
-    """Promote high-score Claude HOLD decisions into actionable ENTER signals."""
+    """Keep Claude HOLD as monitor-only; score alone must never promote to ENTER."""
     if str(result.get("action", "")).upper() != "HOLD":
         return result
-    try:
-        score = float(result.get("ai_score"))
-    except (TypeError, ValueError):
-        return result
-    threshold = _get_hold_threshold(strategy) if strategy else HOLD_TO_ENTER_MIN_AI_SCORE
-    if score < threshold:
-        return result
-
-    promoted = dict(result)
-    reason = str(promoted.get("reason") or "").strip() or "Claude HOLD"
-    promoted["action"] = "ENTER"
-    promoted["cancel_reason"] = None
-    promoted["confidence"] = promoted.get("confidence") or "HIGH"
-    promoted["reason"] = (
-        f"{reason} | HOLD promoted to ENTER because ai_score "
-        f"{score:.1f} >= {threshold:.1f}"
-    )
-    return promoted
+    held = dict(result)
+    reason = str(held.get("reason") or "").strip() or "Claude HOLD"
+    held["action"] = "HOLD"
+    held["confidence"] = held.get("confidence") or "MEDIUM"
+    held["reason"] = f"{reason} | WATCH retained; ai_score alone cannot promote to ENTER"
+    return held
 
 
 def _raw_rr(entry, tp, sl) -> float | None:
@@ -289,12 +281,21 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
         # market_ctx 는 큰 데이터이므로 발행 전 제거
         normalize_signal_prices(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)
+        action = str(enriched.get("action") or "").upper()
+        if action == "ENTER":
+            enriched["execution_decision"] = "ENTER"
+        elif action == "HOLD":
+            enriched["execution_decision"] = "WATCH"
+        else:
+            enriched["execution_decision"] = "BLOCK"
         enriched.pop("market_ctx", None)
-        if enriched.get("action") == "HOLD":
+        if action == "HOLD":
             await push_hold_monitor_queue(rdb, enriched)
             logger.info("[ConfirmWorker] HOLD routed to monitor queue [%s %s]", stk_cd, strategy)
-        else:
+        elif action == "ENTER":
             await push_score_only_queue(rdb, enriched)
+        else:
+            logger.info("[ConfirmWorker] BLOCK kept internal [%s %s] reason=%s", stk_cd, strategy, display_reason)
         if pg_pool:
             signal_id = enriched.get("id")
             action    = enriched.get("action", "")

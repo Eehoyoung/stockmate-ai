@@ -26,6 +26,7 @@ def _make_rdb(rpop_value=None):
     rdb.zadd = AsyncMock(return_value=1)
     rdb.zrangebyscore = AsyncMock(return_value=[])
     rdb.zrem = AsyncMock(return_value=1)
+    rdb.sadd = AsyncMock(return_value=1)
     rdb.delete = AsyncMock(return_value=1)
     rdb.get = AsyncMock(return_value=None)
     return rdb
@@ -193,7 +194,8 @@ class TestQueueWorkerHappyPath:
         with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=ctx), \
              patch("queue_worker.rule_score", return_value=(40.0, {"strength": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=True), \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_hold_monitor_queue", side_effect=capture_push), \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
@@ -201,6 +203,7 @@ class TestQueueWorkerHappyPath:
         assert result is True
         assert captured[0]["bid_ratio"] == 2.4
         assert captured[0]["vol_ratio"] == 2.5
+        assert captured[0]["execution_decision"] == "WATCH"
 
     def test_legacy_float_rule_score_is_tolerated(self):
         item = _signal()
@@ -213,14 +216,16 @@ class TestQueueWorkerHappyPath:
         with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
              patch("queue_worker.rule_score", return_value=75.0), \
              patch("queue_worker.should_skip_ai", return_value=True), \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_hold_monitor_queue", side_effect=capture_push), \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
         assert captured[0]["rule_score"] == 75.0
-        assert captured[0]["action"] == "CANCEL"
+        assert captured[0]["execution_decision"] == "WATCH"
+        assert captured[0]["action"] == "HOLD"
 
     def test_signal_cntr_strength_is_used_for_market_ctx_and_payload(self):
         item = _signal(cntr_strength=257.2, cur_prc=10000, tp1_price=12000, sl_price=9500, rr_ratio=4.0)
@@ -256,7 +261,7 @@ class TestQueueWorkerHappyPath:
         assert captured[0]["cntr_strength"] == 257.2
         assert "257.2" in captured[0]["ai_reason"]
 
-    def test_high_score_hold_is_promoted_to_enter(self):
+    def test_high_score_hold_routes_to_watch_monitor(self):
         item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=2.0, bid_ratio=2.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
@@ -279,18 +284,20 @@ class TestQueueWorkerHappyPath:
                      "reason": "strong but originally hold",
                  },
              ), \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_hold_monitor_queue", side_effect=capture_push), \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
         assert len(captured) == 1
-        assert captured[0]["action"] == "ENTER"
+        assert captured[0]["action"] == "HOLD"
+        assert captured[0]["execution_decision"] == "WATCH"
         assert captured[0]["ai_score"] == 80.0
         assert captured[0]["cancel_reason"] is None
-        assert captured[0]["hold_promoted_to_enter"] is True
-        assert "HOLD promoted to ENTER" in captured[0]["ai_reason"]
+        assert captured[0]["hold_promoted_to_enter"] is False
+        assert "ai_score alone cannot promote to ENTER" in captured[0]["ai_reason"]
 
 
 class TestQueueWorkerFailures:
@@ -374,16 +381,14 @@ class TestQueueWorkerFailures:
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
              patch("queue_worker.analyze_signal", new_callable=AsyncMock, side_effect=RuntimeError("api down")), \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push) as mock_push:
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured[0]["action"] == "CANCEL"
-        assert captured[0]["cancel_reason"] == "AI analysis unavailable"
-        assert captured[1]["signal_grade"] == "RULE_ONLY"
-        assert captured[1]["type"] == "RULE_ONLY_SIGNAL"
+        assert captured == []
+        mock_push.assert_not_awaited()
 
     def test_claude_daily_limit_cancels_instead_of_rule_fallback_enter(self):
         item = _signal()
@@ -398,16 +403,14 @@ class TestQueueWorkerFailures:
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=False), \
              patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push) as mock_push:
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured[0]["action"] == "CANCEL"
-        assert captured[0]["cancel_reason"] == "AI daily limit reached"
-        assert captured[1]["signal_grade"] == "RULE_ONLY"
-        assert captured[1]["type"] == "RULE_ONLY_SIGNAL"
+        assert captured == []
+        mock_push.assert_not_awaited()
         mock_analyze.assert_not_awaited()
 
     def test_claude_cancel_publishes_rule_only_signal(self):
@@ -434,19 +437,14 @@ class TestQueueWorkerFailures:
                      "cancel_reason": "weak follow-through",
                  },
              ), \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push) as mock_push:
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured[0]["action"] == "CANCEL"
-        assert captured[0]["cancel_reason"] == "weak follow-through"
-        assert captured[1]["type"] == "RULE_ONLY_SIGNAL"
-        assert captured[1]["signal_grade"] == "RULE_ONLY"
-        assert captured[1]["cur_prc"] == 18880
-        assert captured[1]["tp1_price"] == 20050
-        assert captured[1]["sl_price"] == 17480
+        assert captured == []
+        mock_push.assert_not_awaited()
 
     def test_s4_hard_gate_failure_cancels_before_ai(self):
         item = _signal(strategy="S4_BIG_CANDLE", cntr_strength=114.9, bid_ratio=1.19)
@@ -461,14 +459,14 @@ class TestQueueWorkerFailures:
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
              patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push) as mock_push:
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured[0]["action"] == "CANCEL"
-        assert "Hard gate failed" in captured[0]["ai_reason"]
+        assert captured == []
+        mock_push.assert_not_awaited()
         mock_limit.assert_not_awaited()
         mock_analyze.assert_not_awaited()
 
@@ -563,19 +561,18 @@ class TestQueueWorkerFailures:
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
              patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push) as mock_push:
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured[0]["action"] == "CANCEL"
-        assert captured[0]["cancel_type"] == "S8_BUY_ZONE"
-        assert "below support low" in captured[0]["cancel_reason"]
+        assert captured == []
+        mock_push.assert_not_awaited()
         mock_limit.assert_not_awaited()
         mock_analyze.assert_not_awaited()
 
-    def test_rr_prefilter_below_080_cancels_before_ai(self):
+    def test_rr_prefilter_below_strategy_gate_routes_to_watch_before_ai(self):
         item = _signal(cur_prc=10000, tp1_price=10100, sl_price=9900, rr_ratio=0.79)
         rdb = _make_rdb(json.dumps(item))
         captured = []
@@ -588,15 +585,16 @@ class TestQueueWorkerFailures:
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
              patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_analyze, \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_hold_monitor_queue", side_effect=capture_push), \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured[0]["action"] == "CANCEL"
-        assert "below 0.80" in captured[0]["cancel_reason"]
-        assert "below 0.80" in captured[0]["ai_reason"]
+        assert captured[0]["action"] == "HOLD"
+        assert captured[0]["execution_decision"] == "WATCH"
+        assert "below 1.20" in captured[0]["ai_reason"]
         mock_limit.assert_not_awaited()
         mock_analyze.assert_not_awaited()
 
@@ -631,12 +629,12 @@ class TestQueueWorkerFailures:
         assert captured[0]["action"] == "HOLD"
         assert captured[0]["cancel_type"] == "S8_WAIT_PULLBACK"
         assert captured[0]["s8_zone_entry_policy"] == "wait_pullback"
-        assert "wait for support-zone pullback" in captured[0]["ai_reason"]
+        assert "WATCH until R:R improves" in captured[0]["ai_reason"]
         mock_limit.assert_not_awaited()
         mock_analyze.assert_not_awaited()
 
-    def test_borderline_rr_calls_ai_with_quality_metadata(self):
-        item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=0.9, vol_ratio=1.5)
+    def test_acceptable_rr_calls_ai_with_quality_metadata(self):
+        item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=1.25, vol_ratio=1.5)
         rdb = _make_rdb(json.dumps(item))
         captured_signal = {}
 
@@ -655,7 +653,7 @@ class TestQueueWorkerFailures:
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured_signal["rr_quality_bucket"] == "caution"
+        assert captured_signal["rr_quality_bucket"] == "acceptable"
         assert "signal_quality_score" in captured_signal
         assert captured_signal["performance_ev_status"] == "insufficient_data"
 
@@ -768,7 +766,7 @@ class TestQueueWorkerFailures:
         assert result[2] == "S1_EXECUTION_POLICY"
 
     def test_claude_tp_sl_recalculates_rr_in_published_payload(self):
-        item = _signal(cur_prc=10000, tp1_price=10200, sl_price=9900, rr_ratio=0.9, min_rr_ratio=1.0)
+        item = _signal(cur_prc=10000, tp1_price=10200, sl_price=9900, rr_ratio=1.3, min_rr_ratio=1.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
 
@@ -808,7 +806,7 @@ class TestQueueWorkerFailures:
         assert payload["rr_ratio"] != 0.9
         assert abs(payload["rr_ratio"] - 3.118) < 0.01
 
-    def test_s1_claude_enter_uses_market_regime_rr_instead_of_fixed_min_rr(self):
+    def test_s1_claude_enter_uses_strategy_base_regime_rr(self):
         item = _signal(cur_prc=10000, tp1_price=12000, sl_price=9000, rr_ratio=2.0, min_rr_ratio=1.0, bid_ratio=2.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
@@ -829,8 +827,8 @@ class TestQueueWorkerFailures:
                      "ai_score": 82.0,
                      "confidence": "HIGH",
                      "reason": "claude says enter",
-                     "claude_tp1": 10500,
-                     "claude_tp2": 10600,
+                    "claude_tp1": 10800,
+                    "claude_tp2": 10900,
                      "claude_sl": 9700,
                  },
              ), \
@@ -844,8 +842,9 @@ class TestQueueWorkerFailures:
         assert len(captured) == 1
         payload = captured[0]
         assert payload["action"] == "ENTER"
-        assert payload["rr_policy"] == "market_regime"
-        assert payload["rr_regime_threshold"] == 0.8
+        assert payload["execution_decision"] == "ENTER"
+        assert payload["rr_policy"] == "strategy_base_x_regime"
+        assert payload["rr_regime_threshold"] == 1.2
         assert payload["rr_ratio"] >= payload["rr_regime_threshold"]
 
 
@@ -873,7 +872,7 @@ class TestClaudeRiskPostprocess:
 
         assert _detect_market_regime(ctx, "S8_GOLDEN_CROSS") == "sideways"
 
-    def test_s1_high_score_hold_promotes_to_enter(self):
+    def test_s1_high_score_hold_stays_watch(self):
         from queue_worker import _maybe_promote_hold_to_enter
 
         action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
@@ -885,12 +884,12 @@ class TestClaudeRiskPostprocess:
             ai_score=95.0,
         )
 
-        assert action == "ENTER"
+        assert action == "HOLD"
         assert confidence == "MEDIUM"
-        assert "HOLD promoted to ENTER" in reason
+        assert "ai_score alone cannot promote to ENTER" in reason
         assert cancel_reason is None
 
-    def test_non_s1_high_score_hold_still_promotes_to_enter(self):
+    def test_non_s1_high_score_hold_stays_watch(self):
         from queue_worker import _maybe_promote_hold_to_enter
 
         action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
@@ -902,9 +901,9 @@ class TestClaudeRiskPostprocess:
             ai_score=95.0,
         )
 
-        assert action == "ENTER"
+        assert action == "HOLD"
         assert confidence == "HIGH"
-        assert "HOLD promoted to ENTER" in reason
+        assert "ai_score alone cannot promote to ENTER" in reason
         assert cancel_reason is None
 
     def test_hold_or_cancel_nulls_claude_prices(self):
@@ -1054,14 +1053,8 @@ class TestClaudeRiskPostprocess:
             result = _run(process_one(rdb))
 
         assert result is True
-        payload = captured[0]
-        assert payload["action"] == "CANCEL"
-        assert payload["cancel_type"] == "CLAUDE_HARD_RULE"
-        assert "tp1 > entry > sl" in payload["cancel_reason"]
-        assert "R:R" not in payload["cancel_reason"]
-        assert payload["claude_tp1"] is None
-        assert payload["claude_tp2"] is None
-        assert payload["claude_sl"] is None
+        assert captured == []
+        mock_ai.assert_awaited_once()
 
 
 class TestSessionEnterGuard:
@@ -1147,16 +1140,16 @@ class TestSessionEnterGuard:
                      "reason": "strong but originally hold",
                  },
              ), \
-             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+             patch("queue_worker.push_hold_monitor_queue", side_effect=capture_push), \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
         assert len(captured) == 1
-        assert captured[0]["action"] == "CANCEL"
-        assert captured[0]["cancel_type"] == "SESSION_ENTER_GUARD"
-        assert "after_market" in captured[0]["cancel_reason"]
+        assert captured[0]["action"] == "HOLD"
+        assert captured[0]["execution_decision"] == "WATCH"
         assert "HOLD promoted to ENTER" not in captured[0]["ai_reason"]
 
 

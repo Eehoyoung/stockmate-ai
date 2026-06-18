@@ -23,7 +23,12 @@ from http_utils import (
 )
 from position_sizing import ENABLE_MODEL_RELATIVE_POSITION_SIZE, calculate_entry_size
 from price_utils import normalize_signal_prices
-from strategy_meta import get_persona, get_hold_to_enter_threshold as _get_hold_threshold
+from strategy_meta import (
+    get_persona,
+    get_regime_rr_multiplier,
+    get_strategy_base_rr_gate,
+    get_strategy_rr_group,
+)
 from redis_reader import (
     get_avg_cntr_strength,
     get_hoga_data,
@@ -115,14 +120,11 @@ _CHART_DAILY_STRATEGIES = {
 }
 _CHART_MINUTE_STRATEGIES = {"S4_BIG_CANDLE", "S12_CLOSING"}
 
-# ── R:R 사전필터 장세별 임계값 ─────────────────────────────────────────────
-# bull: 모멘텀이 슬리피지를 상쇄 → 0.65, bear: 리스크 엄격 → 0.80
-_RR_BY_REGIME = {"bull": 0.65, "sideways": 0.75, "bear": 0.80, "neutral": 0.80}
-
 _S12_START_MINUTE = 14 * 60 + 30
 _S12_END_MINUTE = 15 * 60 + 10
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
 RR_CAUTION_THRESHOLD = float(os.getenv("RR_CAUTION_THRESHOLD", "1.2"))
+RULE_THRESHOLD_WATCH_MIN_QUALITY = float(os.getenv("RULE_THRESHOLD_WATCH_MIN_QUALITY", "45.0"))
 S8_SUPPORT_ZONE_CAUTION_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_CAUTION_GAP_PCT", "1.5"))
 S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT", "3.5"))
 S8_MIN_ZONE_RR = float(os.getenv("S8_MIN_ZONE_RR", "1.5"))
@@ -233,6 +235,56 @@ def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None)
     if action == "CANCEL" and cancel_reason:
         return cancel_reason
     return reason
+
+
+def _execution_decision_from_action(action: str, *, cancel_type: str | None = None) -> str:
+    """Normalize legacy action values into the canonical execution decision."""
+    normalized = str(action or "").upper()
+    if normalized == "ENTER":
+        return "ENTER"
+    if normalized == "HOLD":
+        return "WATCH"
+    return "BLOCK"
+
+
+def _apply_execution_decision(payload: dict, decision: str, *, reason: str | None = None) -> dict:
+    """Attach canonical execution decision while preserving legacy action compatibility."""
+    canonical = str(decision or "BLOCK").upper()
+    if canonical not in {"ENTER", "WATCH", "BLOCK"}:
+        canonical = "BLOCK"
+    payload["execution_decision"] = canonical
+    payload["signal_stage"] = "ENTRY" if canonical == "ENTER" else canonical
+    if reason and not payload.get("execution_reason"):
+        payload["execution_reason"] = reason
+    if canonical == "ENTER":
+        payload["action"] = "ENTER"
+        payload["skip_entry"] = False
+    elif canonical == "WATCH":
+        payload["action"] = "HOLD"
+        payload["skip_entry"] = True
+    else:
+        payload["action"] = "CANCEL"
+        payload["skip_entry"] = True
+    return payload
+
+
+def _canonicalize_execution_payload(payload: dict) -> dict:
+    action = str(payload.get("action") or "").upper()
+    decision = payload.get("execution_decision")
+    # Post-AI hard rules may mutate legacy action after an earlier ENTER decision.
+    # In that case the hard-rule action wins.
+    if action in {"CANCEL", "HOLD"}:
+        decision = _execution_decision_from_action(action, cancel_type=payload.get("cancel_type"))
+    elif not decision:
+        decision = _execution_decision_from_action(action, cancel_type=payload.get("cancel_type"))
+    return _apply_execution_decision(payload, str(decision), reason=payload.get("ai_reason"))
+
+
+def _size_policy_from_legacy(signal: dict) -> str:
+    mode = str(signal.get("signal_mode") or signal.get("entry_policy") or "").upper()
+    if mode == "AUTO_SMALL":
+        return "SIZE_DOWN"
+    return str(signal.get("size_policy") or "NORMAL").upper()
 
 
 def _current_market_session(now: datetime | None = None) -> str:
@@ -1175,17 +1227,21 @@ def _rr_prefilter_reason(signal: dict, ctx: dict | None = None) -> str | None:
 
 def _resolve_regime_rr_policy(ctx: dict | None, strategy: str = "") -> tuple[str, float]:
     regime = _detect_market_regime(ctx or {}, strategy) if ctx else "neutral"
-    if regime == "bear" and strategy in _BEAR_GATE_EXEMPT:
-        threshold = _RR_BY_REGIME["bull"]
-    else:
-        threshold = _RR_BY_REGIME.get(regime, RR_HARD_CANCEL_THRESHOLD)
+    base = get_strategy_base_rr_gate(strategy)
+    multiplier = get_regime_rr_multiplier(strategy, regime)
+    threshold = base * multiplier
     return regime, float(threshold)
 
 
 def _apply_regime_rr_metadata(payload: dict, regime: str, threshold: float) -> None:
-    payload["rr_policy"] = "market_regime"
+    strategy = str(payload.get("strategy") or "")
+    payload["rr_policy"] = "strategy_base_x_regime"
     payload["rr_regime"] = regime
+    payload["rr_strategy_group"] = get_strategy_rr_group(strategy)
+    payload["rr_strategy_base_gate"] = round(get_strategy_base_rr_gate(strategy), 2)
+    payload["rr_regime_multiplier"] = round(get_regime_rr_multiplier(strategy, regime), 3)
     payload["rr_regime_threshold"] = round(float(threshold), 2)
+    payload["final_rr_gate"] = round(float(threshold), 2)
 
 
 def _rr_quality_bucket(rr: float | None) -> str:
@@ -1209,22 +1265,13 @@ def _maybe_promote_hold_to_enter(
     cancel_reason: str | None,
     ai_score: float | None,
 ) -> tuple[str, str, str, str | None]:
-    """Promote high-score Claude HOLD decisions into actionable ENTER signals."""
+    """Keep Claude HOLD as WATCH; score alone must never promote to ENTER."""
     if str(action).upper() != "HOLD":
         return action, confidence, reason, cancel_reason
-    try:
-        score = float(ai_score)
-    except (TypeError, ValueError):
-        return action, confidence, reason, cancel_reason
-    threshold = _get_hold_threshold(strategy) if strategy else HOLD_TO_ENTER_MIN_AI_SCORE
-    if score < threshold:
-        return action, confidence, reason, cancel_reason
-
-    promoted_reason = (
-        f"{reason} | HOLD promoted to ENTER because ai_score "
-        f"{score:.1f} >= {threshold:.1f}"
-    )
-    return "ENTER", confidence or "HIGH", promoted_reason, None
+    watch_reason = str(reason or "Claude HOLD").strip()
+    if ai_score is not None:
+        watch_reason = f"{watch_reason} | WATCH retained; ai_score alone cannot promote to ENTER"
+    return "HOLD", confidence or "MEDIUM", watch_reason, cancel_reason
 
 
 def _rule_threshold_rescue_reason(
@@ -1698,12 +1745,23 @@ async def process_one(rdb, pg_pool=None) -> bool:
             freshness_reason=stale_reason,
         )
         if skip_ai and not rescue_reason:
-            action = "CANCEL"
-            confidence = "LOW"
-            reason = f"Rule score {r_score:.1f} below threshold"
-            cancel_reason = "Rule threshold not met"
-            cancel_type = "RULE_THRESHOLD"
-            await _incr_pipeline(rdb, strategy, "cancel_score")
+            if quality.get("signal_quality_score", 0.0) >= RULE_THRESHOLD_WATCH_MIN_QUALITY and not (
+                s8_zone_gate_reason or s1_fallback_quality_reason or hard_gate_reason or stale_reason
+            ):
+                action = "HOLD"
+                confidence = "LOW"
+                reason = f"Rule score {r_score:.1f} below Claude threshold {threshold:.1f}; WATCH for improvement"
+                cancel_reason = None
+                cancel_type = None
+                signal["decision_stage"] = "WATCH_RULE_THRESHOLD"
+                await _incr_pipeline(rdb, strategy, "watch_rule_threshold")
+            else:
+                action = "CANCEL"
+                confidence = "LOW"
+                reason = f"Rule score {r_score:.1f} below threshold"
+                cancel_reason = "Rule threshold not met"
+                cancel_type = "RULE_THRESHOLD"
+                await _incr_pipeline(rdb, strategy, "cancel_score")
         else:
             if rescue_reason:
                 signal["rule_threshold_rescued"] = True
@@ -1711,20 +1769,18 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 signal["rule_threshold_rescue_reason"] = rescue_reason
                 await _incr_pipeline(rdb, strategy, "rule_threshold_rescue")
             if rr_prefilter_reason:
+                action = "HOLD"
                 if strategy == "S8_GOLDEN_CROSS":
-                    action = "HOLD"
                     signal["s8_zone_status"] = signal.get("s8_zone_status") or "wait_pullback"
                     signal["s8_zone_entry_policy"] = "wait_pullback"
-                    reason = f"{rr_prefilter_reason}; wait for support-zone pullback"
-                    cancel_reason = reason
                     cancel_type = "S8_WAIT_PULLBACK"
                 else:
-                    action = "CANCEL"
-                    reason = rr_prefilter_reason
-                    cancel_reason = rr_prefilter_reason
-                    cancel_type = "RR_TOO_LOW"
+                    cancel_type = None
+                reason = f"{rr_prefilter_reason}; WATCH until R:R improves"
+                cancel_reason = None
                 confidence = "LOW"
-                await _incr_pipeline(rdb, strategy, "cancel_rr")
+                signal["decision_stage"] = "WATCH_RR"
+                await _incr_pipeline(rdb, strategy, "watch_rr")
             elif s8_zone_gate_reason:
                 action = "CANCEL"
                 confidence = "LOW"
@@ -1843,9 +1899,12 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "rule_score": r_score,
             "ai_score": ai_score_val,
             "action": action,
+            "execution_decision": _execution_decision_from_action(action, cancel_type=cancel_type),
             "confidence": confidence,
             "ai_reason": display_reason,
             "cancel_reason": cancel_reason,
+            "legacy_signal_mode": item.get("signal_mode"),
+            "size_policy": _size_policy_from_legacy(item),
             "adjusted_target_pct": ai_result.get("adjusted_target_pct"),
             "adjusted_stop_pct": ai_result.get("adjusted_stop_pct"),
             "claude_tp1": ai_result.get("claude_tp1"),
@@ -1929,33 +1988,30 @@ async def process_one(rdb, pg_pool=None) -> bool:
         enriched = _apply_claude_postprocess_hard_rules(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)
         enriched = _apply_session_enter_guard(enriched, ctx)
+        enriched = _canonicalize_execution_payload(enriched)
         action = enriched.get("action", action)
+        execution_decision = enriched.get("execution_decision", _execution_decision_from_action(action, cancel_type=cancel_type))
         confidence = enriched.get("confidence", confidence)
         cancel_reason = enriched.get("cancel_reason")
         cancel_type = enriched.get("cancel_type")
         reason = enriched.get("ai_reason", reason)
         display_reason = _resolve_display_reason(action, reason, cancel_reason)
         enriched["ai_reason"] = display_reason
-        if action == "HOLD":
+        if execution_decision == "WATCH":
             await push_hold_monitor_queue(rdb, enriched)
             await _incr_pipeline(rdb, strategy, "hold_monitor")
-            logger.info("[Worker] HOLD routed to monitor queue [%s %s]", stk_cd, strategy)
-        else:
+            logger.info("[Worker] WATCH routed to monitor queue [%s %s]", stk_cd, strategy)
+        elif execution_decision == "ENTER":
             await push_score_only_queue(rdb, enriched)
+        else:
+            logger.info("[Worker] BLOCK kept internal [%s %s] reason=%s", stk_cd, strategy, display_reason)
 
         rule_only_payload = None
-        if cancel_type in ("AI_UNAVAILABLE", "AI_DAILY_LIMIT") or (
-            action == "CANCEL" and cancel_type is None and not should_skip_ai(r_score, strategy)
-        ):
-            rule_only_payload = _build_rule_only_alert_payload(signal, r_score, quality)
-            normalize_signal_prices(rule_only_payload)
-            await push_score_only_queue(rdb, rule_only_payload)
-
-        if action == "ENTER":
+        if execution_decision == "ENTER":
             await _incr_pipeline(rdb, strategy, "publish")
 
         try:
-            decision_key = f"status:decisions_10m:{strategy}:{action}"
+            decision_key = f"status:decisions_10m:{strategy}:{execution_decision}"
             await rdb.incr(decision_key)
             await rdb.expire(decision_key, STATUS_DECISION_TTL_SEC)
         except Exception as status_err:

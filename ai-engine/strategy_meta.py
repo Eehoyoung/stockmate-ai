@@ -40,25 +40,25 @@ ALL_STRATEGIES: frozenset[str] = DAY_STRATEGIES | SWING_STRATEGIES
 
 
 # ── Claude 호출 임계값 ────────────────────────────────────────────────────────
-#: 전략별 규칙 점수 임계값. 이 점수 미만이면 Claude API 호출 없이 CANCEL.
+#: 전략별 규칙 점수 임계값. 이 점수 미만이면 Claude API 호출 없이 WATCH/BLOCK 후보가 된다.
 CLAUDE_THRESHOLDS: dict[str, int] = {
     # 데이 트레이딩 전략
     "S1_GAP_OPEN":      55,
-    "S2_VI_PULLBACK":   65,
+    "S2_VI_PULLBACK":   60,
     "S3_INST_FRGN":     60,
     "S4_BIG_CANDLE":    65,
-    "S5_PROG_FRGN":     55,   # 65 → 55 (net_amt 스케일 100억 기준 조정에 따른 임계 하향)
+    "S5_PROG_FRGN":     58,
     "S6_THEME_LAGGARD": 60,
     "S7_ICHIMOKU_BREAKOUT": 62,
     # 스윙 전략 — signal 필드 보완 + bid_ratio 중립화 후 재조정
-    "S8_GOLDEN_CROSS":     50,   # 65 → 50
-    "S9_PULLBACK_SWING":   55,   # 60 → 45 → 55 (거래량 1.3배, pct_ma5 구간 제외 강화)
-    "S10_NEW_HIGH":        55,   # 65 → 48 → 55 (등락률 구간 감점, 윗꼬리 필터)
-    "S11_FRGN_CONT":       52,   # 60 → 58 → 52 (WS 오프라인 score 붕괴 안전망)
-    "S12_CLOSING":         60,   # 65 → 60
-    "S13_BOX_BREAKOUT":    55,   # 65 → 55
-    "S14_OVERSOLD_BOUNCE": 58,   # 65 → 50 → 58 (RSI 범위 22~38, cntr≥105 필수화, cond≥2 강화)
-    "S15_MOMENTUM_ALIGN":  60,   # 70 → 65 → 60 (cond_count 3/4 운용 모드 분리)
+    "S8_GOLDEN_CROSS":     60,
+    "S9_PULLBACK_SWING":   60,
+    "S10_NEW_HIGH":        64,
+    "S11_FRGN_CONT":       58,
+    "S12_CLOSING":         61,
+    "S13_BOX_BREAKOUT":    64,
+    "S14_OVERSOLD_BOUNCE": 61,
+    "S15_MOMENTUM_ALIGN":  65,
 }
 
 _DEFAULT_THRESHOLD = 65
@@ -170,3 +170,78 @@ def get_persona(strategy: str | None) -> str:
     if not strategy:
         return DEFAULT_PERSONA
     return STRATEGY_PERSONAS.get(strategy, DEFAULT_PERSONA)
+
+
+# ── 전략별 실행 R:R hard gate ───────────────────────────────────────────────
+STRATEGY_BASE_RR_GATES: dict[str, float] = {
+    "S1_GAP_OPEN": 1.20,
+    "S2_VI_PULLBACK": 1.30,
+    "S3_INST_FRGN": 1.50,
+    "S4_BIG_CANDLE": 1.40,
+    "S5_PROG_FRGN": 1.50,
+    "S6_THEME_LAGGARD": 1.30,
+    "S7_ICHIMOKU_BREAKOUT": 1.50,
+    "S8_GOLDEN_CROSS": 1.50,
+    "S9_PULLBACK_SWING": 1.45,
+    "S10_NEW_HIGH": 1.50,
+    "S11_FRGN_CONT": 1.50,
+    "S12_CLOSING": 1.45,
+    "S13_BOX_BREAKOUT": 1.50,
+    "S14_OVERSOLD_BOUNCE": 1.50,
+    "S15_MOMENTUM_ALIGN": 1.45,
+}
+
+STRATEGY_RR_GROUPS: dict[str, str] = {
+    "S1_GAP_OPEN": "momentum",
+    "S2_VI_PULLBACK": "event",
+    "S3_INST_FRGN": "flow",
+    "S4_BIG_CANDLE": "breakout",
+    "S5_PROG_FRGN": "flow",
+    "S6_THEME_LAGGARD": "theme",
+    "S7_ICHIMOKU_BREAKOUT": "swing_breakout",
+    "S8_GOLDEN_CROSS": "swing_breakout",
+    "S9_PULLBACK_SWING": "pullback",
+    "S10_NEW_HIGH": "breakout",
+    "S11_FRGN_CONT": "flow",
+    "S12_CLOSING": "event",
+    "S13_BOX_BREAKOUT": "breakout",
+    "S14_OVERSOLD_BOUNCE": "reversal",
+    "S15_MOMENTUM_ALIGN": "momentum",
+}
+
+_REGIME_RR_MULTIPLIERS: dict[str, dict[str, float]] = {
+    "bull": {
+        "momentum": 0.88,
+        "breakout": 0.88,
+        "swing_breakout": 0.90,
+        "event": 0.93,
+        "theme": 0.93,
+        "flow": 0.97,
+        "pullback": 0.97,
+        "reversal": 1.00,
+    },
+    "sideways": {},
+    "neutral": {},
+    "bear": {},
+}
+
+
+def get_strategy_base_rr_gate(strategy: str | None) -> float:
+    """전략별 기본 실행 R:R hard gate."""
+    if not strategy:
+        return 1.40
+    return float(STRATEGY_BASE_RR_GATES.get(strategy, 1.40))
+
+
+def get_strategy_rr_group(strategy: str | None) -> str:
+    """장세별 R:R multiplier 적용을 위한 전략군."""
+    if not strategy:
+        return "default"
+    return STRATEGY_RR_GROUPS.get(strategy, "default")
+
+
+def get_regime_rr_multiplier(strategy: str | None, regime: str | None) -> float:
+    """장세별 R:R multiplier. bear/sideways/neutral은 기본값 유지."""
+    normalized = str(regime or "neutral").lower()
+    group = get_strategy_rr_group(strategy)
+    return float(_REGIME_RR_MULTIPLIERS.get(normalized, {}).get(group, 1.00))

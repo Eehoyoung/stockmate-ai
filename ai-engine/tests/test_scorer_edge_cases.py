@@ -505,10 +505,10 @@ class TestShouldSkipAi:
         """점수가 임계값 초과 → False"""
         assert should_skip_ai(80.0, "S1_GAP_OPEN") is False
 
-    def test_s2_threshold_65(self):
-        """S2 임계값 = 65"""
-        assert should_skip_ai(64.9, "S2_VI_PULLBACK") is True
-        assert should_skip_ai(65.0, "S2_VI_PULLBACK") is False
+    def test_s2_threshold_60(self):
+        """S2 임계값 = 60"""
+        assert should_skip_ai(59.9, "S2_VI_PULLBACK") is True
+        assert should_skip_ai(60.0, "S2_VI_PULLBACK") is False
 
     def test_s3_threshold_60(self):
         """S3 임계값 = 60"""

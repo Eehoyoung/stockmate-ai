@@ -605,20 +605,20 @@ class TestS7IchimokuBreakout:
 class TestThresholdAndSkipAi:
     def test_known_strategy_thresholds(self):
         assert get_claude_threshold("S1_GAP_OPEN") == 55
-        assert get_claude_threshold("S2_VI_PULLBACK") == 65
+        assert get_claude_threshold("S2_VI_PULLBACK") == 60
         assert get_claude_threshold("S3_INST_FRGN") == 60
         assert get_claude_threshold("S4_BIG_CANDLE") == 65
-        assert get_claude_threshold("S5_PROG_FRGN") == 55  # D1: net_amt 스케일 100억 기준 조정에 따라 65→55
+        assert get_claude_threshold("S5_PROG_FRGN") == 58
         assert get_claude_threshold("S6_THEME_LAGGARD") == 60
         assert get_claude_threshold("S7_ICHIMOKU_BREAKOUT") == 62
-        assert get_claude_threshold("S8_GOLDEN_CROSS") == 50
-        assert get_claude_threshold("S9_PULLBACK_SWING") == 55
-        assert get_claude_threshold("S10_NEW_HIGH") == 55
-        assert get_claude_threshold("S11_FRGN_CONT") == 52
-        assert get_claude_threshold("S12_CLOSING") == 60
-        assert get_claude_threshold("S13_BOX_BREAKOUT") == 55
-        assert get_claude_threshold("S14_OVERSOLD_BOUNCE") == 58
-        assert get_claude_threshold("S15_MOMENTUM_ALIGN") == 60
+        assert get_claude_threshold("S8_GOLDEN_CROSS") == 60
+        assert get_claude_threshold("S9_PULLBACK_SWING") == 60
+        assert get_claude_threshold("S10_NEW_HIGH") == 64
+        assert get_claude_threshold("S11_FRGN_CONT") == 58
+        assert get_claude_threshold("S12_CLOSING") == 61
+        assert get_claude_threshold("S13_BOX_BREAKOUT") == 64
+        assert get_claude_threshold("S14_OVERSOLD_BOUNCE") == 61
+        assert get_claude_threshold("S15_MOMENTUM_ALIGN") == 65
 
     def test_unknown_strategy_default_threshold(self):
         threshold = get_claude_threshold("UNKNOWN")

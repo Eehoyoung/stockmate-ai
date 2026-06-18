@@ -1,6 +1,8 @@
 import os
 import sys
 import types
+import asyncio
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -24,7 +26,7 @@ else:
     sys.modules["db_writer"] = _previous_db_writer
 
 
-def test_confirm_worker_bear_exempt_strategy_uses_bull_rr_threshold():
+def test_confirm_worker_bear_strategy_keeps_base_rr_threshold():
     ctx = {
         "market_type": "001",
         "kospi_flu_rt": -1.2,
@@ -34,10 +36,10 @@ def test_confirm_worker_bear_exempt_strategy_uses_bull_rr_threshold():
     regime, threshold = _resolve_regime_rr_policy(ctx, "S9_PULLBACK_SWING")
 
     assert regime == "bear"
-    assert threshold == 0.65
+    assert threshold == 1.45
 
 
-def test_confirm_worker_claude_rr_allows_bear_exempt_above_relaxed_threshold():
+def test_confirm_worker_claude_rr_blocks_bear_signal_below_base_threshold():
     payload = {
         "action": "ENTER",
         "strategy": "S9_PULLBACK_SWING",
@@ -53,7 +55,30 @@ def test_confirm_worker_claude_rr_allows_bear_exempt_above_relaxed_threshold():
 
     result = _apply_claude_rr_override(payload, ctx)
 
-    assert result["action"] == "ENTER"
+    assert result["action"] == "CANCEL"
     assert result["rr_regime"] == "bear"
-    assert result["rr_regime_threshold"] == 0.65
-    assert result["rr_ratio"] >= result["rr_regime_threshold"]
+    assert result["rr_regime_threshold"] == 1.45
+    assert result["rr_ratio"] < result["rr_regime_threshold"]
+
+
+def test_confirm_worker_cancel_is_kept_internal_not_published():
+    from confirm_worker import process_confirmed
+
+    item = {
+        "id": 1,
+        "strategy": "S9_PULLBACK_SWING",
+        "stk_cd": "005930",
+        "rule_score": 80,
+        "market_ctx": {"strength": 120, "market_type": "001"},
+    }
+    rdb = object()
+
+    with patch("confirm_worker.pop_confirmed_queue", new_callable=AsyncMock, return_value=item), \
+         patch("confirm_worker.check_daily_limit", new_callable=AsyncMock, return_value=False), \
+         patch("confirm_worker.push_score_only_queue", new_callable=AsyncMock) as mock_score, \
+         patch("confirm_worker.push_hold_monitor_queue", new_callable=AsyncMock) as mock_hold:
+        result = asyncio.run(process_confirmed(rdb))
+
+    assert result is True
+    mock_score.assert_not_awaited()
+    mock_hold.assert_not_awaited()

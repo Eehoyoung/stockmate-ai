@@ -337,7 +337,11 @@ def _make_rdb(rpop_value=None):
     rdb.lpush = AsyncMock(return_value=1)
     rdb.expire = AsyncMock(return_value=True)
     rdb.incr = AsyncMock(return_value=1)
-    rdb.hgetall = AsyncMock(return_value={})
+    async def hgetall_side_effect(key):
+        if key == "ws:py_heartbeat":
+            return {"updated_at": "2026-06-19T09:00:00+09:00"}
+        return {}
+    rdb.hgetall = AsyncMock(side_effect=hgetall_side_effect)
     rdb.hincrby = AsyncMock(return_value=1)
     rdb.lrange = AsyncMock(return_value=[])
     rdb.get = AsyncMock(return_value=None)
@@ -370,6 +374,7 @@ def _ctx():
         "vi": {},
         "ws_online": False,
         "freshness": {},
+        "market_session": "main_market",
     }
 
 
@@ -393,6 +398,7 @@ class TestQueueWorkerIntegration:
              patch("queue_worker.analyze_signal", new_callable=AsyncMock, return_value={
                  "ai_score": 80.0, "action": "ENTER", "confidence": "HIGH",
                  "reason": "ok", "cancel_reason": None,
+                 "claude_tp1": 76000, "claude_sl": 68600,
              }), \
              patch("queue_worker.push_score_only_queue", new_callable=AsyncMock, side_effect=capture_push), \
              patch("queue_worker.fetch_stk_nm", new_callable=AsyncMock, return_value="Samsung"):
@@ -429,6 +435,7 @@ class TestQueueWorkerIntegration:
              patch("queue_worker.analyze_signal", new_callable=AsyncMock, return_value={
                  "ai_score": 80.0, "action": "ENTER", "confidence": "HIGH",
                  "reason": "ok", "cancel_reason": None,
+                 "claude_tp1": 76000, "claude_sl": 68600,
              }), \
              patch("queue_worker.push_score_only_queue", new_callable=AsyncMock, side_effect=capture_push), \
              patch("queue_worker.fetch_stk_nm", new_callable=AsyncMock, return_value="Samsung"):

@@ -144,6 +144,20 @@ class TestPushScoreOnlyQueue:
         assert "삼성전자" in args[1]  # ensure_ascii=False 로 한글 보존
 
 
+class TestPushTelegramQueue:
+    def test_pushes_candidate_back_to_telegram_queue(self):
+        rdb = _make_rdb(lpush=1, expire=True)
+        payload = {"type": "HOLD_MONITOR_RECHECK", "strategy": "S8_GOLDEN_CROSS"}
+
+        from redis_reader import push_telegram_queue
+        _run(push_telegram_queue(rdb, payload))
+
+        args = rdb.lpush.call_args[0]
+        assert args[0] == "telegram_queue"
+        assert json.loads(args[1])["type"] == "HOLD_MONITOR_RECHECK"
+        rdb.expire.assert_awaited_once_with("telegram_queue", 43200)
+
+
 # ──────────────────────────────────────────────────────────────────
 # get_tick_data 테스트
 # ──────────────────────────────────────────────────────────────────

@@ -180,6 +180,17 @@ async def pop_telegram_queue(rdb) -> Optional[dict]:
         return None
 
 
+async def push_telegram_queue(rdb, payload: dict, *, ttl: int = 43200) -> None:
+    """Push a candidate payload back to telegram_queue for normal queue_worker processing."""
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception as exc:
+        logger.error("[Reader] telegram_queue serialization failed: %s", exc)
+        return
+    await rdb.lpush("telegram_queue", serialized)
+    await rdb.expire("telegram_queue", ttl)
+
+
 async def get_tick_data(rdb, stk_cd: str) -> dict:
     """Return the realtime tick hash for a stock code."""
     data = await rdb.hgetall(f"ws:tick:{stk_cd}")

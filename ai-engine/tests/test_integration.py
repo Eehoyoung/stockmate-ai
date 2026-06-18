@@ -25,7 +25,11 @@ def _make_full_rdb(rpop_value=None):
     rdb.rpop = AsyncMock(return_value=rpop_value)
     rdb.lpush = AsyncMock(return_value=1)
     rdb.expire = AsyncMock(return_value=True)
-    rdb.hgetall = AsyncMock(return_value={})
+    async def hgetall_side_effect(key):
+        if key == "ws:py_heartbeat":
+            return {"updated_at": "2026-06-19T09:00:00+09:00"}
+        return {}
+    rdb.hgetall = AsyncMock(side_effect=hgetall_side_effect)
     rdb.lrange = AsyncMock(return_value=["120.0", "130.0"])
     rdb.incr = AsyncMock(return_value=1)
     rdb.incrby = AsyncMock(return_value=400)
@@ -96,8 +100,8 @@ class TestFullPipeline:
             "reason": "강한 신호",
             "adjusted_target_pct": 3.5,
             "adjusted_stop_pct": -2.0,
-            "claude_tp1": 88000,
-            "claude_tp2": 90000,
+            "claude_tp1": 91000,
+            "claude_tp2": 93000,
             "claude_sl": 82000,
         }
 
@@ -140,8 +144,8 @@ class TestFullPipeline:
         mock_analyze.assert_not_called()
         assert captured[0]["type"] == "FORCE_CLOSE"
 
-    def test_borderline_score_69_is_cancelled(self):
-        """규칙 점수 69점(임계값 70 미달) → CANCEL, Claude 미호출"""
+    def test_low_rule_score_is_blocked_without_ai_or_delivery(self):
+        """규칙 점수와 품질 모두 미달 → Claude/ENTER/WATCH 미호출"""
         signal = {
             "strategy": "S1_GAP_OPEN",
             "stk_cd": "005930",
@@ -153,23 +157,28 @@ class TestFullPipeline:
             "hoga": {"total_buy_bid_req": "1300", "total_sel_bid_req": "1000"},
             "strength": 115.0,
             "vi": {},
+            "market_session": "main_market",
         }
         rdb = _make_full_rdb(json.dumps(signal))
-        captured = []
+        scored = []
+        watched = []
 
-        async def capture_push(rdb, payload):
-            captured.append(payload)
+        async def capture_score(rdb, payload):
+            scored.append(payload)
+
+        async def capture_watch(rdb, payload):
+            watched.append(payload)
 
         with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=ctx):
             with patch("queue_worker.analyze_signal", new_callable=AsyncMock) as mock_ai:
-                with patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+                with patch("queue_worker.push_score_only_queue", side_effect=capture_score), \
+                     patch("queue_worker.push_hold_monitor_queue", side_effect=capture_watch):
                     from queue_worker import process_one
                     _run(process_one(rdb))
 
-        # S1 임계값 = 70, 갭=4.99(20점) + strength=115(10점) + bid_ratio=1.3(10점) = 40점 < 70
-        # should_skip_ai → True → CANCEL
         mock_ai.assert_not_awaited()
-        assert captured[0]["action"] == "CANCEL"
+        assert scored == []
+        assert watched == []
 
     def test_borderline_score_70_triggers_ai(self):
         """규칙 점수 정확히 70점 → Claude 호출"""
@@ -213,8 +222,17 @@ class TestFullPipeline:
             "strategy": "S1_GAP_OPEN",
             "stk_cd": "005930",
             "gap_pct": 4.0,
+            "cur_prc": 84300,
+            "target_pct": 4.0,
+            "stop_pct": -2.0,
         }
-        ctx = {"tick": {}, "hoga": {}, "strength": 120.0, "vi": {}}
+        ctx = {
+            "tick": {"flu_rt": "4.0"},
+            "hoga": {"total_buy_bid_req": "3000", "total_sel_bid_req": "1000"},
+            "strength": 155.0,
+            "vi": {},
+            "market_session": "main_market",
+        }
 
         processed = []
 
@@ -222,8 +240,17 @@ class TestFullPipeline:
             processed.append(payload["stk_cd"])
 
         with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=ctx), \
-             patch("queue_worker.rule_score", return_value=30.0), \
-             patch("queue_worker.should_skip_ai", return_value=True), \
+             patch("queue_worker.rule_score", return_value=75.0), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch("queue_worker.analyze_signal", new_callable=AsyncMock, return_value={
+                 "action": "ENTER",
+                 "ai_score": 80,
+                 "confidence": "HIGH",
+                 "reason": "ok",
+                 "claude_tp1": 91000,
+                 "claude_sl": 82000,
+             }), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 

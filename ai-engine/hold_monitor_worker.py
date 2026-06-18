@@ -5,16 +5,15 @@ import logging
 import os
 from datetime import datetime, time, timedelta, timezone
 
-from analyzer import analyze_signal
 from price_utils import normalize_signal_prices
 from redis_reader import (
     clear_hold_monitor_queue,
+    remove_hold_monitor_item,
     pop_due_hold_monitor_items,
-    push_score_only_queue,
+    push_telegram_queue,
     requeue_hold_monitor_item,
 )
-from scorer import check_daily_limit, get_claude_threshold, rule_score, should_skip_ai
-from score_utils import normalize_score_0_100
+from scorer import get_claude_threshold, rule_score, should_skip_ai
 from tp_sl_engine import compute_rr
 from utils import normalize_stock_code, safe_float as _fv
 
@@ -31,6 +30,8 @@ HOLD_MONITOR_BATCH_LIMIT = int(os.getenv("HOLD_MONITOR_BATCH_LIMIT", "20"))
 HOLD_MONITOR_CLOSE_HHMM = os.getenv("HOLD_MONITOR_CLOSE_HHMM", "15:30")
 HOLD_MONITOR_USE_REST_FALLBACK = os.getenv("HOLD_MONITOR_USE_REST_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
 HOLD_MONITOR_MAX_REST_CALLS_PER_MIN = int(os.getenv("HOLD_MONITOR_MAX_REST_CALLS_PER_MIN", "30"))
+HOLD_MONITOR_MAX_AGE_SEC = int(os.getenv("HOLD_MONITOR_MAX_AGE_SEC", "1800"))
+HOLD_MONITOR_MAX_ATTEMPTS = int(os.getenv("HOLD_MONITOR_MAX_ATTEMPTS", "6"))
 _REST_CALL_FIELDS = ("tick", "strength", "hoga")
 
 
@@ -146,18 +147,38 @@ async def _refresh_ctx_for_hold_monitor(ctx: dict, stk_cd: str, rdb, payload: di
     await _record_rest_budget(rdb, _count_rest_attempts(ctx.get("refresh_meta")))
 
 
-async def _requeue(rdb, payload: dict, reason: str) -> None:
+def _terminal_reason(payload: dict) -> str | None:
+    enqueued_at = _fv(payload.get("hold_monitor_enqueued_at"), None)
+    if enqueued_at is not None and (_now_kst().timestamp() - enqueued_at) > HOLD_MONITOR_MAX_AGE_SEC:
+        return f"hold monitor max age exceeded {HOLD_MONITOR_MAX_AGE_SEC}s"
+    attempts = int(_fv(payload.get("hold_monitor_attempts"), 0) or 0)
+    if attempts >= HOLD_MONITOR_MAX_ATTEMPTS:
+        return f"hold monitor max attempts exceeded {HOLD_MONITOR_MAX_ATTEMPTS}"
+    return None
+
+
+async def _requeue(rdb, payload: dict, reason: str) -> bool:
+    terminal = _terminal_reason(payload)
+    if terminal:
+        payload["hold_monitor_last_reason"] = terminal
+        return False
     payload["hold_monitor_last_reason"] = reason
     payload["hold_monitor_attempts"] = int(_fv(payload.get("hold_monitor_attempts"), 0) or 0) + 1
     await requeue_hold_monitor_item(rdb, payload, delay_sec=HOLD_MONITOR_RECHECK_SEC)
+    return True
 
 
 async def evaluate_hold_item(rdb, payload: dict) -> dict:
-    """Return an ENTER payload when a HOLD item improves, otherwise return {}."""
+    """Return a recheck candidate when a WATCH item improves, otherwise return {}."""
     normalize_signal_prices(payload)
     stk_cd = normalize_stock_code(payload.get("stk_cd", ""))
     strategy = str(payload.get("strategy") or "")
     if not stk_cd or not strategy:
+        payload["hold_monitor_terminal_reason"] = "missing stk_cd or strategy"
+        return {}
+    terminal = _terminal_reason(payload)
+    if terminal:
+        payload["hold_monitor_terminal_reason"] = terminal
         return {}
     payload["stk_cd"] = stk_cd
 
@@ -198,6 +219,7 @@ async def evaluate_hold_item(rdb, payload: dict) -> dict:
     )
     if skip_ai and not rescue_reason:
         payload["threshold_used"] = threshold
+        payload["hold_monitor_last_gate"] = f"rule_score {r_score:.1f} below threshold {threshold:.1f}"
         return {}
 
     rr_reason = qw._rr_prefilter_reason(payload, ctx)
@@ -209,60 +231,24 @@ async def evaluate_hold_item(rdb, payload: dict) -> dict:
         payload["hold_monitor_last_gate"] = rr_reason or s8_zone_reason or s1_reason or hard_reason or stale_reason
         return {}
 
-    if _recent_ai_call(payload):
-        return {}
-
-    if not await check_daily_limit(rdb):
-        payload["hold_monitor_last_gate"] = "AI daily limit reached"
-        return {}
-
-    payload["hold_monitor_last_ai_at"] = _now_kst().timestamp()
-    ai_result = await analyze_signal(payload, ctx, r_score, rdb=rdb)
-    ai_score = normalize_score_0_100(ai_result.get("ai_score", r_score))
-    original_action = str(ai_result.get("action", "HOLD") or "HOLD").upper()
-    action = original_action
-    confidence = ai_result.get("confidence", "LOW")
-    reason = ai_result.get("reason", "hold monitor re-evaluation")
-    cancel_reason = ai_result.get("cancel_reason")
-    action, confidence, reason, cancel_reason = qw._maybe_promote_hold_to_enter(
-        strategy=strategy,
-        action=action,
-        confidence=confidence,
-        reason=reason,
-        cancel_reason=cancel_reason,
-        ai_score=ai_score,
-    )
-    if action != "ENTER":
-        payload["ai_score"] = ai_score
-        payload["confidence"] = confidence
-        payload["ai_reason"] = qw._resolve_display_reason(action, reason, cancel_reason)
-        payload["cancel_reason"] = cancel_reason
-        return {}
-
     enriched = {
         **payload,
-        "type": payload.get("type") if payload.get("type") != "HOLD_MONITOR" else None,
-        "action": "ENTER",
-        "confidence": confidence or "HIGH",
+        "type": "HOLD_MONITOR_RECHECK",
+        "action": "HOLD",
+        "execution_decision": "WATCH",
+        "signal_stage": "WATCH",
+        "confidence": payload.get("confidence") or "MEDIUM",
         "rule_score": r_score,
-        "ai_score": ai_score,
-        "ai_reason": qw._resolve_display_reason("ENTER", reason, None),
+        "ai_score": payload.get("ai_score", r_score),
+        "ai_reason": "HOLD monitor conditions improved; re-enter queue_worker for full validation",
         "cancel_reason": None,
-        "adjusted_target_pct": ai_result.get("adjusted_target_pct"),
-        "adjusted_stop_pct": ai_result.get("adjusted_stop_pct"),
-        "claude_tp1": ai_result.get("claude_tp1"),
-        "claude_tp2": ai_result.get("claude_tp2"),
-        "claude_sl": ai_result.get("claude_sl"),
-        "hold_monitor_promoted": True,
-        "hold_promoted_to_enter": original_action == "HOLD",
+        "hold_monitor_recheck": True,
+        "hold_monitor_promoted": False,
+        "origin_hold_monitor_key": payload.get("hold_monitor_key"),
+        "hold_monitor_last_gate": None,
+        "recompute_rule_score": True,
     }
     normalize_signal_prices(enriched)
-    enriched = qw._apply_claude_postprocess_hard_rules(enriched)
-    enriched = qw._apply_claude_rr_override(enriched, ctx)
-    enriched = qw._apply_session_enter_guard(enriched, ctx)
-    if enriched.get("action") != "ENTER":
-        payload.update(enriched)
-        return {}
     return enriched
 
 
@@ -274,20 +260,33 @@ async def process_due_items(rdb) -> int:
         try:
             result = await evaluate_hold_item(rdb, item)
             if result:
-                await push_score_only_queue(rdb, result)
+                await push_telegram_queue(rdb, result)
+                if key:
+                    await remove_hold_monitor_item(rdb, key)
                 promoted += 1
                 logger.info(
-                    "[HoldMonitor] promoted HOLD to ENTER [%s %s] key=%s",
+                    "[HoldMonitor] queued WATCH recheck [%s %s] key=%s",
                     result.get("stk_cd"),
                     result.get("strategy"),
                     key,
                 )
             elif not _is_after_close():
-                await _requeue(rdb, item, item.get("hold_monitor_last_gate") or item.get("hold_monitor_last_reason") or "still HOLD")
+                requeued = await _requeue(
+                    rdb,
+                    item,
+                    item.get("hold_monitor_terminal_reason")
+                    or item.get("hold_monitor_last_gate")
+                    or item.get("hold_monitor_last_reason")
+                    or "still WATCH",
+                )
+                if not requeued and key:
+                    await remove_hold_monitor_item(rdb, key)
         except Exception as exc:
             logger.warning("[HoldMonitor] evaluation failed key=%s: %s", key, exc)
             if not _is_after_close():
-                await _requeue(rdb, item, f"error:{type(exc).__name__}")
+                requeued = await _requeue(rdb, item, f"error:{type(exc).__name__}")
+                if not requeued and key:
+                    await remove_hold_monitor_item(rdb, key)
     return promoted
 
 

@@ -18,6 +18,8 @@ def _rdb():
     rdb.expire = AsyncMock(return_value=True)
     rdb.hgetall = AsyncMock(return_value={})
     rdb.lrange = AsyncMock(return_value=[])
+    rdb.zrem = AsyncMock(return_value=1)
+    rdb.hdel = AsyncMock(return_value=1)
     return rdb
 
 
@@ -54,7 +56,7 @@ def _payload(**overrides):
     return payload
 
 
-def test_evaluate_hold_item_promotes_high_score_ai_hold_to_enter():
+def test_evaluate_hold_item_returns_queue_worker_recheck_candidate():
     rdb = _rdb()
 
     with patch("hold_monitor_worker.HOLD_MONITOR_USE_REST_FALLBACK", False), \
@@ -66,28 +68,43 @@ def test_evaluate_hold_item_promotes_high_score_ai_hold_to_enter():
          patch("hold_monitor_worker.qw._s8_buy_zone_gate_failure", return_value=None), \
          patch("hold_monitor_worker.qw._s1_fallback_quality_failure", return_value=None), \
          patch("hold_monitor_worker.qw._hard_gate_failure", return_value=None), \
-         patch("hold_monitor_worker.qw._freshness_cancel_reason", return_value=None), \
-         patch("hold_monitor_worker.qw._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
-         patch("hold_monitor_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
-         patch(
-             "hold_monitor_worker.analyze_signal",
-             new_callable=AsyncMock,
-             return_value={
-                 "action": "HOLD",
-                 "ai_score": 90.0,
-                 "confidence": "HIGH",
-                 "reason": "setup improved",
-             },
-         ):
+         patch("hold_monitor_worker.qw._freshness_cancel_reason", return_value=None):
         from hold_monitor_worker import evaluate_hold_item
 
         result = _run(evaluate_hold_item(rdb, _payload()))
 
-    assert result["action"] == "ENTER"
-    assert result["hold_monitor_promoted"] is True
-    assert result["hold_promoted_to_enter"] is True
+    assert result["type"] == "HOLD_MONITOR_RECHECK"
+    assert result["action"] == "HOLD"
+    assert result["execution_decision"] == "WATCH"
+    assert result["hold_monitor_recheck"] is True
+    assert result["hold_monitor_promoted"] is False
     assert result["cur_prc"] == 9900
     mock_refresh.assert_not_awaited()
+
+
+def test_process_due_items_requeues_via_telegram_queue_not_scored_queue():
+    rdb = _rdb()
+    rdb.zrangebyscore = AsyncMock(return_value=["S8_GOLDEN_CROSS:005930"])
+    rdb.zrem = AsyncMock(return_value=1)
+    rdb.hget = AsyncMock(return_value='{"hold_monitor_key":"S8_GOLDEN_CROSS:005930","strategy":"S8_GOLDEN_CROSS","stk_cd":"005930"}')
+    captured = []
+
+    async def capture_push(_rdb, payload):
+        captured.append(payload)
+
+    with patch("hold_monitor_worker.evaluate_hold_item", new_callable=AsyncMock, return_value={
+        "type": "HOLD_MONITOR_RECHECK",
+        "strategy": "S8_GOLDEN_CROSS",
+        "stk_cd": "005930",
+        "execution_decision": "WATCH",
+    }), patch("hold_monitor_worker.push_telegram_queue", side_effect=capture_push):
+        from hold_monitor_worker import process_due_items
+
+        promoted = _run(process_due_items(rdb))
+
+    assert promoted == 1
+    assert captured[0]["type"] == "HOLD_MONITOR_RECHECK"
+    rdb.hdel.assert_awaited_with("hold_monitor:items", "S8_GOLDEN_CROSS:005930")
 
 
 def test_refresh_ctx_uses_rest_only_when_enabled_and_budget_available():
