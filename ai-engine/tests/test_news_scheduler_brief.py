@@ -78,3 +78,22 @@ def test_build_close_message_contains_required_sections():
     assert "마감시황" in msg
     assert "오늘 시장 주도 축" in msg
     assert "내일 체크포인트" in msg
+
+
+def test_build_morning_message_formats_sector_and_summary_as_bullets():
+    analysis = {
+        "market_sentiment": "BEARISH",
+        "recommended_sectors": [
+            "은행·보험주: 금리 상승 수혜와 방어 성격을 함께 확인한다.",
+            "반도체: 눌림 이후 외국인 수급 복귀 여부를 본다.",
+        ],
+        "korea_outlook": "코스피는 약세 출발 가능성이 높다. 장중 환율 1,520원 돌파 여부를 확인해야 한다.",
+        "summary": "추격 매수보다 눌림 확인이 우선이다. 방어 섹터 중심으로 비중을 조절한다.",
+    }
+
+    msg = _build_brief_message(analysis, "MORNING")
+
+    assert "<b>5) 오늘 볼 섹터</b>\n• 은행·보험주" in msg
+    assert ", 반도체:" not in msg
+    assert "<b>4) 오늘 국장 예상 흐름</b>\n• 코스피는 약세 출발 가능성이 높다." in msg
+    assert "<b>한 줄 결론</b>\n• 추격 매수보다 눌림 확인이 우선이다." in msg

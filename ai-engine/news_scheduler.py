@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -101,6 +102,23 @@ def _normalize_lines(values: list[str] | None, limit: int) -> list[str]:
     return [str(v).strip() for v in values if str(v).strip()][:limit]
 
 
+def _sentence_lines(value: str, limit: int = 5) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    sentences = re.findall(r".+?(?:[.!?。]|다\.|요\.|니다\.)(?=\s|$)|.+$", text)
+    lines = [s.strip() for s in sentences if s.strip()]
+    return lines[:limit] if lines else [text]
+
+
+def _bullet_lines(values: list[str] | None, limit: int) -> list[str]:
+    return [f"• {item}" for item in _normalize_lines(values, limit)]
+
+
+def _paragraph_bullets(value: str, limit: int = 5) -> list[str]:
+    return [f"• {item}" for item in _sentence_lines(value, limit)]
+
+
 def _slot_header(slot_name: str) -> str:
     return {
         "MORNING": "🧠 <b>[오전 시황 브리핑 08:00]</b>",
@@ -127,35 +145,38 @@ def _build_morning_message(analysis: dict) -> str:
 
     if us_market:
         lines.extend(["", "<b>1) 전일 미 3대지수</b>"])
-        lines.extend([f"• {item}" for item in us_market])
+        lines.extend(_bullet_lines(us_market, 3))
 
     if us_sector:
         lines.extend(["", "<b>2) 미국 주도/부진 섹터</b>"])
-        lines.extend([f"• {item}" for item in us_sector])
+        lines.extend(_bullet_lines(us_sector, 3))
 
     if macro_points:
         lines.extend(["", "<b>3) 외부 변수</b>"])
-        lines.extend([f"• {item}" for item in macro_points])
+        lines.extend(_bullet_lines(macro_points, 3))
 
     outlook = str(analysis.get("korea_outlook", "") or "").strip()
     if outlook:
-        lines.extend(["", "<b>4) 오늘 국장 예상 흐름</b>", outlook])
+        lines.extend(["", "<b>4) 오늘 국장 예상 흐름</b>"])
+        lines.extend(_paragraph_bullets(outlook, 5))
 
     if sectors:
-        lines.extend(["", f"<b>5) 오늘 볼 섹터</b>\n{', '.join(sectors)}"])
+        lines.extend(["", "<b>5) 오늘 볼 섹터</b>"])
+        lines.extend(_bullet_lines(sectors, 4))
 
     urgent_news = _normalize_lines(analysis.get("urgent_news", []), 6)
     if urgent_news:
         lines.extend(["", "<b>6) 영향 뉴스</b>"])
-        lines.extend([f"• {item}" for item in urgent_news])
+        lines.extend(_bullet_lines(urgent_news, 6))
 
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
-        lines.extend([f"• {item}" for item in risk_factors])
+        lines.extend(_bullet_lines(risk_factors, 3))
 
     summary = str(analysis.get("summary", "") or "").strip()
     if summary:
-        lines.extend(["", f"<b>한 줄 결론</b>\n{summary}"])
+        lines.extend(["", "<b>한 줄 결론</b>"])
+        lines.extend(_paragraph_bullets(summary, 5))
 
     return "\n".join(lines).strip()
 
@@ -177,28 +198,33 @@ def _build_midday_message(analysis: dict, slot_name: str = "MIDDAY") -> str:
     ]
 
     if sectors:
-        lines.extend(["", f"<b>1) 오전장 주도 섹터</b>\n{', '.join(sectors)}"])
+        lines.extend(["", "<b>1) 오전장 주도 섹터</b>"])
+        lines.extend(_bullet_lines(sectors, 4))
 
     if index_commentary:
-        lines.extend(["", "<b>2) 코스피 / 코스닥 흐름</b>", index_commentary])
+        lines.extend(["", "<b>2) 코스피 / 코스닥 흐름</b>"])
+        lines.extend(_paragraph_bullets(index_commentary, 4))
 
     if recap:
-        lines.extend(["", "<b>3) 오전장 복기</b>", recap])
+        lines.extend(["", "<b>3) 오전장 복기</b>"])
+        lines.extend(_paragraph_bullets(recap, 4))
 
     if outlook:
-        lines.extend(["", "<b>4) 오후장 예상</b>", outlook])
+        lines.extend(["", "<b>4) 오후장 예상</b>"])
+        lines.extend(_paragraph_bullets(outlook, 4))
 
     if urgent_news:
         lines.extend(["", "<b>5) 영향 뉴스 / 장중 변수</b>"])
-        lines.extend([f"• {item}" for item in urgent_news])
+        lines.extend(_bullet_lines(urgent_news, 6))
 
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
-        lines.extend([f"• {item}" for item in risk_factors])
+        lines.extend(_bullet_lines(risk_factors, 3))
 
     summary = str(analysis.get("summary", "") or "").strip()
     if summary:
-        lines.extend(["", f"<b>한 줄 결론</b>\n{summary}"])
+        lines.extend(["", "<b>한 줄 결론</b>"])
+        lines.extend(_paragraph_bullets(summary, 4))
 
     return "\n".join(lines).strip()
 
@@ -218,25 +244,29 @@ def _build_close_message(analysis: dict) -> str:
     ]
 
     if close_flow:
-        lines.extend(["", "<b>1) 마감시황</b>", close_flow])
+        lines.extend(["", "<b>1) 마감시황</b>"])
+        lines.extend(_paragraph_bullets(close_flow, 5))
 
     if leaders:
-        lines.extend(["", f"<b>2) 오늘 시장 주도 축</b>\n{', '.join(leaders)}"])
+        lines.extend(["", "<b>2) 오늘 시장 주도 축</b>"])
+        lines.extend(_bullet_lines(leaders, 4))
 
     if tomorrow_watch:
-        lines.extend(["", "<b>3) 내일 체크포인트</b>", tomorrow_watch])
+        lines.extend(["", "<b>3) 내일 체크포인트</b>"])
+        lines.extend(_paragraph_bullets(tomorrow_watch, 4))
 
     if urgent_news:
         lines.extend(["", "<b>4) 장중 영향 뉴스</b>"])
-        lines.extend([f"• {item}" for item in urgent_news])
+        lines.extend(_bullet_lines(urgent_news, 6))
 
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
-        lines.extend([f"• {item}" for item in risk_factors])
+        lines.extend(_bullet_lines(risk_factors, 3))
 
     summary = str(analysis.get("summary", "") or "").strip()
     if summary:
-        lines.extend(["", f"<b>한 줄 결론</b>\n{summary}"])
+        lines.extend(["", "<b>한 줄 결론</b>"])
+        lines.extend(_paragraph_bullets(summary, 4))
 
     return "\n".join(lines).strip()
 
