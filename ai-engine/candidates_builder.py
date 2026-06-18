@@ -504,6 +504,13 @@ async def _cache_expected_from_ka10029(rdb, items: list[dict], ttl: int = 1800) 
         if not stk_cd or not exp_cntr_pric or not exp_flu_rt:
             continue
 
+        key = f"ws:expected:{stk_cd}"
+        prev_buy_req = ""
+        try:
+            prev_buy_req = str(await rdb.hget(key, "buy_req") or "").strip()
+        except Exception:
+            prev_buy_req = ""
+
         mapping = {
             "exp_cntr_pric": exp_cntr_pric,
             "exp_flu_rt": exp_flu_rt,
@@ -516,7 +523,11 @@ async def _cache_expected_from_ka10029(rdb, items: list[dict], ttl: int = 1800) 
             "buy_bid": str(item.get("buy_bid", "")).strip(),
             "buy_req": str(item.get("buy_req", "")).strip(),
             "ka10029_rank": str(rank),
+            "source": "ka10029",
+            "updated_at_ms": str(int(_time.time() * 1000)),
         }
+        if prev_buy_req:
+            mapping["prev_buy_req"] = prev_buy_req
 
         try:
             pric = float(exp_cntr_pric.replace(",", "").replace("+", "").replace("-", ""))
@@ -526,7 +537,6 @@ async def _cache_expected_from_ka10029(rdb, items: list[dict], ttl: int = 1800) 
         except Exception:
             pass
 
-        key = f"ws:expected:{stk_cd}"
         flat_args: list[str] = []
         for field, value in mapping.items():
             if value == "":

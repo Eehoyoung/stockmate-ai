@@ -27,6 +27,99 @@ logger = logging.getLogger(__name__)
 from utils import safe_float as clean_num
 
 
+def _expected_age_ms(exp: dict) -> int | None:
+    updated_at = clean_num(exp.get("updated_at_ms"), 0)
+    if updated_at <= 0:
+        return None
+    return max(0, int(datetime.now(_KST).timestamp() * 1000) - int(updated_at))
+
+
+def _expected_bid_decay_pct(exp: dict) -> float | None:
+    prev_buy_req = clean_num(exp.get("prev_buy_req"), 0)
+    buy_req = clean_num(exp.get("buy_req"), 0)
+    if prev_buy_req <= 0 or buy_req < 0:
+        return None
+    return round((buy_req - prev_buy_req) / prev_buy_req * 100.0, 2)
+
+
+def _s1_entry_policy(
+    *,
+    gap_pct: float,
+    strength: float,
+    bid_ratio: float | None,
+    rr_ratio: float | None,
+    early_open: bool,
+    expected_age_ms: int | None,
+    expected_bid_decay_pct: float | None,
+    post_open_extension_pct: float | None,
+    execution_quality: str,
+    first_low_break: bool,
+    vwap_position: str,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    policy = "ENTER_CANDIDATE"
+    bid = bid_ratio if bid_ratio is not None else 0.0
+    rr = rr_ratio if rr_ratio is not None else 0.0
+
+    def hold(reason: str) -> None:
+        nonlocal policy
+        if policy != "CANCEL":
+            policy = "HOLD_RECHECK"
+        reasons.append(reason)
+
+    def cancel(reason: str) -> None:
+        nonlocal policy
+        policy = "CANCEL"
+        reasons.append(reason)
+
+    if expected_age_ms is None:
+        hold("expected freshness missing")
+    elif expected_age_ms > 15_000:
+        hold(f"expected stale {expected_age_ms}ms")
+
+    if expected_bid_decay_pct is not None:
+        if expected_bid_decay_pct <= -50.0:
+            cancel(f"expected bid decayed {expected_bid_decay_pct:.1f}%")
+        elif expected_bid_decay_pct <= -30.0:
+            hold(f"expected bid weakened {expected_bid_decay_pct:.1f}%")
+
+    if first_low_break and vwap_position == "BELOW_VWAP":
+        cancel("first low break below VWAP")
+    elif first_low_break:
+        hold("first low break")
+    elif vwap_position == "BELOW_VWAP":
+        hold("below VWAP")
+
+    if post_open_extension_pct is not None:
+        if gap_pct >= 8.0 and post_open_extension_pct > 1.0:
+            hold(f"gap>=8 and extension {post_open_extension_pct:.2f}%")
+        elif post_open_extension_pct > 1.5:
+            hold(f"post-open extension {post_open_extension_pct:.2f}%")
+
+    if rr_ratio is not None:
+        if rr < 0.8:
+            cancel(f"R:R {rr:.2f} below 0.80")
+        elif rr < 1.0:
+            hold(f"R:R {rr:.2f} below 1.00")
+
+    if gap_pct < 3.0 and not (strength >= 150.0 and bid >= 1.8 and rr >= 1.2):
+        hold("sub-3pct gap needs stronger strength/bid/RR")
+    elif 5.0 <= gap_pct < 8.0 and (strength < 130.0 or bid < 1.3 or rr < 1.0):
+        hold("5-8pct gap needs strength>=130 bid>=1.3 RR>=1.0")
+    elif 8.0 <= gap_pct < 12.0 and (strength < 150.0 or bid < 1.5 or rr < 1.2):
+        hold("8-12pct gap needs strength>=150 bid>=1.5 RR>=1.2")
+    elif gap_pct >= 12.0:
+        hold("gap>=12 overheat")
+
+    if early_open and not (strength >= 160.0 and bid >= 1.5):
+        hold("early open requires strength>=160 and bid>=1.5")
+
+    if execution_quality == "REJECT":
+        hold("execution quality reject shadow")
+
+    return policy, reasons
+
+
 async def get_expected_execution(rdb, stk_cd: str) -> dict:
     """Read pre-open expected execution data written from WS 0H."""
     try:
@@ -400,6 +493,8 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
         if not exp:
             stats["no_expected"] += 1
             continue
+        expected_age = _expected_age_ms(exp)
+        expected_bid_decay_pct = _expected_bid_decay_pct(exp)
 
         try:
             raw_exp_price = exp.get("exp_cntr_pric") or exp.get("10", "0")
@@ -417,7 +512,8 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
 
         strength, strength_source = await _get_strength_value(token, stk_cd, rdb=rdb)
         stats[f"strength_from_{strength_source}"] += 1
-        if strength < 120.0:
+        min_strength = 115.0 if 3.0 <= gap_pct < 5.0 else 120.0
+        if strength < min_strength:
             stats["strength_below_threshold"] += 1
             continue
 
@@ -496,8 +592,6 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
                 pass
 
         # 예상체결 매수잔량 감소율 (장전 buy_req 스냅샷 차분 — 현재는 None)
-        expected_bid_decay_pct: float | None = None
-
         # 장시작 후 예상가 대비 추가 상승폭 (현재가 vs 예상가)
         post_open_extension_pct: float | None = None
         cur_price = float(exp_price)
@@ -532,6 +626,24 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
         if eq_result["execution_quality"] == "REJECT" and signal_mode == "NORMAL":
             signal_mode = "SHADOW"
 
+        entry_policy, entry_policy_reasons = _s1_entry_policy(
+            gap_pct=gap_pct,
+            strength=strength,
+            bid_ratio=bid_ratio,
+            rr_ratio=tp_sl.rr_ratio,
+            early_open=early_open,
+            expected_age_ms=expected_age,
+            expected_bid_decay_pct=expected_bid_decay_pct,
+            post_open_extension_pct=post_open_extension_pct,
+            execution_quality=eq_result["execution_quality"],
+            first_low_break=bool(eq_result["first_low_break"]),
+            vwap_position=str(eq_result["vwap_position"]),
+        )
+        if entry_policy == "HOLD_RECHECK" and signal_mode == "NORMAL":
+            signal_mode = "HOLD_RECHECK"
+        elif entry_policy == "CANCEL":
+            signal_mode = "SHADOW"
+
         results.append(
             {
                 "stk_cd": stk_cd,
@@ -541,12 +653,15 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
                 "gap_pct": round(gap_pct, 2),
                 "gap_zone": ("overheat" if gap_overheat else "strong" if gap_strong else "normal"),
                 "signal_mode": signal_mode,
+                "s1_entry_policy": entry_policy,
+                "s1_entry_policy_reasons": entry_policy_reasons,
                 "early_open": early_open,
                 "cntr_strength": round(strength, 1),
                 "bid_ratio": round(bid_ratio, 2) if bid_ratio is not None else None,
                 "score": round(score, 2),
                 "entry_type": "시초가_시장가",
                 # S1 추격 품질 필드
+                "expected_age_ms": expected_age,
                 "expected_bid_decay_pct": expected_bid_decay_pct,
                 "post_open_extension_pct": post_open_extension_pct,
                 "first_3m_low": first_3m_low,

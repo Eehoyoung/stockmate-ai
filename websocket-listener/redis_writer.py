@@ -328,6 +328,7 @@ async def write_expected(rdb, values: dict, stk_cd: str, pg_pool=None):
             "exp_flu_rt": exp_flu_rt,
             "exp_cntr_qty": exp_cntr_qty,
             "exp_cntr_tm": exp_cntr_tm,
+            "source": "ws_0h",
             "updated_at_ms": now_ms,
         }
 

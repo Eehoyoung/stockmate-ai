@@ -613,6 +613,24 @@ def _s1_fallback_quality_failure(signal: dict, ctx: dict) -> str | None:
     return "S1 fallback quality failed: " + "; ".join(failures)
 
 
+def _s1_execution_policy_gate(signal: dict) -> tuple[str, str, str] | None:
+    if signal.get("strategy") != "S1_GAP_OPEN":
+        return None
+    policy = str(signal.get("s1_entry_policy") or "ENTER_CANDIDATE").upper()
+    reasons = signal.get("s1_entry_policy_reasons") or []
+    if isinstance(reasons, str):
+        reason_text = reasons
+    else:
+        reason_text = "; ".join(str(reason) for reason in reasons if reason)
+    reason_text = reason_text or policy
+
+    if policy == "CANCEL":
+        return ("CANCEL", f"S1 execution policy failed: {reason_text}", "S1_EXECUTION_POLICY")
+    if policy == "HOLD_RECHECK":
+        return ("HOLD", f"S1 waiting for opening confirmation: {reason_text}", "S1_HOLD_RECHECK")
+    return None
+
+
 def _s8_buy_zone_gate_failure(signal: dict) -> str | None:
     if signal.get("strategy") != "S8_GOLDEN_CROSS":
         return None
@@ -1658,12 +1676,14 @@ async def process_one(rdb, pg_pool=None) -> bool:
             rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
             s8_zone_gate_reason = _s8_buy_zone_gate_failure(dict(signal))
             s1_fallback_quality_reason = _s1_fallback_quality_failure(dict(signal), ctx)
+            s1_execution_policy = _s1_execution_policy_gate(dict(signal))
             hard_gate_reason = _hard_gate_failure(dict(signal), ctx)
             stale_reason = _freshness_cancel_reason(ctx, strategy)
         else:
             rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
             s8_zone_gate_reason = _s8_buy_zone_gate_failure(signal)
             s1_fallback_quality_reason = _s1_fallback_quality_failure(signal, ctx)
+            s1_execution_policy = _s1_execution_policy_gate(signal)
             hard_gate_reason = _hard_gate_failure(signal, ctx)
             stale_reason = _freshness_cancel_reason(ctx, strategy)
         failed_gates = _build_failed_gate_diagnostics(
@@ -1719,6 +1739,14 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 cancel_reason = s1_fallback_quality_reason
                 cancel_type = "S1_FALLBACK_QUALITY"
                 await _incr_pipeline(rdb, strategy, "cancel_s1_fallback_quality")
+            elif s1_execution_policy and s1_execution_policy[0] == "CANCEL":
+                policy_action, policy_reason, policy_type = s1_execution_policy
+                action = "CANCEL"
+                confidence = "LOW"
+                reason = policy_reason
+                cancel_reason = policy_reason
+                cancel_type = policy_type
+                await _incr_pipeline(rdb, strategy, "cancel_s1_execution_policy")
             elif hard_gate_reason:
                 action = "CANCEL"
                 confidence = "LOW"
@@ -1733,6 +1761,14 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 cancel_reason = stale_reason
                 cancel_type = "FRESHNESS_STALE"
                 await _incr_pipeline(rdb, strategy, "cancel_freshness")
+            elif s1_execution_policy:
+                policy_action, policy_reason, _policy_type = s1_execution_policy
+                action = policy_action
+                confidence = "LOW"
+                reason = policy_reason
+                cancel_reason = policy_reason
+                cancel_type = None
+                await _incr_pipeline(rdb, strategy, "hold_s1_execution_policy")
             else:
                 await _incr_pipeline(rdb, strategy, "rule_pass")
                 can_call = await check_daily_limit(rdb)

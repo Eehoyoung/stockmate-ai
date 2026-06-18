@@ -737,6 +737,36 @@ class TestQueueWorkerFailures:
         assert "S1 fallback quality failed" in reason
         assert signal["s1_fallback_entry_policy"] == "skip_fallback_candidate"
 
+    def test_s1_execution_policy_gate_routes_hold_recheck(self):
+        from queue_worker import _s1_execution_policy_gate
+
+        signal = {
+            "strategy": "S1_GAP_OPEN",
+            "s1_entry_policy": "HOLD_RECHECK",
+            "s1_entry_policy_reasons": ["expected bid weakened -35.0%"],
+        }
+
+        result = _s1_execution_policy_gate(signal)
+
+        assert result is not None
+        assert result[0] == "HOLD"
+        assert result[2] == "S1_HOLD_RECHECK"
+
+    def test_s1_execution_policy_gate_routes_cancel(self):
+        from queue_worker import _s1_execution_policy_gate
+
+        signal = {
+            "strategy": "S1_GAP_OPEN",
+            "s1_entry_policy": "CANCEL",
+            "s1_entry_policy_reasons": ["first low break below VWAP"],
+        }
+
+        result = _s1_execution_policy_gate(signal)
+
+        assert result is not None
+        assert result[0] == "CANCEL"
+        assert result[2] == "S1_EXECUTION_POLICY"
+
     def test_claude_tp_sl_recalculates_rr_in_published_payload(self):
         item = _signal(cur_prc=10000, tp1_price=10200, sl_price=9900, rr_ratio=0.9, min_rr_ratio=1.0)
         rdb = _make_rdb(json.dumps(item))
