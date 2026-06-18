@@ -55,6 +55,8 @@ from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_POOL_READ_LIMIT = int(os.getenv("S15_POOL_READ_LIMIT", "180"))
+_SCAN_LIMIT = int(os.getenv("S15_SCAN_LIMIT", "60"))
 
 
 async def scan_momentum_align(token: str, rdb=None) -> list:
@@ -68,9 +70,9 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
     candidates: list[str] = []
     if rdb:
         try:
-            kospi  = await rdb.lrange("candidates:s15:001", 0, 99)
-            kosdaq = await rdb.lrange("candidates:s15:101", 0, 99)
-            candidates = list(dict.fromkeys(kospi + kosdaq))[:30]
+            kospi  = await rdb.lrange("candidates:s15:001", 0, max(0, _POOL_READ_LIMIT - 1))
+            kosdaq = await rdb.lrange("candidates:s15:101", 0, max(0, _POOL_READ_LIMIT - 1))
+            candidates = list(dict.fromkeys(kospi + kosdaq))[:_SCAN_LIMIT]
         except Exception as e:
             logger.warning("[S15] Redis candidates 조회 실패: %s", e)
 

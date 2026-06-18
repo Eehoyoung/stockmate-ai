@@ -23,7 +23,7 @@ def _prog_map(size=20):
 
 
 class TestScanProgramBuy:
-    def test_default_keeps_existing_15_candidate_extra_check_limit(self, monkeypatch):
+    def test_default_uses_expanded_candidate_extra_check_limit(self, monkeypatch):
         from strategy_5_program_buy import scan_program_buy
 
         monkeypatch.delenv("S5_TWO_STAGE_ENABLED", raising=False)
@@ -36,9 +36,9 @@ class TestScanProgramBuy:
             result = _run(scan_program_buy("token"))
 
         assert result == []
-        assert check_extra.await_count == 15
+        assert check_extra.await_count == 20
 
-    def test_two_stage_flag_reduces_extra_check_limit(self, monkeypatch):
+    def test_two_stage_flag_uses_configured_module_limit(self, monkeypatch):
         from strategy_5_program_buy import scan_program_buy
 
         monkeypatch.setenv("S5_TWO_STAGE_ENABLED", "1")
@@ -52,4 +52,4 @@ class TestScanProgramBuy:
             result = _run(scan_program_buy("token"))
 
         assert result == []
-        assert check_extra.await_count == 8
+        assert check_extra.await_count == 15

@@ -40,6 +40,8 @@ _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 MIN_CNTR_STR = float(os.getenv("S13_MIN_CNTR_STR", "120.0"))  # 체결강도 하한
 BOX_PERIOD = 15     # 박스권 관찰 기간
 MAX_BOX_RANGE = 8.0  # 박스권 허용 폭 (%)
+_POOL_READ_LIMIT = int(os.getenv("S13_POOL_READ_LIMIT", "180"))
+_SCAN_LIMIT = int(os.getenv("S13_SCAN_LIMIT", "60"))
 
 
 async def _fetch_minute_chart_raw_s13(token: str, stk_cd: str, scope: int = 5) -> dict:
@@ -100,9 +102,9 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
     if rdb:
         try:
             # Java Orchestrator가 적재한 후보 풀 조회 (S8: 소폭상승 + S10: 신고가 근접 종목군)
-            kospi = await rdb.lrange("candidates:s13:001", 0, 99)
-            kosdaq = await rdb.lrange("candidates:s13:101", 0, 99)
-            candidates = list(dict.fromkeys(kospi + kosdaq))[:30] # 중복 제거 후 상위 30개 검사
+            kospi = await rdb.lrange("candidates:s13:001", 0, max(0, _POOL_READ_LIMIT - 1))
+            kosdaq = await rdb.lrange("candidates:s13:101", 0, max(0, _POOL_READ_LIMIT - 1))
+            candidates = list(dict.fromkeys(kospi + kosdaq))[:_SCAN_LIMIT]
         except Exception as e:
             logger.error(f"[S13] 후보 풀 로드 실패: {e}")
 

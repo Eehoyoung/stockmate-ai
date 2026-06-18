@@ -31,6 +31,8 @@ from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_POOL_READ_LIMIT = int(os.getenv("S9_POOL_READ_LIMIT", "180"))
+_SCAN_LIMIT = int(os.getenv("S9_SCAN_LIMIT", "60"))
 
 async def scan_pullback_swing(token: str, rdb=None) -> list:
     """
@@ -43,9 +45,9 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
     if rdb:
         try:
             logger.debug("[S9] using candidates:s9 strategy-owned pool for pullback scan")
-            kospi  = await rdb.lrange("candidates:s9:001", 0, 99)
-            kosdaq = await rdb.lrange("candidates:s9:101", 0, 99)
-            candidates = list(dict.fromkeys(kospi + kosdaq))[:30]
+            kospi  = await rdb.lrange("candidates:s9:001", 0, max(0, _POOL_READ_LIMIT - 1))
+            kosdaq = await rdb.lrange("candidates:s9:101", 0, max(0, _POOL_READ_LIMIT - 1))
+            candidates = list(dict.fromkeys(kospi + kosdaq))[:_SCAN_LIMIT]
         except Exception as e:
             logger.warning("[S9] Redis 후보 조회 실패: %s", e)
 

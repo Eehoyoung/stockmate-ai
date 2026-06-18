@@ -23,8 +23,8 @@ KST    = timezone(timedelta(hours=9))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
 _S5_CACHE_TTL = int(os.getenv("S5_SHARED_CACHE_TTL", "60"))
-_S5_OVERLAP_LIMIT = int(os.getenv("S5_OVERLAP_LIMIT", "15"))
-_S5_TWO_STAGE_LIMIT = int(os.getenv("S5_TWO_STAGE_LIMIT", "8"))
+_S5_OVERLAP_LIMIT = int(os.getenv("S5_OVERLAP_LIMIT", "25"))
+_S5_TWO_STAGE_LIMIT = int(os.getenv("S5_TWO_STAGE_LIMIT", "15"))
 
 async def fetch_progra_netbuy(token: str, market: str, rdb=None) -> dict:
     """ka90003 프로그램순매수상위50 조회 (연속조회 포함)"""

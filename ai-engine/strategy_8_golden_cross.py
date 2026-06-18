@@ -33,6 +33,8 @@ from utils import safe_float as clean_num
 
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_POOL_READ_LIMIT = int(os.getenv("S8_POOL_READ_LIMIT", "180"))
+_SCAN_LIMIT = int(os.getenv("S8_SCAN_LIMIT", "60"))
 
 async def scan_golden_cross(token: str, rdb=None) -> list:
     """
@@ -43,9 +45,9 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
     if rdb:
         try:
             # S8 후보 풀 (Orchestrator가 미리 적재한 candidates:s8)
-            kospi  = await rdb.lrange("candidates:s8:001", 0, 99)
-            kosdaq = await rdb.lrange("candidates:s8:101", 0, 99)
-            candidates = list(dict.fromkeys(kospi + kosdaq))[:30]
+            kospi  = await rdb.lrange("candidates:s8:001", 0, max(0, _POOL_READ_LIMIT - 1))
+            kosdaq = await rdb.lrange("candidates:s8:101", 0, max(0, _POOL_READ_LIMIT - 1))
+            candidates = list(dict.fromkeys(kospi + kosdaq))[:_SCAN_LIMIT]
         except Exception as e:
             logger.warning("[S8] Redis 후보 조회 실패: %s", e)
 

@@ -29,6 +29,8 @@ S3S5_STATUS_TTL_SEC = int(os.getenv("S3S5_STATUS_TTL_SEC", "1800"))
 # 품질 필터 / watchlist ZSET 기능 플래그
 ENABLE_CANDIDATE_QUALITY_FILTER = os.getenv("ENABLE_CANDIDATE_QUALITY_FILTER", "false").lower() in {"1", "true", "yes"}
 ENABLE_WATCHLIST_ZSET = os.getenv("ENABLE_WATCHLIST_ZSET", "true").lower() in {"1", "true", "yes"}
+CANDIDATE_MIN_MARKET_CAP_EOK = float(os.getenv("CANDIDATE_MIN_MARKET_CAP_EOK", "800"))
+CANDIDATE_MIN_TRDE_AMT = float(os.getenv("CANDIDATE_MIN_TRDE_AMT", "500000"))
 
 # 섹터 과열 임계치 (같은 섹터 후보가 이 수 이상이면 하향)
 _SECTOR_HEAT_MAX = int(os.getenv("CANDIDATE_SECTOR_HEAT_MAX", "10"))
@@ -47,20 +49,20 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
 
 CANDIDATE_LIMIT_S1 = _int_env("CANDIDATE_LIMIT_S1", 100)
 CANDIDATE_LIMIT_S2 = _int_env("CANDIDATE_LIMIT_S2", 50)
-CANDIDATE_LIMIT_S3 = _int_env("CANDIDATE_LIMIT_S3", 100)
+CANDIDATE_LIMIT_S3 = _int_env("CANDIDATE_LIMIT_S3", 150)
 CANDIDATE_LIMIT_S4 = _int_env("CANDIDATE_LIMIT_S4", 100)
-CANDIDATE_LIMIT_S5 = _int_env("CANDIDATE_LIMIT_S5", 100)
+CANDIDATE_LIMIT_S5 = _int_env("CANDIDATE_LIMIT_S5", 150)
 CANDIDATE_LIMIT_S6 = _int_env("CANDIDATE_LIMIT_S6", 150)
 CANDIDATE_LIMIT_S7 = _int_env("CANDIDATE_LIMIT_S7", 100)
-CANDIDATE_LIMIT_S8 = _int_env("CANDIDATE_LIMIT_S8", 150)
-CANDIDATE_LIMIT_S9 = _int_env("CANDIDATE_LIMIT_S9", 150)
-CANDIDATE_LIMIT_S10 = _int_env("CANDIDATE_LIMIT_S10", 100)
-CANDIDATE_LIMIT_S11 = _int_env("CANDIDATE_LIMIT_S11", 80)
+CANDIDATE_LIMIT_S8 = _int_env("CANDIDATE_LIMIT_S8", 220)
+CANDIDATE_LIMIT_S9 = _int_env("CANDIDATE_LIMIT_S9", 220)
+CANDIDATE_LIMIT_S10 = _int_env("CANDIDATE_LIMIT_S10", 150)
+CANDIDATE_LIMIT_S11 = _int_env("CANDIDATE_LIMIT_S11", 120)
 CANDIDATE_LIMIT_S12 = _int_env("CANDIDATE_LIMIT_S12", 50)
-CANDIDATE_LIMIT_S13 = _int_env("CANDIDATE_LIMIT_S13", 100)
+CANDIDATE_LIMIT_S13 = _int_env("CANDIDATE_LIMIT_S13", 150)
 CANDIDATE_LIMIT_S14 = _int_env("CANDIDATE_LIMIT_S14", 100)
-CANDIDATE_LIMIT_S15 = _int_env("CANDIDATE_LIMIT_S15", 80)
-CANDIDATE_WATCHLIST_PRIORITY_LIMIT = _int_env("CANDIDATE_WATCHLIST_PRIORITY_LIMIT", 200)
+CANDIDATE_LIMIT_S15 = _int_env("CANDIDATE_LIMIT_S15", 150)
+CANDIDATE_WATCHLIST_PRIORITY_LIMIT = _int_env("CANDIDATE_WATCHLIST_PRIORITY_LIMIT", 300)
 
 
 def now_kst_str() -> str:
@@ -302,6 +304,15 @@ def _assess_candidate_quality(stk_cd: str, raw_data: dict, strategy_id: str) -> 
     # 3. 유동성 점수 계산 (거래대금/거래량 기반)
     trde_amt = _clean(raw_data.get("trde_amt", raw_data.get("trde_prica", 0)))
     trde_qty = _clean(raw_data.get("trde_qty", 0))
+    market_cap_eok = _clean(
+        raw_data.get("market_cap_eok")
+        or raw_data.get("market_cap")
+        or raw_data.get("mkt_cap")
+        or raw_data.get("stk_mkt_cap")
+        or 0
+    )
+    if market_cap_eok > 10_000_000:
+        market_cap_eok = market_cap_eok / 100_000_000
     if trde_amt >= 10_000_000:  # 100억 이상
         liquidity_score = 90
     elif trde_amt >= 5_000_000:  # 50억 이상
@@ -318,14 +329,24 @@ def _assess_candidate_quality(stk_cd: str, raw_data: dict, strategy_id: str) -> 
         liquidity_score = 50  # 데이터 없음 — 중립
 
     # 거래대금이 명시적으로 낮은 경우 하향
-    if trde_amt > 0 and trde_amt < 500_000:  # 5억 미만
+    if trde_amt > 0 and trde_amt < CANDIDATE_MIN_TRDE_AMT:
         reject_reasons.append("low_liquidity")
 
     # 4. 스프레드 점수 (데이터 없으면 중립 50)
     spread_score = 50
 
     # 5. 시가총액 점수 (데이터 없으면 중립 50)
-    market_cap_score = 50
+    if market_cap_eok <= 0:
+        market_cap_score = 50
+    elif market_cap_eok >= 3000:
+        market_cap_score = 90
+    elif market_cap_eok >= CANDIDATE_MIN_MARKET_CAP_EOK:
+        market_cap_score = 70
+    elif market_cap_eok >= CANDIDATE_MIN_MARKET_CAP_EOK * 0.75:
+        market_cap_score = 50
+    else:
+        market_cap_score = 30
+        reject_reasons.append("low_market_cap")
 
     # 6. 섹터 과열 점수 (기본 100 — 외부에서 섹터 카운트 적용 시 하향)
     sector_heat_score = 100
@@ -353,6 +374,9 @@ def _assess_candidate_quality(stk_cd: str, raw_data: dict, strategy_id: str) -> 
         "liquidity_score": liquidity_score,
         "spread_score": spread_score,
         "market_cap_score": market_cap_score,
+        "market_cap_eok": round(market_cap_eok, 2) if market_cap_eok else 0,
+        "trde_amt": round(trde_amt, 2) if trde_amt else 0,
+        "trde_qty": round(trde_qty, 2) if trde_qty else 0,
         "status_filter_pass": status_filter_pass,
         "sector_heat_score": sector_heat_score,
         "source_confluence": source_confluence,
@@ -432,6 +456,9 @@ async def _persist_candidate_quality_batch(
             "liquidity_score": str(quality["liquidity_score"]),
             "spread_score": str(quality["spread_score"]),
             "market_cap_score": str(quality["market_cap_score"]),
+            "market_cap_eok": str(quality["market_cap_eok"]),
+            "trde_amt": str(quality["trde_amt"]),
+            "trde_qty": str(quality["trde_qty"]),
             "status_filter_pass": str(quality["status_filter_pass"]),
             "sector_heat_score": str(quality["sector_heat_score"]),
             "source_confluence": str(quality["source_confluence"]),
