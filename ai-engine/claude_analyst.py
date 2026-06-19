@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import anthropic
@@ -61,6 +62,25 @@ def _get_client() -> anthropic.AsyncAnthropic:
     return _claude_client
 
 
+def _loads_json_with_repairs(raw: str) -> dict[str, Any]:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    repaired = raw
+    # Claude occasionally returns near-valid JSON with a missing comma between
+    # top-level fields. Repair only field-boundary cases, then let json.loads
+    # remain the final validator.
+    repaired = re.sub(
+        r'(?<=[}\]"\d])\s*\n\s*(?="(?:action|confidence|reasons|risk_factors|action_guide|tp_sl|summary)"\s*:)',
+        ',\n',
+        repaired,
+    )
+    repaired = re.sub(r',\s*([}\]])', r'\1', repaired)
+    return json.loads(repaired)
+
+
 def _extract_json_block(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -68,12 +88,12 @@ def _extract_json_block(text: str) -> dict[str, Any]:
         cleaned = "\n".join(lines).strip()
 
     if cleaned.startswith("{") and cleaned.endswith("}"):
-        return json.loads(cleaned)
+        return _loads_json_with_repairs(cleaned)
 
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start >= 0 and end > start:
-        return json.loads(cleaned[start:end + 1])
+        return _loads_json_with_repairs(cleaned[start:end + 1])
 
     raise json.JSONDecodeError("No JSON object found", cleaned, 0)
 

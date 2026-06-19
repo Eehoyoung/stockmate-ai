@@ -164,10 +164,11 @@ async function analyzeStockWithClaude(stkCd) {
  */
 async function scoreStockFull(stkCd, enableAi = true) {
     const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://ai-engine:8082';
+    const timeoutMs = Number(process.env.SCORE_COMMAND_TIMEOUT_MS ?? 95_000);
     const aiParam = enableAi ? 'true' : 'false';
     const { data } = await axios.get(
         `${AI_ENGINE_URL}/score/${stkCd}?ai=${aiParam}`,
-        { timeout: 60_000 },   // AI 분석 포함 최대 60초
+        { timeout: timeoutMs },
     );
     return data;
 }
