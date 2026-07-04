@@ -197,3 +197,28 @@ class RedisWriterTests(IsolatedAsyncioTestCase):
         self.assertEqual(rdb.ltrims, [("ws:strength:005930", 0, 9)])
         self.assertEqual(rdb.lranges, [])
         self.assertEqual(rdb.hashes["ws:strength_meta:005930"]["avg_5"], "105.0")
+
+    async def test_program_writer_persists_snapshot_and_history(self):
+        rdb = FakeRedis()
+
+        await redis_writer.write_program(rdb, {
+            "10": "+75000",
+            "12": "+1.23",
+            "13": "100000",
+            "20": "101530",
+            "202": "3000",
+            "204": "220000",
+            "206": "5000",
+            "208": "380000",
+            "210": "2000",
+            "211": "-500",
+            "212": "160000",
+            "213": "-40000",
+        }, "A005930")
+
+        snapshot = rdb.hashes["ws:program:005930"]
+        self.assertEqual(snapshot["program_net_buy_amt"], "160000")
+        self.assertEqual(snapshot["program_net_buy_amt_chg"], "-40000")
+        self.assertEqual(snapshot["source"], "ws_0w")
+        self.assertIn(("ltrim", "ws:program_history:005930", 0, 19), rdb.calls)
+        self.assertIn(("expire", "ws:program_history:005930", 900), rdb.calls)

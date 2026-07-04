@@ -375,6 +375,46 @@ async def write_hoga(rdb, values: dict, stk_cd: str, pg_pool=None):
         logger.warning("[Redis] hoga write failed [%s]: %s", stk_cd, e)
 
 
+async def write_program(rdb, values: dict, stk_cd: str, pg_pool=None):
+    stk_cd = _normalize_stock_code(stk_cd)
+    if not stk_cd:
+        return
+    key = f"ws:program:{stk_cd}"
+    history_key = f"ws:program_history:{stk_cd}"
+    try:
+        now_ms_int = _now_ms()
+        now_ms = str(now_ms_int)
+        mapping = {
+            "cur_prc": values.get("10", ""),
+            "pred_pre_sig": values.get("25", ""),
+            "pred_pre": values.get("11", ""),
+            "flu_rt": values.get("12", ""),
+            "acc_trde_qty": values.get("13", ""),
+            "cntr_tm": values.get("20", ""),
+            "program_sell_qty": values.get("202", ""),
+            "program_sell_amt": values.get("204", ""),
+            "program_buy_qty": values.get("206", ""),
+            "program_buy_amt": values.get("208", ""),
+            "program_net_buy_qty": values.get("210", ""),
+            "program_net_buy_qty_chg": values.get("211", ""),
+            "program_net_buy_amt": values.get("212", ""),
+            "program_net_buy_amt_chg": values.get("213", ""),
+            "source": "ws_0w",
+            "updated_at_ms": now_ms,
+        }
+        await _write_hash(rdb, key, mapping, 600, now_ms_int)
+
+        history_item = json.dumps(mapping, ensure_ascii=False, sort_keys=True)
+        commands = [("lpush", (history_key, history_item))]
+        if _should_ltrim(history_key, now_ms_int):
+            commands.append(("ltrim", (history_key, 0, 19)))
+        if _should_expire(history_key, now_ms_int):
+            commands.append(("expire", (history_key, 900)))
+        await _execute_redis_commands(rdb, commands)
+    except Exception as e:
+        logger.warning("[Redis] program write failed [%s]: %s", stk_cd, e)
+
+
 async def write_vi(rdb, values: dict, stk_cd: str, pg_pool=None):
     real_stk_cd = _normalize_stock_code(values.get("9001", stk_cd))
     if not real_stk_cd:

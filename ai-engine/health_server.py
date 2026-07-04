@@ -123,12 +123,31 @@ async def run_health_server(port: int, rdb) -> None:
             return web.json_response({"error": "6-digit stock code required"}, status=400)
 
         enable_ai = request.rel_url.query.get("ai", "true").lower() != "false"
+        refresh = request.rel_url.query.get("refresh", "false").lower() in {"1", "true", "yes", "on"}
+        cache_ttl = int(os.getenv("SCORE_COMMAND_CACHE_TTL_SEC", "60"))
+        cache_key = f"score:command:{stk_cd}:ai:{str(enable_ai).lower()}"
         try:
-            score_result, claude_result = await asyncio.gather(
-                score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai),
-                analyze_stock_for_user(rdb, stk_cd),
-                return_exceptions=True,
-            )
+            if not refresh and cache_ttl > 0:
+                cached = await rdb.get(cache_key)
+                if cached:
+                    if isinstance(cached, bytes):
+                        cached = cached.decode("utf-8")
+                    data = json.loads(cached)
+                    data["used_cache"] = True
+                    return web.json_response(
+                        data,
+                        dumps=lambda o: json.dumps(o, ensure_ascii=False, default=str),
+                    )
+
+            if enable_ai:
+                score_result, claude_result = await asyncio.gather(
+                    score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai),
+                    analyze_stock_for_user(rdb, stk_cd),
+                    return_exceptions=True,
+                )
+            else:
+                score_result = await score_stock_strategies(stk_cd, rdb, enable_ai=False)
+                claude_result = {}
             if isinstance(score_result, Exception):
                 logger.error("[Health] /score/%s score error: %s", stk_cd, score_result)
                 score_result = {"stk_cd": stk_cd, "results": [], "no_match": True, "error": str(score_result)}
@@ -136,25 +155,39 @@ async def run_health_server(port: int, rdb) -> None:
                 logger.error("[Health] /score/%s claude error: %s", stk_cd, claude_result)
                 claude_result = {"error": str(claude_result)}
 
-            score_result["claude_full"] = {
-                "action":            claude_result.get("action"),
-                "confidence":        claude_result.get("confidence"),
-                "reasons":           claude_result.get("reasons", []),
-                "risk_factors":      claude_result.get("risk_factors", []),
-                "action_guide":      claude_result.get("action_guide", []),
-                "tp_sl":             claude_result.get("tp_sl"),
-                "summary":           claude_result.get("summary"),
-                "claude_analysis":   claude_result.get("claude_analysis"),
-                "daily_indicators":  claude_result.get("daily_indicators"),
-                "minute_indicators": claude_result.get("minute_indicators"),
-                "strategies_in_pool":claude_result.get("strategies_in_pool", []),
-                "cur_prc":           claude_result.get("cur_prc"),
-                "flu_rt":            claude_result.get("flu_rt"),
-                "cntr_str":          claude_result.get("cntr_str"),
-                "hoga":              claude_result.get("hoga"),
-                "stk_nm":            claude_result.get("stk_nm"),
-                "error":             claude_result.get("error"),
-            }
+            if enable_ai:
+                score_result["claude_full"] = {
+                    "action":            claude_result.get("action"),
+                    "confidence":        claude_result.get("confidence"),
+                    "reasons":           claude_result.get("reasons", []),
+                    "risk_factors":      claude_result.get("risk_factors", []),
+                    "action_guide":      claude_result.get("action_guide", []),
+                    "tp_sl":             claude_result.get("tp_sl"),
+                    "summary":           claude_result.get("summary"),
+                    "claude_analysis":   claude_result.get("claude_analysis"),
+                    "daily_indicators":  claude_result.get("daily_indicators"),
+                    "minute_indicators": claude_result.get("minute_indicators"),
+                    "strategies_in_pool":claude_result.get("strategies_in_pool", []),
+                    "cur_prc":           claude_result.get("cur_prc"),
+                    "flu_rt":            claude_result.get("flu_rt"),
+                    "cntr_str":          claude_result.get("cntr_str"),
+                    "hoga":              claude_result.get("hoga"),
+                    "stk_nm":            claude_result.get("stk_nm"),
+                    "error":             claude_result.get("error"),
+                }
+            else:
+                score_result["claude_full"] = {"error": "skipped_fast_mode"}
+            score_result["score_mode"] = "deep" if enable_ai else "fast"
+            score_result["used_cache"] = False
+            if cache_ttl > 0 and not score_result.get("error"):
+                try:
+                    await rdb.set(
+                        cache_key,
+                        json.dumps(score_result, ensure_ascii=False, default=str),
+                        ex=cache_ttl,
+                    )
+                except Exception as cache_error:
+                    logger.debug("[Health] /score/%s cache write failed: %s", stk_cd, cache_error)
             return web.json_response(
                 score_result,
                 dumps=lambda o: json.dumps(o, ensure_ascii=False, default=str),
@@ -167,8 +200,10 @@ async def run_health_server(port: int, rdb) -> None:
         from news_scheduler import build_live_brief
 
         slot = request.rel_url.query.get("slot")
+        refresh = request.rel_url.query.get("refresh", "false").lower() in {"1", "true", "yes", "on"}
+        allow_ai = request.rel_url.query.get("ai", "false").lower() in {"1", "true", "yes", "on", "deep"}
         try:
-            result = await build_live_brief(rdb, slot_name=slot, publish_queue=False)
+            result = await build_live_brief(rdb, slot_name=slot, publish_queue=False, force_refresh=refresh, allow_ai=allow_ai)
             return web.json_response(
                 result,
                 dumps=lambda o: json.dumps(o, ensure_ascii=False, default=str),

@@ -164,6 +164,22 @@ class TestMessageParsingErrors:
             await ws_client._handle_message(real_msg, mock_ws, mock_rdb)
             mock_record.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_subscription_ack_updates_status_without_recording_real_message(self):
+        import ws_client, health_server
+
+        health_server._subscription_ack = {}
+        mock_rdb = AsyncMock()
+        mock_ws = AsyncMock()
+        msg = '{"trnm":"REG","grp_no":"1","return_code":"1","return_msg":"bad request"}'
+
+        with patch("ws_client.record_message_received") as mock_record:
+            await ws_client._handle_message(msg, mock_ws, mock_rdb)
+
+        mock_record.assert_not_called()
+        assert health_server._subscription_ack["1"]["return_code"] == "1"
+        mock_rdb.hset.assert_awaited_once()
+
 
 # ──────────────────────────────────────────────────────────────
 # TC-FR-15~16: health_server 헬스 응답 상태 판단

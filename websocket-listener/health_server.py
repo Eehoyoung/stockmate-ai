@@ -24,6 +24,7 @@ _disconnect_reason: str        = ""        # 예: "ConnectionClosed:1001", "OSEr
 _last_message_time: float | None = None    # monotonic timestamp
 _start_time: float | None      = None
 _current_session: str | None   = None
+_subscription_ack: dict[str, dict] = {}
 
 # Redis 인스턴스 참조 (main.py 가 주입)
 _rdb = None
@@ -77,6 +78,18 @@ def set_ws_session(session: str | None) -> None:
     """Record the current market session for optional health output."""
     global _current_session
     _current_session = session
+
+
+def record_subscription_ack(trnm: str, grp_no: str | None, return_code: str, return_msg: str = "") -> None:
+    """Record the latest Kiwoom REG/REMOVE acknowledgement per group."""
+    key = str(grp_no or "unknown")
+    _subscription_ack[key] = {
+        "trnm": trnm,
+        "grp_no": key,
+        "return_code": str(return_code),
+        "return_msg": return_msg or "",
+        "updated_at": time.monotonic(),
+    }
 
 
 def set_redis(rdb) -> None:
@@ -152,6 +165,17 @@ async def _health_handler(request):
         ws_info["disconnect_reason"] = _disconnect_reason
     if EXPOSE_WS_SESSION and _current_session:
         ws_info["session"] = _current_session
+    if _subscription_ack:
+        ws_info["subscription_ack"] = {
+            key: {
+                "trnm": value.get("trnm"),
+                "grp_no": value.get("grp_no"),
+                "return_code": value.get("return_code"),
+                "return_msg": value.get("return_msg") or None,
+                "age_sec": _mono_to_ago_sec(value.get("updated_at")),
+            }
+            for key, value in _subscription_ack.items()
+        }
 
     # 전체 상태 판단
     # UP       : WS 연결 + Redis OK

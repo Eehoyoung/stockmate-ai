@@ -36,9 +36,14 @@ from datetime import datetime, time as dtime, timedelta, timezone
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from health_server import set_ws_connected, set_ws_session, record_message_received
+from health_server import (
+    set_ws_connected,
+    set_ws_session,
+    record_message_received,
+    record_subscription_ack,
+)
 import market_session
-from redis_writer import write_tick, write_expected, write_hoga, write_vi, write_heartbeat
+from redis_writer import write_tick, write_expected, write_hoga, write_program, write_vi, write_heartbeat
 from token_loader import load_token
 
 KST = timezone(timedelta(hours=9))
@@ -112,6 +117,40 @@ MIN_CONNECTED_SEC    = 30     # 이 미만으로 연결이 유지되면 "즉시 
 WS_SILENCE_TIMEOUT_SEC = 90  # 이 초 이상 메시지 없으면 dead connection 판정 후 강제 종료
 
 
+WS_CONTROL_MIN_INTERVAL_MS = int(os.getenv("WS_CONTROL_MIN_INTERVAL_MS", "500"))
+WS_CONTROL_BACKOFF_SEC = float(os.getenv("WS_CONTROL_BACKOFF_SEC", "30"))
+WS_GROUP_MAX_ITEMS = int(os.getenv("WS_GROUP_MAX_ITEMS", "200"))
+
+_ws_control_lock = asyncio.Lock()
+_ws_control_last_sent_at = 0.0
+_ws_control_backoff_until = 0.0
+
+
+async def _send_ws_control(ws, payload: dict):
+    """Throttle Kiwoom REG/REMOVE control packets across concurrent tasks."""
+    global _ws_control_last_sent_at
+    async with _ws_control_lock:
+        now = time.monotonic()
+        if _ws_control_backoff_until > now:
+            await asyncio.sleep(_ws_control_backoff_until - now)
+            now = time.monotonic()
+        min_interval = max(0.0, WS_CONTROL_MIN_INTERVAL_MS / 1000.0)
+        wait = min_interval - (now - _ws_control_last_sent_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        await ws.send(json.dumps(payload))
+        _ws_control_last_sent_at = time.monotonic()
+
+
+def _backoff_ws_control(reason: str):
+    """Back off future REG/REMOVE sends after Kiwoom request-limit ACKs."""
+    global _ws_control_backoff_until
+    until = time.monotonic() + WS_CONTROL_BACKOFF_SEC
+    if until > _ws_control_backoff_until:
+        _ws_control_backoff_until = until
+        logger.warning("[WS] control backoff %.1fs reason=%s", WS_CONTROL_BACKOFF_SEC, reason)
+
+
 async def _replace_subscription_set(rdb, key: str, codes: list[str]):
     """Persist actual subscribed codes so monitors can use the real WS scope."""
     try:
@@ -141,6 +180,49 @@ async def _remove_subscription_code(rdb, key: str, code: str):
         await rdb.srem(key, code)
     except Exception as e:
         logger.debug("[WS] subscription set remove failed %s %s: %s", key, code, e)
+
+
+async def _get_subscription_codes(rdb, ttype: str) -> list[str]:
+    """Return the locally tracked codes for a realtime type."""
+    try:
+        raw = await rdb.smembers(f"ws:subscribed:{ttype}")
+    except Exception as e:
+        logger.debug("[WS] subscription set read failed %s: %s", ttype, e)
+        return []
+    codes = [
+        c.decode("utf-8") if isinstance(c, bytes) else c
+        for c in (raw or [])
+        if c is not None
+    ]
+    return [str(c) for c in codes]
+
+
+async def _send_remove(ws, grp_no: str, ttype: str, items: list[str]):
+    """Send Kiwoom REMOVE only for concrete tracked items."""
+    uniq = [code for code in dict.fromkeys(items) if code is not None]
+    if not uniq:
+        return False
+    for i in range(0, len(uniq), 100):
+        batch = uniq[i:i + 100]
+        payload = {"trnm": "REMOVE", "grp_no": grp_no, "data": [{"item": batch, "type": [ttype]}]}
+        await _send_ws_control(ws, payload)
+    return True
+
+
+async def _clear_subscription_type(ws, rdb, grp_no: str, ttype: str):
+    """Idempotently release one realtime type using local subscription state."""
+    codes = await _get_subscription_codes(rdb, ttype)
+    sent = await _send_remove(ws, grp_no, ttype, codes)
+    await _replace_subscription_set(rdb, f"ws:subscribed:{ttype}", [])
+    if sent:
+        logger.info("[WS] subscription cleared grp=%s type=%s count=%d", grp_no, ttype, len(codes))
+    return sent
+
+
+async def _reset_local_subscription_sets(rdb):
+    """Clear Redis subscription tracking for a freshly established WS connection."""
+    for ttype in ("0B", "0H", "0D", "0w", "1h"):
+        await _replace_subscription_set(rdb, f"ws:subscribed:{ttype}", [])
 
 
 async def _get_candidates(rdb, market: str = "001") -> list[str]:
@@ -246,6 +328,7 @@ def _groups_for_session(session: str, all_cands: list[str], top100: list[str]) -
             ("1", "0B", all_cands),
             ("2", "0H", top100),
             ("4", "0D", top100),
+            ("5", "0w", top100),
             ("3", "1h", [""]),
         ]
     if session == "opening_auction":
@@ -253,12 +336,14 @@ def _groups_for_session(session: str, all_cands: list[str], top100: list[str]) -
             ("1", "0B", all_cands),
             ("2", "0H", top100),
             ("4", "0D", top100),
+            ("5", "0w", top100),
             ("3", "1h", [""]),
         ]
     if session in {"main_market", "closing_auction", "after_preopen", "after_market"}:
         return [
             ("1", "0B", all_cands),
             ("4", "0D", top100),
+            ("5", "0w", top100),
             ("3", "1h", [""]),
         ]
     return []
@@ -270,8 +355,7 @@ def _is_expected_silent_close(session: str, close_code) -> bool:
 
 async def _send_unreg(ws, grp_no: str, ttype: str):
     """단일 그룹/타입 구독 해제 전송"""
-    payload = {"trnm": "UNREG", "grp_no": grp_no, "data": [{"type": [ttype]}]}
-    await ws.send(json.dumps(payload))
+    await _send_remove(ws, grp_no, ttype, [])
 
 
 async def _subscribe_by_phase(ws, rdb, phase: str):
@@ -288,15 +372,12 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     groups = _groups_for_session(session, all_cands, top100)
 
     if not groups:
-        for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("3", "1h"), ("4", "0D")]:
+        for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("3", "1h"), ("4", "0D"), ("5", "0w")]:
             try:
-                await _send_unreg(ws, grp_no, ttype)
+                await _clear_subscription_type(ws, rdb, grp_no, ttype)
                 await asyncio.sleep(0.1)
             except Exception:
                 pass
-        await _replace_subscription_set(rdb, "ws:subscribed:0B", [])
-        await _replace_subscription_set(rdb, "ws:subscribed:0H", [])
-        await _replace_subscription_set(rdb, "ws:subscribed:0D", [])
         logger.info("[WS] session=%s, all subscriptions cleared", session)
         return
 
@@ -304,22 +385,23 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     for grp_no, ttype, items in groups:
         if not items:
             continue
+        items = list(dict.fromkeys(items))[:WS_GROUP_MAX_ITEMS]
         for i in range(0, len(items), 100):
             batch = items[i:i + 100]
             payload = {
                 "trnm":    "REG",
                 "grp_no":  grp_no,
-                "refresh": "1",
+                "refresh": "0" if i == 0 else "1",
                 "data":    [{"item": batch, "type": [ttype]}],
             }
-            await ws.send(json.dumps(payload))
+            await _send_ws_control(ws, payload)
             logger.info("[WS] 구독 grp=%s type=%s %d개", grp_no, ttype, len(batch))
             await asyncio.sleep(0.3)
 
     # 0H is only valid through opening_auction; make later sessions explicitly release it.
     if phase in {"main_market", "closing_auction", "after_preopen", "after_market"}:
         try:
-            await _send_unreg(ws, "2", "0H")
+            removed_0h = await _clear_subscription_type(ws, rdb, "2", "0H")
             logger.info("[WS] 정규장 전환 – 예상체결(0H) 구독 해제")
         except Exception:
             pass
@@ -328,6 +410,8 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     await _replace_subscription_set(rdb, "ws:subscribed:0B", subscribed_map.get("0B", []))
     await _replace_subscription_set(rdb, "ws:subscribed:0H", subscribed_map.get("0H", []))
     await _replace_subscription_set(rdb, "ws:subscribed:0D", subscribed_map.get("0D", []))
+    await _replace_subscription_set(rdb, "ws:subscribed:0w", subscribed_map.get("0w", []))
+    await _replace_subscription_set(rdb, "ws:subscribed:1h", subscribed_map.get("1h", []))
     logger.info("[WS] 구독 설정 완료 (phase=%s, 후보=%d개)", phase, len(all_cands))
 
 
@@ -378,6 +462,31 @@ async def _handle_message(msg_str: str, ws, rdb, pg_pool=None):
             return
 
         # 키움 실시간 데이터는 trnm="REAL", data 배열 안에 type/item/values 포함
+        if trnm in {"REG", "REMOVE"} and "return_code" in msg:
+            rc = str(msg.get("return_code", ""))
+            grp_no = str(msg.get("grp_no", ""))
+            return_msg = str(msg.get("return_msg", ""))
+            record_subscription_ack(trnm, grp_no, rc, return_msg)
+            status_key = f"status:ws_subscription_ack:{grp_no or 'unknown'}"
+            try:
+                await rdb.hset(status_key, mapping={
+                    "trnm": trnm,
+                    "grp_no": grp_no,
+                    "return_code": rc,
+                    "return_msg": return_msg,
+                    "updated_at_ms": str(int(time.time() * 1000)),
+                })
+                await rdb.expire(status_key, 600)
+            except Exception:
+                pass
+            if rc != "0":
+                if rc == "105110":
+                    _backoff_ws_control(f"{trnm}:{rc}")
+                logger.warning("[WS] %s ACK failed grp=%s return_code=%s msg=%s", trnm, grp_no, rc, return_msg)
+            else:
+                logger.debug("[WS] %s ACK ok grp=%s", trnm, grp_no)
+            return
+
         if trnm == "REAL":
             data_list = msg.get("data") or []
             for entry in data_list:
@@ -388,6 +497,7 @@ async def _handle_message(msg_str: str, ws, rdb, pg_pool=None):
                     case "0B": await write_tick(rdb, values, stk_cd, pg_pool)
                     case "0H": await write_expected(rdb, values, stk_cd, pg_pool)
                     case "0D": await write_hoga(rdb, values, stk_cd, pg_pool)
+                    case "0w": await write_program(rdb, values, stk_cd, pg_pool)
                     case "1h": await write_vi(rdb, values, stk_cd, pg_pool)
             record_message_received()
             return
@@ -401,7 +511,7 @@ async def _handle_message(msg_str: str, ws, rdb, pg_pool=None):
 async def _watchlist_poller(ws, rdb, subscribed_set: set):
     """
     candidates:watchlist (Redis Set) 을 30초마다 폴링하여
-    신규 종목은 REG, 제거 종목은 UNREG 전송.
+    신규 종목은 REG, 제거 종목은 REMOVE 전송.
     """
     while True:
         try:
@@ -426,19 +536,27 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                     groups.append(("2", "0H"))
                 if "0D" in active_types and code in topset:
                     groups.append(("4", "0D"))
+                if "0w" in active_types and code in topset:
+                    groups.append(("5", "0w"))
                 for grp_no, ttype in groups:
-                    payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "0",
+                    subscribed_codes = set(await _get_subscription_codes(rdb, ttype))
+                    if code in subscribed_codes:
+                        continue
+                    if len(subscribed_codes) >= WS_GROUP_MAX_ITEMS:
+                        logger.warning("[WS] dynamic REG skipped grp=%s type=%s code=%s: group limit reached", grp_no, ttype, code)
+                        continue
+                    payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "1",
                                "data": [{"item": [code], "type": [ttype]}]}
-                    await ws.send(json.dumps(payload))
+                    await _send_ws_control(ws, payload)
                     await _add_subscription_code(rdb, f"ws:subscribed:{ttype}", code)
                 subscribed_set.add(code)
                 logger.info("[WS] 동적 구독 추가 [%s]", code)
 
             for code in removed_codes:
-                for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("4", "0D")]:
-                    payload = {"trnm": "UNREG", "grp_no": grp_no,
-                               "data": [{"item": [code], "type": [ttype]}]}
-                    await ws.send(json.dumps(payload))
+                for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("4", "0D"), ("5", "0w")]:
+                    if code not in set(await _get_subscription_codes(rdb, ttype)):
+                        continue
+                    await _send_remove(ws, grp_no, ttype, [code])
                     await _remove_subscription_code(rdb, f"ws:subscribed:{ttype}", code)
                 subscribed_set.discard(code)
                 logger.info("[WS] 동적 구독 해제 [%s]", code)
@@ -453,7 +571,7 @@ async def _heartbeat_writer(rdb):
         try:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             await write_heartbeat(rdb, {
-                "grp1": "ok", "grp2": "ok", "grp3": "ok", "grp4": "ok"
+                "grp1": "ok", "grp2": "ok", "grp3": "ok", "grp4": "ok", "grp5": "ok"
             })
         except Exception as e:
             logger.debug("[WS] heartbeat 오류: %s", e)
@@ -570,6 +688,7 @@ async def run_ws_loop(rdb, pg_pool=None):
                         logger.error("[WS] LOGIN 실패 – return_code=%s body=%s", return_code, login_resp)
                         raise ConnectionError(f"WS LOGIN 실패 (return_code={return_code})")
                     logger.info("[WS] LOGIN 성공 – return_code=0")
+                    await _reset_local_subscription_sets(rdb)
                 except asyncio.TimeoutError:
                     logger.error("[WS] LOGIN 응답 타임아웃 (10초)")
                     raise ConnectionError("WS LOGIN 응답 없음")
@@ -579,7 +698,7 @@ async def run_ws_loop(rdb, pg_pool=None):
 
                 # 연결 직후 즉시 heartbeat 기록 (TTL 소멸 방지)
                 await write_heartbeat(rdb, {
-                    "grp1": "ok", "grp2": "ok", "grp3": "ok", "grp4": "ok"
+                    "grp1": "ok", "grp2": "ok", "grp3": "ok", "grp4": "ok", "grp5": "ok"
                 })
 
                 # ── 메시지 루프를 구독보다 먼저 시작 ──────────────────────
@@ -591,7 +710,7 @@ async def run_ws_loop(rdb, pg_pool=None):
                 initial_phase = _get_market_session()
                 await _subscribe_by_phase(ws, rdb, initial_phase)
 
-                # 초기 구독 후보를 subscribed_set 에 등록 (watchlist poller 가 중복 UNREG 방지)
+                # 초기 구독 후보를 subscribed_set 에 등록 (watchlist poller 가 중복 REMOVE 방지)
                 initial_ranked, _ = await _get_ranked_candidates(rdb)
                 subscribed_set: set = set(initial_ranked)
 
