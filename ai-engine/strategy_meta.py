@@ -19,7 +19,7 @@ _DEFAULT_SWING = (
     "S3_INST_FRGN,S5_PROG_FRGN,"
     "S7_ICHIMOKU_BREAKOUT,S8_GOLDEN_CROSS,S9_PULLBACK_SWING,S10_NEW_HIGH,"
     "S11_FRGN_CONT,S12_CLOSING,S13_BOX_BREAKOUT,"
-    "S14_OVERSOLD_BOUNCE,S15_MOMENTUM_ALIGN"
+    "S14_OVERSOLD_BOUNCE,S15_MOMENTUM_ALIGN,S16_ACCUMULATION_SHADOW"
 )
 
 #: 스윙 전략 이름 집합 – dedup TTL 86400s (하루 1회), ForceClose 시 보유 유지
@@ -59,6 +59,7 @@ CLAUDE_THRESHOLDS: dict[str, int] = {
     "S13_BOX_BREAKOUT":    64,
     "S14_OVERSOLD_BOUNCE": 61,
     "S15_MOMENTUM_ALIGN":  65,
+    "S16_ACCUMULATION_SHADOW": 75,
 }
 
 _DEFAULT_THRESHOLD = 65
@@ -135,6 +136,11 @@ STRATEGY_PERSONAS: dict[str, str] = {
         "다중 모멘텀 동조 분석가. RSI, ATR, 이동평균, 거래량 조건의 동시성과 "
         "섹터 과열 여부를 균형 있게 평가한다."
     ),
+    "S16_ACCUMULATION_SHADOW": (
+        "세력 매집 검증형 스윙 트레이더. 20~60일 박스권, 양봉/음봉 거래량 구조, "
+        "외국인·기관·프로그램 누적 수급, 당일 체결강도와 호가 트리거를 함께 보며 "
+        "이미 늦은 추격매수보다 RR이 남아 있는 확인매수와 첫 눌림만 선호한다."
+    ),
 }
 
 DEFAULT_PERSONA = (
@@ -154,6 +160,7 @@ HOLD_TO_ENTER_THRESHOLDS: dict[str, float] = {
     "S6_THEME_LAGGARD": 75.0,
     "S3_INST_FRGN":   85.0,
     "S11_FRGN_CONT":  85.0,
+    "S16_ACCUMULATION_SHADOW": 85.0,
 }
 _DEFAULT_HOLD_TO_ENTER = 80.0
 
@@ -189,6 +196,7 @@ STRATEGY_BASE_RR_GATES: dict[str, float] = {
     "S13_BOX_BREAKOUT": 1.50,
     "S14_OVERSOLD_BOUNCE": 1.50,
     "S15_MOMENTUM_ALIGN": 1.45,
+    "S16_ACCUMULATION_SHADOW": 1.60,
 }
 
 STRATEGY_RR_GROUPS: dict[str, str] = {
@@ -207,6 +215,7 @@ STRATEGY_RR_GROUPS: dict[str, str] = {
     "S13_BOX_BREAKOUT": "breakout",
     "S14_OVERSOLD_BOUNCE": "reversal",
     "S15_MOMENTUM_ALIGN": "momentum",
+    "S16_ACCUMULATION_SHADOW": "flow",
 }
 
 _REGIME_RR_MULTIPLIERS: dict[str, dict[str, float]] = {

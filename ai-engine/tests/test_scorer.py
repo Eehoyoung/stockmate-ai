@@ -619,6 +619,7 @@ class TestThresholdAndSkipAi:
         assert get_claude_threshold("S13_BOX_BREAKOUT") == 64
         assert get_claude_threshold("S14_OVERSOLD_BOUNCE") == 61
         assert get_claude_threshold("S15_MOMENTUM_ALIGN") == 65
+        assert get_claude_threshold("S16_ACCUMULATION_SHADOW") == 75
 
     def test_unknown_strategy_default_threshold(self):
         threshold = get_claude_threshold("UNKNOWN")

@@ -427,6 +427,7 @@ async def create_shadow_trade(
     tp2_price: Optional[float] = None,
     data_quality: Optional[str] = "OK",
     data_quality_detail: Optional[dict] = None,
+    initial_status: str = "OPEN",
 ) -> bool:
     if not signal_id:
         return False
@@ -436,6 +437,9 @@ async def create_shadow_trade(
         return False
 
     payload = dict(payload or {})
+    status = str(initial_status or "OPEN").upper()
+    if status not in {"OPEN", "CANCELLED", "IGNORED"}:
+        status = "OPEN"
     now_utc = datetime.now(timezone.utc)
     signal_time = (
         _parse_utc_dt(payload.get("signal_time"))
@@ -465,7 +469,7 @@ async def create_shadow_trade(
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6, $7, $8,
-                $9, NOW(), 'OPEN',
+                $9, NOW(), $13,
                 $5, $5, $5,
                 $10, $11, $12::jsonb
             )
@@ -478,7 +482,7 @@ async def create_shadow_trade(
                 tp2_price = EXCLUDED.tp2_price,
                 sl_price = EXCLUDED.sl_price,
                 signal_time = EXCLUDED.signal_time,
-                status = CASE WHEN shadow_trades.status = 'CLOSED' THEN shadow_trades.status ELSE 'OPEN' END,
+                status = CASE WHEN shadow_trades.status = 'CLOSED' THEN shadow_trades.status ELSE EXCLUDED.status END,
                 last_price = EXCLUDED.last_price,
                 latency_ms = COALESCE(shadow_trades.latency_ms, EXCLUDED.latency_ms),
                 data_quality = COALESCE(EXCLUDED.data_quality, shadow_trades.data_quality),
@@ -497,6 +501,7 @@ async def create_shadow_trade(
             latency_ms,
             _clip_str(data_quality, 20),
             json.dumps(detail, ensure_ascii=False, default=str),
+            status,
         )
         return True
     except Exception as e:

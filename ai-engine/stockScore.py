@@ -33,6 +33,12 @@ from http_utils import (
     validate_kiwoom_response, kiwoom_client,
     fetch_cntr_strength, fetch_stk_nm,
     fetch_cntr_strength_cached, fetch_hoga,
+    apply_volume_profile_rr,
+    fetch_daily_cntr_strength,
+    fetch_investor_flow_summary_cached,
+    fetch_program_snapshot,
+    fetch_volume_profile,
+    program_drop_reason,
 )
 from ma_utils import (
     fetch_daily_candles, _safe_price, _safe_vol,
@@ -94,6 +100,7 @@ class StockSnapshot:
     # 호가 (Redis hoga)
     hoga:      dict            = field(default_factory=dict)
     bid_ratio: Optional[float] = None
+    freshness: dict = field(default_factory=dict)
 
     # 데이터 신선도 플래그
     ws_online:        bool = False  # tick이 실제 WS 데이터에서 왔는지
@@ -289,6 +296,7 @@ async def collect_snapshot(rdb, stk_cd: str) -> StockSnapshot:
     # ── tick 신선도 판정 ──────────────────────────────────────────
     _tick_ok = isinstance(tick, dict) and bool(tick)
     _tick_fresh = freshness_status(tick if _tick_ok else {}, "tick")
+    snap.freshness["tick"] = _tick_fresh
     snap.ws_online = _tick_ok and _tick_fresh["state"] != "cancel"
 
     if _tick_ok:
@@ -307,10 +315,13 @@ async def collect_snapshot(rdb, stk_cd: str) -> StockSnapshot:
     # ── hoga: Redis 우선, REST fallback ──────────────────────────
     if isinstance(hoga, dict) and hoga:
         snap.hoga = hoga
+        snap.freshness["hoga"] = freshness_status(hoga, "hoga")
         bid = _sf(hoga.get("total_buy_bid_req", 0))
         ask = _sf(hoga.get("total_sel_bid_req", 1))
         if ask > 0:
             snap.bid_ratio = round(bid / ask, 2)
+    else:
+        snap.freshness["hoga"] = freshness_status({}, "hoga")
 
     if snap.bid_ratio is None and token:
         try:
@@ -330,14 +341,21 @@ async def collect_snapshot(rdb, stk_cd: str) -> StockSnapshot:
             )
             snap.avg_strength     = _str_val
             snap.strength_from_ws = (_str_src in ("redis", "tick"))
+            snap.freshness["strength"] = {"state": "fresh" if snap.strength_from_ws else "caution", "source": _str_src}
         except Exception as e:
             logger.debug("[stockScore] strength 조회 실패 [%s]: %s", stk_cd, e)
     else:
         _ws_str = await get_avg_cntr_strength(rdb, stk_cd, 5)
         snap.avg_strength = _ws_str
+        snap.freshness["strength"] = {"state": "unknown", "source": "redis_reader"}
 
     if isinstance(vi, dict):
         snap.vi_event = vi
+        _vi_status = str((vi or {}).get("status", "")).lower()
+        _vi_kind = "vi_active" if _vi_status == "active" else "vi_released"
+        snap.freshness["vi"] = freshness_status(vi, _vi_kind)
+    else:
+        snap.freshness["vi"] = freshness_status({}, "vi_released")
 
     # flu_rt 폴백: tick 없으면 일봉 기반 계산
     if snap.flu_rt == 0.0 and snap.prev_close > 0 and snap.cur_prc > 0:
@@ -359,6 +377,45 @@ async def collect_snapshot(rdb, stk_cd: str) -> StockSnapshot:
             )
         except Exception as e:
             logger.debug("[stockScore] 기관+외인 플래그 조회 실패: %s", e)
+
+    try:
+        snap.program_snapshot = await fetch_program_snapshot(rdb, stk_cd)
+        snap.program_drop_reason = program_drop_reason(snap.program_snapshot)
+    except Exception as e:
+        logger.debug("[stockScore] program snapshot failed [%s]: %s", stk_cd, e)
+        snap.program_snapshot = {}
+        snap.program_drop_reason = None
+
+    if token:
+        try:
+            daily_strength, _ = await asyncio.wait_for(
+                fetch_daily_cntr_strength(token, stk_cd, days=20),
+                timeout=5.0,
+            )
+            snap.daily_strength = daily_strength
+        except Exception as e:
+            logger.debug("[stockScore] ka10047 daily strength failed [%s]: %s", stk_cd, e)
+            snap.daily_strength = {}
+
+        try:
+            investor_flow, _ = await asyncio.wait_for(
+                fetch_investor_flow_summary_cached(token, stk_cd, rdb=rdb, days=10),
+                timeout=5.0,
+            )
+            snap.investor_flow = investor_flow
+        except Exception as e:
+            logger.debug("[stockScore] ka10061 investor flow failed [%s]: %s", stk_cd, e)
+            snap.investor_flow = {}
+
+        try:
+            volume_profile, _ = await asyncio.wait_for(
+                fetch_volume_profile(token, stk_cd),
+                timeout=5.0,
+            )
+            snap.volume_profile = volume_profile
+        except Exception as e:
+            logger.debug("[stockScore] ka10025 volume profile failed [%s]: %s", stk_cd, e)
+            snap.volume_profile = {}
 
     return snap
 
@@ -851,6 +908,69 @@ def run_all_checks(snap: StockSnapshot) -> tuple[list[dict], list[str]]:
     return matched, skipped
 
 
+def _enrich_signal_from_snapshot(signal: dict, snap: StockSnapshot) -> dict:
+    daily_strength = getattr(snap, "daily_strength", {}) or {}
+    investor_flow = getattr(snap, "investor_flow", {}) or {}
+    program_snapshot = getattr(snap, "program_snapshot", {}) or {}
+
+    signal.update({
+        "daily_strength_latest": daily_strength.get("latest"),
+        "daily_strength_avg_5": daily_strength.get("avg_5"),
+        "daily_strength_avg_20": daily_strength.get("avg_20"),
+        "daily_strength_strong_days": daily_strength.get("strong_days"),
+        "investor_foreign": investor_flow.get("foreign"),
+        "investor_institution": investor_flow.get("institution"),
+        "investor_individual": investor_flow.get("individual"),
+        "investor_smart_money": investor_flow.get("smart_money"),
+    })
+    signal.update(program_snapshot)
+
+    drop_reason = getattr(snap, "program_drop_reason", None)
+    if drop_reason:
+        signal["program_drop_reason"] = drop_reason
+
+    volume_profile = getattr(snap, "volume_profile", {}) or {}
+    if volume_profile:
+        signal = apply_volume_profile_rr(signal, volume_profile)
+        signal["effective_rr"] = signal.get("rr_ratio")
+    return signal
+
+
+def apply_signal_readiness_gate(signal: dict, snap: StockSnapshot, *, enable_ai: bool) -> dict:
+    """Classify whether a signal is ready for manual review, not auto-ordering."""
+    action = str(signal.get("action") or "ENTER").upper()
+    reasons: list[str] = []
+    freshness = getattr(snap, "freshness", {}) or {}
+
+    if not enable_ai and action == "ENTER":
+        readiness = "ENTER_CANDIDATE"
+        reasons.append("fast rule pass; deep/AI not used")
+    elif action == "ENTER":
+        readiness = "ENTER"
+    elif action == "HOLD":
+        readiness = "HOLD"
+    else:
+        readiness = "AVOID"
+
+    for name, status in freshness.items():
+        state = str((status or {}).get("state", "")).lower()
+        if state == "cancel":
+            reasons.append(f"{name} stale")
+            if readiness == "ENTER":
+                readiness = "HOLD"
+
+    if signal.get("program_drop_reason"):
+        reasons.append("program flow weakening")
+        if readiness in {"ENTER", "ENTER_CANDIDATE"}:
+            readiness = "HOLD"
+
+    signal["readiness_action"] = readiness
+    signal["readiness_reasons"] = reasons
+    signal["freshness"] = freshness
+    signal["manual_review_only"] = True
+    return signal
+
+
 # ─── 2차 스코어링 ──────────────────────────────────────────────
 
 async def score_one_signal(
@@ -885,6 +1005,16 @@ async def score_one_signal(
         logger.debug("[stockScore] TP/SL 계산 실패 [%s %s]: %s", strategy, snap.stk_cd, e)
 
     # 규칙 점수 임계 미달 → 즉시 CANCEL
+    signal = _enrich_signal_from_snapshot(signal, snap)
+    if strategy in {"S5_PROG_FRGN", "S13_BOX_BREAKOUT"} and signal.get("program_drop_reason"):
+        logger.info(
+            "[stockScore] program flow gate rejected [%s %s]: %s",
+            snap.stk_cd,
+            strategy,
+            signal.get("program_drop_reason"),
+        )
+        return None
+
     if r_score < threshold:
         logger.info("[stockScore] 규칙점수 %.0f < 임계 %d → 탈락 [%s %s]",
                     r_score, threshold, snap.stk_cd, strategy)
@@ -900,7 +1030,7 @@ async def score_one_signal(
             signal.update(ai_result)
             # AI가 CANCEL 판정 시 None 반환
             if signal.get("action") == "CANCEL":
-                return None
+                return apply_signal_readiness_gate(signal, snap, enable_ai=enable_ai)
         except asyncio.TimeoutError:
             logger.warning("[stockScore] AI 타임아웃 [%s %s] – CANCEL", snap.stk_cd, strategy)
             signal["action"] = "CANCEL"
@@ -909,7 +1039,7 @@ async def score_one_signal(
             signal["cancel_type"] = "AI_UNAVAILABLE"
             signal["cancel_reason"] = "AI analysis timeout"
             signal["ai_reason"] = "AI analysis timeout"
-            return None
+            return apply_signal_readiness_gate(signal, snap, enable_ai=enable_ai)
         except Exception as e:
             logger.error("[stockScore] AI 오류 [%s %s]: %s", snap.stk_cd, strategy, e)
             signal["action"] = "CANCEL"
@@ -918,7 +1048,7 @@ async def score_one_signal(
             signal["cancel_type"] = "AI_UNAVAILABLE"
             signal["cancel_reason"] = "AI analysis unavailable"
             signal["ai_reason"] = "AI analysis unavailable"
-            return None
+            return apply_signal_readiness_gate(signal, snap, enable_ai=enable_ai)
     else:
         signal["action"]     = "ENTER"
         signal["ai_score"]   = round(r_score, 1)
@@ -931,7 +1061,7 @@ async def score_one_signal(
 
     from datetime import datetime as _dt
     signal["signal_time"] = _dt.now().isoformat()
-    return signal
+    return apply_signal_readiness_gate(signal, snap, enable_ai=enable_ai)
 
 
 # ─── 메인 엔트리 포인트 ────────────────────────────────────────
@@ -999,6 +1129,11 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
                 "bid_ratio":        snap.bid_ratio,
                 "ws_online":        snap.ws_online,
                 "strength_from_ws": snap.strength_from_ws,
+                "freshness":        snap.freshness,
+                "daily_strength":   getattr(snap, "daily_strength", {}),
+                "investor_flow":    getattr(snap, "investor_flow", {}),
+                "program_snapshot": getattr(snap, "program_snapshot", {}),
+                "program_drop_reason": getattr(snap, "program_drop_reason", None),
             },
         }
 
@@ -1043,5 +1178,12 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
             "ma60":         snap.ma60,
             "avg_strength": snap.avg_strength,
             "bid_ratio":    snap.bid_ratio,
+            "ws_online":    snap.ws_online,
+            "strength_from_ws": snap.strength_from_ws,
+            "freshness":    snap.freshness,
+            "daily_strength": getattr(snap, "daily_strength", {}),
+            "investor_flow": getattr(snap, "investor_flow", {}),
+            "program_snapshot": getattr(snap, "program_snapshot", {}),
+            "program_drop_reason": getattr(snap, "program_drop_reason", None),
         },
     }

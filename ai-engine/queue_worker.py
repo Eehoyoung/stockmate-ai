@@ -8,7 +8,6 @@ optional AI analysis, then publishes results to `ai_scored_queue`.
 """
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -43,8 +42,40 @@ from redis_reader import (
     push_hold_monitor_queue,
     push_score_only_queue,
 )
+from repositories import shadow_trade_repository, signal_repository
 from scorer import check_daily_limit, get_claude_threshold, rule_score, should_skip_ai
 from score_utils import normalize_score_0_100
+from scoring_pipeline.execution_decision import (
+    apply_execution_decision as _ed_apply_execution_decision,
+    apply_session_enter_guard as _ed_apply_session_enter_guard,
+    canonicalize_execution_payload as _ed_canonicalize_execution_payload,
+    current_market_session as _ed_current_market_session,
+    execution_decision_from_action as _ed_execution_decision_from_action,
+    is_session_enter_guard_exempt as _ed_is_session_enter_guard_exempt,
+    normalize_session_value as _ed_normalize_session_value,
+    resolve_signal_session as _ed_resolve_signal_session,
+)
+from scoring_pipeline.data_quality import (
+    compute_data_quality as _dq_compute_data_quality,
+    compute_freshness_decision as _dq_compute_freshness_decision,
+    freshness_status_from_decision as _dq_freshness_status_from_decision,
+)
+from scoring_pipeline.risk_decision import (
+    keep_hold_as_watch as _risk_keep_hold_as_watch,
+    rr_quality_bucket as _risk_rr_quality_bucket,
+)
+from scoring_pipeline.status_decision import select_pre_ai_decision
+from scoring_pipeline.ai_decision import evaluate_ai_decision
+from scoring_pipeline.publisher import route_execution_payload
+from scoring_pipeline.status_metrics import (
+    record_execution_decision_metric,
+    record_freshness_decision_metric,
+)
+from scoring_pipeline.failure_handler import (
+    build_failure_payload,
+    handle_processing_failure,
+)
+from scoring_pipeline.persistence_handler import persist_processed_signal
 from shadow_features import compute_all_shadow_features
 from tp_sl_engine import compute_rr
 from utils import normalize_stock_code, safe_float as _fv
@@ -105,6 +136,7 @@ _BID_RATIO_RESCUE_FLOOR = {
     "S15_MOMENTUM_ALIGN": 0.50,
     "S8_GOLDEN_CROSS": 0.70,
 }
+_PROGRAM_DROP_GATE_STRATEGIES = {"S5_PROG_FRGN", "S13_BOX_BREAKOUT", "S16_ACCUMULATION_SHADOW"}
 
 # freshness 취소 게이트: tick/hoga cancel → CANCEL 판정하는 전략 집합 (문서 4.1)
 # _freshness_cancel_reason() 과 _compute_freshness_decision() 이 공유한다.
@@ -168,6 +200,7 @@ _STRATEGY_ENTER_SESSIONS = {
     "S13_BOX_BREAKOUT": {"main_market"},
     "S14_OVERSOLD_BOUNCE": {"main_market"},
     "S15_MOMENTUM_ALIGN": {"main_market"},
+    "S16_ACCUMULATION_SHADOW": {"main_market"},
 }
 _SESSION_ENTER_EXEMPT_TYPES = {
     "DAILY_REPORT",
@@ -179,42 +212,36 @@ _SESSION_ENTER_EXEMPT_TYPES = {
 }
 
 
-def _db_writer():
-    import db_writer
-
-    return db_writer
-
-
 async def insert_python_signal(*args, **kwargs):
-    return await _db_writer().insert_python_signal(*args, **kwargs)
+    return await signal_repository.insert_python_signal(*args, **kwargs)
 
 
 async def update_signal_score(*args, **kwargs):
-    return await _db_writer().update_signal_score(*args, **kwargs)
+    return await signal_repository.update_signal_score(*args, **kwargs)
 
 
 async def insert_score_components(*args, **kwargs):
-    return await _db_writer().insert_score_components(*args, **kwargs)
+    return await signal_repository.insert_score_components(*args, **kwargs)
 
 
 async def confirm_open_position(*args, **kwargs):
-    return await _db_writer().confirm_open_position(*args, **kwargs)
+    return await signal_repository.confirm_open_position(*args, **kwargs)
 
 
 async def create_shadow_trade(*args, **kwargs):
-    return await _db_writer().create_shadow_trade(*args, **kwargs)
+    return await shadow_trade_repository.create_shadow_trade(*args, **kwargs)
 
 
 async def insert_rule_cancel_signal(*args, **kwargs):
-    return await _db_writer().insert_rule_cancel_signal(*args, **kwargs)
+    return await signal_repository.insert_rule_cancel_signal(*args, **kwargs)
 
 
 async def insert_ai_cancel_signal(*args, **kwargs):
-    return await _db_writer().insert_ai_cancel_signal(*args, **kwargs)
+    return await signal_repository.insert_ai_cancel_signal(*args, **kwargs)
 
 
 async def cancel_open_position_by_signal(*args, **kwargs):
-    return await _db_writer().cancel_open_position_by_signal(*args, **kwargs)
+    return await signal_repository.cancel_open_position_by_signal(*args, **kwargs)
 
 
 async def _incr_pipeline(rdb, strategy: str, field: str) -> None:
@@ -239,46 +266,15 @@ def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None)
 
 
 def _execution_decision_from_action(action: str, *, cancel_type: str | None = None) -> str:
-    """Normalize legacy action values into the canonical execution decision."""
-    normalized = str(action or "").upper()
-    if normalized == "ENTER":
-        return "ENTER"
-    if normalized == "HOLD":
-        return "WATCH"
-    return "BLOCK"
+    return _ed_execution_decision_from_action(action, cancel_type=cancel_type)
 
 
 def _apply_execution_decision(payload: dict, decision: str, *, reason: str | None = None) -> dict:
-    """Attach canonical execution decision while preserving legacy action compatibility."""
-    canonical = str(decision or "BLOCK").upper()
-    if canonical not in {"ENTER", "WATCH", "BLOCK"}:
-        canonical = "BLOCK"
-    payload["execution_decision"] = canonical
-    payload["signal_stage"] = "ENTRY" if canonical == "ENTER" else canonical
-    if reason and not payload.get("execution_reason"):
-        payload["execution_reason"] = reason
-    if canonical == "ENTER":
-        payload["action"] = "ENTER"
-        payload["skip_entry"] = False
-    elif canonical == "WATCH":
-        payload["action"] = "HOLD"
-        payload["skip_entry"] = True
-    else:
-        payload["action"] = "CANCEL"
-        payload["skip_entry"] = True
-    return payload
+    return _ed_apply_execution_decision(payload, decision, reason=reason)
 
 
 def _canonicalize_execution_payload(payload: dict) -> dict:
-    action = str(payload.get("action") or "").upper()
-    decision = payload.get("execution_decision")
-    # Post-AI hard rules may mutate legacy action after an earlier ENTER decision.
-    # In that case the hard-rule action wins.
-    if action in {"CANCEL", "HOLD"}:
-        decision = _execution_decision_from_action(action, cancel_type=payload.get("cancel_type"))
-    elif not decision:
-        decision = _execution_decision_from_action(action, cancel_type=payload.get("cancel_type"))
-    return _apply_execution_decision(payload, str(decision), reason=payload.get("ai_reason"))
+    return _ed_canonicalize_execution_payload(payload)
 
 
 def _size_policy_from_legacy(signal: dict) -> str:
@@ -289,96 +285,32 @@ def _size_policy_from_legacy(signal: dict) -> str:
 
 
 def _current_market_session(now: datetime | None = None) -> str:
-    if current_session is not None:
-        try:
-            session = current_session(now)
-            value = getattr(session, "value", session)
-            return str(value).lower()
-        except Exception:
-            pass
-    now = now or datetime.now(_KST)
-    if now.weekday() >= 5:
-        return "closed"
-    t = now.time()
-    if t < datetime.strptime("08:00:00", "%H:%M:%S").time():
-        return "closed"
-    if t < datetime.strptime("08:50:00", "%H:%M:%S").time():
-        return "pre_market"
-    if t < datetime.strptime("09:00:30", "%H:%M:%S").time():
-        return "opening_auction"
-    if t < datetime.strptime("15:20:00", "%H:%M:%S").time():
-        return "main_market"
-    if t < datetime.strptime("15:30:00", "%H:%M:%S").time():
-        return "closing_auction"
-    if t < datetime.strptime("15:40:00", "%H:%M:%S").time():
-        return "after_preopen"
-    if t < datetime.strptime("20:00:00", "%H:%M:%S").time():
-        return "after_market"
-    if t < datetime.strptime("20:10:00", "%H:%M:%S").time():
-        return "post_quiet"
-    return "closed"
+    return _ed_current_market_session(current_session_func=current_session, now=now)
 
 
 def _normalize_session_value(value) -> str:
-    if value is None:
-        return ""
-    enum_value = getattr(value, "value", value)
-    text = str(enum_value).strip().lower()
-    if "." in text:
-        text = text.rsplit(".", 1)[-1]
-    return text
+    return _ed_normalize_session_value(value)
 
 
 def _resolve_signal_session(payload: dict, ctx: dict | None = None) -> str:
-    for source in (payload, ctx or {}):
-        for field in ("market_session", "session", "ws_session"):
-            value = source.get(field)
-            if value:
-                return _normalize_session_value(value)
-    return _current_market_session()
+    return _ed_resolve_signal_session(payload, ctx, current_session_func=current_session)
 
 
 def _is_session_enter_guard_exempt(payload: dict) -> bool:
-    strategy = str(payload.get("strategy") or "")
-    if strategy.startswith("S2"):
-        return True
-
-    item_type = str(payload.get("type") or "").upper()
-    if item_type in _SESSION_ENTER_EXEMPT_TYPES:
-        return True
-    if "REPORT" in item_type or "FORCE_CLOSE" in item_type or "EXIT" in item_type or "CLOSE" in item_type:
-        return True
-
-    action = str(payload.get("action") or "").upper()
-    return action in {"FORCE_CLOSE", "EXIT", "CLOSE", "SELL"}
+    return _ed_is_session_enter_guard_exempt(payload, _SESSION_ENTER_EXEMPT_TYPES)
 
 
 def _apply_session_enter_guard(payload: dict, ctx: dict | None = None) -> dict:
-    if not SESSION_ENTER_GUARD_ENABLED:
-        return payload
-    if str(payload.get("action") or "").upper() != "ENTER":
-        return payload
-    if _is_session_enter_guard_exempt(payload):
-        return payload
-
-    session = _resolve_signal_session(payload, ctx)
-    strategy = str(payload.get("strategy") or "")
-    allowed_sessions = _STRATEGY_ENTER_SESSIONS.get(strategy)
-    if allowed_sessions is not None and session in allowed_sessions:
-        return payload
-    if allowed_sessions is None and session not in _SESSION_ENTER_BLOCKLIST:
-        return payload
-
-    reason = f"Session enter guard blocked new ENTER during {session}"
-    payload["market_session"] = session
-    payload["action"] = "CANCEL"
-    payload["confidence"] = "LOW"
-    payload["cancel_reason"] = reason
-    payload["ai_reason"] = reason
-    payload["skip_entry"] = True
-    payload["cancel_type"] = "SESSION_ENTER_GUARD"
-    _null_claude_prices(payload)
-    return payload
+    return _ed_apply_session_enter_guard(
+        payload,
+        ctx,
+        enabled=SESSION_ENTER_GUARD_ENABLED,
+        enter_sessions=_STRATEGY_ENTER_SESSIONS,
+        blocklist=_SESSION_ENTER_BLOCKLIST,
+        exempt_types=_SESSION_ENTER_EXEMPT_TYPES,
+        current_session_func=current_session,
+        null_claude_prices=_null_claude_prices,
+    )
 
 
 def _coerce_rule_score_result(result) -> tuple[float, dict]:
@@ -400,23 +332,15 @@ def _coerce_rule_score_result(result) -> tuple[float, dict]:
 
 
 def _build_failure_payload(item: dict, strategy: str, stk_cd: str, error: Exception) -> dict:
-    return {
-        **item,
-        "type": FAILURE_TYPE,
-        "action": FAILURE_ACTION,
-        "confidence": "LOW",
-        "rule_score": None,
-        "ai_score": 0.0,
-        "ai_reason": f"queue_worker processing failed: {type(error).__name__}",
-        "error": str(error),
-        "error_type": type(error).__name__,
-        "failed_stage": "queue_worker",
-        "execution_decision": "BLOCK",
-        "stk_cd": stk_cd,
-        "strategy": strategy,
-        "skip_entry": True,
-        "error_ts": time.time(),
-    }
+    return build_failure_payload(
+        item,
+        strategy=strategy,
+        stk_cd=stk_cd,
+        error=error,
+        failure_type=FAILURE_TYPE,
+        failure_action=FAILURE_ACTION,
+        now_fn=time.time,
+    )
 
 
 def _resolve_execution_strength(signal: dict, ctx: dict) -> float:
@@ -627,6 +551,24 @@ def _hard_gate_failure(signal: dict, ctx: dict) -> str | None:
             failures.append(f"bid_ratio {bid_ratio:.2f} < {req_bid:.2f}({regime})")
     if failures:
         return "; ".join(failures)
+    return None
+
+
+def _program_flow_gate_failure(signal: dict) -> str | None:
+    strategy = signal.get("strategy", "")
+    if strategy not in _PROGRAM_DROP_GATE_STRATEGIES:
+        return None
+    explicit_reason = signal.get("program_drop_reason")
+    if explicit_reason:
+        return str(explicit_reason)
+    net_amt = _fv(signal.get("program_net_buy_amt"), 0.0)
+    net_chg = _fv(signal.get("program_net_buy_amt_chg"), 0.0)
+    net_qty = _fv(signal.get("program_net_buy_qty"), 0.0)
+    qty_chg = _fv(signal.get("program_net_buy_qty_chg"), 0.0)
+    if net_chg < 0 and net_amt <= 0:
+        return f"program net-buy amount weakening: chg={net_chg:.0f}, net={net_amt:.0f}"
+    if qty_chg < 0 and net_qty <= 0:
+        return f"program net-buy quantity weakening: chg={qty_chg:.0f}, net={net_qty:.0f}"
     return None
 
 
@@ -1066,6 +1008,7 @@ def _build_failed_gate_diagnostics(
     s8_zone_reason: str | None,
     s1_fallback_reason: str | None,
     hard_gate_reason: str | None,
+    program_flow_reason: str | None,
     freshness_reason: str | None,
 ) -> list[dict]:
     failures = []
@@ -1082,6 +1025,7 @@ def _build_failed_gate_diagnostics(
         ("S8_BUY_ZONE", s8_zone_reason),
         ("S1_FALLBACK_QUALITY", s1_fallback_reason),
         ("HARD_GATE", hard_gate_reason),
+        ("PROGRAM_FLOW", program_flow_reason),
         ("FRESHNESS_STALE", freshness_reason),
     ):
         if reason:
@@ -1090,6 +1034,12 @@ def _build_failed_gate_diagnostics(
 
 
 def _compute_freshness_decision(freshness: dict, strategy: str) -> str:
+    return _dq_compute_freshness_decision(
+        freshness,
+        strategy,
+        strict_cancel_gate=_STRICT_CANCEL_GATE,
+        vi_stale_cancel_strategies=_VI_STALE_CANCEL_STRATEGIES,
+    )
     """
     실시간 Redis 데이터 신선도를 종합해 최종 결정을 반환한다.
 
@@ -1131,6 +1081,7 @@ def _compute_freshness_decision(freshness: dict, strategy: str) -> str:
 
 
 def _freshness_status_from_decision(decision: str) -> str:
+    return _dq_freshness_status_from_decision(decision)
     """
     freshness_decision → position_sizing 이 사용하는 freshness_status 변환.
     PASS          → FRESH
@@ -1177,6 +1128,7 @@ def _collect_missing_feature_flags(signal: dict, ctx: dict) -> list[str]:
 
 
 def _compute_data_quality(missing_flags: list[str], freshness_decision: str, signal: dict) -> dict:
+    return _dq_compute_data_quality(missing_flags, freshness_decision, signal)
     """
     data_quality_score (0~100)와 data_quality_decision을 계산한다.
 
@@ -1247,15 +1199,11 @@ def _apply_regime_rr_metadata(payload: dict, regime: str, threshold: float) -> N
 
 
 def _rr_quality_bucket(rr: float | None) -> str:
-    if rr is None:
-        return "unknown"
-    if rr < RR_HARD_CANCEL_THRESHOLD:
-        return "hard_cancel"
-    if rr < RR_CAUTION_THRESHOLD:
-        return "caution"
-    if rr < 1.5:
-        return "acceptable"
-    return "strong"
+    return _risk_rr_quality_bucket(
+        rr,
+        hard_cancel_threshold=RR_HARD_CANCEL_THRESHOLD,
+        caution_threshold=RR_CAUTION_THRESHOLD,
+    )
 
 
 def _maybe_promote_hold_to_enter(
@@ -1267,13 +1215,13 @@ def _maybe_promote_hold_to_enter(
     cancel_reason: str | None,
     ai_score: float | None,
 ) -> tuple[str, str, str, str | None]:
-    """Keep Claude HOLD as WATCH; score alone must never promote to ENTER."""
-    if str(action).upper() != "HOLD":
-        return action, confidence, reason, cancel_reason
-    watch_reason = str(reason or "Claude HOLD").strip()
-    if ai_score is not None:
-        watch_reason = f"{watch_reason} | WATCH retained; ai_score alone cannot promote to ENTER"
-    return "HOLD", confidence or "MEDIUM", watch_reason, cancel_reason
+    return _risk_keep_hold_as_watch(
+        action=action,
+        confidence=confidence,
+        reason=reason,
+        cancel_reason=cancel_reason,
+        ai_score=ai_score,
+    )
 
 
 def _rule_threshold_rescue_reason(
@@ -1761,6 +1709,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             s1_fallback_quality_reason = _s1_fallback_quality_failure(dict(signal), ctx)
             s1_execution_policy = _s1_execution_policy_gate(dict(signal))
             hard_gate_reason = _hard_gate_failure(dict(signal), ctx)
+            program_flow_reason = _program_flow_gate_failure(dict(signal))
             stale_reason = _freshness_cancel_reason(ctx, strategy)
         else:
             rr_prefilter_reason = _rr_prefilter_reason(signal, ctx)
@@ -1768,6 +1717,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             s1_fallback_quality_reason = _s1_fallback_quality_failure(signal, ctx)
             s1_execution_policy = _s1_execution_policy_gate(signal)
             hard_gate_reason = _hard_gate_failure(signal, ctx)
+            program_flow_reason = _program_flow_gate_failure(signal)
             stale_reason = _freshness_cancel_reason(ctx, strategy)
         failed_gates = _build_failed_gate_diagnostics(
             rule_score_value=r_score,
@@ -1778,147 +1728,79 @@ async def process_one(rdb, pg_pool=None) -> bool:
             s8_zone_reason=s8_zone_gate_reason,
             s1_fallback_reason=s1_fallback_quality_reason,
             hard_gate_reason=hard_gate_reason,
+            program_flow_reason=program_flow_reason,
             freshness_reason=stale_reason,
         )
-        if skip_ai and not rescue_reason:
-            if quality.get("signal_quality_score", 0.0) >= RULE_THRESHOLD_WATCH_MIN_QUALITY and not (
-                s8_zone_gate_reason or s1_fallback_quality_reason or hard_gate_reason or stale_reason
-            ):
-                action = "HOLD"
-                confidence = "LOW"
-                reason = f"Rule score {r_score:.1f} below Claude threshold {threshold:.1f}; WATCH for improvement"
-                cancel_reason = None
-                cancel_type = None
-                signal["decision_stage"] = "WATCH_RULE_THRESHOLD"
-                await _incr_pipeline(rdb, strategy, "watch_rule_threshold")
-            else:
-                action = "CANCEL"
-                confidence = "LOW"
-                reason = f"Rule score {r_score:.1f} below threshold"
-                cancel_reason = "Rule threshold not met"
-                cancel_type = "RULE_THRESHOLD"
-                await _incr_pipeline(rdb, strategy, "cancel_score")
+        pre_ai_decision = select_pre_ai_decision(
+            skip_ai=skip_ai,
+            rescue_reason=rescue_reason,
+            rule_score_value=r_score,
+            threshold=threshold,
+            quality_score=quality.get("signal_quality_score", 0.0),
+            watch_min_quality=RULE_THRESHOLD_WATCH_MIN_QUALITY,
+            rr_prefilter_reason=rr_prefilter_reason,
+            s8_zone_gate_reason=s8_zone_gate_reason,
+            s1_fallback_quality_reason=s1_fallback_quality_reason,
+            s1_execution_policy=s1_execution_policy,
+            hard_gate_reason=hard_gate_reason,
+            program_flow_reason=program_flow_reason,
+            stale_reason=stale_reason,
+            strategy=strategy,
+            current_s8_zone_status=signal.get("s8_zone_status"),
+        )
+        signal.update(pre_ai_decision.get("signal_updates") or {})
+        if pre_ai_decision.get("decision_stage"):
+            signal["decision_stage"] = pre_ai_decision["decision_stage"]
+        for metric in pre_ai_decision.get("metrics", []):
+            await _incr_pipeline(rdb, strategy, metric)
+
+        if pre_ai_decision.get("terminal"):
+            action = pre_ai_decision["action"]
+            confidence = pre_ai_decision["confidence"]
+            reason = pre_ai_decision["reason"]
+            cancel_reason = pre_ai_decision.get("cancel_reason")
+            cancel_type = pre_ai_decision.get("cancel_type")
         else:
-            if rescue_reason:
-                signal["rule_threshold_rescued"] = True
-                signal["decision_stage"] = "AI_REVIEW"
-                signal["rule_threshold_rescue_reason"] = rescue_reason
-                await _incr_pipeline(rdb, strategy, "rule_threshold_rescue")
-            if rr_prefilter_reason:
-                action = "HOLD"
-                if strategy == "S8_GOLDEN_CROSS":
-                    signal["s8_zone_status"] = signal.get("s8_zone_status") or "wait_pullback"
-                    signal["s8_zone_entry_policy"] = "wait_pullback"
-                    cancel_type = "S8_WAIT_PULLBACK"
-                else:
-                    cancel_type = None
-                reason = f"{rr_prefilter_reason}; WATCH until R:R improves"
-                cancel_reason = None
-                confidence = "LOW"
-                signal["decision_stage"] = "WATCH_RR"
-                await _incr_pipeline(rdb, strategy, "watch_rr")
-            elif s8_zone_gate_reason:
-                action = "CANCEL"
-                confidence = "LOW"
-                reason = s8_zone_gate_reason
-                cancel_reason = s8_zone_gate_reason
-                cancel_type = "S8_BUY_ZONE"
-                await _incr_pipeline(rdb, strategy, "cancel_s8_buy_zone")
-            elif s1_fallback_quality_reason:
-                action = "CANCEL"
-                confidence = "LOW"
-                reason = s1_fallback_quality_reason
-                cancel_reason = s1_fallback_quality_reason
-                cancel_type = "S1_FALLBACK_QUALITY"
-                await _incr_pipeline(rdb, strategy, "cancel_s1_fallback_quality")
-            elif s1_execution_policy and s1_execution_policy[0] == "CANCEL":
-                policy_action, policy_reason, policy_type = s1_execution_policy
-                action = "CANCEL"
-                confidence = "LOW"
-                reason = policy_reason
-                cancel_reason = policy_reason
-                cancel_type = policy_type
-                await _incr_pipeline(rdb, strategy, "cancel_s1_execution_policy")
-            elif hard_gate_reason:
-                action = "CANCEL"
-                confidence = "LOW"
-                reason = f"Hard gate failed: {hard_gate_reason}"
-                cancel_reason = reason
-                cancel_type = "HARD_GATE"
-                await _incr_pipeline(rdb, strategy, "cancel_hard_gate")
-            elif stale_reason:
-                action = "CANCEL"
-                confidence = "LOW"
-                reason = stale_reason
-                cancel_reason = stale_reason
-                cancel_type = "FRESHNESS_STALE"
-                await _incr_pipeline(rdb, strategy, "cancel_freshness")
-            elif s1_execution_policy:
-                policy_action, policy_reason, _policy_type = s1_execution_policy
-                action = policy_action
-                confidence = "LOW"
-                reason = policy_reason
-                cancel_reason = policy_reason
-                cancel_type = None
-                await _incr_pipeline(rdb, strategy, "hold_s1_execution_policy")
-            else:
-                await _incr_pipeline(rdb, strategy, "rule_pass")
-                can_call = await check_daily_limit(rdb)
-                if can_call:
-                    try:
-                        ai_result = await analyze_signal(signal, ctx, r_score, rdb=rdb)
-                        ai_score_val = normalize_score_0_100(ai_result.get("ai_score", r_score))
-                        original_ai_action = str(ai_result.get("action", "ENTER") or "ENTER").upper()
-                        action = original_ai_action
-                        confidence = ai_result.get("confidence", "HIGH")
-                        reason = ai_result.get("reason", f"Rule score {r_score:.1f} passed")
-                        cancel_reason = ai_result.get("cancel_reason")
-                        action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
-                            strategy=strategy,
-                            action=action,
-                            confidence=confidence,
-                            reason=reason,
-                            cancel_reason=cancel_reason,
-                            ai_score=ai_score_val,
-                        )
-                        hold_promoted_to_enter = original_ai_action == "HOLD" and action == "ENTER"
-                        if action == "ENTER":
-                            await _incr_pipeline(rdb, strategy, "ai_pass")
-                        else:
-                            await _incr_pipeline(rdb, strategy, "cancel_ai")
-                    except Exception as claude_err:
-                        logger.warning(
-                            "[Worker] Claude failed [%s %s]: %s, canceling signal",
-                            stk_cd,
-                            strategy,
-                            claude_err,
-                        )
-                        action = "CANCEL"
-                        confidence = "LOW"
-                        reason = f"Claude unavailable: {type(claude_err).__name__}"
-                        cancel_reason = "AI analysis unavailable"
-                        cancel_type = "AI_UNAVAILABLE"
-                        await _incr_pipeline(rdb, strategy, "cancel_ai_unavailable")
-                else:
-                    action = "CANCEL"
-                    confidence = "LOW"
-                    reason = "Claude daily limit reached"
-                    cancel_reason = "AI daily limit reached"
-                    cancel_type = "AI_DAILY_LIMIT"
-                    await _incr_pipeline(rdb, strategy, "cancel_ai_limit")
+            ai_decision = await evaluate_ai_decision(
+                signal=signal,
+                ctx=ctx,
+                rule_score_value=r_score,
+                rdb=rdb,
+                check_daily_limit_fn=check_daily_limit,
+                analyze_signal_fn=analyze_signal,
+                normalize_score_fn=normalize_score_0_100,
+                hold_policy_fn=_maybe_promote_hold_to_enter,
+            )
+            if ai_decision.get("error"):
+                logger.warning(
+                    "[Worker] Claude failed [%s %s]: %s, canceling signal",
+                    stk_cd,
+                    strategy,
+                    ai_decision["error"],
+                )
+            ai_result = ai_decision.get("ai_result") or {}
+            ai_score_val = ai_decision["ai_score"]
+            action = ai_decision["action"]
+            confidence = ai_decision["confidence"]
+            reason = ai_decision["reason"]
+            cancel_reason = ai_decision.get("cancel_reason")
+            cancel_type = ai_decision.get("cancel_type")
+            hold_promoted_to_enter = bool(ai_decision.get("hold_promoted_to_enter"))
+            for metric in ai_decision.get("metrics", []):
+                await _incr_pipeline(rdb, strategy, metric)
 
         display_reason = _resolve_display_reason(action, reason, cancel_reason)
 
         # ── 데이터 품질·신선도 메타데이터 계산 (Phase 1 관측 가능성) ────────────
         _freshness_dec = _compute_freshness_decision(ctx.get("freshness") or {}, strategy)
         # 운영 metric: freshness_decision 분포 추적 (strategy 없는 bypass payload는 건너뜀)
-        if strategy:
-            try:
-                _fd_today = datetime.now(_KST).strftime("%Y-%m-%d")
-                await rdb.hincrby(f"status:freshness_decision:{_fd_today}:{strategy}", _freshness_dec, 1)
-                await rdb.expire(f"status:freshness_decision:{_fd_today}:{strategy}", _PIPELINE_TTL_SEC)
-            except Exception:
-                pass
+        await record_freshness_decision_metric(
+            rdb,
+            strategy=strategy,
+            decision=_freshness_dec,
+            ttl_sec=_PIPELINE_TTL_SEC,
+            logger=logger,
+        )
         _missing_flags = _collect_missing_feature_flags(signal, ctx)
         _dq = _compute_data_quality(_missing_flags, _freshness_dec, signal)
         _freshness_diag = _freshness_age_diagnostics(ctx)
@@ -2035,249 +1917,78 @@ async def process_one(rdb, pg_pool=None) -> bool:
         reason = enriched.get("ai_reason", reason)
         display_reason = _resolve_display_reason(action, reason, cancel_reason)
         enriched["ai_reason"] = display_reason
-        if execution_decision == "WATCH":
-            await push_hold_monitor_queue(rdb, enriched)
-            await _incr_pipeline(rdb, strategy, "hold_monitor")
-            logger.info("[Worker] WATCH routed to monitor queue [%s %s]", stk_cd, strategy)
-        elif execution_decision == "ENTER":
-            await push_score_only_queue(rdb, enriched)
-        else:
-            logger.info("[Worker] BLOCK kept internal [%s %s] reason=%s", stk_cd, strategy, display_reason)
+        await route_execution_payload(
+            rdb=rdb,
+            payload=enriched,
+            strategy=strategy,
+            stk_cd=stk_cd,
+            execution_decision=execution_decision,
+            display_reason=display_reason,
+            push_hold_monitor_queue_fn=push_hold_monitor_queue,
+            push_score_only_queue_fn=push_score_only_queue,
+            incr_pipeline_fn=_incr_pipeline,
+            logger=logger,
+        )
 
         rule_only_payload = None
         if execution_decision == "ENTER":
             await _incr_pipeline(rdb, strategy, "publish")
 
-        try:
-            decision_key = f"status:decisions_10m:{strategy}:{execution_decision}"
-            await rdb.incr(decision_key)
-            await rdb.expire(decision_key, STATUS_DECISION_TTL_SEC)
-        except Exception as status_err:
-            logger.debug(
-                "[Worker] status decision metric failed [%s %s]: %s",
-                strategy,
-                action,
-                status_err,
-            )
+        await record_execution_decision_metric(
+            rdb,
+            strategy=strategy,
+            decision=execution_decision,
+            ttl_sec=STATUS_DECISION_TTL_SEC,
+            logger=logger,
+        )
 
         if pg_pool:
-            if rule_only_payload is not None and not signal_id:
-                # cancel_type=None → AI가 명시적으로 CANCEL → ai_cancel_signal에만 기록
-                # cancel_type 있음 → AI 불가/한도 → rule_cancel_signal 유지
-                if cancel_type is None:
-                    await insert_ai_cancel_signal(
-                        pg_pool,
-                        signal_id=None,
-                        stk_cd=stk_cd,
-                        strategy=strategy,
-                        ai_score=ai_score_val,
-                        confidence=confidence,
-                        reason=display_reason,
-                        cancel_reason="RULE_ONLY_ALERT",
-                        raw_payload=rule_only_payload,
-                    )
-                else:
-                    await insert_rule_cancel_signal(
-                        pg_pool,
-                        signal_id=None,
-                        stk_cd=stk_cd,
-                        strategy=strategy,
-                        rule_score=r_score,
-                        cancel_type=cancel_type,
-                        reason=display_reason,
-                        raw_payload=rule_only_payload,
-                    )
+            persistence_terminal = await persist_processed_signal(
+                pg_pool=pg_pool,
+                signal_id=signal_id,
+                signal=signal,
+                enriched=enriched,
+                ctx=ctx,
+                strategy=strategy,
+                stk_cd=stk_cd,
+                action=action,
+                confidence=confidence,
+                reason=reason,
+                display_reason=display_reason,
+                cancel_reason=cancel_reason,
+                cancel_type=cancel_type,
+                r_score=r_score,
+                ai_score_val=ai_score_val,
+                threshold=threshold,
+                components=components,
+                rule_only_payload=rule_only_payload,
+                insert_python_signal_fn=insert_python_signal,
+                update_signal_score_fn=update_signal_score,
+                insert_score_components_fn=insert_score_components,
+                confirm_open_position_fn=confirm_open_position,
+                create_shadow_trade_fn=create_shadow_trade,
+                insert_rule_cancel_signal_fn=insert_rule_cancel_signal,
+                insert_ai_cancel_signal_fn=insert_ai_cancel_signal,
+                cancel_open_position_by_signal_fn=cancel_open_position_by_signal,
+                normalize_market_type_fn=_normalize_market_type,
+                fv_fn=_fv,
+                logger=logger,
+            )
+            if persistence_terminal:
                 return True
-
-            db_id = signal_id
-            if not db_id:
-                db_id = await insert_python_signal(
-                    pg_pool,
-                    enriched,
-                    action=action,
-                    confidence=confidence,
-                    rule_score=r_score,
-                    ai_score=ai_score_val,
-                    ai_reason=display_reason,
-                    skip_entry=(action != "ENTER"),
-                )
-
-            if db_id:
-                _flu_mkt = _normalize_market_type(signal.get("market_type") or ctx.get("market_type", ""))
-                _market_flu_rt = (
-                    ctx.get("kospi_flu_rt") if _flu_mkt == "001"
-                    else ctx.get("kosdaq_flu_rt") if _flu_mkt == "101"
-                    else None
-                )
-                await update_signal_score(
-                    pg_pool,
-                    db_id,
-                    rule_score=r_score,
-                    ai_score=ai_score_val,
-                    rr_ratio=_fv(enriched.get("rr_ratio")),
-                    action=action,
-                    confidence=confidence,
-                    ai_reason=display_reason,
-                    tp_method=enriched.get("tp_method"),
-                    sl_method=enriched.get("sl_method"),
-                    skip_entry=(action != "ENTER"),
-                    ma5=signal.get("ma5"),
-                    ma20=signal.get("ma20"),
-                    ma60=signal.get("ma60"),
-                    rsi14=signal.get("rsi"),
-                    bb_upper=signal.get("bb_upper"),
-                    bb_lower=signal.get("bb_lower"),
-                    atr=signal.get("atr"),
-                    market_flu_rt=_market_flu_rt,
-                    news_sentiment=enriched.get("news_sentiment") or signal.get("news_sentiment"),
-                    news_ctrl=enriched.get("news_ctrl") or signal.get("news_ctrl"),
-                    raw_rr=_fv(enriched.get("raw_rr")),
-                    single_tp_rr=_fv(enriched.get("single_tp_rr")),
-                    effective_rr=_fv(enriched.get("effective_rr")),
-                    min_rr_ratio=_fv(enriched.get("min_rr_ratio")),
-                    rr_skip_reason=enriched.get("rr_skip_reason"),
-                    stop_max_pct=_fv(enriched.get("stop_max_pct")),
-                    tp_policy_version=enriched.get("tp_policy_version"),
-                    sl_policy_version=enriched.get("sl_policy_version"),
-                    exit_policy_version=enriched.get("exit_policy_version"),
-                    allow_overnight=enriched.get("allow_overnight"),
-                    allow_reentry=enriched.get("allow_reentry"),
-                    time_stop_deadline_at=None,
-                    stk_nm=enriched.get("stk_nm") or signal.get("stk_nm"),
-                )
-                await insert_score_components(
-                    pg_pool,
-                    db_id,
-                    strategy,
-                    components,
-                    total_score=r_score,
-                    threshold=threshold,
-                )
-
-                if action == "ENTER":
-                    entry_for_shadow = _fv(
-                        enriched.get("entry_price") or signal.get("entry_price") or
-                        enriched.get("cur_prc") or signal.get("cur_prc")
-                    )
-                    tp1_for_shadow = _fv(enriched.get("claude_tp1") or enriched.get("tp1_price"))
-                    tp2_for_shadow = _fv(enriched.get("claude_tp2") or enriched.get("tp2_price"))
-                    sl_for_shadow = _fv(enriched.get("claude_sl") or enriched.get("sl_price"))
-                    position_confirmed = await confirm_open_position(
-                        pg_pool,
-                        db_id,
-                        ai_score=ai_score_val,
-                        tp1_price=tp1_for_shadow,
-                        tp2_price=tp2_for_shadow,
-                        sl_price=sl_for_shadow,
-                        rr_ratio=_fv(enriched.get("rr_ratio")),
-                        trailing_pct=_fv(enriched.get("trailing_pct")),
-                        trailing_activation=_fv(enriched.get("trailing_activation")),
-                        trailing_basis=enriched.get("trailing_basis"),
-                        strategy_version=enriched.get("strategy_version"),
-                        time_stop_type=enriched.get("time_stop_type"),
-                        time_stop_minutes=enriched.get("time_stop_minutes"),
-                        time_stop_session=enriched.get("time_stop_session"),
-                        raw_rr=_fv(enriched.get("raw_rr")),
-                        single_tp_rr=_fv(enriched.get("single_tp_rr")),
-                        effective_rr=_fv(enriched.get("effective_rr")),
-                        min_rr_ratio=_fv(enriched.get("min_rr_ratio")),
-                        rr_skip_reason=enriched.get("rr_skip_reason"),
-                        stop_max_pct=_fv(enriched.get("stop_max_pct")),
-                        tp_policy_version=enriched.get("tp_policy_version"),
-                        sl_policy_version=enriched.get("sl_policy_version"),
-                        exit_policy_version=enriched.get("exit_policy_version"),
-                        allow_overnight=enriched.get("allow_overnight"),
-                        allow_reentry=enriched.get("allow_reentry"),
-                    )
-                    if position_confirmed:
-                        await create_shadow_trade(
-                            pg_pool,
-                            signal_id=db_id,
-                            payload=enriched,
-                            entry_price=entry_for_shadow,
-                            tp1_price=tp1_for_shadow,
-                            tp2_price=tp2_for_shadow,
-                            sl_price=sl_for_shadow,
-                            data_quality="OK",
-                        )
-                    else:
-                        logger.warning("[Queue] shadow trade skipped because position confirm failed signal_id=%s", db_id)
-                else:
-                    if cancel_type:
-                        await insert_rule_cancel_signal(
-                            pg_pool,
-                            signal_id=db_id,
-                            stk_cd=stk_cd,
-                            strategy=strategy,
-                            rule_score=r_score,
-                            cancel_type=cancel_type,
-                            reason=display_reason,
-                            raw_payload=enriched,
-                        )
-                    elif action == "CANCEL":
-                        await insert_ai_cancel_signal(
-                            pg_pool,
-                            signal_id=db_id,
-                            stk_cd=stk_cd,
-                            strategy=strategy,
-                            ai_score=ai_score_val,
-                            confidence=confidence,
-                            reason=reason,
-                            cancel_reason=cancel_reason,
-                            raw_payload=enriched,
-                        )
-
-                    entry_for_shadow = _fv(enriched.get("entry_price") or enriched.get("cur_prc"))
-                    tp1_for_shadow = _fv(enriched.get("claude_tp1") or enriched.get("tp1_price"))
-                    tp2_for_shadow = _fv(enriched.get("claude_tp2") or enriched.get("tp2_price"), None)
-                    sl_for_shadow = _fv(enriched.get("claude_sl") or enriched.get("sl_price"))
-                    await create_shadow_trade(
-                        pg_pool,
-                        signal_id=db_id,
-                        payload=enriched,
-                        entry_price=entry_for_shadow,
-                        tp1_price=tp1_for_shadow,
-                        tp2_price=tp2_for_shadow,
-                        sl_price=sl_for_shadow,
-                        data_quality="CANCEL_SHADOW",
-                        data_quality_detail={
-                            "cancel_type": cancel_type,
-                            "cancel_reason": cancel_reason,
-                            "decision_stage": enriched.get("decision_stage"),
-                            "rule_threshold_rescued": bool(enriched.get("rule_threshold_rescued")),
-                            "hard_gate_bid_ratio_rescued": bool(enriched.get("hard_gate_bid_ratio_rescued")),
-                            "s8_zone_entry_policy": enriched.get("s8_zone_entry_policy"),
-                            "entry_size_tier": enriched.get("entry_size_tier"),
-                            "entry_size_weight": enriched.get("entry_size_weight"),
-                            "position_scale": enriched.get("position_scale"),
-                            "rr_ratio": _fv(enriched.get("rr_ratio"), None),
-                            "effective_rr": _fv(enriched.get("effective_rr"), None),
-                        },
-                    )
-                    await cancel_open_position_by_signal(pg_pool, db_id)
-
     except Exception as err:
         logger.error("[Worker] processing failed [%s %s]: %s", stk_cd, strategy, err)
         await _incr_pipeline(rdb, strategy, "processing_error")
-        failure_payload = _build_failure_payload(item, strategy, stk_cd, err)
-        normalize_signal_prices(failure_payload)
-
-        try:
-            dead_payload = json.dumps(failure_payload, ensure_ascii=False, default=str)
-            await rdb.lpush("error_queue", dead_payload)
-            await rdb.expire("error_queue", 86400)
-        except Exception as dlq_err:
-            logger.error("[Worker] error_queue publish failed: %s", dlq_err)
-
-        try:
-            await push_score_only_queue(rdb, failure_payload)
-        except Exception as push_err:
-            logger.error(
-                "[Worker] failure payload publish failed [%s %s]: %s",
-                stk_cd,
-                strategy,
-                push_err,
-            )
+        await handle_processing_failure(
+            rdb=rdb,
+            item=item,
+            strategy=strategy,
+            stk_cd=stk_cd,
+            error=err,
+            normalize_signal_prices_fn=normalize_signal_prices,
+            push_score_only_queue_fn=push_score_only_queue,
+            logger=logger,
+        )
 
     return True
 

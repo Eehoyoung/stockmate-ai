@@ -26,6 +26,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from price_utils import round_to_tick
+from risk.rr import (
+    calc_raw_rr as _risk_calc_raw_rr,
+    calc_rr as _risk_calc_rr,
+    required_tp_for_rr as _risk_required_tp_for_rr,
+    slip_fee_for_stock as _risk_slip_fee_for_stock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -413,6 +419,7 @@ def _calc_rr(
     slip_fee: float,   # 편도 비율 (예: 0.0035)
     min_rr: float = MIN_RR_RATIO,
 ) -> tuple[float, bool]:
+    return _risk_calc_rr(cur_prc, tp_price, sl_price, slip_fee, min_rr)
     """
     슬리피지·수수료 반영 실효 R:R 계산.
 
@@ -438,6 +445,7 @@ def _calc_rr(
 
 
 def _calc_raw_rr(cur_prc: float, tp_price: float, sl_price: float) -> float | None:
+    return _risk_calc_raw_rr(cur_prc, tp_price, sl_price)
     if cur_prc <= 0 or tp_price <= cur_prc or sl_price >= cur_prc:
         return None
     risk = cur_prc - sl_price
@@ -463,10 +471,11 @@ def _nearest_resistance(highs: list[float], cur_prc: float, *, lookback: int, mi
 
 def _slip_fee(stk_cd: str) -> float:
     """종목코드 기반 슬리피지+수수료 비율 (편도)"""
-    return SLIP_FEE_KOSPI if str(stk_cd).startswith("0") else SLIP_FEE_KOSDAQ
+    return _risk_slip_fee_for_stock(stk_cd, kospi_fee=SLIP_FEE_KOSPI, kosdaq_fee=SLIP_FEE_KOSDAQ)
 
 
 def _required_tp_for_rr(cur_prc: float, sl_price: float, slip_fee: float, min_rr: float) -> int | None:
+    return _risk_required_tp_for_rr(cur_prc, sl_price, slip_fee, min_rr)
     if cur_prc <= 0 or sl_price <= 0 or sl_price >= cur_prc:
         return None
     rt = 2 * slip_fee

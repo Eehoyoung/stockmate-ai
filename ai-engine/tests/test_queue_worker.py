@@ -155,6 +155,43 @@ class TestQueueWorkerHappyPath:
         assert kwargs["sl_price"] == 9600
         assert kwargs["data_quality"] == "OK"
 
+    def test_cancel_signal_creates_cancelled_shadow_trade_record(self):
+        item = _signal(entry_price=10000, cur_prc=10000, tp1_price=10800, sl_price=9700, rr_ratio=2.6)
+        rdb = _make_rdb(json.dumps(item))
+        pg_pool = object()
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+             patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch(
+                 "queue_worker.analyze_signal",
+                 new_callable=AsyncMock,
+                 return_value={
+                     "action": "CANCEL",
+                     "ai_score": 30.0,
+                     "confidence": "LOW",
+                     "reason": "risk too high",
+                     "cancel_reason": "시장 약세",
+                 },
+             ), \
+             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock), \
+             patch("queue_worker.insert_python_signal", new_callable=AsyncMock, return_value=777), \
+             patch("queue_worker.update_signal_score", new_callable=AsyncMock), \
+             patch("queue_worker.insert_score_components", new_callable=AsyncMock), \
+             patch("queue_worker.insert_ai_cancel_signal", new_callable=AsyncMock), \
+             patch("queue_worker.cancel_open_position_by_signal", new_callable=AsyncMock), \
+             patch("queue_worker.create_shadow_trade", new_callable=AsyncMock) as mock_shadow:
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb, pg_pool=pg_pool))
+
+        assert result is True
+        mock_shadow.assert_awaited_once()
+        kwargs = mock_shadow.await_args.kwargs
+        assert kwargs["data_quality"] == "CANCEL_SHADOW"
+        assert kwargs["initial_status"] == "CANCELLED"
+
     def test_resolve_bid_ratio_falls_back_to_signal_buy_sell_requests(self):
         from queue_worker import _resolve_bid_ratio
 
@@ -1190,6 +1227,30 @@ class TestCrossStrategyArbitration:
         assert result["execution_decision"] == "BLOCK"
         assert result["cancel_type"] == "CROSS_STRATEGY_ARBITRATION"
         assert result["representative_strategy"] == "S8_GOLDEN_CROSS"
+
+
+class TestProgramFlowGate:
+    def test_program_flow_gate_blocks_s5_when_net_buy_flips_negative(self):
+        from queue_worker import _program_flow_gate_failure
+
+        signal = {
+            "strategy": "S5_PROG_FRGN",
+            "program_net_buy_amt": "-100",
+            "program_net_buy_amt_chg": "-50",
+        }
+
+        assert "amount weakening" in _program_flow_gate_failure(signal)
+
+    def test_program_flow_gate_ignores_unrelated_strategy(self):
+        from queue_worker import _program_flow_gate_failure
+
+        signal = {
+            "strategy": "S8_GOLDEN_CROSS",
+            "program_net_buy_amt": "-100",
+            "program_net_buy_amt_chg": "-50",
+        }
+
+        assert _program_flow_gate_failure(signal) is None
 
 
 class TestPipelineDailyCounter:

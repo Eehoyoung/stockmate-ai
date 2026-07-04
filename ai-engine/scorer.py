@@ -624,6 +624,33 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
             _zd, _zi = _zone_bonus(signal, cur_prc_for_zone)
             score += _zd; _technical_score += _zd; _strategy_data["zone"] = _zi
 
+        case "S16_ACCUMULATION_SHADOW":
+            acc_sc = max(0.0, min(30.0, _safe_float(signal.get("accumulation_score", 0))))
+            supply_sc = max(0.0, min(25.0, _safe_float(signal.get("supply_score", 0))))
+            trigger_sc = max(0.0, min(20.0, _safe_float(signal.get("trigger_score", 0))))
+            risk_sc = max(0.0, min(10.0, _safe_float(signal.get("risk_score", 0))))
+            vol_ratio_s16 = _safe_float(signal.get("vol_ratio", 0))
+            rr_s16 = _safe_float(signal.get("effective_rr", signal.get("rr_ratio", 0)))
+            box_high = _safe_float(signal.get("box_high", 0))
+            cur_s16 = _safe_float(signal.get("cur_prc", 0))
+            breakout_gap = ((cur_s16 - box_high) / box_high * 100.0) if box_high > 0 else 0.0
+
+            score += acc_sc + supply_sc + trigger_sc + risk_sc
+            _technical_score += acc_sc
+            _demand_score += supply_sc
+            _momentum_score += trigger_sc
+            _vol_score += min(10.0, vol_ratio_s16 * 3.0) if vol_ratio_s16 > 0 else 0.0
+            _strategy_data = {
+                "accumulation_score": acc_sc,
+                "supply_score": supply_sc,
+                "trigger_score": trigger_sc,
+                "risk_score": risk_sc,
+                "rr": rr_s16,
+                "box_high": box_high,
+                "breakout_gap_pct": round(breakout_gap, 2),
+                "s16_state": signal.get("s16_state"),
+            }
+
     # 조건 충족 수 보너스
     _cond_bonus = 10 if cond_cnt >= 4 else (5 if cond_cnt == 3 else 0)
     score += _cond_bonus
@@ -651,7 +678,8 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
                             "S8_GOLDEN_CROSS", "S10_NEW_HIGH", "S13_BOX_BREAKOUT"}
     _BEAR_STRATEGIES     = {"S14_OVERSOLD_BOUNCE", "S9_PULLBACK_SWING", "S11_FRGN_CONT"}
     _SIDEWAYS_STRATEGIES = {"S7_ICHIMOKU_BREAKOUT", "S13_BOX_BREAKOUT",
-                            "S8_GOLDEN_CROSS", "S11_FRGN_CONT", "S15_MOMENTUM_ALIGN"}
+                            "S8_GOLDEN_CROSS", "S11_FRGN_CONT", "S15_MOMENTUM_ALIGN",
+                            "S16_ACCUMULATION_SHADOW"}
 
     _regime_bonus = 0.0
     if _regime == "bull"     and strategy in _BULL_STRATEGIES:
