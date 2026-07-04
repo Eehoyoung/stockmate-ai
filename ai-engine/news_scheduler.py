@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
 
 NEWS_ENABLED = os.getenv("NEWS_ENABLED", "true").lower() == "true"
+NEWS_LIVE_CACHE_TTL_SEC = int(os.getenv("NEWS_LIVE_CACHE_TTL_SEC", "600"))
 
 _SLOTS: list[dict[str, object]] = [
     {"time": (8, 0), "name": "MORNING"},
@@ -307,6 +308,55 @@ async def _load_cached_analysis(rdb) -> dict | None:
         return None
 
 
+def _cache_age_sec(analysis: dict) -> float | None:
+    try:
+        analyzed_at = float(analysis.get("analyzed_at") or 0)
+        if analyzed_at <= 0:
+            return None
+        return max(0.0, time.time() - analyzed_at)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _load_fresh_cached_analysis(rdb, slot_name: str, max_age_sec: int) -> dict | None:
+    cached = await _load_cached_analysis(rdb)
+    if not cached:
+        return None
+    cached_slot = str(cached.get("brief_slot") or "").upper()
+    if cached_slot and cached_slot != slot_name:
+        return None
+    age = _cache_age_sec(cached)
+    if age is None or age > max_age_sec:
+        return None
+    cached = dict(cached)
+    cached["used_cached_analysis"] = True
+    cached["cache_age_sec"] = round(age, 1)
+    cached["brief_slot"] = slot_name
+    return cached
+
+
+async def _prefer_cached_on_fallback(rdb, analysis: dict, slot_name: str) -> dict:
+    if not analysis.get("_fallback"):
+        return analysis
+
+    cached = await _load_cached_analysis(rdb)
+    if not cached:
+        return analysis
+
+    fallback_reason = str(analysis.get("_fallback_reason") or "unknown")
+    merged = dict(cached)
+    merged["_fallback"] = True
+    merged["_fallback_reason"] = f"cached_due_to_{fallback_reason}"
+    merged["used_cached_analysis"] = True
+    merged["brief_slot"] = slot_name
+    logger.warning(
+        "[NewsScheduler] using cached analysis after AI fallback slot=%s reason=%s",
+        slot_name,
+        fallback_reason,
+    )
+    return merged
+
+
 def _resolve_slot_name(slot_name: str | None = None, now: datetime | None = None) -> str:
     normalized = str(slot_name or "").strip().upper()
     if normalized in {"MORNING", "MIDMORNING", "MIDDAY", "AFTERNOON", "CLOSE"}:
@@ -363,10 +413,67 @@ async def _emit_scheduled_brief(rdb, analysis: dict, slot_name: str, slot_time: 
     )
 
 
-async def build_live_brief(rdb, slot_name: str | None = None, publish_queue: bool = False) -> dict:
+async def build_live_brief(
+    rdb,
+    slot_name: str | None = None,
+    publish_queue: bool = False,
+    force_refresh: bool = False,
+    allow_ai: bool = True,
+) -> dict:
     resolved_slot = _resolve_slot_name(slot_name)
     slot = next((item for item in _SLOTS if item["name"] == resolved_slot), _SLOTS[0])
     slot_time = tuple(slot["time"])
+
+    if not allow_ai:
+        cached = await _load_cached_analysis(rdb)
+        if not cached:
+            cached = {
+                "market_sentiment": await rdb.get(_KEY_SENTIMENT) or "NEUTRAL",
+                "recommended_sectors": json.loads(await rdb.get(_KEY_SECTORS) or "[]"),
+                "urgent_news": [],
+                "risk_factors": [],
+                "summary": "Cached news facts only. Use /news deep for a fresh Claude interpretation.",
+                "confidence": "LOW",
+                "us_market_points": [],
+                "us_sector_points": [],
+                "macro_points": [],
+                "korea_outlook": "",
+                "midday_sectors": [],
+                "midday_index_commentary": "",
+                "midday_recap": "",
+                "afternoon_outlook": "",
+                "close_flow": "",
+                "close_leaders": [],
+                "tomorrow_watch": "",
+            }
+        cached["brief_slot"] = resolved_slot
+        cached["ai_used"] = False
+        cached["used_cached_analysis"] = True
+        return {
+            "slot_name": resolved_slot,
+            "slot": f"{slot_time[0]:02d}:{slot_time[1]:02d}",
+            "analysis": cached,
+            "message": _build_brief_message(cached, resolved_slot),
+            "used_cached_analysis": True,
+            "ai_used": False,
+        }
+
+    if not force_refresh and NEWS_LIVE_CACHE_TTL_SEC > 0:
+        cached = await _load_fresh_cached_analysis(rdb, resolved_slot, NEWS_LIVE_CACHE_TTL_SEC)
+        if cached:
+            logger.info(
+                "[NewsScheduler] live brief cache hit slot=%s age=%.1fs",
+                resolved_slot,
+                cached.get("cache_age_sec", 0.0),
+            )
+            return {
+                "slot_name": resolved_slot,
+                "slot": f"{slot_time[0]:02d}:{slot_time[1]:02d}",
+                "analysis": cached,
+                "message": _build_brief_message(cached, resolved_slot),
+                "used_cached_analysis": True,
+                "ai_used": False,
+            }
 
     news_list = await collect_news(rdb)
     if news_list:
@@ -374,7 +481,9 @@ async def build_live_brief(rdb, slot_name: str | None = None, publish_queue: boo
         analysis["news_count"] = len(news_list)
         analysis["analyzed_at"] = time.time()
         analysis["brief_slot"] = resolved_slot
-        await _save_to_redis(rdb, analysis)
+        analysis = await _prefer_cached_on_fallback(rdb, analysis, resolved_slot)
+        if not analysis.get("_fallback"):
+            await _save_to_redis(rdb, analysis)
     else:
         logger.info("[NewsScheduler] live brief using cached analysis slot=%s", resolved_slot)
         analysis = await _load_cached_analysis(rdb)
@@ -412,6 +521,7 @@ async def build_live_brief(rdb, slot_name: str | None = None, publish_queue: boo
         "slot": f"{slot_time[0]:02d}:{slot_time[1]:02d}",
         "analysis": analysis,
         "message": message,
+        "ai_used": not bool(analysis.get("used_cached_analysis")),
     }
 
 
@@ -457,8 +567,10 @@ async def run_once(rdb, slot: dict[str, object] | None = None) -> None:
         analysis["news_count"] = len(news_list)
         analysis["analyzed_at"] = time.time()
         analysis["brief_slot"] = slot_name
+        analysis = await _prefer_cached_on_fallback(rdb, analysis, slot_name)
 
-        await _save_to_redis(rdb, analysis)
+        if not analysis.get("_fallback"):
+            await _save_to_redis(rdb, analysis)
         await _emit_scheduled_brief(rdb, analysis, slot_name, slot_time)
 
         elapsed = time.time() - start

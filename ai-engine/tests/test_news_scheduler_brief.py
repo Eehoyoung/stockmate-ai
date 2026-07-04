@@ -1,6 +1,17 @@
+import asyncio
+import json
 from datetime import datetime
 
-from news_scheduler import KST, _build_brief_message, _next_run_slot
+from news_analyzer import NEWS_PROMPT_DESC_CHARS, _build_news_prompt
+from news_scheduler import KST, _build_brief_message, _next_run_slot, _prefer_cached_on_fallback
+
+
+class FakeRedis:
+    def __init__(self, values=None):
+        self.values = values or {}
+
+    async def get(self, key):
+        return self.values.get(key)
 
 
 def test_next_run_slot_morning():
@@ -32,6 +43,107 @@ def test_next_run_slot_keeps_kst_on_monday_premarket():
     assert info["slot"]["name"] == "MORNING"
     assert info["run_at"].tzinfo == KST
     assert info["run_at"] == datetime(2026, 4, 20, 8, 0, 0, tzinfo=KST)
+
+
+def test_news_prompt_limits_items_and_description_length():
+    news = [
+        {
+            "source": "src",
+            "title": f"title-{i}",
+            "description": "x" * (NEWS_PROMPT_DESC_CHARS + 50),
+        }
+        for i in range(25)
+    ]
+
+    prompt = _build_news_prompt(news, "AFTERNOON")
+
+    assert "title-11" in prompt
+    assert "title-12" not in prompt
+    assert "x" * (NEWS_PROMPT_DESC_CHARS + 1) not in prompt
+
+
+def test_ai_fallback_uses_cached_news_analysis():
+    cached = {
+        "market_sentiment": "BULLISH",
+        "recommended_sectors": ["반도체"],
+        "urgent_news": ["기존 정상 뉴스"],
+        "summary": "기존 정상 브리핑",
+        "confidence": "MEDIUM",
+    }
+    fallback = {
+        "_fallback": True,
+        "_fallback_reason": "api_quota_limited",
+        "market_sentiment": "NEUTRAL",
+        "recommended_sectors": [],
+        "urgent_news": [],
+        "summary": "fallback",
+    }
+    rdb = FakeRedis({"news:analysis": json.dumps(cached, ensure_ascii=False)})
+
+    result = asyncio.run(_prefer_cached_on_fallback(rdb, fallback, "MIDDAY"))
+
+    assert result["market_sentiment"] == "BULLISH"
+    assert result["recommended_sectors"] == ["반도체"]
+    assert result["_fallback"] is True
+    assert result["_fallback_reason"] == "cached_due_to_api_quota_limited"
+    assert result["brief_slot"] == "MIDDAY"
+
+
+def test_live_brief_uses_fresh_cache_without_collecting(monkeypatch):
+    import time
+    import news_scheduler
+
+    cached = {
+        "market_sentiment": "NEUTRAL",
+        "recommended_sectors": ["반도체"],
+        "urgent_news": [],
+        "risk_factors": [],
+        "summary": "cached brief",
+        "confidence": "MEDIUM",
+        "brief_slot": "MIDDAY",
+        "analyzed_at": time.time(),
+    }
+    rdb = FakeRedis({"news:analysis": json.dumps(cached, ensure_ascii=False)})
+
+    async def fail_collect(_rdb):
+        raise AssertionError("collect_news should not be called on fresh cache")
+
+    monkeypatch.setattr(news_scheduler, "collect_news", fail_collect)
+    result = asyncio.run(news_scheduler.build_live_brief(rdb, slot_name="MIDDAY"))
+
+    assert result["used_cached_analysis"] is True
+    assert result["analysis"]["summary"] == "cached brief"
+
+
+def test_live_brief_no_ai_uses_cached_analysis_without_collecting(monkeypatch):
+    import time
+    import news_scheduler
+
+    cached = {
+        "market_sentiment": "NEUTRAL",
+        "recommended_sectors": ["semiconductor"],
+        "urgent_news": [],
+        "risk_factors": [],
+        "summary": "cached no-ai brief",
+        "confidence": "MEDIUM",
+        "brief_slot": "MIDDAY",
+        "analyzed_at": time.time() - 3600,
+    }
+    rdb = FakeRedis({"news:analysis": json.dumps(cached, ensure_ascii=False)})
+
+    async def fail_collect(_rdb):
+        raise AssertionError("collect_news should not be called in no-ai live brief")
+
+    async def fail_analyze(*_args, **_kwargs):
+        raise AssertionError("analyze_news should not be called in no-ai live brief")
+
+    monkeypatch.setattr(news_scheduler, "collect_news", fail_collect)
+    monkeypatch.setattr(news_scheduler, "analyze_news", fail_analyze)
+    result = asyncio.run(news_scheduler.build_live_brief(rdb, slot_name="MIDDAY", force_refresh=True, allow_ai=False))
+
+    assert result["used_cached_analysis"] is True
+    assert result["ai_used"] is False
+    assert result["analysis"]["summary"] == "cached no-ai brief"
 
 
 def test_build_morning_message_contains_required_sections():

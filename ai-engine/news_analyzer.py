@@ -11,7 +11,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -20,11 +22,13 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
-NEWS_MAX_TOKENS = int(os.getenv("NEWS_MAX_TOKENS", "12000"))
+NEWS_MAX_TOKENS = int(os.getenv("NEWS_MAX_TOKENS", "4000"))
 NEWS_CLAUDE_TIMEOUT = int(os.getenv("NEWS_CLAUDE_TIMEOUT_SEC", "180"))
-MAX_NEWS_CLAUDE_CALLS = int(os.getenv("MAX_NEWS_CLAUDE_CALLS", "12"))
+MAX_NEWS_CLAUDE_CALLS = int(os.getenv("MAX_NEWS_CLAUDE_CALLS", "10"))
 NEWS_RETRY_ON_MAX_TOKENS = os.getenv("NEWS_RETRY_ON_MAX_TOKENS", "true").lower() in {"1", "true", "yes", "on"}
-NEWS_RETRY_MAX_TOKENS = int(os.getenv("NEWS_RETRY_MAX_TOKENS", "6000"))
+NEWS_RETRY_MAX_TOKENS = int(os.getenv("NEWS_RETRY_MAX_TOKENS", "2000"))
+NEWS_PROMPT_ITEM_LIMIT = int(os.getenv("NEWS_PROMPT_ITEM_LIMIT", "18"))
+NEWS_PROMPT_DESC_CHARS = int(os.getenv("NEWS_PROMPT_DESC_CHARS", "90"))
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 try:
@@ -38,6 +42,9 @@ except Exception:
     )
 
 _NEWS_CALLS_KEY_PREFIX = "claude_news_calls:"
+_NEWS_API_BLOCK_KEY = "claude:news_api_blocked"
+_MIN_API_BLOCK_TTL_SEC = 3600
+_MAX_API_BLOCK_TTL_SEC = 172800
 _SLOT_LABELS = {
     "MORNING": "08:00 오전 브리핑",
     "MIDMORNING": "10:30 장중 오전 브리핑",
@@ -56,14 +63,14 @@ _LIST_KEYS = (
     "close_leaders",
 )
 _LIST_LIMITS = {
-    "recommended_sectors": 8,
-    "urgent_news": 8,
-    "risk_factors": 6,
-    "us_market_points": 5,
-    "us_sector_points": 5,
-    "macro_points": 5,
-    "midday_sectors": 8,
-    "close_leaders": 8,
+    "recommended_sectors": 4,
+    "urgent_news": 4,
+    "risk_factors": 3,
+    "us_market_points": 3,
+    "us_sector_points": 3,
+    "macro_points": 3,
+    "midday_sectors": 4,
+    "close_leaders": 4,
 }
 _TEXT_KEYS = (
     "summary",
@@ -75,25 +82,39 @@ _TEXT_KEYS = (
     "tomorrow_watch",
 )
 
+_SLOT_NEWS_LIMITS = {
+    "MORNING": 18,
+    "MIDMORNING": 14,
+    "MIDDAY": 14,
+    "AFTERNOON": 12,
+    "CLOSE": 14,
+}
+
+
+def _prompt_news_limit(slot_name: str) -> int:
+    slot_limit = _SLOT_NEWS_LIMITS.get(str(slot_name or "").upper(), NEWS_PROMPT_ITEM_LIMIT)
+    return max(1, min(NEWS_PROMPT_ITEM_LIMIT, slot_limit))
+
 
 def _build_news_prompt(news_list: List[Dict], slot_name: str) -> str:
     if not news_list:
         return "수집된 뉴스가 없습니다. 정보 부족 상태로 보수적으로 판단하세요."
 
     slot_label = _SLOT_LABELS.get(slot_name, slot_name)
+    prompt_items = news_list[:_prompt_news_limit(slot_name)]
     lines = [
         f"[수행 슬롯] {slot_label}",
         "[브리핑 스타일] 탑급 애널리스트 + 헤드 트레이더 + 초보자 교육형 진행자",
-        f"[수집 뉴스 {len(news_list)}건 - 분석 요청]",
+        f"[수집 뉴스 {len(news_list)}건 중 {len(prompt_items)}건 분석]",
         "",
     ]
-    for i, news in enumerate(news_list, 1):
+    for i, news in enumerate(prompt_items, 1):
         title = news.get("title", "")
         desc = news.get("description", "")
         src = news.get("source", "")
         line = f"{i}. [{src}] {title}"
         if desc:
-            line += f" / {desc[:160]}"
+            line += f" / {desc[:NEWS_PROMPT_DESC_CHARS]}"
         lines.append(line)
 
     lines.append("")
@@ -109,12 +130,12 @@ def _build_news_prompt(news_list: List[Dict], slot_name: str) -> str:
     lines.append("")
     lines.append("[OUTPUT BUDGET - mandatory]")
     lines.append("- Return valid JSON only. No markdown, no explanations outside JSON.")
-    lines.append("- recommended_sectors max 6 items, urgent_news max 6 items, risk_factors max 4 items.")
-    lines.append("- us_market_points/us_sector_points/macro_points max 4 items each.")
-    lines.append("- midday_sectors/close_leaders max 6 items each.")
-    lines.append("- Each list item must be one Korean sentence under 180 Korean characters.")
-    lines.append("- summary must be 3-4 Korean sentences under 500 Korean characters.")
-    lines.append("- korea_outlook/midday_index_commentary/midday_recap/afternoon_outlook/close_flow/tomorrow_watch must each be under 450 Korean characters.")
+    lines.append("- recommended_sectors max 4 items, urgent_news max 4 items, risk_factors max 3 items.")
+    lines.append("- us_market_points/us_sector_points/macro_points max 3 items each.")
+    lines.append("- midday_sectors/close_leaders max 4 items each.")
+    lines.append("- Each list item must be one Korean sentence under 120 Korean characters.")
+    lines.append("- summary must be 2-3 Korean sentences under 300 Korean characters.")
+    lines.append("- korea_outlook/midday_index_commentary/midday_recap/afternoon_outlook/close_flow/tomorrow_watch must each be under 260 Korean characters.")
     return "\n".join(lines)
 
 
@@ -212,6 +233,45 @@ async def _check_daily_news_limit(rdb) -> bool:
         return True
 
 
+async def _is_api_blocked(rdb) -> bool:
+    try:
+        reason = await rdb.get(_NEWS_API_BLOCK_KEY)
+        if reason:
+            logger.warning("[NewsAnalyzer] API quota block active: %s", reason)
+            return True
+    except Exception as e:
+        logger.debug("[NewsAnalyzer] API quota block check failed: %s", e)
+    return False
+
+
+def _is_usage_limit_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return "usage limit" in text or "usage limits" in text or "specified api usage limits" in text
+
+
+def _api_limit_ttl_seconds(error: Exception) -> int:
+    text = str(error)
+    match = re.search(r"regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC", text)
+    if not match:
+        return _MIN_API_BLOCK_TTL_SEC
+
+    try:
+        reset_at = datetime.fromisoformat(f"{match.group(1)}T{match.group(2)}:00+00:00")
+        ttl = int((reset_at - datetime.now(timezone.utc)).total_seconds())
+        return max(_MIN_API_BLOCK_TTL_SEC, min(ttl, _MAX_API_BLOCK_TTL_SEC))
+    except Exception:
+        return _MIN_API_BLOCK_TTL_SEC
+
+
+async def _mark_api_blocked(rdb, error: Exception) -> None:
+    ttl = _api_limit_ttl_seconds(error)
+    try:
+        await rdb.set(_NEWS_API_BLOCK_KEY, "api_quota_limited", ex=ttl)
+        logger.warning("[NewsAnalyzer] API quota block set ttl=%ds", ttl)
+    except Exception as e:
+        logger.debug("[NewsAnalyzer] API quota block set failed: %s", e)
+
+
 def _fallback_analysis(reason: str = "unknown") -> Dict:
     return {
         "market_sentiment": "NEUTRAL",
@@ -272,6 +332,9 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
         logger.error("[NewsAnalyzer] CLAUDE_API_KEY missing")
         return _fallback_analysis("missing_api_key")
 
+    if await _is_api_blocked(rdb):
+        return _fallback_analysis("api_quota_limited")
+
     if not await _check_daily_news_limit(rdb):
         return _fallback_analysis("daily_limit_exceeded")
 
@@ -313,6 +376,10 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
         logger.error("[NewsAnalyzer] JSON parse failed: %s stop_reason=%s / raw=%.300s", e, stop_reason, raw_text)
         return _fallback_analysis("json_parse_failed")
     except anthropic.APIError as e:
+        if _is_usage_limit_error(e):
+            await _mark_api_blocked(rdb, e)
+            logger.warning("[NewsAnalyzer] Claude API quota limited: %s", e)
+            return _fallback_analysis("api_quota_limited")
         logger.warning("[NewsAnalyzer] Claude API error: %s", e)
         return _fallback_analysis("api_error")
     except Exception as e:
