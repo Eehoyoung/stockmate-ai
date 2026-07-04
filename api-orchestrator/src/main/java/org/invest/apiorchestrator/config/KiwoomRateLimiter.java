@@ -13,34 +13,33 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 키움 API 전역 Rate Limiter.
+ * Kiwoom REST API rate limiter.
  *
- * <p>키움 제한: 초당 5회<br>
- * 설정값: 초당 최대 3회 (333ms 간격) – 여유 마진 확보 및 재시도 burst 방지.
+ * <p>Kiwoom's documented baseline is 5 requests per second. This service uses
+ * a conservative 3 requests per second local limiter, plus a Redis-backed global
+ * limiter to coordinate multiple processes.
  *
- * <p><b>Mono.defer 연동</b>: KiwoomApiService 에서 Mono.defer() 로 감쌌으므로
- * retryWhen 재시도 시에도 acquire() 가 반드시 재호출됩니다.
- *
- * <p>사용법: 모든 키움 API 호출 전 {@code rateLimiter.acquire()} 호출
+ * <p>Call {@code rateLimiter.acquire()} immediately before every Kiwoom REST call.
+ * When Redis coordination is unavailable or too slow, this class now falls back
+ * to a stricter local throttle instead of fail-open bursting requests.
  */
 @Slf4j
 @Component
 public class KiwoomRateLimiter {
 
-    /** 초당 최대 요청 수 (키움 제한 5/s 에서 여유 마진 적용) */
     private static final int MAX_REQUESTS_PER_SECOND = 3;
-
-    /** 토큰 보충 간격 ms = 1000 / MAX_REQUESTS_PER_SECOND */
     private static final long REFILL_INTERVAL_MS = 1000L / MAX_REQUESTS_PER_SECOND; // 333ms
 
-    /** 토큰 버킷 세마포어 – 초기 MAX 토큰 */
     private final Semaphore semaphore = new Semaphore(MAX_REQUESTS_PER_SECOND, true);
     private final StringRedisTemplate redisTemplate;
     private final boolean globalEnabled;
     private final long globalIntervalMs;
     private final long globalWaitMs;
+    private final long fallbackIntervalMs;
+    private final long unavailableBackoffMs;
     private final String globalKey;
     private volatile long globalDisabledUntilMs = 0L;
+    private long fallbackLastMs = 0L;
 
     private final ScheduledExecutorService refillExecutor =
             Executors.newSingleThreadScheduledExecutor(r -> {
@@ -54,12 +53,16 @@ public class KiwoomRateLimiter {
             @Value("${KIWOOM_GLOBAL_RATE_LIMIT_ENABLED:true}") boolean globalEnabled,
             @Value("${KIWOOM_GLOBAL_RATE_LIMIT_INTERVAL_MS:333}") long globalIntervalMs,
             @Value("${KIWOOM_GLOBAL_RATE_LIMIT_WAIT_MS:5000}") long globalWaitMs,
+            @Value("${KIWOOM_GLOBAL_RATE_LIMIT_FALLBACK_INTERVAL_MS:1000}") long fallbackIntervalMs,
+            @Value("${KIWOOM_GLOBAL_RATE_LIMIT_UNAVAILABLE_BACKOFF_MS:30000}") long unavailableBackoffMs,
             @Value("${KIWOOM_GLOBAL_RATE_LIMIT_KEY:kiwoom:global_rate_limit:lock}") String globalKey
     ) {
         this.redisTemplate = redisTemplate;
         this.globalEnabled = globalEnabled;
         this.globalIntervalMs = Math.max(globalIntervalMs, 1L);
         this.globalWaitMs = Math.max(globalWaitMs, 0L);
+        this.fallbackIntervalMs = Math.max(fallbackIntervalMs, this.globalIntervalMs);
+        this.unavailableBackoffMs = Math.max(unavailableBackoffMs, 0L);
         this.globalKey = globalKey;
     }
 
@@ -68,28 +71,29 @@ public class KiwoomRateLimiter {
         refillExecutor.scheduleAtFixedRate(
                 this::refillOne,
                 REFILL_INTERVAL_MS, REFILL_INTERVAL_MS, TimeUnit.MILLISECONDS);
-        log.info("[RateLimiter] 키움 API Rate Limiter 시작 – 최대 {}req/s ({}ms 간격)",
-                MAX_REQUESTS_PER_SECOND, REFILL_INTERVAL_MS);
+        log.info("[RateLimiter] Kiwoom REST limiter started: local={}req/s interval={}ms global={} globalInterval={}ms fallback={}ms",
+                MAX_REQUESTS_PER_SECOND, REFILL_INTERVAL_MS, globalEnabled, globalIntervalMs, fallbackIntervalMs);
     }
 
     /**
-     * API 호출 전 토큰 획득. 토큰 소진 시 최대 5초 대기.
-     * 5초 초과 시 경고 로그 후 강제 진행 (무한 블로킹 방지).
+     * Blocks until a local token is available, then applies the global limiter.
+     * If the local wait exceeds 5 seconds, continue through the stricter fallback
+     * throttle so the caller is delayed instead of released in a burst.
      */
     public void acquire() {
         try {
             boolean acquired = semaphore.tryAcquire(5, TimeUnit.SECONDS);
             if (!acquired) {
-                log.warn("[RateLimiter] 토큰 대기 5초 초과 – 강제 진행 (Rate Limit 위험)");
+                log.warn("[RateLimiter] local token wait exceeded 5000ms - local fallback {}ms", fallbackIntervalMs);
+                acquireGlobalFallback("local token wait exceeded");
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.warn("[RateLimiter] acquire 인터럽트: {}", e.getMessage());
+            log.warn("[RateLimiter] acquire interrupted: {}", e.getMessage());
         }
         acquireGlobal();
     }
 
-    /** 현재 사용 가능한 토큰 수 (모니터링용) */
     public int availablePermits() {
         return semaphore.availablePermits();
     }
@@ -106,6 +110,7 @@ public class KiwoomRateLimiter {
         }
         long now = System.currentTimeMillis();
         if (now < globalDisabledUntilMs) {
+            acquireGlobalFallback("global limiter unavailable");
             return;
         }
         long deadline = now + globalWaitMs;
@@ -120,21 +125,40 @@ public class KiwoomRateLimiter {
                     return;
                 }
             } catch (Exception e) {
-                globalDisabledUntilMs = System.currentTimeMillis() + 30_000L;
-                log.warn("[RateLimiter] Redis 전역 limiter 사용 불가 – 30초 fail-open: {}", e.getMessage());
+                globalDisabledUntilMs = System.currentTimeMillis() + unavailableBackoffMs;
+                acquireGlobalFallback("global limiter unavailable");
+                log.warn("[RateLimiter] Redis global limiter unavailable - local fallback {}ms for {}ms: {}",
+                        fallbackIntervalMs, unavailableBackoffMs, e.getMessage());
                 return;
             }
             if (System.currentTimeMillis() >= deadline) {
-                log.warn("[RateLimiter] Redis 전역 limiter 대기 {}ms 초과 – fail-open", globalWaitMs);
+                acquireGlobalFallback("global limiter wait exceeded");
+                log.warn("[RateLimiter] Redis global limiter wait exceeded {}ms - local fallback {}ms",
+                        globalWaitMs, fallbackIntervalMs);
                 return;
             }
             try {
                 Thread.sleep(25L);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                log.warn("[RateLimiter] Redis 전역 limiter 대기 인터럽트: {}", e.getMessage());
+                log.warn("[RateLimiter] Redis global limiter wait interrupted: {}", e.getMessage());
                 return;
             }
         }
+    }
+
+    private synchronized void acquireGlobalFallback(String reason) {
+        long now = System.currentTimeMillis();
+        long waitMs = fallbackIntervalMs - (now - fallbackLastMs);
+        if (waitMs > 0L) {
+            try {
+                Thread.sleep(waitMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("[RateLimiter] local fallback interrupted reason={}: {}", reason, e.getMessage());
+                return;
+            }
+        }
+        fallbackLastMs = System.currentTimeMillis();
     }
 }

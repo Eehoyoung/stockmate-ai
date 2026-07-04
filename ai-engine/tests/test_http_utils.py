@@ -24,6 +24,38 @@ HAS_HTTP_UTILS = importlib.util.find_spec("http_utils") is not None
 
 
 @pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+def test_classify_kiwoom_return_code():
+    from http_utils import classify_kiwoom_return_code, kiwoom_error_meta
+
+    assert classify_kiwoom_return_code("0") == "ok"
+    assert classify_kiwoom_return_code("1700") == "rate_limit"
+    assert classify_kiwoom_return_code("8005") == "auth"
+    assert classify_kiwoom_return_code("8050") == "auth"
+    assert classify_kiwoom_return_code("8103") == "auth"
+    assert classify_kiwoom_return_code("9999") == "business_error"
+    meta = kiwoom_error_meta({"return_code": "1700", "return_msg": "too many"}, "ka10001")
+    assert meta["error_type"] == "rate_limit"
+
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+def test_global_rate_limiter_wait_timeout_uses_local_fallback():
+    import http_utils
+
+    limiter = http_utils._KiwoomRateLimiter(rate=1000.0)
+    limiter._global_wait_ms = 0
+    limiter._fallback_interval_ms = 1000
+    limiter._fallback_last = http_utils._time.monotonic()
+    fake_redis = MagicMock()
+    fake_redis.set = AsyncMock(return_value=False)
+    limiter._redis_client = lambda: fake_redis
+
+    with patch("http_utils.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        _run(limiter._acquire_global())
+
+    assert mock_sleep.await_count >= 1
+
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
 class TestFetchCntrStrengthSuccess:
     def _make_response(self, strengths):
         """httpx 응답 모킹"""
@@ -613,3 +645,176 @@ class TestFetchTickSnapshot:
             await fetch_tick_snapshot("token", "005930")
 
         mock_post.assert_called_once()
+
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+class TestKiwoomSupplyAndProfileHelpers:
+    @pytest.mark.asyncio
+    async def test_fetch_daily_cntr_strength_uses_ka10047(self):
+        import http_utils
+        from http_utils import fetch_daily_cntr_strength
+
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _make_httpx_response({
+                "return_code": "0",
+                "cntr_str_daly": [
+                    {"cntr_str": "130"},
+                    {"cntr_str": "120"},
+                    {"cntr_str": "110"},
+                ],
+            })
+            summary, meta = await fetch_daily_cntr_strength("token", "A005930", days=3)
+
+        assert meta["api_id"] == "ka10047"
+        assert summary["latest"] == 130.0
+        assert summary["avg_5"] == pytest.approx(120.0)
+        args = mock_post.await_args.args
+        assert args[3] == "ka10047"
+        assert args[2] == {"stk_cd": "005930"}
+
+    @pytest.mark.asyncio
+    async def test_fetch_investor_flow_summary_uses_ka10061(self):
+        import http_utils
+        from http_utils import fetch_investor_flow_summary
+
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _make_httpx_response({
+                "return_code": "0",
+                "stk_invsr_orgn_tot": [
+                    {"frgnr_invsr": "10", "orgn": "20", "ind_invsr": "-30"}
+                ],
+            })
+            summary, meta = await fetch_investor_flow_summary("token", "005930")
+
+        assert meta["api_id"] == "ka10061"
+        assert summary["smart_money"] == 30.0
+        assert mock_post.await_args.args[2]["stk_cd"] == "005930"
+        assert mock_post.await_args.args[2]["amt_qty_tp"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_fetch_investor_flow_daily_uses_ka10059(self):
+        import http_utils
+        from http_utils import fetch_investor_flow_daily
+
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _make_httpx_response({
+                "return_code": "0",
+                "stk_invsr_orgn": [{"dt": "20260701", "frgnr_invsr": "5"}],
+            })
+            records, meta = await fetch_investor_flow_daily("token", "A005930", dt="20260701")
+
+        assert meta["api_id"] == "ka10059"
+        assert records[0]["frgnr_invsr"] == "5"
+        body = mock_post.await_args.args[2]
+        assert body["dt"] == "20260701"
+        assert body["stk_cd"] == "005930"
+        assert body["trde_tp"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_fetch_investor_flow_summary_cached_uses_redis_hit(self):
+        import http_utils
+        from http_utils import fetch_investor_flow_summary_cached
+
+        rdb = MagicMock()
+        rdb.get = AsyncMock(return_value=json.dumps({
+            "summary": {"smart_money": 42},
+            "meta": {"api_id": "ka10061", "error": None},
+        }))
+        rdb.set = AsyncMock()
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            summary, meta = await fetch_investor_flow_summary_cached("token", "005930", rdb=rdb)
+
+        assert summary["smart_money"] == 42
+        assert meta["source"] == "redis"
+        mock_post.assert_not_called()
+        rdb.set.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_volume_profile_derives_support_and_resistance(self):
+        import http_utils
+        from http_utils import fetch_volume_profile
+
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _make_httpx_response({
+                "return_code": "0",
+                "prps_cnctr": [
+                    {"stk_cd": "005930", "cur_prc": "1000", "pric_strt": "900", "pric_end": "950", "prps_rt": "+60.00"},
+                    {"stk_cd": "005930", "cur_prc": "1000", "pric_strt": "1100", "pric_end": "1150", "prps_rt": "+55.00"},
+                    {"stk_cd": "000660", "cur_prc": "2000", "pric_strt": "1900", "pric_end": "1950", "prps_rt": "+99.00"},
+                ],
+            })
+            profile, meta = await fetch_volume_profile("token", "005930")
+
+        assert meta["api_id"] == "ka10025"
+        assert meta["target_verified"] is True
+        assert profile["support"]["high"] == 950.0
+        assert profile["resistance"]["low"] == 1100.0
+
+    @pytest.mark.asyncio
+    async def test_fetch_volume_profile_skips_unverified_target(self):
+        import http_utils
+        from http_utils import fetch_volume_profile
+
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _make_httpx_response({
+                "return_code": "0",
+                "prps_cnctr": [
+                    {"cur_prc": "1000", "pric_strt": "900", "pric_end": "950", "prps_rt": "+60.00"},
+                ],
+            })
+            profile, meta = await fetch_volume_profile("token", "005930")
+
+        assert meta["target_verified"] is False
+        assert "target not verified" in meta["error"]
+        assert profile["target_verified"] is False
+
+    @pytest.mark.asyncio
+    async def test_fetch_program_snapshot_reads_0w_hash(self):
+        from http_utils import fetch_program_snapshot, program_drop_reason
+
+        rdb = MagicMock()
+        rdb.hgetall = AsyncMock(return_value={
+            "program_net_buy_amt": "-100",
+            "program_net_buy_amt_chg": "-50",
+            "program_net_buy_qty": "0",
+            "program_net_buy_qty_chg": "-10",
+        })
+        snapshot = await fetch_program_snapshot(rdb, "A005930")
+
+        assert snapshot["program_net_buy_amt"] == -100.0
+        assert "amount weakening" in program_drop_reason(snapshot)
+
+    @pytest.mark.asyncio
+    async def test_fetch_same_time_volume_ratio_parses_ka10055(self):
+        import http_utils
+        from http_utils import fetch_same_time_volume_ratio
+
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.side_effect = [
+                _make_httpx_response({"return_code": "0", "tdy_pred_cntr_qty": [{"cntr_tm": "091000", "cntr_qty": "+300"}]}),
+                _make_httpx_response({"return_code": "0", "tdy_pred_cntr_qty": [{"cntr_tm": "091000", "cntr_qty": "+100"}]}),
+            ]
+            summary, meta = await fetch_same_time_volume_ratio("token", "005930")
+
+        assert meta["api_id"] == "ka10055"
+        assert summary["same_time_volume_ratio"] == 3.0
+
+    @pytest.mark.asyncio
+    async def test_fetch_program_time_trend_parses_ka90008(self):
+        import http_utils
+        from http_utils import fetch_program_time_trend
+
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _make_httpx_response({
+                "return_code": "0",
+                "stk_tm_prm_trde_trn": [
+                    {"prm_netprps_amt": "+1000"},
+                    {"prm_netprps_amt": "-500"},
+                    {"prm_netprps_amt": "+250"},
+                ],
+            })
+            summary, meta = await fetch_program_time_trend("token", "005930")
+
+        assert meta["api_id"] == "ka90008"
+        assert summary["latest_net_buy_amt"] == 1000.0
+        assert summary["positive_count"] == 2
