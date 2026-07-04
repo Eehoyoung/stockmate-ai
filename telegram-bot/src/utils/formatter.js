@@ -23,6 +23,7 @@ const STRATEGY_EMOJI = {
     S13_BOX_BREAKOUT:   '📦',
     S14_OVERSOLD_BOUNCE:'🔄',
     S15_MOMENTUM_ALIGN: '🔥',
+    S16_ACCUMULATION_SHADOW: 'S16',
 };
 
 const STRATEGY_DESC = {
@@ -41,6 +42,7 @@ const STRATEGY_DESC = {
     S13_BOX_BREAKOUT:   '박스권 상단 돌파 + 거래량 폭발',
     S14_OVERSOLD_BOUNCE:'RSI 과매도 구간 반등 신호 (RSI < 35)',
     S15_MOMENTUM_ALIGN: '다중 모멘텀 정렬 상승 (RSI+MA+거래량)',
+    S16_ACCUMULATION_SHADOW: '세력 매집 의심 박스 돌파/첫 눌림 트리거',
 };
 
 /**
@@ -81,6 +83,11 @@ function _normalizeSignalStage(stage) {
 }
 
 function _effectiveAction(item) {
+    const readiness = String(item.readiness_action || '').trim().toUpperCase();
+    if (readiness === 'ENTER_CANDIDATE') return 'HOLD';
+    if (readiness === 'AVOID') return 'CANCEL';
+    if (readiness === 'HOLD') return 'HOLD';
+    if (readiness === 'ENTER') return 'ENTER';
     const decision = String(item.execution_decision || '').trim().toUpperCase();
     if (decision === 'ENTER') return 'ENTER';
     if (decision === 'WATCH') return 'HOLD';
@@ -305,6 +312,12 @@ function formatSignal(item) {
         `${emoji} <b>${strategyTag} ${stockLabel}</b>`,
     ];
     if (stratDesc) lines.push(`<i>${stratDesc}</i>`);
+    if (item.readiness_action) {
+        lines.push(`Readiness: <b>${escapeHtml(String(item.readiness_action))}</b>`);
+        if (Array.isArray(item.readiness_reasons) && item.readiness_reasons.length) {
+            lines.push(`Reason: ${escapeHtml(item.readiness_reasons.slice(0, 3).join(' | '))}`);
+        }
+    }
 
     // 진입가 표시
     const curPrc = normalizeForDisplay(item.cur_prc ?? item.entry_price ?? 0);
@@ -367,6 +380,14 @@ function formatSignal(item) {
             const effRR = _effectiveRR(item.stk_cd, curPrc, displayedTp1, displayedSl);
             if (effRR) lines.push(effRR);
         }
+
+        const flowLine = [
+            item.daily_strength_avg_5 != null ? `5D강도 ${Number(item.daily_strength_avg_5).toFixed(0)}` : null,
+            item.investor_smart_money != null ? `스마트머니 ${Number(item.investor_smart_money).toLocaleString()}` : null,
+            item.program_net_buy_amt != null ? `프로그램 ${Number(item.program_net_buy_amt).toLocaleString()}` : null,
+        ].filter(Boolean).join(' | ');
+        if (flowLine) lines.push(`수급: ${flowLine}`);
+        if (item.volume_profile_adjusted) lines.push('매물대 기준 TP/SL 보정 적용');
 
         const pos = _positionSize(item.ai_score, item.confidence);
         if (!isS1GapOpen && pos) lines.push(`권장 비중: <b>${pos}</b>`);
@@ -847,7 +868,7 @@ function _formatClaudeFull(cf, stkLabel) {
 }
 
 function formatStockScore(scoreData) {
-    const { stk_cd, stk_nm, no_match, matched_count, results, skipped, data, claude_full } = scoreData;
+    const { stk_cd, stk_nm, no_match, matched_count, results, skipped, data, claude_full, score_mode, used_cache } = scoreData;
     const stkLabel = stk_nm ? `${stk_nm}(${stk_cd})` : stk_cd;
 
     // ── 공통 헤더 (실시간 지표) ─────────────────────────────────
@@ -862,12 +883,24 @@ function formatStockScore(scoreData) {
     const ma60     = d.ma60  ? Number(d.ma60).toLocaleString() : 'N/A';
     const strength = d.avg_strength != null ? Number(d.avg_strength).toFixed(0) : 'N/A';
     const bidRatio = d.bid_ratio    != null ? Number(d.bid_ratio).toFixed(2)    : 'N/A';
+    const freshness = d.freshness || {};
+    const freshnessLine = Object.entries(freshness)
+        .map(([key, value]) => {
+            const state = String((value && value.state) || 'unknown').toUpperCase();
+            const age = value && value.age_ms != null ? ` ${Math.round(Number(value.age_ms) / 1000)}s` : '';
+            const source = value && value.source ? `/${value.source}` : '';
+            return `${key}:${state}${age}${source}`;
+        })
+        .join(' | ');
 
-    const header =
+    let header =
         `🔍 <b>[통합 분석] ${stkLabel}</b>\n` +
         `💰 현재가: <b>${curPrc.toLocaleString()}원</b>  <b>${fluSign}${fluRt}%</b>\n` +
+        `Mode: <b>${score_mode === 'fast' ? 'FAST' : 'DEEP'}</b>${used_cache ? ' | cache' : ''}\n` +
         `MA5: ${ma5} | MA20: ${ma20} | MA60: ${ma60}\n` +
         `RSI(14): ${rsi}  |  체결강도: ${strength}  |  호가비율: ${bidRatio}`;
+
+    if (freshnessLine) header += `\nData: ${freshnessLine}`;
 
     const claudeBlock = _formatClaudeFull(cf, stkLabel);
 

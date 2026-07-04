@@ -89,6 +89,16 @@ test('formatSignal includes basic trade context', () => {
     assert.ok(msg.includes('&lt;') || !msg.includes('<script>'));
 });
 
+test('formatSignal treats ENTER_CANDIDATE readiness as non-enter review', () => {
+    const msg = formatSignal(makeSignal({
+        readiness_action: 'ENTER_CANDIDATE',
+        readiness_reasons: ['fast rule pass; deep/AI not used'],
+    }));
+    assert.ok(msg.includes('ENTER_CANDIDATE'));
+    assert.ok(msg.includes('fast rule pass'));
+    assert.ok(!msg.includes('조건부 매수 검토'));
+});
+
 test('formatSignal renders S1 rule-only as observation form', () => {
     const msg = formatSignal(makeSignal({
         type: 'RULE_ONLY_SIGNAL',
@@ -252,6 +262,22 @@ test('formatSignal keeps non-S1 ENTER wording unchanged', () => {
     assert.ok(msg.includes('권장 비중'));
     assert.ok(msg.includes('매수 방식'));
     assert.ok(msg.includes('진입 체크포인트'));
+});
+
+test('formatSignal renders S16 accumulation strategy identity', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S16_ACCUMULATION_SHADOW',
+        stk_cd: '123456',
+        stk_nm: 'Accumulation Test',
+        tp1_price: 11500,
+        tp2_price: 12600,
+        sl_price: 9900,
+        rr_ratio: 1.8,
+        s16_state: 'TRIGGERED',
+    }));
+    assert.ok(msg.includes('S16_ACCUMULATION_SHADOW'));
+    assert.ok(msg.includes('Accumulation Test'));
+    assert.ok(msg.includes('세력 매집'));
 });
 
 test('formatSignal prefixes hold-promoted ENTER strategy with H tag', () => {

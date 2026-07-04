@@ -83,9 +83,10 @@ function buildCommands(overrides = {}) {
             getSignalPerformance: async () => overrides.performanceSignals || [],
             getPerformanceSummary: async () => overrides.performanceSummary || [],
             getStrategyAnalysis: async () => overrides.strategyAnalysis || [],
-            getLiveNewsBrief: async () => overrides.liveNewsBrief || null,
+            getLiveNewsBrief: overrides.getLiveNewsBrief || (async () => overrides.liveNewsBrief || null),
+            runStrategy: async (strategy) => overrides.runStrategy || ({ strategy: strategy.toUpperCase(), published: 0 }),
             analyzeStockWithClaude: async () => overrides.claudeAnalysis || { error: 'missing mock' },
-            scoreStockFull: async () => overrides.claudeAnalysis || { error: 'missing mock' },
+            scoreStockFull: overrides.scoreStockFull || (async () => overrides.claudeAnalysis || { error: 'missing mock' }),
         },
     };
 
@@ -252,6 +253,25 @@ function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0
         assert.deepStrictEqual(saved, ['S1_GAP_OPEN', 'S4_BIG_CANDLE']);
     });
 
+    await test('/filter accepts s16 accumulation shadow', async () => {
+        const { commands, redisState } = buildCommands();
+        const ctx = createCtx('/filter s16');
+        await commands.filter(ctx);
+        const saved = JSON.parse(redisState.kv.get('user_filter:100'));
+        assert.deepStrictEqual(saved, ['S16_ACCUMULATION_SHADOW']);
+    });
+
+    await test('/strategy accepts s16 manual run', async () => {
+        const { commands } = buildCommands({
+            runStrategy: { strategy: 'S16', published: 1 },
+        });
+        const ctx = createCtx('/strategy s16');
+        await commands.runStrategy(ctx);
+        assert.strictEqual(ctx.replies.length, 2);
+        assert.ok(ctx.replies[0].includes('S16'));
+        assert.ok(ctx.replies[1].includes('S16'));
+    });
+
     await test('/watchAdd rejects invalid code', async () => {
         const { commands } = buildCommands();
         const ctx = createCtx('/watchAdd ABC');
@@ -274,6 +294,17 @@ function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0
         await commands.userSettings(ctx);
         assert.ok(ctx.replies[0].includes('Quick Actions'));
         assert.ok(ctx.replies[0].includes('/watchAdd 005930'));
+    });
+
+    await test('/help shows renewed manual workflow', async () => {
+        const { commands } = buildCommands();
+        const ctx = createCtx('/help');
+        await commands.help(ctx);
+
+        assert.ok(ctx.replies[0].includes('StockMate AI 사용법'));
+        assert.ok(ctx.replies[0].includes('/news deep refresh'));
+        assert.ok(ctx.replies[0].includes('ENTER_CANDIDATE'));
+        assert.ok(ctx.replies[0].includes('자동매매/계좌 주문 연동 없이'));
     });
 
     await test('/news uses fixed layout when structured brief is available', async () => {
@@ -331,6 +362,55 @@ function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0
             assert.strictEqual(entry.meta.sent_count, 1);
             assert.strictEqual(entry.meta.failed_count, 0);
         }
+    });
+
+    await test('/news default uses no-ai live brief', async () => {
+        const calls = [];
+        const { commands } = buildCommands({
+            getLiveNewsBrief: async (slot, options) => {
+                calls.push({ slot, options });
+                return { message: 'live-news' };
+            },
+        });
+        const ctx = createCtx('/news');
+        await commands.newsStatus(ctx);
+
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].options.refresh, false);
+        assert.strictEqual(calls[0].options.ai, false);
+    });
+
+    await test('/news deep refresh enables ai refresh', async () => {
+        const calls = [];
+        const { commands } = buildCommands({
+            getLiveNewsBrief: async (slot, options) => {
+                calls.push({ slot, options });
+                return { message: 'live-news' };
+            },
+        });
+        const ctx = createCtx('/news deep refresh');
+        await commands.newsStatus(ctx);
+
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].options.refresh, true);
+        assert.strictEqual(calls[0].options.ai, true);
+    });
+
+    await test('/score fast refresh passes no-ai refresh options', async () => {
+        const calls = [];
+        const { commands } = buildCommands({
+            scoreStockFull: async (stkCd, options) => {
+                calls.push({ stkCd, options });
+                return { stk_cd: stkCd, no_match: true, results: [], skipped: [], data: {} };
+            },
+        });
+        const ctx = createCtx('/score 005930 fast refresh');
+        await commands.scoreStock(ctx);
+
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].stkCd, '005930');
+        assert.strictEqual(calls[0].options.enableAi, false);
+        assert.strictEqual(calls[0].options.refresh, true);
     });
 
     await test('/report writes 20260430 operational delivery log', async () => {

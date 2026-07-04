@@ -23,6 +23,7 @@ const {
 const { close: closePositionsStore } = require('./services/positions');
 const { getLogger } = require('./utils/logger');
 const health = require('./health');
+const { registerCommands } = require('./commands/registry');
 
 const logger = getLogger('index');
 
@@ -78,40 +79,8 @@ bot.use((ctx, next) => {
     return next();
 });
 
-bot.command('ping', commands.ping);
-bot.command('health', commands.status);
-bot.command('status', commands.status);
-bot.command('signals', commands.signals);
-bot.command('perf', commands.performance);
-bot.command('track', commands.performanceDetail);
-bot.command('analysis', commands.strategyAnalysis);
-bot.command('history', commands.signalHistory);
-bot.command('quote', commands.quote);
-bot.command('score', commands.scoreStock);
-bot.command('claude', commands.claudeAnalyze);
-bot.command('candidates', commands.candidates);
-bot.command('report', commands.report);
-bot.command('news', commands.newsStatus);
-bot.command('sector', commands.sectorStatus);
-bot.command('events', commands.calendarEvents);
-bot.command('settings', commands.userSettings);
-bot.command('filter', commands.filter);
-bot.command('watchAdd', commands.watchlistAdd);
-bot.command('watchRemove', commands.watchlistRemove);
 const CONFIRM_GATE_ENABLED = String(process.env.ENABLE_CONFIRM_GATE || 'false').toLowerCase() === 'true';
-if (CONFIRM_GATE_ENABLED) {
-    bot.command('confirmPending', commands.confirmPending);
-    bot.command('reanalyze', commands.reanalyzeConfirm);
-}
-bot.command('pause', commands.pauseTrading);
-bot.command('resume', commands.resumeTrading);
-bot.command('errors', commands.systemErrors);
-bot.command('strategy', commands.runStrategy);
-bot.command('token', commands.refreshToken);
-bot.command('wsStart', commands.wsStart);
-bot.command('wsStop', commands.wsStop);
-bot.command('help', commands.help);
-bot.command('start', commands.help);
+registerCommands(bot, commands, { confirmGateEnabled: CONFIRM_GATE_ENABLED });
 
 bot.action('confirm_pause', async (ctx) => {
     if (!commands.isAllowed(ctx)) return ctx.answerCbQuery('Access denied');

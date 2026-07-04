@@ -23,7 +23,7 @@
  *
  * ── Personal Settings ──
  * /settings – My notification settings
- * /filter [s1~s15|all] – Strategy filter
+ * /filter [s1~s16|all] – Strategy filter
  * /watchAdd {code} – Add to watchlist
  * /watchRemove {code} – Remove from watchlist
  *
@@ -31,7 +31,7 @@
  * /pause – Pause trading signals
  * /resume – Resume trading (CONTINUE)
  * /errors – System error status
- * /strategy {s1~s15} – Run strategy manually
+ * /strategy {s1~s16} – Run strategy manually
  * /token – Refresh Kiwoom token
  * /wsStart / /wsStop – WebSocket control
  * /status – System health check
@@ -132,6 +132,7 @@ const STRATEGY_MAP = {
     s13: 'S13_BOX_BREAKOUT',
     s14: 'S14_OVERSOLD_BOUNCE',
     s15: 'S15_MOMENTUM_ALIGN',
+    s16: 'S16_ACCUMULATION_SHADOW',
 };
 
 const CANDIDATE_MARKETS = {
@@ -162,6 +163,31 @@ function parseStockCodeArg(ctx, commandName) {
         return { ok: false, message: `❌ 종목코드는 6자리 숫자입니다. 예: /${commandName} 005930` };
     }
     return { ok: true, stkCd };
+}
+
+function parseScoreOptions(ctx, commandName = 'score') {
+    const args = parseCommandArgs(ctx.message?.text);
+    const rest = args.slice(1).map((arg) => String(arg).trim().toLowerCase());
+    const parsed = parseStockCodeArg(ctx, commandName);
+    if (!parsed.ok) return parsed;
+    const mode = rest.includes('fast') || rest.includes('rule') || rest.includes('noai') ? 'fast' : 'deep';
+    const refresh = rest.includes('refresh') || rest.includes('force');
+    return {
+        ok: true,
+        stkCd: parsed.stkCd,
+        mode,
+        refresh,
+        enableAi: mode !== 'fast',
+    };
+}
+
+function parseNewsOptions(ctx) {
+    const args = parseCommandArgs(ctx.message?.text).map((arg) => String(arg).trim().toLowerCase());
+    const deep = args.includes('deep') || args.includes('ai');
+    return {
+        refresh: args.includes('refresh') || args.includes('force'),
+        deep,
+    };
 }
 
 function parseCandidateMarket(rawArg) {
@@ -265,6 +291,8 @@ function formatNewsBriefResponse(brief) {
         `📰 <b>${slotLabel}</b>`,
         `시장 톤: <b>${sentimentLabel}</b>`,
     ];
+
+    lines.push(`AI: <b>${brief?.ai_used ? 'DEEP' : 'NO-AI/CACHE'}</b>`);
 
     if (marketLine) {
         lines.push('', '<b>1) 현재 국장 상황</b>', escapeHtml(marketLine));
@@ -574,7 +602,7 @@ const candidates = guard(async (ctx) => {
         } catch (_) { ps = null; }
     }
     if (ps) {
-        const strategies = ['s1','s7','s8','s9','s10','s11','s12','s13','s14','s15'];
+        const strategies = ['s1','s7','s8','s9','s10','s11','s12','s13','s14','s15','s16'];
         const rows = strategies.map(s => {
             const k = market === '101' ? `${s}_101` : (market === '001' ? `${s}_001` : null);
             if (k && ps[k] != null) return `  ${s.toUpperCase()}: ${ps[k]}건`;
@@ -623,7 +651,7 @@ const quote = guard(async (ctx) => {
     );
 });
 
-/** /strategy {s1~s7} */
+/** /strategy {s1~s16} */
 const runStrategy = guard(async (ctx) => {
     const args     = ctx.message.text.split(' ');
     const strategy = args[1];
@@ -735,6 +763,7 @@ const filter = guard(async (ctx) => {
         s11: 'S11_FRGN_CONT',      s12: 'S12_CLOSING',
         s13: 'S13_BOX_BREAKOUT',   s14: 'S14_OVERSOLD_BOUNCE',
         s15: 'S15_MOMENTUM_ALIGN',
+        s16: 'S16_ACCUMULATION_SHADOW',
     };
     const selected = args
         .map((a) => strategyMap[a.toLowerCase()])
@@ -823,10 +852,11 @@ const userSettings = guard(async (ctx) => {
 
 /** /뉴스 – 최근 뉴스 + 분석 결과 */
 const newsStatus = guard(async (ctx) => {
+    const options = parseNewsOptions(ctx);
     await sendOperationalReplies(ctx, 'news', '뉴스와 장상황을 즉시 재분석 중입니다. 잠시만 기다리세요.');
 
     try {
-        const brief = await kiwoom.getLiveNewsBrief();
+        const brief = await kiwoom.getLiveNewsBrief(null, { refresh: options.refresh, ai: options.deep });
         if (brief?.analysis || brief?.message) {
             const message = brief?.analysis ? formatNewsBriefResponse(brief) : brief.message;
             return sendOperationalReplies(ctx, 'news', {
@@ -876,7 +906,7 @@ const sectorStatus = guard(async (ctx) => {
  * 전략 미매칭 시: Claude 실시간 데이터 단독 AI 분석 반환 (후보풀 무관 동작)
  */
 const scoreStock = guard(async (ctx) => {
-    const parsed = parseStockCodeArg(ctx, 'score');
+    const parsed = parseScoreOptions(ctx, 'score');
     if (!parsed.ok) return ctx.reply(parsed.message);
     const stkCd = parsed.stkCd;
     if (!stkCd || !/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /score 005930');
@@ -888,7 +918,10 @@ const scoreStock = guard(async (ctx) => {
 
     let d;
     try {
-        d = await kiwoom.scoreStockFull(stkCd);
+        d = await kiwoom.scoreStockFull(stkCd, {
+            enableAi: parsed.enableAi,
+            refresh: parsed.refresh,
+        });
     } catch (e) {
         return ctx.reply(`❌ ai-engine 심사 실패: ${e.message}`);
     }
@@ -915,7 +948,7 @@ const scoreStock = guard(async (ctx) => {
 
 /** /claude — /score 와 동일 (이전 호환) */
 const claudeAnalyze = guard(async (ctx) => {
-    const parsed = parseStockCodeArg(ctx, 'claude');
+    const parsed = parseScoreOptions(ctx, 'claude');
     if (!parsed.ok) return ctx.reply(parsed.message);
     const stkCd = parsed.stkCd;
     if (!stkCd || !/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /claude 005930');
@@ -927,7 +960,10 @@ const claudeAnalyze = guard(async (ctx) => {
 
     let d;
     try {
-        d = await kiwoom.scoreStockFull(stkCd);
+        d = await kiwoom.scoreStockFull(stkCd, {
+            enableAi: parsed.enableAi,
+            refresh: parsed.refresh,
+        });
     } catch (e) {
         return ctx.reply(`❌ ai-engine 분석 실패: ${e.message}`);
     }
@@ -1024,8 +1060,58 @@ const reanalyzeConfirm = guard(async (ctx) => {
     );
 });
 
+const HELP_MESSAGE =
+    `<b>StockMate AI 사용법</b>\n` +
+    `<i>현재는 자동매매/계좌 주문 연동 없이 수동 판단 보조로 동작합니다.</i>\n\n` +
+    `<b>1. 종목 평가</b>\n` +
+    `/score 005930 - 기본 정밀 평가(DEEP)\n` +
+    `/score 005930 fast - Claude 없이 빠른 규칙 평가\n` +
+    `/score 005930 deep - Claude 포함 정밀 평가\n` +
+    `/score 005930 refresh - 캐시 우회 후 재평가\n` +
+    `/claude 005930 - /score deep 호환 명령\n` +
+    `<i>FAST 결과는 ENTER가 아니라 ENTER_CANDIDATE로 보고 직접 확인합니다.</i>\n\n` +
+    `<b>2. 뉴스/시장 브리핑</b>\n` +
+    `/news - 캐시/구조화 facts 기반 no-AI 브리핑\n` +
+    `/news refresh - 기본 no-AI 새로고침\n` +
+    `/news deep - Claude 해석 포함 브리핑\n` +
+    `/news deep refresh - Claude 포함 강제 재분석\n` +
+    `/sector - 섹터/테마 상태\n` +
+    `/events - 이번 주 주요 일정\n\n` +
+    `<b>3. 신호/성과 조회</b>\n` +
+    `/signals - 오늘 신호 목록\n` +
+    `/perf - 오늘 전략별 통계\n` +
+    `/track - 가상 손익 상세\n` +
+    `/analysis - 전략 승률/수익률 분석\n` +
+    `/history 005930 - 종목별 신호 이력\n` +
+    `/quote 005930 - 실시간 시세/호가\n` +
+    `/candidates [all|kospi|kosdaq] - 후보군 조회\n` +
+    `/report - 오늘 신호 요약\n\n` +
+    `<b>4. 개인 설정</b>\n` +
+    `/settings - 내 알림 설정\n` +
+    `/filter [s1~s16|all] - 받을 전략 필터\n` +
+    `/watchAdd 005930 - 관심 종목 추가\n` +
+    `/watchRemove 005930 - 관심 종목 제거\n\n` +
+    `<b>5. 운영/점검</b>\n` +
+    `/status - 시스템 상태\n` +
+    `/errors - 시스템 경고/오류\n` +
+    `/pause - 신호 일시정지\n` +
+    `/resume - 신호 재개\n` +
+    `/strategy s16 - 전략 수동 실행\n` +
+    `/token - 키움 토큰 재발급\n` +
+    `/wsStart / /wsStop - WebSocket 제어\n` +
+    `/ping - 봇 응답 확인\n\n` +
+    `<b>6. 전략 코드</b>\n` +
+    `s1 갭상승 | s2 VI 눌림 | s3 기관+외국인\n` +
+    `s4 장대양봉 | s5 프로그램+외국인 | s6 테마 후발\n` +
+    `s7 일목 돌파 | s8 골든크로스 | s9 눌림 스윙\n` +
+    `s10 신고가 | s11 외국인 연속 | s12 종가베팅\n` +
+    `s13 박스돌파 | s14 과매도 반등 | s15 모멘텀 정렬\n` +
+    `s16 세력 매집 의심/박스 돌파`;
+
 /** /help */
 const help = guard(async (ctx) => {
+    await ctx.reply(HELP_MESSAGE, { parse_mode: 'HTML' });
+    return;
     await ctx.reply(
         `📖 <b>StockMate AI Commands</b>\n\n` +
         `<b>── Query ──</b>\n` +
@@ -1045,14 +1131,14 @@ const help = guard(async (ctx) => {
         `/events – This week's economic calendar\n\n` +
         `<b>── Personal Settings ──</b>\n` +
         `/settings – My notification settings\n` +
-        `/filter [s1~s15|all] – Strategy filter\n` +
+        `/filter [s1~s16|all] – Strategy filter\n` +
         `/watchAdd {code} – Add to watchlist\n` +
         `/watchRemove {code} – Remove from watchlist\n\n` +
         `<b>── System Control ──</b>\n` +
         `/pause – Pause trading signals\n` +
         `/resume – Resume trading (CONTINUE)\n` +
         `/errors – System error status\n` +
-        `/strategy {s1~s15} – Run strategy manually\n` +
+        `/strategy {s1~s16} – Run strategy manually\n` +
         `/token – Refresh Kiwoom token\n` +
         `/wsStart / /wsStop – WebSocket control\n` +
         `/status – System health check\n` +
@@ -1063,6 +1149,7 @@ const help = guard(async (ctx) => {
         `s7: Auction | s8: Golden cross | s9: Pullback swing\n` +
         `s10: 52w New High | s11: Frgn cont | s12: Closing\n` +
         `s13: Box breakout | s14: Oversold bounce | s15: Momentum align\n` +
+        `s16: Accumulation shadow\n` +
         `\n💡 /score works anytime (even outside trading hours)`,
         { parse_mode: 'HTML' }
     );
@@ -1161,7 +1248,7 @@ const candidatesEnhanced = guard(async (ctx) => {
     }
 
     if (ps) {
-        const strategies = ['s1','s7','s8','s9','s10','s11','s12','s13','s14','s15'];
+        const strategies = ['s1','s7','s8','s9','s10','s11','s12','s13','s14','s15','s16'];
         const rows = strategies.map((s) => {
             const exactKey = market === '101' ? `${s}_101` : (market === '001' ? `${s}_001` : null);
             if (exactKey && ps[exactKey] != null) return `  ${s.toUpperCase()}: ${ps[exactKey]}건`;

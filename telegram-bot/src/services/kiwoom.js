@@ -58,10 +58,10 @@ async function refreshToken() {
 /** 전술 수동 실행 */
 async function runStrategy(strategy, params = {}) {
     const s = strategy.toLowerCase();
-    // s1~s15 모두 동일한 URL 패턴 사용
-    const valid = ['s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14','s15'];
+    // s1~s16 모두 동일한 URL 패턴 사용
+    const valid = ['s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14','s15','s16'];
     if (!valid.includes(s)) {
-        throw new Error(`알 수 없는 전술: ${strategy}. 사용 가능: s1~s15`);
+        throw new Error(`알 수 없는 전술: ${strategy}. 사용 가능: s1~s16`);
     }
     const url = `/api/trading/strategy/${s}/run`;
     const { data } = await api.post(url, null, { params });
@@ -162,24 +162,31 @@ async function analyzeStockWithClaude(stkCd) {
  * @param {boolean} enableAi  AI 스코어링 활성화 여부 (기본 true)
  * @returns {Promise<Object>} { stk_cd, stk_nm, no_match, matched_count, results, skipped, data }
  */
-async function scoreStockFull(stkCd, enableAi = true) {
+async function scoreStockFull(stkCd, options = {}) {
     const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://ai-engine:8082';
     const timeoutMs = Number(process.env.SCORE_COMMAND_TIMEOUT_MS ?? 95_000);
+    const enableAi = typeof options === 'boolean' ? options : options.enableAi !== false;
+    const refresh = typeof options === 'object' && options.refresh === true;
     const aiParam = enableAi ? 'true' : 'false';
+    const params = new URLSearchParams({ ai: aiParam });
+    if (refresh) params.set('refresh', 'true');
     const { data } = await axios.get(
-        `${AI_ENGINE_URL}/score/${stkCd}?ai=${aiParam}`,
+        `${AI_ENGINE_URL}/score/${stkCd}?${params.toString()}`,
         { timeout: timeoutMs },
     );
     return data;
 }
 
 /** /news 즉시 브리핑 */
-async function getLiveNewsBrief(slot) {
+async function getLiveNewsBrief(slot, options = {}) {
     const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://ai-engine:8082';
-    const params = slot ? { slot } : undefined;
+    const params = {};
+    if (slot) params.slot = slot;
+    if (options.refresh === true) params.refresh = 'true';
+    if (options.ai === true) params.ai = 'true';
     const { data } = await axios.get(
         `${AI_ENGINE_URL}/news/brief`,
-        { params, timeout: 40_000 },
+        { params: Object.keys(params).length ? params : undefined, timeout: 120_000 },
     );
     return data;
 }
