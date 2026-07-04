@@ -19,7 +19,16 @@ import asyncio
 import logging
 import os
 import httpx
-from http_utils import fetch_cntr_strength_cached, fetch_hoga, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import (
+    apply_volume_profile_rr,
+    fetch_cntr_strength_cached,
+    fetch_hoga,
+    fetch_investor_flow_summary_cached,
+    fetch_stk_nm,
+    fetch_volume_profile,
+    kiwoom_client,
+    validate_kiwoom_response,
+)
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
@@ -285,10 +294,26 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
                     upper_shadow_penalty = 8.0    # 약한 윗꼬리: 감점
 
         # 스코어링 (거래량 비중 강화)
+        investor_flow = {}
+        investor_flow_meta = {}
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            investor_flow, investor_flow_meta = await fetch_investor_flow_summary_cached(token, stk_cd, rdb=rdb, days=10)
+        except Exception as e:
+            investor_flow_meta = {"api_id": "ka10061", "error": str(e)}
+
+        smart_money = float(investor_flow.get("smart_money") or 0.0)
+        institution_foreign_confirm = (
+            "POSITIVE" if smart_money > 0
+            else "NEGATIVE" if smart_money < 0
+            else "UNKNOWN"
+        )
+
         score = (flu_rt * 0.3) + (min(sdnin_rt / 100, 5.0) * 12) + (max(cntr_str - 100, 0) * 0.2)
         score -= (12 if flu_rt_overheat else 0)      # 과열 구간 감점 (10~15%)
         score -= (5  if flu_rt_strong   else 0)      # 강한 돌파 감점 (7~10%)
         score -= upper_shadow_penalty                 # 윗꼬리 감점
+        score += (6 if smart_money > 0 else -5 if smart_money < 0 else 0)
 
         # ATR 계산 (SL/TP 폴백 품질 향상)
         atr_val = None
@@ -348,10 +373,11 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             signal_mode = "SHADOW"
 
         stk_nm = str(item.get("stk_nm", "")).strip() or await fetch_stk_nm(rdb, token, stk_cd)
-        results.append({
+        signal = {
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
             "cur_prc": round(cur_prc),
+            "entry_price": round(cur_prc),
             "strategy": "S10_NEW_HIGH",
             "flu_rt": round(flu_rt, 2),
             "flu_rt_zone": flu_rt_zone,
@@ -361,7 +387,11 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             "high_rejection_pct": high_rejection_pct,
             "ma20_extension_pct": ma20_extension_pct,
             "breakout_quality": breakout_quality,
-            "institution_foreign_confirm": "UNKNOWN",
+            "institution_foreign_confirm": institution_foreign_confirm,
+            "investor_smart_money": smart_money,
+            "investor_foreign": investor_flow.get("foreign"),
+            "investor_institution": investor_flow.get("institution"),
+            "investor_flow_meta": investor_flow_meta,
             "spread_pct": eq_result["spread_pct"],
             "depth_score": eq_result["depth_score"],
             "sell_wall_score": eq_result["sell_wall_score"],
@@ -377,7 +407,16 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             "bid_ratio": round(bid_ratio, 3) if bid_ratio is not None else None,
             "score": round(score, 2),
             **tp_sl.to_signal_fields(),
-        })
+        }
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            profile, profile_meta = await fetch_volume_profile(token, stk_cd)
+            signal["volume_profile_meta"] = profile_meta
+            if profile_meta.get("target_verified"):
+                signal = apply_volume_profile_rr(signal, profile)
+        except Exception as e:
+            signal["volume_profile_meta"] = {"api_id": "ka10025", "error": str(e)}
+        results.append(signal)
 
     # 상위 5개 종목 반환
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

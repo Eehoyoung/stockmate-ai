@@ -6,8 +6,10 @@ import os
 from datetime import datetime, timezone, timedelta
 
 from http_utils import (
+    apply_volume_profile_rr,
     fetch_hoga,
     fetch_cntr_strength,
+    fetch_volume_profile,
     fetch_stk_nm,
     kiwoom_client,
     validate_kiwoom_response,
@@ -644,11 +646,11 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
         elif entry_policy == "CANCEL":
             signal_mode = "SHADOW"
 
-        results.append(
-            {
+        signal = {
                 "stk_cd": stk_cd,
                 "stk_nm": stk_nm,
                 "cur_prc": exp_price,
+                "entry_price": exp_price,
                 "strategy": "S1_GAP_OPEN",
                 "gap_pct": round(gap_pct, 2),
                 "gap_zone": ("overheat" if gap_overheat else "strong" if gap_strong else "normal"),
@@ -671,7 +673,16 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
                 "execution_quality": eq_result["execution_quality"],
                 **tp_sl.to_signal_fields(),
             }
-        )
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            profile, profile_meta = await fetch_volume_profile(token, stk_cd)
+            signal["volume_profile_meta"] = profile_meta
+            if profile.get("target_verified"):
+                signal = apply_volume_profile_rr(signal, profile)
+        except Exception as exc:
+            logger.debug("[S1] ka10025 volume profile failed [%s]: %s", stk_cd, exc)
+
+        results.append(signal)
 
     final_results = sorted(results, key=lambda x: x["score"], reverse=True)[:5]
     logger.info(

@@ -23,7 +23,15 @@ import asyncio
 import logging
 import os
 
-from http_utils import fetch_stk_nm, validate_kiwoom_response, kiwoom_client
+from http_utils import (
+    apply_volume_profile_rr,
+    fetch_program_snapshot,
+    fetch_stk_nm,
+    fetch_volume_profile,
+    kiwoom_client,
+    program_drop_reason,
+    validate_kiwoom_response,
+)
 from indicator_bollinger import calc_bollinger
 from indicator_rsi import calc_rsi
 from indicator_volume import calc_mfi
@@ -254,8 +262,11 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
             or near_resistance
             or box_breakout_extension_pct > 3.0
         ) else "NORMAL"
+        program_snapshot = await fetch_program_snapshot(rdb, stk_cd)
+        program_reason = program_drop_reason(program_snapshot)
+        volume_profile, volume_profile_meta = await fetch_volume_profile(token, stk_cd)
 
-        results.append({
+        signal = {
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
             "cur_prc": round(cur_prc),
@@ -291,7 +302,14 @@ async def scan_box_breakout(token: str, rdb=None) -> list:
             "entry_type": "당일종가_또는_익일눌림",
             "holding_days": "3~7거래일",
             **tp_sl.to_signal_fields(),
-        })
+        }
+        signal.update(program_snapshot)
+        if program_reason:
+            signal["program_drop_reason"] = program_reason
+        signal["volume_profile_meta"] = volume_profile_meta
+        signal = apply_volume_profile_rr(signal, volume_profile)
+        signal["effective_rr"] = signal.get("rr_ratio")
+        results.append(signal)
 
     # 스코어 기준 내림차순 정렬 후 상위 5개 반환
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

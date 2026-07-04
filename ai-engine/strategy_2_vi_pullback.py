@@ -15,7 +15,7 @@ import logging
 
 import httpx
 
-from http_utils import fetch_cntr_strength_cached, fetch_hoga, fetch_stk_nm
+from http_utils import fetch_cntr_strength_cached, fetch_hoga, fetch_same_time_volume_ratio, fetch_stk_nm
 from indicator_atr import get_atr_minute
 from tp_sl_engine import calc_tp_sl
 
@@ -34,6 +34,9 @@ ENABLE_S2_STRICT_VOLUME_GATE = (
 
 VI_VOL_RATIO_THRESHOLD = 3.0
 VI_AMOUNT_RATIO_THRESHOLD = 3.0
+S2_KA10055_ENRICH_ENABLED = (
+    os.getenv("S2_KA10055_ENRICH_ENABLED", "true").lower() == "true"
+)
 
 # 2차 VI 위험 판단: VI 해제 후 이 시간(초) 이내에 같은 종목 VI 재발동 이력이 있으면 HIGH
 SECONDARY_VI_RISK_WINDOW_SEC = 300  # 5분
@@ -301,6 +304,18 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     if strength < 110:
         return None
 
+    same_time_volume_ratio = 0.0
+    same_time_volume_meta = {}
+    if S2_KA10055_ENRICH_ENABLED:
+        try:
+            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio(token, stk_cd)
+            same_time_volume_ratio = float(volume_summary.get("same_time_volume_ratio") or 0.0)
+            if same_time_volume_ratio >= 3.0 and volume_quality in {"UNKNOWN", "LOW", "PARTIAL"}:
+                volume_quality = "CONFIRMED_BY_KA10055"
+                signal_mode = None
+        except Exception as exc:
+            logger.debug("[S2] ka10055 volume enrich failed [%s]: %s", stk_cd, exc)
+
     stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
 
     # 동적 TP/SL — 5분봉 ATR 기반 (VI 눌림목 = 단기 변동성 기준)
@@ -330,6 +345,8 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
         # 거래량 품질 필드 (항상 포함)
         "vi_vol_ratio": round(vi_vol_ratio, 2),
         "vi_amount_ratio": round(vi_amount_ratio, 2),
+        "same_time_volume_ratio": round(same_time_volume_ratio, 2),
+        "same_time_volume_meta": same_time_volume_meta,
         "volume_quality": volume_quality,
         "secondary_vi_risk": secondary_vi_risk,
         "rebound_high_breakout": rebound_high_breakout,

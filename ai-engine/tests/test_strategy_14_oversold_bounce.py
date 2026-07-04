@@ -1,5 +1,6 @@
 import os
 import sys
+import importlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -8,13 +9,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 @pytest.mark.asyncio
-async def test_s14_empty_pool_returns_empty():
-    from strategy_14_oversold_bounce import scan_oversold_bounce
+async def test_s14_empty_pool_returns_empty(monkeypatch):
+    monkeypatch.setenv("S14_POOL_READ_LIMIT", "180")
+    import strategy_14_oversold_bounce
+    strategy_14_oversold_bounce = importlib.reload(strategy_14_oversold_bounce)
 
     rdb = AsyncMock()
     rdb.lrange = AsyncMock(side_effect=[[], []])
 
-    result = await scan_oversold_bounce("token", rdb=rdb)
+    result = await strategy_14_oversold_bounce.scan_oversold_bounce("token", rdb=rdb)
 
     assert result == []
     assert rdb.lrange.await_args_list[0].args == ("candidates:s14:001", 0, 179)

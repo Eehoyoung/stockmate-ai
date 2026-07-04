@@ -23,7 +23,14 @@ import httpx
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
-from http_utils import fetch_cntr_strength_cached, fetch_stk_nm, validate_kiwoom_response, kiwoom_client
+from http_utils import (
+    apply_volume_profile_rr,
+    fetch_cntr_strength_cached,
+    fetch_stk_nm,
+    fetch_volume_profile,
+    validate_kiwoom_response,
+    kiwoom_client,
+)
 from indicator_atr import get_atr_minute
 from tp_sl_engine import calc_tp_sl
 from execution_quality import assess_execution_quality, should_hard_reject
@@ -244,10 +251,11 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
         logger.debug("[S4] execution_quality REJECT skip [%s]", stk_cd)
         return None
 
-    return {
+    signal = {
         "stk_cd": stk_cd,
         "stk_nm": stk_nm,
         "cur_prc": round(c),
+        "entry_price": round(c),
         "strategy": "S4_BIG_CANDLE",
         "gain_pct": round(gain_pct, 2),
         "vol_ratio": round(vol_ratio, 1),
@@ -269,3 +277,11 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
         "execution_quality": eq_result["execution_quality"],
         **tp_sl.to_signal_fields(),
     }
+    try:
+        profile, profile_meta = await fetch_volume_profile(token, stk_cd)
+        signal["volume_profile_meta"] = profile_meta
+        if profile.get("target_verified"):
+            signal = apply_volume_profile_rr(signal, profile)
+    except Exception as exc:
+        logger.debug("[S4] ka10025 volume profile failed [%s]: %s", stk_cd, exc)
+    return signal

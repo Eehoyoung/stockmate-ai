@@ -49,7 +49,13 @@ from indicator_ichimoku import calc_ichimoku
 from indicator_rsi import calc_rsi
 from indicator_atr import calc_atr
 from indicator_volume import get_vwap_minute
-from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
+from http_utils import (
+    apply_volume_profile_rr,
+    fetch_cntr_strength_cached,
+    fetch_same_time_volume_ratio,
+    fetch_stk_nm,
+    fetch_volume_profile,
+)
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -181,6 +187,15 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
         if cond_count < 2:
             continue
 
+        same_time_volume_ratio = 0.0
+        same_time_volume_meta = {}
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio(token, stk_cd)
+            same_time_volume_ratio = float(volume_summary.get("same_time_volume_ratio") or 0.0)
+        except Exception as e:
+            same_time_volume_meta = {"api_id": "ka10055", "error": str(e)}
+
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ATR 계산
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -274,6 +289,7 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             + (5  if 1.0 <= flu_rt <= 8.0 else 0)
             + (0  if cloud_confirmed_prev else -10)   # 전일 미확인 패널티
             + _h60_bonus                              # 60분봉 MTF 완전 정합 보너스
+            + (6 if same_time_volume_ratio >= 1.5 else -4 if 0 < same_time_volume_ratio < 0.8 else 0)
         )
 
         # ── 동적 TP/SL ──────────────────────────────────────────
@@ -284,10 +300,11 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
-        results.append({
+        signal = {
             "stk_cd":               stk_cd,
             "stk_nm":               stk_nm,
             "cur_prc":              round(cur_prc),
+            "entry_price":          round(cur_prc),
             "strategy":             "S7_ICHIMOKU_BREAKOUT",
             "flu_rt":               round(flu_rt, 2),
             "tenkan":               round(ichi.tenkan, 0),
@@ -298,6 +315,8 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             "chikou_above":         ichi.chikou_above_price,
             "rsi":                  round(rsi_now, 1) if rsi_now else None,
             "vol_ratio":            round(vol_ratio, 2),
+            "same_time_volume_ratio": round(same_time_volume_ratio, 2),
+            "same_time_volume_meta": same_time_volume_meta,
             "cntr_strength":        round(cntr_str, 1),
             "cond_count":           cond_count,
             "score":                round(score, 2),
@@ -308,6 +327,15 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             "h60_tenkan_above_kijun": h60_tenkan_above_kijun,
             "cloud_confirmed_prev": cloud_confirmed_prev,
             **tp_sl.to_signal_fields(),
-        })
+        }
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            profile, profile_meta = await fetch_volume_profile(token, stk_cd)
+            signal["volume_profile_meta"] = profile_meta
+            if profile_meta.get("target_verified"):
+                signal = apply_volume_profile_rr(signal, profile)
+        except Exception as e:
+            signal["volume_profile_meta"] = {"api_id": "ka10025", "error": str(e)}
+        results.append(signal)
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]

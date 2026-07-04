@@ -23,7 +23,14 @@ import os
 import asyncio
 import httpx
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client, fetch_cntr_strength_cached
+from http_utils import (
+    fetch_cntr_strength_cached,
+    fetch_hoga,
+    fetch_investor_flow_summary_cached,
+    fetch_stk_nm,
+    kiwoom_client,
+    validate_kiwoom_response,
+)
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_bollinger import calc_bollinger
 from tp_sl_engine import calc_tp_sl
@@ -179,9 +186,27 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         if cntr_str < 100.0:
             continue
 
+        investor_flow = {}
+        investor_flow_meta = {}
+        try:
+            await asyncio.sleep(0.25)
+            investor_flow, investor_flow_meta = await fetch_investor_flow_summary_cached(token, stk_cd, rdb=rdb, days=10)
+        except Exception as e:
+            investor_flow_meta = {"api_id": "ka10061", "error": str(e)}
+
+        smart_money = float(investor_flow.get("smart_money") or 0.0)
+        bid_ratio = None
+        try:
+            await asyncio.sleep(0.25)
+            bid_ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
+        except Exception:
+            bid_ratio = None
+
         # 5. 스코어링 (누적 매집량 + 최근 매수 강도 + 시장 탄력)
         # 100만 주 단위를 기준으로 가중치 부여
         score = (tot / 1_000_000) * 5 + (dm1 / 1_000_000) * 3 + (flu_rt * 0.5)
+        score += (6 if smart_money > 0 else -5 if smart_money < 0 else 0)
+        score += (4 if bid_ratio is not None and bid_ratio >= 1.2 else -3 if bid_ratio is not None and bid_ratio < 0.8 else 0)
         cur_prc = abs(float(str(item.get("cur_prc", "0")).replace("+", "").replace(",", "")))
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
@@ -217,6 +242,12 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
             "tot": tot,
             "flu_rt": round(flu_rt, 2),
             "cntr_strength": round(cntr_str, 1),
+            "bid_ratio": round(bid_ratio, 3) if bid_ratio is not None else None,
+            "investor_smart_money": smart_money,
+            "investor_foreign": investor_flow.get("foreign"),
+            "investor_institution": investor_flow.get("institution"),
+            "investor_individual": investor_flow.get("individual"),
+            "investor_flow_meta": investor_flow_meta,
             "entry_type": "현재가_종가",
             **tp_sl.to_signal_fields(),
         })

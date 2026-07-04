@@ -118,6 +118,18 @@ class TestPushSignals:
         assert payload["score"] == 100.0
         assert payload["runner_score_raw"] == 90.0
 
+    def test_runner_preserves_s16_normalized_score(self):
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        signals = [{"stk_cd": "005930", "strategy": "S16_ACCUMULATION_SHADOW", "score": 82.0}]
+        _run(_push_signals(rdb, signals, "S16_ACCUMULATION_SHADOW"))
+
+        payload = json.loads(rdb.lpush.call_args[0][1])
+        assert payload["score"] == 82.0
+        assert payload["runner_score"] == 82.0
+        assert payload["runner_score_raw"] == 82.0
+
     def test_sets_queue_ttl(self):
         from strategy_runner import _push_signals
 
@@ -199,6 +211,12 @@ class TestSemaphore:
 
         sem = strategy_runner._get_semaphore()
         assert not sem.locked()
+
+    def test_schedule_includes_s16_accumulation_shadow(self):
+        import strategy_runner
+
+        tags = [entry[0] for entry in strategy_runner._SCHEDULE]
+        assert "S16" in tags
 
     def test_slow_strategy_records_status_and_pipeline_when_enabled(self, monkeypatch):
         import strategy_runner

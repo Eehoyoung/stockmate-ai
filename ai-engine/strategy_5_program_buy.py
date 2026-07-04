@@ -10,7 +10,16 @@ import os
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 
-from http_utils import fetch_cntr_strength_cached, fetch_hoga, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import (
+    fetch_cntr_strength_cached,
+    fetch_hoga,
+    fetch_program_snapshot,
+    fetch_program_time_trend,
+    fetch_stk_nm,
+    kiwoom_client,
+    program_drop_reason,
+    validate_kiwoom_response,
+)
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
@@ -259,6 +268,15 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
             cur_prc = info.get("cur_prc", 0)
             cntr_strength, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
             bid_ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
+            program_snapshot = await fetch_program_snapshot(rdb, stk_cd)
+            program_reason = program_drop_reason(program_snapshot)
+            program_trend = {}
+            program_trend_meta = {}
+            try:
+                await asyncio.sleep(_API_INTERVAL)
+                program_trend, program_trend_meta = await fetch_program_time_trend(token, stk_cd)
+            except Exception as e:
+                logger.debug("[S5] ka90008 program trend failed %s: %s", stk_cd, e)
 
             # 동적 TP/SL — 일봉 기반 (프로그램+외인 수급 스윙 목표)
             highs_d, lows_d, closes_d, ma20, atr_val = [], [], [], None, None
@@ -279,7 +297,7 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
             tp_sl = calc_tp_sl("S5_PROG_FRGN", cur_prc, highs_d, lows_d, closes_d,
                                 stk_cd=stk_cd, ma20=ma20, atr=atr_val)
 
-            results.append({
+            signal = {
                 "stk_cd": stk_cd,
                 "stk_nm": stk_nm,
                 "cur_prc": cur_prc,
@@ -288,9 +306,17 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
                 "flu_rt": info.get("flu_rt", 0.0),
                 "cntr_strength": round(cntr_strength, 1),
                 "bid_ratio": round(bid_ratio, 2) if bid_ratio is not None else None,
+                "program_trend_latest_net_buy_amt": program_trend.get("latest_net_buy_amt"),
+                "program_trend_positive_count": program_trend.get("positive_count"),
+                "program_trend_avg_net_buy_amt": program_trend.get("avg_net_buy_amt"),
+                "program_trend_meta": program_trend_meta,
                 "entry_type": "지정가_1호가",
                 **tp_sl.to_signal_fields(),
-            })
+            }
+            signal.update(program_snapshot)
+            if program_reason:
+                signal["program_drop_reason"] = program_reason
+            results.append(signal)
 
     # 순매수 금액 상위 5개 반환
     return sorted(results, key=lambda x: x["net_buy_amt"], reverse=True)[:5]

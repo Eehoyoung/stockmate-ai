@@ -100,6 +100,7 @@ _STRATEGY_TIMEOUT_OVERRIDES = {
     "S3": int(os.getenv("STRATEGY_TIMEOUT_S3_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
     "S5": int(os.getenv("STRATEGY_TIMEOUT_S5_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
     "S11": int(os.getenv("STRATEGY_TIMEOUT_S11_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
+    "S16": int(os.getenv("STRATEGY_TIMEOUT_S16_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
 }
 
 
@@ -532,6 +533,16 @@ async def _scan_s15(rdb, token):
         logger.exception("[Runner] S15 스캔 오류")
 
 
+async def _scan_s16(rdb, token):
+    try:
+        from strategy_16_accumulation import scan_accumulation_shadow
+
+        signals = await scan_accumulation_shadow(token, rdb=rdb)
+        await _push_signals(rdb, signals, "S16_ACCUMULATION_SHADOW")
+    except Exception:
+        logger.exception("[Runner] S16 스캔 오류")
+
+
 _SCHEDULE: list[tuple[str, time, time, callable]] = [
     ("S7", time(10, 0), time(14,  0), _scan_s7),
     ("S1", time(8, 30), time(9, 10), _scan_s1),
@@ -546,6 +557,7 @@ _SCHEDULE: list[tuple[str, time, time, callable]] = [
     ("S13", time(10, 0), time(14, 0), _scan_s13),
     ("S14", time(9, 30), time(14, 0), _scan_s14),
     ("S15", time(10, 0), time(14, 30), _scan_s15),
+    ("S16", time(10, 0), time(14, 30), _scan_s16),
     ("S12", time(14, 30), time(15, 10), _scan_s12),
 ]
 

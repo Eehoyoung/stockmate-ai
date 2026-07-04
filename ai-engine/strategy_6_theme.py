@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from http_utils import (
     fetch_cntr_strength_cached,
     fetch_hoga,
+    fetch_investor_flow_summary_cached,
+    fetch_program_time_trend,
     fetch_stk_nm,
     kiwoom_client,
     validate_kiwoom_response,
@@ -110,6 +112,25 @@ async def _get_bid_ratio(token: str, rdb, stk_cd: str) -> float | None:
     except Exception:
         pass
     return None
+
+
+def _theme_bid_ratio(stk: dict) -> float | None:
+    """Use ka90002 buy/sell request fields before falling back to hoga REST."""
+    buy = clean_num(stk.get("buy_req") or stk.get("tot_buy_req") or 0)
+    sell = clean_num(stk.get("sel_req") or stk.get("sell_req") or stk.get("tot_sel_req") or 0)
+    if sell > 0:
+        return round(buy / sell, 2)
+    return None
+
+
+def _theme_acc_vol(stk: dict) -> float:
+    """Use ka90002 accumulated volume when present."""
+    return clean_num(
+        stk.get("acc_trde_qty")
+        or stk.get("trde_qty")
+        or stk.get("now_trde_qty")
+        or 0
+    )
 
 
 async def _get_acc_vol(rdb, stk_cd: str) -> float:
@@ -276,7 +297,9 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 continue
 
             # ── 호가비율 (소프트: 없으면 체결강도/거래량으로 보완) ──────────
-            bid_ratio = await _get_bid_ratio(token, rdb, stk_cd)
+            bid_ratio = _theme_bid_ratio(stk)
+            if bid_ratio is None:
+                bid_ratio = await _get_bid_ratio(token, rdb, stk_cd)
             if bid_ratio is not None and bid_ratio < _MIN_BID_RATIO and strength < 130:
                 _log_reject(stk_cd, theme_nm, mode, "weak_bid_ratio",
                             bid_ratio=bid_ratio, strength=round(strength, 1))
@@ -302,7 +325,9 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 logger.debug("[S6] 일봉 조회 실패 %s: %s", stk_cd, e)
 
             # ── 거래량비율 ───────────────────────────────────────────────
-            acc_vol   = await _get_acc_vol(rdb, stk_cd)
+            acc_vol   = _theme_acc_vol(stk)
+            if acc_vol <= 0:
+                acc_vol = await _get_acc_vol(rdb, stk_cd)
             if acc_vol <= 0:
                 acc_vol = _fallback_acc_vol_from_candles(candles)
             vol_ratio = _calc_volume_ratio(acc_vol, candles)
@@ -314,6 +339,31 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 continue
 
             # ── TP/SL ───────────────────────────────────────────────────
+            investor_flow = {}
+            investor_flow_meta = {}
+            program_trend = {}
+            program_trend_meta = {}
+            try:
+                await asyncio.sleep(_API_INTERVAL)
+                investor_flow, investor_flow_meta = await fetch_investor_flow_summary_cached(token, stk_cd, rdb=rdb, days=10)
+            except Exception as e:
+                investor_flow_meta = {"api_id": "ka10061", "error": str(e)}
+            try:
+                await asyncio.sleep(_API_INTERVAL)
+                program_trend, program_trend_meta = await fetch_program_time_trend(token, stk_cd)
+            except Exception as e:
+                program_trend_meta = {"api_id": "ka90008", "error": str(e)}
+
+            smart_money = clean_num(investor_flow.get("smart_money", 0))
+            program_latest = clean_num(program_trend.get("latest_net_buy_amt", 0))
+            program_positive_count = int(clean_num(program_trend.get("positive_count", 0)))
+            s6_quality_score = (
+                strength
+                + vol_ratio * 5
+                + (5 if smart_money > 0 else -3 if smart_money < 0 else 0)
+                + (3 if program_latest > 0 or program_positive_count >= 3 else -2 if program_latest < 0 else 0)
+            )
+
             tp_sl = calc_tp_sl(
                 "S6_THEME_LAGGARD", cur_prc, highs_d, lows_d, closes_d,
                 stk_cd=stk_cd, ma5=ma5, atr=atr_val,
@@ -347,6 +397,15 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 "cntr_strength":  round(strength, 1),
                 "volume_ratio":   vol_ratio,
                 "bid_ratio":      bid_ratio,
+                "s6_quality_score": round(s6_quality_score, 2),
+                "investor_smart_money": smart_money,
+                "investor_foreign": investor_flow.get("foreign"),
+                "investor_institution": investor_flow.get("institution"),
+                "investor_flow_meta": investor_flow_meta,
+                "program_trend_latest_net_buy_amt": program_latest,
+                "program_trend_positive_count": program_positive_count,
+                "program_trend_avg_net_buy_amt": program_trend.get("avg_net_buy_amt"),
+                "program_trend_meta": program_trend_meta,
                 "entry_type":     "지정가_1호가",
                 **tp_sl.to_signal_fields(),
             }
@@ -361,7 +420,7 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
     # 체결강도 + 거래량비율 복합 정렬
     sorted_results = sorted(
         final_candidates.values(),
-        key=lambda x: (x["cntr_strength"] + x.get("volume_ratio", 0) * 5),
+        key=lambda x: x.get("s6_quality_score", x["cntr_strength"] + x.get("volume_ratio", 0) * 5),
         reverse=True,
     )
     return sorted_results[:_MAX_SIGNALS_PER_SCAN]

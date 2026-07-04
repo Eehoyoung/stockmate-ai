@@ -17,7 +17,7 @@ import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import fetch_investor_flow_summary_cached, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
 from ma_utils import fetch_daily_candles, _safe_price, _calc_ma
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
@@ -408,6 +408,13 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
 
         continuous_days = cont_map.get(stk_cd, 1)
         stk_nm = str(item.get("stk_nm", "")).strip() or await fetch_stk_nm(rdb, token, stk_cd)
+        investor_flow = {}
+        investor_flow_meta = {}
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            investor_flow, investor_flow_meta = await fetch_investor_flow_summary_cached(token, stk_cd, rdb=rdb, days=10)
+        except Exception as e:
+            logger.debug("[S3] ka10061 investor flow failed %s: %s", stk_cd, e)
 
         # 동적 TP/SL — 일봉 기반 (기관+외인 수급 스윙 목표)
         highs_d, lows_d, closes_d, ma20, atr_val = [], [], [], None, None
@@ -439,6 +446,11 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             "continuous_days": continuous_days,
             "inst_frgn_smtm": True,        # smtm_netprps_tp="1" → 외인+기관 동시 순매수 확인
             "buy_concentration_pct": buy_concentration_pct,
+            "investor_smart_money": investor_flow.get("smart_money"),
+            "investor_foreign": investor_flow.get("foreign"),
+            "investor_institution": investor_flow.get("institution"),
+            "investor_individual": investor_flow.get("individual"),
+            "investor_flow_meta": investor_flow_meta,
             "entry_type": "지정가_1호가",
             **tp_sl.to_signal_fields(),
         })

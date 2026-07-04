@@ -26,7 +26,7 @@ import os
 from ma_utils import fetch_daily_candles, detect_pullback_setup, _safe_price, _safe_vol
 from indicator_rsi import calc_rsi
 from indicator_stochastic import calc_stochastic
-from http_utils import fetch_cntr_strength, fetch_stk_nm
+from http_utils import fetch_cntr_strength_cached, fetch_hoga, fetch_same_time_volume_ratio, fetch_stk_nm
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -144,6 +144,29 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         # 명시적 하락 확인 시 제외 (시장지수 폴백이 포함되므로 베어 장세에서도 작동)
         if flu_rt < 0: continue
 
+        if cntr_str <= 100:
+            try:
+                await asyncio.sleep(_API_INTERVAL)
+                cntr_str, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
+            except Exception:
+                cntr_str = 100.0
+
+        bid_ratio = None
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            bid_ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
+        except Exception:
+            bid_ratio = None
+
+        same_time_volume_ratio = 0.0
+        same_time_volume_meta = {}
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio(token, stk_cd)
+            same_time_volume_ratio = float(volume_summary.get("same_time_volume_ratio") or 0.0)
+        except Exception as e:
+            same_time_volume_meta = {"api_id": "ka10055", "error": str(e)}
+
         # 6. 최종 점수 산정
         # pct_ma5 구간별 처리:
         #   -1% ~ +2%: 최적 눌림 (보너스)
@@ -161,6 +184,8 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
                 - (8 if vol_weak else 0)                   # 약한 거래량 감점 (1.1~1.3배)
                 + (12 if stoch_gc else 0)                  # 스토캐스틱 골든크로스
                 + (8 if 40 <= rsi_now <= 58 else 0)        # RSI 회복 초입 구간
+                + (5 if same_time_volume_ratio >= 1.3 else -4 if 0 < same_time_volume_ratio < 0.8 else 0)
+                + (4 if bid_ratio is not None and bid_ratio >= 1.2 else -3 if bid_ratio is not None and bid_ratio < 0.8 else 0)
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
@@ -187,6 +212,9 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
             "stoch_gc": stoch_gc,
             "cntr_strength": round(cntr_str, 1),
             "vol_ratio": vol_ratio,
+            "same_time_volume_ratio": round(same_time_volume_ratio, 2),
+            "same_time_volume_meta": same_time_volume_meta,
+            "bid_ratio": round(bid_ratio, 3) if bid_ratio is not None else None,
             "vol_weak": vol_weak,
             "pct_ma5_zone": ("optimal" if -1.0 <= pct_ma5 <= 2.0
                              else "late" if pct_ma5_late

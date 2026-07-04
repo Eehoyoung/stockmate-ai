@@ -156,6 +156,10 @@ def _patch_externals(strength: float = 120.0):
             new=AsyncMock(return_value="삼성전자"),
         ),
         patch(
+            "strategy_2_vi_pullback.fetch_same_time_volume_ratio",
+            new=AsyncMock(return_value=({"same_time_volume_ratio": 0.0}, {"api_id": "ka10055"})),
+        ),
+        patch(
             "strategy_2_vi_pullback.get_atr_minute",
             new=AsyncMock(side_effect=Exception("no atr")),
         ),

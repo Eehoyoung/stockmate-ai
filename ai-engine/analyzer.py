@@ -80,6 +80,7 @@ _STRATEGY_PROMPT_FILES: dict[str, str] = {
     "S13_BOX_BREAKOUT":     "signal_analysis_s13_box_breakout.txt",
     "S14_OVERSOLD_BOUNCE":  "signal_analysis_s14_oversold_bounce.txt",
     "S15_MOMENTUM_ALIGN":   "signal_analysis_s15_momentum_align.txt",
+    "S16_ACCUMULATION_SHADOW": "signal_analysis_s16_accumulation_shadow.txt",
 }
 
 _STRATEGY_PROMPTS: dict[str, str] = {}
@@ -378,6 +379,19 @@ def _s15_body(sig, c) -> str:
         f"체결강도: {c['strength']}, 규칙점수: {c['rule_score']}/100\n"
     )
 
+def _s16_body(sig, c) -> str:
+    return (
+        f"세력 매집 관찰 후 트리거 신호 평가:\n"
+        f"종목: {c['stk_nm']}({c['stk_cd']}), 상태: {sig.get('s16_state', 'N/A')}, "
+        f"매집점수: {sig.get('accumulation_score', 'N/A')}, 수급점수: {sig.get('supply_score', 'N/A')}, "
+        f"트리거점수: {sig.get('trigger_score', 'N/A')}, 리스크점수: {sig.get('risk_score', 'N/A')}\n"
+        f"박스: {sig.get('box_low', 'N/A')}~{sig.get('box_high', 'N/A')}, "
+        f"현재가: {sig.get('cur_prc', 'N/A')}, 거래량비율: {sig.get('vol_ratio', 'N/A')}x, "
+        f"체결강도: {c['strength']}, 호가비율: {c['bid_ratio']}, RR: {sig.get('effective_rr', sig.get('rr_ratio', 'N/A'))}\n"
+        f"근거: {sig.get('s16_reason', '')}\n"
+        f"규칙점수: {c['rule_score']}/100\n"
+    )
+
 # 전략코드 → (body_fn, 질문 문구)
 _STRATEGY_TEMPLATES: dict[str, tuple[callable, str]] = {
     "S1_GAP_OPEN":       (_s1_body,  "매수 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."),
@@ -395,6 +409,7 @@ _STRATEGY_TEMPLATES: dict[str, tuple[callable, str]] = {
     "S13_BOX_BREAKOUT":  (_s13_body, "박스권 돌파 스윙 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."),
     "S14_OVERSOLD_BOUNCE": (_s14_body, "과매도 반등 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."),
     "S15_MOMENTUM_ALIGN":  (_s15_body, "모멘텀 동조 스윙 진입 적합성과 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."),
+    "S16_ACCUMULATION_SHADOW": (_s16_body, "세력 매집 트리거가 실제 ENTER 가능한 자리인지 판단하고 최종 TP1/TP2/SL(원화)을 JSON으로 답하세요."),
 }
 
 

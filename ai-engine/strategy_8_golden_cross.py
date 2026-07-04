@@ -27,7 +27,13 @@ from indicator_rsi import calc_rsi
 from indicator_macd import calc_macd
 from indicator_bollinger import calc_bollinger
 from indicator_atr import calc_atr
-from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
+from http_utils import (
+    apply_volume_profile_rr,
+    fetch_cntr_strength_cached,
+    fetch_same_time_volume_ratio,
+    fetch_stk_nm,
+    fetch_volume_profile,
+)
 from tp_sl_engine import calc_tp_sl
 from utils import safe_float as clean_num
 
@@ -123,6 +129,15 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
         if not (0.0 <= flu_rt <= 15.0):
             continue
 
+        same_time_volume_ratio = 0.0
+        same_time_volume_meta = {}
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio(token, stk_cd)
+            same_time_volume_ratio = float(volume_summary.get("same_time_volume_ratio") or 0.0)
+        except Exception as e:
+            same_time_volume_meta = {"api_id": "ka10055", "error": str(e)}
+
         # 6. 점수 산정 (보너스 포함)
         score = (
                 (20 if is_today_cross else 10)           # 당일 크로스 가점
@@ -130,6 +145,7 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
                 + (10 if is_macd_accel else 0)          # MACD 가속 보너스
                 + (vol_today / vol_ma20 * 5)            # 거래량 가중치
                 + (cntr_str * 0.05)                     # 체결강도 가중치
+                + (5 if same_time_volume_ratio >= 1.5 else -3 if 0 < same_time_volume_ratio < 0.8 else 0)
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
@@ -154,10 +170,11 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
                             stk_cd=stk_cd, ma5=ma5, ma20=ma20, ma60=ma60,
                             atr=atr_val, bb_upper=bb_upper, compute_zones=True)
 
-        results.append({
+        signal = {
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
             "cur_prc": round(cur_prc),
+            "entry_price": round(cur_prc),
             "strategy": "S8_GOLDEN_CROSS",
             "score": round(score, 2),
             "rsi": round(rsi_now, 1),
@@ -168,11 +185,22 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
             "flu_rt": flu_rt,
             "cntr_strength": round(cntr_str, 1),
             "vol_ratio": vol_ratio,
+            "same_time_volume_ratio": round(same_time_volume_ratio, 2),
+            "same_time_volume_meta": same_time_volume_meta,
             "is_today_cross": is_today_cross,
             "is_macd_accel": is_macd_accel,
             "entry_type": "현재가_종가",
             **tp_sl.to_signal_fields(),
-        })
+        }
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            profile, profile_meta = await fetch_volume_profile(token, stk_cd)
+            signal["volume_profile_meta"] = profile_meta
+            if profile_meta.get("target_verified"):
+                signal = apply_volume_profile_rr(signal, profile)
+        except Exception as e:
+            signal["volume_profile_meta"] = {"api_id": "ka10025", "error": str(e)}
+        results.append(signal)
 
     return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
 
