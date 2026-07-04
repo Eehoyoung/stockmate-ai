@@ -183,7 +183,7 @@ public class OvernightScoringService {
             // 스윙 전략: 다음날도 보유 적합
             case S7_ICHIMOKU_BREAKOUT, S8_GOLDEN_CROSS, S9_PULLBACK_SWING -> 25;
             // 다중지표 동조: 추세 지속 가능성 높음
-            case S15_MOMENTUM_ALIGN -> 25;
+            case S15_MOMENTUM_ALIGN, S16_ACCUMULATION_SHADOW -> 25;
             // 과매도 반등: 추세 불확실 – 중립
             case S14_OVERSOLD_BOUNCE -> 15;
             // 장대양봉·테마후발: 중립 – 상황에 따라 다름

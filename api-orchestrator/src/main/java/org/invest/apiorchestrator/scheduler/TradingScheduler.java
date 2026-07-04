@@ -299,6 +299,7 @@ public class TradingScheduler {
                         try { candidateService.getS13Candidates(market); } catch (Exception e) { log.warn("[Pool] S13 {} error: {}", market, e.getMessage()); }
                         try { candidateService.getS14Candidates(market); } catch (Exception e) { log.warn("[Pool] S14 {} error: {}", market, e.getMessage()); }
                         try { candidateService.getS15Candidates(market); } catch (Exception e) { log.warn("[Pool] S15 {} error: {}", market, e.getMessage()); }
+                        try { candidateService.getS16Candidates(market); } catch (Exception e) { log.warn("[Pool] S16 {} error: {}", market, e.getMessage()); }
                     }
                 }
                 log.info("[Pool] intraday preload complete");

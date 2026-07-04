@@ -52,6 +52,7 @@ public class CandidatePoolHistoryScheduler {
         STRATEGY_MAP.put("s13", "S13_BOX_BREAKOUT");
         STRATEGY_MAP.put("s14", "S14_OVERSOLD_BOUNCE");
         STRATEGY_MAP.put("s15", "S15_MOMENTUM_ALIGN");
+        STRATEGY_MAP.put("s16", "S16_ACCUMULATION_SHADOW");
     }
 
     private static final String[] MARKETS = {"001", "101"};

@@ -72,7 +72,7 @@ public class PortfolioConfig {
     private String enabledStrategies =
             "[\"S1_GAP_OPEN\",\"S7_ICHIMOKU_BREAKOUT\",\"S8_GOLDEN_CROSS\",\"S9_PULLBACK_SWING\"," +
             "\"S10_NEW_HIGH\",\"S11_FRGN_CONT\",\"S12_CLOSING\",\"S13_BOX_BREAKOUT\"," +
-            "\"S14_OVERSOLD_BOUNCE\",\"S15_MOMENTUM_ALIGN\"]";
+            "\"S14_OVERSOLD_BOUNCE\",\"S15_MOMENTUM_ALIGN\",\"S16_ACCUMULATION_SHADOW\"]";
 
     /** FIXED_PCT / KELLY / VOLATILITY */
     @Column(name = "sizing_method", nullable = false, length = 20)

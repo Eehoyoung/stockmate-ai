@@ -382,7 +382,7 @@ public class TradingController {
     @GetMapping("/candidates/pool-status")
     public ResponseEntity<Map<String, Object>> getCandidatePoolStatus() {
         Map<String, Object> result = new java.util.LinkedHashMap<>();
-        String[] strategies = {"s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","s12","s13","s14","s15"};
+        String[] strategies = {"s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","s12","s13","s14","s15","s16"};
         String[] markets    = {"001","101"};
         for (String s : strategies) {
             for (String m : markets) {

@@ -140,6 +140,12 @@ public class TradingSignalDto {
         m.put("time_stop_type", timeStopType);
         m.put("time_stop_minutes", timeStopMinutes);
         m.put("time_stop_session", timeStopSession);
+        if (extra != null && !extra.isEmpty()) {
+            m.put("extra", extra);
+            for (Map.Entry<String, Object> entry : extra.entrySet()) {
+                m.putIfAbsent(entry.getKey(), entry.getValue());
+            }
+        }
         m.put("signal_time",     signalTime != null ? signalTime.toString() : KstClock.now().toString());
         m.put("cur_prc",         entryPrice);  // 진입가 = 현재가 (신호 발생 시점)
         m.put("message",         toTelegramMessage());
@@ -163,7 +169,8 @@ public class TradingSignalDto {
             case S12_CLOSING         -> "🌙";
             case S13_BOX_BREAKOUT    -> "📦";
             case S14_OVERSOLD_BOUNCE -> "🔄";
-            case S15_MOMENTUM_ALIGN  -> "⚡";
+            case S15_MOMENTUM_ALIGN  -> "⚡";
+            case S16_ACCUMULATION_SHADOW -> "S16";
         };
 
         StringBuilder sb = new StringBuilder();

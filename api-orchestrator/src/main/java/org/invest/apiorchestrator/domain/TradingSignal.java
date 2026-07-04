@@ -409,6 +409,7 @@ public class TradingSignal {
         // ── 다중지표 기반 (신규) ─────────────────
         S14_OVERSOLD_BOUNCE, // 과매도 오실레이터 수렴 반등
         S15_MOMENTUM_ALIGN,  // 다중지표 모멘텀 동조 스윙
+        S16_ACCUMULATION_SHADOW, // medium-cap accumulation shadow
         // ── 종가 ─────────────────────────────────
         S12_CLOSING         // 종가 강도 확인 매수 (익일 갭)
     }

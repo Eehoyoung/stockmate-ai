@@ -49,7 +49,8 @@ public class OvernightRiskScheduler {
             StrategyType.S11_FRGN_CONT,
             StrategyType.S13_BOX_BREAKOUT,
             StrategyType.S14_OVERSOLD_BOUNCE,
-            StrategyType.S15_MOMENTUM_ALIGN
+            StrategyType.S15_MOMENTUM_ALIGN,
+            StrategyType.S16_ACCUMULATION_SHADOW
     );
 
     @Scheduled(cron = "0 30 8 * * MON-FRI", zone = "Asia/Seoul")

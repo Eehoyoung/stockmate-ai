@@ -286,4 +286,83 @@ public class StrategyRequests {
     public static class OvtSigPricRequest extends KiwoomApiRequest {
         @JsonProperty("stk_cd") private String stkCd;
     }
+
+    /** ka10053 daily upper exit broker/order-flow request. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class TodayUpperExitRequest extends KiwoomApiRequest {
+        @JsonProperty("stk_cd") private String stkCd;
+    }
+
+    /** ka10061 per-stock investor/institution total request. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class InvestorOrgTotalRequest extends KiwoomApiRequest {
+        @JsonProperty("stk_cd") private String stkCd;
+        @JsonProperty("strt_dt") private String strtDt;
+        @JsonProperty("end_dt") private String endDt;
+        @Builder.Default @JsonProperty("amt_qty_tp") private String amtQtyTp = "1";
+        @Builder.Default @JsonProperty("trde_tp") private String trdeTp = "0";
+        @Builder.Default @JsonProperty("unit_tp") private String unitTp = "1";
+    }
+
+    /** ka90005 market program-trading trend by time. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class ProgramTrendRequest extends KiwoomApiRequest {
+        @JsonProperty("date") private String date;
+        @Builder.Default @JsonProperty("amt_qty_tp") private String amtQtyTp = "1";
+        @JsonProperty("mrkt_tp") private String mrktTp;
+        @Builder.Default @JsonProperty("min_tic_tp") private String minTicTp = "1";
+    }
+
+    /** ka90008 per-stock program-trading trend by time. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class StockProgramTrendRequest extends KiwoomApiRequest {
+        @Builder.Default @JsonProperty("amt_qty_tp") private String amtQtyTp = "1";
+        @JsonProperty("stk_cd") private String stkCd;
+        @JsonProperty("date") private String date;
+    }
+
+    /** ka90013 per-stock daily program-trading trend. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class StockDailyProgramTrendRequest extends KiwoomApiRequest {
+        @Builder.Default @JsonProperty("amt_qty_tp") private String amtQtyTp = "1";
+        @JsonProperty("stk_cd") private String stkCd;
+        @JsonProperty("date") private String date;
+    }
+
+    /** ka10051 sector investor net-buy request. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class SectorInvestorNetBuyRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp") private String mrktTp;
+        @Builder.Default @JsonProperty("amt_qty_tp") private String amtQtyTp = "1";
+        @JsonProperty("base_dt") private String baseDt;
+    }
+
+    /** ka20001 sector current-price request. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class SectorCurrentPriceRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp") private String mrktTp;
+        @JsonProperty("inds_cd") private String indsCd;
+    }
+
+    /** ka20002 sector constituents request. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class SectorStocksRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp") private String mrktTp;
+        @JsonProperty("inds_cd") private String indsCd;
+    }
+
+    /** ka20003 all-sector index request. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class AllSectorIndexRequest extends KiwoomApiRequest {
+        @JsonProperty("inds_cd") private String indsCd;
+    }
 }

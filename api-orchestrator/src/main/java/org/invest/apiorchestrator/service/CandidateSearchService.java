@@ -46,7 +46,8 @@ public class CandidateSearchService {
             Map.entry("S12_CLOSING", "s12"),
             Map.entry("S13_BOX_BREAKOUT", "s13"),
             Map.entry("S14_OVERSOLD_BOUNCE", "s14"),
-            Map.entry("S15_MOMENTUM_ALIGN", "s15")
+            Map.entry("S15_MOMENTUM_ALIGN", "s15"),
+            Map.entry("S16_ACCUMULATION_SHADOW", "s16")
     );
 
     private static final Map<String, String> REDIS_SUFFIX_TO_STRATEGY = Map.ofEntries(
@@ -64,7 +65,8 @@ public class CandidateSearchService {
             Map.entry("s12", "S12_CLOSING"),
             Map.entry("s13", "S13_BOX_BREAKOUT"),
             Map.entry("s14", "S14_OVERSOLD_BOUNCE"),
-            Map.entry("s15", "S15_MOMENTUM_ALIGN")
+            Map.entry("s15", "S15_MOMENTUM_ALIGN"),
+            Map.entry("s16", "S16_ACCUMULATION_SHADOW")
     );
 
     private final NamedParameterJdbcTemplate jdbc;

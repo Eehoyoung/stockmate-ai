@@ -65,6 +65,7 @@ public class StrategyParamSnapshotService {
             case "S13_BOX_BREAKOUT" -> 62.0;
             case "S14_OVERSOLD_BOUNCE" -> 58.0;
             case "S15_MOMENTUM_ALIGN" -> 65.0;
+            case "S16_ACCUMULATION_SHADOW" -> 62.0;
             default -> 65.0;
         };
     }
@@ -86,6 +87,7 @@ public class StrategyParamSnapshotService {
         scheduleWindows.put("S13_BOX_BREAKOUT", "09:30-14:00");
         scheduleWindows.put("S14_OVERSOLD_BOUNCE", "09:30-14:00");
         scheduleWindows.put("S15_MOMENTUM_ALIGN", "10:00-14:30");
+        scheduleWindows.put("S16_ACCUMULATION_SHADOW", "09:30-14:30");
 
         Map<String, Integer> candidateTtlMinutes = new LinkedHashMap<>();
         candidateTtlMinutes.put("S1_GAP_OPEN", 10);
@@ -103,6 +105,7 @@ public class StrategyParamSnapshotService {
         candidateTtlMinutes.put("S13_BOX_BREAKOUT", 10);
         candidateTtlMinutes.put("S14_OVERSOLD_BOUNCE", 20);
         candidateTtlMinutes.put("S15_MOMENTUM_ALIGN", 15);
+        candidateTtlMinutes.put("S16_ACCUMULATION_SHADOW", 30);
 
         List<ParamSnapshot> snapshots = new ArrayList<>();
         scheduleWindows.forEach((strategy, window) -> {
@@ -114,7 +117,8 @@ public class StrategyParamSnapshotService {
                     || strategy.startsWith("S12_")
                     || strategy.startsWith("S13_")
                     || strategy.startsWith("S14_")
-                    || strategy.startsWith("S15_");
+                    || strategy.startsWith("S15_")
+                    || strategy.startsWith("S16_");
             snapshots.add(new ParamSnapshot(strategy, "schedule_window", window));
             snapshots.add(new ParamSnapshot(strategy, "claude_threshold",
                     String.valueOf(getClaudeThreshold(strategy).intValue())));

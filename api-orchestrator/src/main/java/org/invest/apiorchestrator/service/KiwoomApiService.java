@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.config.KiwoomRateLimiter;
 import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
+import org.invest.apiorchestrator.dto.res.KiwoomSupplementalResponses;
 import org.invest.apiorchestrator.exception.KiwoomApiException;
 import org.invest.apiorchestrator.util.StockCodeNormalizer;
 import org.springframework.http.HttpStatusCode;
@@ -119,32 +120,36 @@ public class KiwoomApiService {
      */
     @SuppressWarnings("unchecked")
     private <T> Mono<T> validateKiwoomResponse(String apiId, T resp) {
-        if (!(resp instanceof KiwoomApiResponses.BaseResponse base)) {
-            return Mono.justOrEmpty(resp);
+        if (resp instanceof KiwoomApiResponses.BaseResponse base) {
+            return validateReturnCode(apiId, resp, base.isSuccess(), base.getReturnCode(), base.getReturnMsg());
         }
-        if (base.isSuccess()) {
+        if (resp instanceof KiwoomSupplementalResponses.BaseResponse base) {
+            return validateReturnCode(apiId, resp, base.isSuccess(), base.getReturnCode(), base.getReturnMsg());
+        }
+        return Mono.justOrEmpty(resp);
+    }
+
+    private <T> Mono<T> validateReturnCode(String apiId, T resp, boolean success, String code, String returnMsg) {
+        if (success) {
             return Mono.just(resp);
         }
-        String code = base.getReturnCode();
-        String msg  = base.getReturnMsg() != null ? base.getReturnMsg() : "서버 오류";
+        String msg = returnMsg != null ? returnMsg : "server error";
         if (code == null) {
-            // return_code 필드 자체가 없음 → Spring Boot 에러 바디 (HTTP 200 wrapping error)
-            log.warn("Kiwoom 서버 오류 바디 수신 [{}] – returnCode=null (HTTP 200 wrapping error)", apiId);
+            log.warn("Kiwoom server error body [{}] returnCode=null", apiId);
             return Mono.error(new IllegalStateException("Kiwoom server error (HTTP 200 wrapping). Retry."));
         }
         if ("1700".equals(code)) {
-            log.warn("1700 Rate Limit [{}] – 응답 바디 감지", apiId);
+            log.warn("1700 Rate Limit [{}] response body detected", apiId);
             return Mono.error(new IllegalStateException("1700 Rate limit. Retry request."));
         }
         if ("8005".equals(code)) {
-            log.warn("8005 토큰 만료 [{}] – 응답 바디 감지, 토큰 갱신", apiId);
+            log.warn("8005 token expired [{}] response body detected; refreshing token", apiId);
             tokenService.refreshToken();
             return Mono.error(new IllegalStateException("8005 Token expired. Retry request."));
         }
-        log.warn("Kiwoom API 오류 [{}] code={} msg={}", apiId, code, msg);
-        return Mono.error(new KiwoomApiException("API 오류 [" + apiId + "] " + msg));
+        log.warn("Kiwoom API error [{}] code={} msg={}", apiId, code, msg);
+        return Mono.error(new KiwoomApiException("API error [" + apiId + "] " + msg));
     }
-
     // 공통 POST 스펙 생성 (인증/공통 헤더 포함, Rate Limiter 적용)
     // Mono.defer 내부에서 호출되므로 재시도마다 acquire() 가 실행됨
     private WebClient.RequestBodySpec createPostSpec(String apiId, String endpoint) {
@@ -286,5 +291,60 @@ public class KiwoomApiService {
         return post("ka10087", MRKCOND_PATH,
                 StrategyRequests.OvtSigPricRequest.builder().stkCd(stkCd).build(),
                 KiwoomApiResponses.OvtSigPricResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.TodayUpperExitResponse fetchKa10053(String stkCd) {
+        stkCd = StockCodeNormalizer.normalize(stkCd);
+        return post("ka10053", RKINFO_PATH,
+                StrategyRequests.TodayUpperExitRequest.builder().stkCd(stkCd).build(),
+                KiwoomSupplementalResponses.TodayUpperExitResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.InvestorOrgTotalResponse fetchKa10061(
+            StrategyRequests.InvestorOrgTotalRequest req) {
+        return post("ka10061", STKINFO_PATH, req,
+                KiwoomSupplementalResponses.InvestorOrgTotalResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.ProgramTrendResponse fetchKa90005(
+            StrategyRequests.ProgramTrendRequest req) {
+        return post("ka90005", MRKCOND_PATH, req,
+                KiwoomSupplementalResponses.ProgramTrendResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.StockProgramTrendResponse fetchKa90008(
+            StrategyRequests.StockProgramTrendRequest req) {
+        return post("ka90008", MRKCOND_PATH, req,
+                KiwoomSupplementalResponses.StockProgramTrendResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.StockDailyProgramTrendResponse fetchKa90013(
+            StrategyRequests.StockDailyProgramTrendRequest req) {
+        return post("ka90013", MRKCOND_PATH, req,
+                KiwoomSupplementalResponses.StockDailyProgramTrendResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.SectorInvestorNetBuyResponse fetchKa10051(
+            StrategyRequests.SectorInvestorNetBuyRequest req) {
+        return post("ka10051", "/api/dostk/sect", req,
+                KiwoomSupplementalResponses.SectorInvestorNetBuyResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.SectorCurrentPriceResponse fetchKa20001(
+            StrategyRequests.SectorCurrentPriceRequest req) {
+        return post("ka20001", "/api/dostk/sect", req,
+                KiwoomSupplementalResponses.SectorCurrentPriceResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.SectorStocksResponse fetchKa20002(
+            StrategyRequests.SectorStocksRequest req) {
+        return post("ka20002", "/api/dostk/sect", req,
+                KiwoomSupplementalResponses.SectorStocksResponse.class);
+    }
+
+    public KiwoomSupplementalResponses.AllSectorIndexResponse fetchKa20003(
+            StrategyRequests.AllSectorIndexRequest req) {
+        return post("ka20003", "/api/dostk/sect", req,
+                KiwoomSupplementalResponses.AllSectorIndexResponse.class);
     }
 }

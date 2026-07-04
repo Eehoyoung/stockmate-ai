@@ -193,6 +193,11 @@ public class CandidateService {
                 () -> fetchKa10032Codes(market, 0.5, 8.0, 80));
     }
 
+    public List<String> getS16Candidates(String market) {
+        return loadCandidates("s16", market, Duration.ofMinutes(30), 30,
+                () -> fetchKa10032Codes(market, -2.0, 6.0, 120));
+    }
+
     // ─────────────────────────────────────────────────────────────
     // 템플릿 + 내부 헬퍼
     // ─────────────────────────────────────────────────────────────
