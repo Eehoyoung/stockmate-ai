@@ -38,6 +38,7 @@ KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 MIN_FLU_RT = float(os.getenv("S12_MIN_FLU_RT", "4.0"))       # 최소 등락률 (%)
 MIN_CNTR_STR = float(os.getenv("S12_MIN_CNTR_STR", "110.0"))  # 최소 체결강도
+POOL_BONUS = float(os.getenv("S12_POOL_BONUS", "5.0"))        # 거래대금상위 풀 동시 충족 가점
 
 
 async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: int = 2) -> list[dict]:
@@ -76,8 +77,16 @@ async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: in
     return all_gainers
 
 
-async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
-    """ka10063 장중투자자별매매요청 – 기관 당일 순매수 종목 집합"""
+async def fetch_inst_netbuy_set(token: str, market: str = "000") -> tuple[set[str], bool]:
+    """ka10063 장중투자자별매매요청 – 기관 당일 순매수 종목 집합.
+
+    반환: (종목집합, 조회성공여부)
+
+    성공여부를 함께 돌려주는 이유: 조회가 실패해도 빈 집합이 나오고,
+    "기관이 아무것도 안 샀다"는 정상 결과도 빈 집합이다. 이 둘을 구분하지
+    않으면 API가 죽은 날에도 전 종목이 조용히 필터링되면서 스캔이 정상
+    동작한 것처럼 보인다(2026-08-14 관측).
+    """
     async with kiwoom_client() as client:
         try:
             resp = await client.post(
@@ -98,11 +107,11 @@ async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
             )
         except KiwoomReservationUnavailable:
             logger.warning("[S12] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10063")
-            return set()
+            return set(), False
         resp.raise_for_status()
         data = resp.json()
         if not validate_kiwoom_response(data, "ka10063", logger):
-            return set()
+            return set(), False
         items = data.get("opmr_invsr_trde", [])
         result = set()
         for item in items:
@@ -115,7 +124,7 @@ async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
                     result.add(stk_cd)
             except (TypeError, ValueError):
                 pass
-        return result
+        return result, True
 
 
 async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
@@ -124,7 +133,7 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
     흐름:
       1. candidates:s12:{market} 풀 우선 읽기 (candidates_builder가 ka10032로 생성)
       2. ka10027 등락률상위 + ka10063 기관순매수 병렬 조회
-      3. gainers 중 inst_set 교집합 → 풀이 있으면 pool_set 추가 교집합
+      3. gainers 중 inst_set 교집합 (풀은 하드 게이트가 아니라 가점)
       4. 조건 검증(flu_rt/cntr_str) → 점수 산정
     """
     # 0. candidates:s12:{market} 풀 로드 — market="000" 시 001+101 모두 로드
@@ -145,10 +154,20 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
     # 1. 기관 순매수 세트와 등락률 상위 리스트 병렬 호출
     gainers_task = fetch_top_gainers_paged(token, market)
     inst_set_task = fetch_inst_netbuy_set(token, market)
-    gainers, inst_set = await asyncio.gather(gainers_task, inst_set_task)
+    gainers, (inst_set, inst_ok) = await asyncio.gather(gainers_task, inst_set_task)
 
     if not gainers:
         logger.info("[S12][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
+        return []
+
+    # 기관 수급이 S12의 핵심 근거다. 조회 자체가 실패했으면 전 종목을
+    # "기관 미매수"로 떨구지 말고 이번 사이클을 건너뛴다.
+    if not inst_ok:
+        logger.warning(
+            "[S12][scan_summary] candidate_count=%d pass=0 rejects={'inst_netbuy_fetch_failed': 1} "
+            "— ka10063 조회 실패로 스캔 생략",
+            len(gainers),
+        )
         return []
 
     results = []
@@ -167,12 +186,15 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
         stk_cd = item.get("stk_cd")
         evaluated_count += 1
         if not stk_cd or stk_cd not in inst_set:
-            _reject("inst_netbuy_failed", stk_cd or "unknown")
+            # 이름 주의: API 실패가 아니라 "기관 순매수 집합에 없음"이다.
+            _reject("not_inst_netbuy", stk_cd or "unknown")
             continue
-        # 풀이 있을 경우 풀 내 종목만 처리 (candidates_builder가 이미 flu_rt>0 필터 적용)
-        if pool_set and stk_cd not in pool_set:
-            _reject("not_in_pool", stk_cd)
-            continue
+
+        # 풀(candidates:s12, ka10032 거래대금상위)은 gainers(ka10027 등락률상위)와
+        # 서로 다른 유니버스라 AND로 걸면 교집합이 사실상 비어버린다. 2026-08-14에
+        # 기관 필터를 통과한 47~106종목이 전부 여기서 잘려 하루 28,000평가 0통과가
+        # 났다. 유동성 근거로서의 가치는 남기되 하드 게이트에서 가점으로 낮춘다.
+        in_pool = bool(pool_set) and stk_cd in pool_set
 
         # 수치 파싱
         flu_rt = float(str(item.get("flu_rt", "0")).replace("+", ""))
@@ -186,6 +208,8 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
         # 점수 산정: 등락률의 탄력과 체결강도의 밀도를 조합
         # $Score = (Flu\_Rate \times 0.5) + ((Cntr\_Str - 100) \times 0.3)$
         score = (flu_rt * 0.5) + (max(cntr_str - 100, 0) * 0.3)
+        if in_pool:
+            score += POOL_BONUS  # 거래대금상위 동시 충족 = 유동성 근거 보강
 
         cur_prc = abs(float(str(item.get("cur_prc", "0")).replace(",", "")))
         stk_nm = item.get("stk_nm", "").strip() or await fetch_stk_nm(rdb, token, stk_cd)
