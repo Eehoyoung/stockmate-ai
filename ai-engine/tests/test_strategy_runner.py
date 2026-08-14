@@ -25,11 +25,29 @@ def _make_rdb(**overrides):
         "lpush": 1,
         "expire": True,
         "lrange": [],
+        "set": True,
     }
     defaults.update(overrides)
     for method, return_value in defaults.items():
         setattr(rdb, method, AsyncMock(return_value=return_value))
     return rdb
+
+
+class TestStrategyTimeoutOverrides:
+    def test_s8_s9_get_longer_timeout_than_default(self):
+        from strategy_runner import _strategy_timeout_sec, _DEFAULT_STRATEGY_TIMEOUT_SEC
+
+        assert _strategy_timeout_sec("S8") == 500
+        assert _strategy_timeout_sec("S9") == 450
+        assert _strategy_timeout_sec("S8") > _DEFAULT_STRATEGY_TIMEOUT_SEC
+        assert _strategy_timeout_sec("S9") > _DEFAULT_STRATEGY_TIMEOUT_SEC
+
+    def test_strategies_without_override_use_default(self):
+        from strategy_runner import _strategy_timeout_sec, _DEFAULT_STRATEGY_TIMEOUT_SEC
+
+        assert _strategy_timeout_sec("S4") == _DEFAULT_STRATEGY_TIMEOUT_SEC
+        assert _strategy_timeout_sec("S7") == _DEFAULT_STRATEGY_TIMEOUT_SEC
+        assert _strategy_timeout_sec("S13") == _DEFAULT_STRATEGY_TIMEOUT_SEC
 
 
 class TestLoadToken:
@@ -75,6 +93,19 @@ class TestPushSignals:
         _run(_push_signals(rdb, signals, "S1"))
         args = rdb.lpush.call_args[0]
         assert args[0] == "telegram_queue"
+        payload = json.loads(args[1])
+        assert isinstance(payload["enqueued_at"], float)
+        assert payload["stk_cd"] == "005930"
+
+    def test_preserves_upstream_enqueued_at(self):
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        signals = [{"stk_cd": "005930", "strategy": "S1", "score": 70.0, "enqueued_at": 123.0}]
+        _run(_push_signals(rdb, signals, "S1"))
+
+        payload = json.loads(rdb.lpush.call_args[0][1])
+        assert payload["enqueued_at"] == 123.0
 
     def test_empty_signals_no_push(self):
         from strategy_runner import _push_signals
@@ -82,6 +113,38 @@ class TestPushSignals:
         rdb = _make_rdb(lpush=1, expire=True)
         _run(_push_signals(rdb, [], "S1_GAP_OPEN"))
         rdb.lpush.assert_not_awaited()
+
+    def test_discards_result_when_token_rotated_during_scan(self):
+        from strategy_runner import _push_signals, _run_with_token_context
+
+        rdb = _make_rdb(get="new-token", lpush=1, expire=True)
+        signals = [{"stk_cd": "005930", "strategy": "S11_FRGN_CONT", "score": 80.0}]
+
+        published = _run(
+            _run_with_token_context(
+                _push_signals(rdb, signals, "S11_FRGN_CONT"),
+                "old-token",
+            )
+        )
+
+        assert published == 0
+        rdb.lpush.assert_not_awaited()
+
+    def test_publishes_result_when_token_generation_is_current(self):
+        from strategy_runner import _push_signals, _run_with_token_context
+
+        rdb = _make_rdb(get="current-token", lpush=1, expire=True)
+        signals = [{"stk_cd": "005930", "strategy": "S11_FRGN_CONT", "score": 80.0}]
+
+        published = _run(
+            _run_with_token_context(
+                _push_signals(rdb, signals, "S11_FRGN_CONT"),
+                "current-token",
+            )
+        )
+
+        assert published == 1
+        rdb.lpush.assert_awaited_once()
 
     def test_signal_serialized_as_json(self):
         from strategy_runner import _push_signals
@@ -156,8 +219,50 @@ class TestPushSignals:
         rdb = MagicMock()
         rdb.lpush = AsyncMock(side_effect=Exception("Redis connection failed"))
         rdb.expire = AsyncMock(return_value=True)
+        rdb.set = AsyncMock(return_value=True)
         signals = [{"stk_cd": "005930", "score": 70.0}]
         _run(_push_signals(rdb, signals, "S1"))
+
+    def test_duplicate_within_dedup_ttl_skips_publish(self):
+        """dedup 키가 이미 존재하면(SET NX 실패) 같은 종목·전략을 재발행하지 않는다."""
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True, set=None)
+        signals = [{"stk_cd": "044780", "strategy": "S1_GAP_OPEN", "score": 74.0}]
+        published = _run(_push_signals(rdb, signals, "S1_GAP_OPEN"))
+
+        assert published == 0
+        rdb.lpush.assert_not_awaited()
+
+    def test_dedup_check_persistent_failure_skips_publish_this_cycle(self):
+        """dedup SET NX 호출이 재시도까지 계속 실패하면 발행을 보류한다(fail-closed).
+
+        2026-07-30 044780(S1_GAP_OPEN)이 30분 dedup TTL 내(13분 간격)에 두 번 발행된
+        사고의 회귀 테스트: 예전에는 dedup 확인 예외가 나면 무조건 통과(fail-open)시켜
+        중복 발행으로 이어졌다.
+        """
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        rdb.set = AsyncMock(side_effect=Exception("redis timeout"))
+        signals = [{"stk_cd": "044780", "strategy": "S1_GAP_OPEN", "score": 74.0}]
+        published = _run(_push_signals(rdb, signals, "S1_GAP_OPEN"))
+
+        assert published == 0
+        assert rdb.set.await_count == 2
+        rdb.lpush.assert_not_awaited()
+
+    def test_dedup_check_transient_failure_recovers_on_retry(self):
+        """dedup 확인이 첫 시도만 실패하고 재시도에서 성공하면 정상 발행된다."""
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        rdb.set = AsyncMock(side_effect=[Exception("transient"), True])
+        signals = [{"stk_cd": "044780", "strategy": "S1_GAP_OPEN", "score": 74.0}]
+        published = _run(_push_signals(rdb, signals, "S1_GAP_OPEN"))
+
+        assert published == 1
+        rdb.lpush.assert_awaited_once()
 
 
 class TestSemaphore:
@@ -249,7 +354,7 @@ class TestRunOnce:
         monkeypatch.setattr(strategy_runner, "ENABLE_STRATEGY_SESSION_FILTER", False)
         monkeypatch.setattr(strategy_runner, "is_trading_active", MagicMock(side_effect=AssertionError("should not be called")))
 
-        assert strategy_runner._session_filter_allows_run() is True
+        assert _run(strategy_runner._session_filter_allows_run(None)) is True
 
     def test_session_filter_skips_closed_session(self, monkeypatch):
         import datetime
@@ -261,7 +366,7 @@ class TestRunOnce:
         monkeypatch.setattr(strategy_runner, "current_session", MagicMock(return_value=MarketSession.CLOSED))
         monkeypatch.setattr(strategy_runner, "is_trading_active", MagicMock(return_value=False))
 
-        assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 7, 0)) is False
+        assert _run(strategy_runner._session_filter_allows_run(None, datetime.datetime(2026, 5, 4, 7, 0))) is False
 
     def test_session_filter_allows_trading_active_sessions_when_enabled(self, monkeypatch):
         import datetime
@@ -273,7 +378,7 @@ class TestRunOnce:
         monkeypatch.setattr(strategy_runner, "current_session", MagicMock(return_value=MarketSession.OPENING_AUCTION))
         monkeypatch.setattr(strategy_runner, "is_trading_active", MagicMock(return_value=True))
 
-        assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 8, 55)) is True
+        assert _run(strategy_runner._session_filter_allows_run(None, datetime.datetime(2026, 5, 4, 8, 55))) is True
 
     def test_session_filter_dry_run_allows_closed_session(self, monkeypatch):
         import datetime
@@ -285,7 +390,7 @@ class TestRunOnce:
         monkeypatch.setattr(strategy_runner, "current_session", MagicMock(return_value=MarketSession.CLOSED))
         monkeypatch.setattr(strategy_runner, "is_trading_active", MagicMock(return_value=False))
 
-        assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 7, 0)) is True
+        assert _run(strategy_runner._session_filter_allows_run(None, datetime.datetime(2026, 5, 4, 7, 0))) is True
 
     def test_session_filter_fail_open_allows_on_error(self, monkeypatch):
         import datetime
@@ -295,15 +400,29 @@ class TestRunOnce:
         monkeypatch.setattr(strategy_runner, "STRATEGY_SESSION_FAIL_OPEN", True)
         monkeypatch.setattr(strategy_runner, "current_session", MagicMock(side_effect=RuntimeError("boom")))
 
-        assert strategy_runner._session_filter_allows_run(datetime.datetime(2026, 5, 4, 7, 0)) is True
+        assert _run(strategy_runner._session_filter_allows_run(None, datetime.datetime(2026, 5, 4, 7, 0))) is True
+
+    def test_session_filter_fail_closed_blocks_on_error(self, monkeypatch):
+        import datetime
+        import strategy_runner
+
+        monkeypatch.setattr(strategy_runner, "ENABLE_STRATEGY_SESSION_FILTER", True)
+        monkeypatch.setattr(strategy_runner, "STRATEGY_SESSION_FAIL_OPEN", False)
+        monkeypatch.setattr(strategy_runner, "current_session", MagicMock(side_effect=RuntimeError("boom")))
+
+        assert _run(strategy_runner._session_filter_allows_run(None, datetime.datetime(2026, 5, 4, 7, 0))) is False
 
     def test_skips_all_strategies_when_no_token(self, caplog):
         import datetime
         from strategy_runner import _run_once
 
         rdb = _make_rdb(get=None)
+
+        async def _allow(*_args, **_kwargs):
+            return True
+
         with patch("strategy_runner._current_kst_time", return_value=datetime.time(10, 15)), \
-             patch("strategy_runner._session_filter_allows_run", return_value=True):
+             patch("strategy_runner._session_filter_allows_run", side_effect=_allow):
             with caplog.at_level("WARNING"):
                 _run(_run_once(rdb))
 
@@ -412,7 +531,7 @@ class TestTimeBasedStrategyActivation:
         import datetime
         from strategy_runner import _active_schedule_entries
 
-        entries = _active_schedule_entries(datetime.time(10, 15))
+        entries = _active_schedule_entries(datetime.time(11, 0))
         tags = [tag for tag, _, _, _ in entries]
         assert "S7" in tags
 
@@ -425,9 +544,9 @@ class TestTimeBasedStrategyActivation:
         ("strategy", "start", "end", "after_end"),
         [
             ("S4", (10, 0), (14, 30), (14, 31)),
-            ("S10", (10, 0), (14, 0), (14, 1)),
-            ("S11", (10, 0), (14, 30), (14, 31)),
-            ("S13", (10, 0), (14, 0), (14, 1)),
+            ("S10", (10, 30), (14, 30), (14, 31)),
+            ("S11", (10, 45), (14, 0), (14, 1)),
+            ("S13", (11, 15), (14, 30), (14, 31)),
         ],
     )
     def test_final_schedule_boundaries(self, strategy, start, end, after_end):
@@ -457,6 +576,30 @@ class TestConstants:
         from strategy_runner import REDIS_TOKEN_KEY
 
         assert REDIS_TOKEN_KEY == "kiwoom:token"
+
+
+class TestStrategyExecutionOwnership:
+    @pytest.mark.parametrize(
+        ("configured_owner", "expected"),
+        [("PYTHON", True), ("JAVA", False), ("INVALID", False), ("", False)],
+    )
+    def test_python_owner_check_fails_closed(self, configured_owner, expected):
+        import strategy_runner
+
+        with patch.object(strategy_runner, "STRATEGY_EXECUTION_OWNER", configured_owner):
+            assert strategy_runner._python_owns_strategy_execution() is expected
+
+    def test_java_owner_skips_before_token_or_strategy_work(self):
+        import strategy_runner
+
+        rdb = _make_rdb()
+        with patch.object(strategy_runner, "STRATEGY_EXECUTION_OWNER", "JAVA"), \
+             patch("strategy_runner._load_token", new_callable=AsyncMock) as token_mock, \
+             patch("strategy_runner._active_schedule_entries") as schedule_mock:
+            _run(strategy_runner._run_once(rdb))
+
+        token_mock.assert_not_awaited()
+        schedule_mock.assert_not_called()
 
 
 class TestGatherErrorHandling:
@@ -517,8 +660,8 @@ class TestS1Fallback:
         metric_mock.assert_awaited_once_with(rdb, "S1_GAP_OPEN", "skip_empty_pool")
 
 
-class TestS2ShadowPublishing:
-    def test_scan_s2_does_not_push_shadow_signal(self):
+class TestS2NonLivePublishing:
+    def test_scan_s2_rejects_non_live_signal(self):
         from strategy_runner import _scan_s2
 
         item = {"stk_cd": "005930", "watch_until": 9999999999999}
@@ -533,4 +676,44 @@ class TestS2ShadowPublishing:
             _run(_scan_s2(rdb, "valid-token"))
 
         push_mock.assert_awaited_once()
-        assert push_mock.await_args.args[1] == []
+        published = push_mock.await_args.args[1]
+        assert published == []
+
+
+class TestManualScan:
+    """대시보드 '전략 수동 실행' 패널이 호출하는 run_manual_scan() — Java에 대응 엔드포인트가
+    없는 S8/S9/S11/S13~S16 전용 진입점."""
+
+    def test_unsupported_code_returns_error_without_touching_redis(self):
+        from strategy_runner import run_manual_scan
+
+        rdb = _make_rdb()
+        result = _run(run_manual_scan(rdb, "s1"))
+
+        assert "error" in result
+        rdb.get.assert_not_awaited()
+
+    def test_missing_token_short_circuits_with_zero_published(self):
+        from strategy_runner import run_manual_scan
+
+        rdb = _make_rdb(get=None)
+        result = _run(run_manual_scan(rdb, "s8"))
+
+        assert result["strategy"] == "S8_GOLDEN_CROSS"
+        assert result["published"] == 0
+        assert "error" in result
+
+    def test_dispatches_to_matching_scan_function_and_returns_count(self):
+        import strategy_runner
+        from strategy_runner import run_manual_scan
+
+        rdb = _make_rdb(get="valid-token")
+        mock_fn = AsyncMock(return_value=3)
+        with patch.dict(
+            strategy_runner.MANUAL_RUN_STRATEGIES,
+            {"s16": ("S16_ACCUMULATION_SHADOW", mock_fn)},
+        ):
+            result = _run(run_manual_scan(rdb, "S16"))
+
+        mock_fn.assert_awaited_once_with(rdb, "valid-token")
+        assert result == {"strategy": "S16_ACCUMULATION_SHADOW", "published": 3}

@@ -21,6 +21,7 @@ StockMate AI - Python 전술 스캐너 (메인 실행자)
 """
 
 import asyncio
+from contextvars import ContextVar
 import datetime
 import json
 import logging
@@ -32,12 +33,17 @@ from market_session import current_session, is_trading_active
 from score_utils import normalize_runner_signal
 from utils import normalize_stock_code
 
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 
 logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 
 REDIS_TOKEN_KEY = "kiwoom:token"
+_STRATEGY_TOKEN_CONTEXT: ContextVar[str | None] = ContextVar(
+    "strategy_token_context", default=None
+)
+STRATEGY_EXECUTION_OWNER = str(os.getenv("STRATEGY_EXECUTION_OWNER", "PYTHON")).strip().upper()
+LIVE_ONLY_MODE = str(os.getenv("LIVE_ONLY_MODE", "true")).strip().lower() == "true"
 SCAN_INTERVAL_SEC = float(os.getenv("STRATEGY_SCAN_INTERVAL_SEC", "60.0"))
 QUEUE_TTL_SECONDS = 43200
 SWING_DEDUP_TTL_SEC = int(os.getenv("SWING_SIGNAL_DEDUP_SEC", "7200"))
@@ -55,6 +61,11 @@ def _env_flag(name: str, default: str = "false") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _python_owns_strategy_execution() -> bool:
+    # Unknown/mistyped values fail closed so two runtimes cannot both publish.
+    return STRATEGY_EXECUTION_OWNER == "PYTHON"
+
+
 def _int_env(name: str, default: int, minimum: int = 1) -> int:
     try:
         return max(minimum, int(str(os.getenv(name, default)).strip()))
@@ -63,9 +74,9 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
 
 
 RUNNER_POOL_READ_LIMIT_S1 = _int_env("RUNNER_POOL_READ_LIMIT_S1", 100)
-RUNNER_POOL_READ_LIMIT_S4 = _int_env("RUNNER_POOL_READ_LIMIT_S4", 100)
-RUNNER_SCAN_LIMIT_S4 = _int_env("RUNNER_SCAN_LIMIT_S4", 30)
-RUNNER_SIGNAL_LIMIT_S4 = _int_env("RUNNER_SIGNAL_LIMIT_S4", 5)
+# S4 풀 읽기/스캔/시그널 제한값은 strategy_4_big_candle.scan_big_candle() 내부로 이관됨
+# (동일한 RUNNER_POOL_READ_LIMIT_S4 / RUNNER_SCAN_LIMIT_S4 / RUNNER_SIGNAL_LIMIT_S4
+#  env var 이름을 그대로 사용하므로 운영 설정은 변경할 필요 없음).
 
 
 def _redis_text(value) -> str:
@@ -94,13 +105,21 @@ _SLOW_STRATEGY_WARN_SEC = float(os.getenv("SLOW_STRATEGY_WARN_SEC", "90"))
 ENABLE_STRATEGY_LATENCY_METRICS = _env_flag("ENABLE_STRATEGY_LATENCY_METRICS")
 ENABLE_STRATEGY_SESSION_FILTER = _env_flag("ENABLE_STRATEGY_SESSION_FILTER")
 STRATEGY_SESSION_DRY_RUN = _env_flag("STRATEGY_SESSION_DRY_RUN")
-STRATEGY_SESSION_FAIL_OPEN = _env_flag("STRATEGY_SESSION_FAIL_OPEN", "true")
+STRATEGY_SESSION_FAIL_OPEN = _env_flag("STRATEGY_SESSION_FAIL_OPEN", "false")
 STRATEGY_LATENCY_STATUS_TTL_SEC = int(os.getenv("STRATEGY_LATENCY_STATUS_TTL_SEC", "1800"))
 _STRATEGY_TIMEOUT_OVERRIDES = {
     "S3": int(os.getenv("STRATEGY_TIMEOUT_S3_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
     "S5": int(os.getenv("STRATEGY_TIMEOUT_S5_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
     "S11": int(os.getenv("STRATEGY_TIMEOUT_S11_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
     "S16": int(os.getenv("STRATEGY_TIMEOUT_S16_SEC", str(_DEFAULT_STRATEGY_TIMEOUT_SEC))),
+    # 2026-08-06: S8/S9 share the ka10081/ka10055 heavy-TR budget with every other
+    # concurrently-scheduled strategy at ~1 req/s. With 5 strategies running at once
+    # under that shared cap, 300s isn't enough to clear ~60 candidates' worth of
+    # calls even with zero wasted requests (fetch coalescing landed the same day and
+    # didn't fully fix it) -- S8 timed out 37/37 runs today, S9 4/14. Give them more
+    # runway instead of racing the shared rate limiter.
+    "S8": int(os.getenv("STRATEGY_TIMEOUT_S8_SEC", "500")),
+    "S9": int(os.getenv("STRATEGY_TIMEOUT_S9_SEC", "450")),
 }
 
 
@@ -154,8 +173,11 @@ def _current_kst_datetime() -> datetime.datetime:
     return datetime.datetime.now(KST)
 
 
-def _session_filter_allows_run(now: datetime.datetime | None = None) -> bool:
-    if not ENABLE_STRATEGY_SESSION_FILTER:
+async def _session_filter_allows_run(rdb=None, now: datetime.datetime | None = None) -> bool:
+    from redis_reader import get_runtime_flag
+
+    filter_enabled = await get_runtime_flag(rdb, "strategy_session_filter", ENABLE_STRATEGY_SESSION_FILTER)
+    if not filter_enabled:
         return True
 
     try:
@@ -163,7 +185,8 @@ def _session_filter_allows_run(now: datetime.datetime | None = None) -> bool:
         session = current_session(checked_at)
         active = is_trading_active(checked_at)
     except Exception as exc:
-        if STRATEGY_SESSION_FAIL_OPEN:
+        fail_open = await get_runtime_flag(rdb, "strategy_session_fail_open", STRATEGY_SESSION_FAIL_OPEN)
+        if fail_open:
             logger.warning("[Runner] session filter failed open: %s", exc)
             return True
         logger.warning("[Runner] session filter failed closed: %s", exc)
@@ -173,7 +196,8 @@ def _session_filter_allows_run(now: datetime.datetime | None = None) -> bool:
         logger.debug("[Runner] session filter allows scan (session=%s)", session.value)
         return True
 
-    if STRATEGY_SESSION_DRY_RUN:
+    dry_run = await get_runtime_flag(rdb, "strategy_session_dry_run", STRATEGY_SESSION_DRY_RUN)
+    if dry_run:
         logger.info("[Runner] session filter dry-run would skip scan (session=%s)", session.value)
         return True
 
@@ -204,7 +228,7 @@ async def _run_strategy_with_semaphore(name: str, coro, rdb=None):
                 logger.warning("[Runner] [%s] 느린 실행 감지 (%.1fs, timeout=%ds)", name, elapsed_sec, timeout_sec)
                 await _record_strategy_latency(rdb, name, elapsed_sec, "slow")
             else:
-                logger.debug("[Runner] [%s] 실행 완료 (%.1fs)", name, elapsed_sec)
+                logger.info("[Runner] [%s] 실행 완료 (%.1fs)", name, elapsed_sec)
                 await _record_strategy_latency(rdb, name, elapsed_sec, "ok")
             return result
         except asyncio.TimeoutError:
@@ -232,8 +256,34 @@ async def _load_token(rdb) -> str | None:
     return token
 
 
-async def _push_signals(rdb, signals: list, strategy_name: str):
+async def _push_signals(rdb, signals: list, strategy_name: str) -> int:
+    expected_token = _STRATEGY_TOKEN_CONTEXT.get()
+    if expected_token:
+        try:
+            current_token = await rdb.get(REDIS_TOKEN_KEY)
+        except Exception as exc:
+            logger.warning(
+                "[Runner] [%s] publish blocked: token generation check failed: %s",
+                strategy_name,
+                exc,
+            )
+            return 0
+        if not current_token or current_token != expected_token:
+            logger.warning(
+                "[Runner] [%s] stale-token scan result discarded before publish",
+                strategy_name,
+            )
+            return 0
+
+    published = 0
     for sig in signals:
+        if LIVE_ONLY_MODE and str(sig.get("signal_mode", "")).upper() == "SHADOW":
+            logger.warning(
+                "[Runner] live-only policy rejected non-live candidate [%s %s]",
+                strategy_name,
+                sig.get("stk_cd", ""),
+            )
+            continue
         stk_cd = normalize_stock_code(sig.get("stk_cd", ""))
         sig["stk_cd"] = stk_cd
         normalize_runner_signal(sig, strategy_name)
@@ -243,8 +293,17 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
         try:
             is_new = await rdb.set(dedup_key, "1", nx=True, ex=dedup_ttl)
         except Exception as dedup_err:
-            logger.debug("[Runner] dedup 확인 실패 (통과): %s", dedup_err)
-            is_new = True
+            logger.warning("[Runner] dedup 확인 1차 실패, 재시도 [%s %s]: %s", strategy_name, stk_cd, dedup_err)
+            try:
+                is_new = await rdb.set(dedup_key, "1", nx=True, ex=dedup_ttl)
+            except Exception as dedup_err2:
+                # 중복 발행(같은 종목·전략이 dedup TTL 내에 두 번 발행되는 문제)을 막기 위해
+                # 재시도까지 실패하면 이번 사이클은 발행을 보류한다(다음 스캔 주기에 재평가).
+                logger.warning(
+                    "[Runner] dedup 확인 재시도 실패 — 이번 사이클 발행 보류 [%s %s]: %s",
+                    strategy_name, stk_cd, dedup_err2,
+                )
+                continue
         if not is_new:
             logger.debug("[Runner] 중복 무시 [%s %s] (dedup TTL %ds)", strategy_name, stk_cd, dedup_ttl)
             continue
@@ -273,6 +332,9 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
                 logger.debug("[Runner] stk_nm 조회 실패 [%s]: %s", stk_cd, nm_err)
 
         try:
+            # Additive payload metadata used by consumers to bound queue-value fallbacks.
+            # Preserve an upstream timestamp when one already exists.
+            sig.setdefault("enqueued_at", _time.time())
             payload = json.dumps(sig, ensure_ascii=False, default=str)
             await rdb.lpush("telegram_queue", payload)
             await rdb.expire("telegram_queue", QUEUE_TTL_SECONDS)
@@ -294,8 +356,19 @@ async def _push_signals(rdb, signals: list, strategy_name: str):
             except Exception as status_err:
                 logger.debug("[Runner] status signal metric failed [%s]: %s", strategy_name, status_err)
             logger.info("[Runner] 신호 발행 [%s] stk=%s score=%s", strategy_name, sig.get("stk_cd"), sig.get("score", "N/A"))
+            published += 1
         except Exception as exc:
             logger.error("[Runner] 신호 발행 실패 [%s]: %s", strategy_name, exc)
+
+    return published
+
+
+async def _run_with_token_context(coro, token: str):
+    context_token = _STRATEGY_TOKEN_CONTEXT.set(token)
+    try:
+        return await coro
+    finally:
+        _STRATEGY_TOKEN_CONTEXT.reset(context_token)
 
 
 async def _scan_s1(rdb, token):
@@ -378,7 +451,7 @@ async def _scan_s2(rdb, token):
                     if len(s2_signals) >= 3:
                         break
                 elif result:
-                    logger.debug("[Runner] S2 SHADOW 관찰 전용 - 발행 제외 [%s]", item.get("stk_cd"))
+                    logger.debug("[Runner] S2 SHADOW rollback mode - 발행 제외 [%s]", item.get("stk_cd"))
                 else:
                     await rdb.lpush("vi_watch_queue", item_raw)
             except Exception as ve:
@@ -401,20 +474,9 @@ async def _scan_s3(rdb, token):
 
 async def _scan_s4(rdb, token):
     try:
-        from strategy_4_big_candle import check_big_candle
+        from strategy_4_big_candle import scan_big_candle
 
-        pool_stop = RUNNER_POOL_READ_LIMIT_S4 - 1
-        kospi = await rdb.lrange("candidates:s4:001", 0, pool_stop)
-        kosdaq = await rdb.lrange("candidates:s4:101", 0, pool_stop)
-        candidates = list(dict.fromkeys(kospi + kosdaq))[:RUNNER_SCAN_LIMIT_S4]
-        s4_signals = []
-        for stk_cd in candidates:
-            await asyncio.sleep(_API_INTERVAL)
-            result = await check_big_candle(token, stk_cd, rdb=rdb)
-            if result:
-                s4_signals.append(result)
-                if len(s4_signals) >= RUNNER_SIGNAL_LIMIT_S4:
-                    break
+        s4_signals = await scan_big_candle(token, rdb=rdb)
         await _push_signals(rdb, s4_signals, "S4_BIG_CANDLE")
     except Exception as exc:
         logger.exception("[Runner] S4 스캔 오류")
@@ -456,9 +518,10 @@ async def _scan_s8(rdb, token):
         from strategy_8_golden_cross import scan_golden_cross
 
         signals = await scan_golden_cross(token, rdb=rdb)
-        await _push_signals(rdb, signals, "S8_GOLDEN_CROSS")
+        return await _push_signals(rdb, signals, "S8_GOLDEN_CROSS")
     except Exception as exc:
         logger.exception("[Runner] S8 스캔 오류")
+        return 0
 
 
 async def _scan_s9(rdb, token):
@@ -466,9 +529,10 @@ async def _scan_s9(rdb, token):
         from strategy_9_pullback import scan_pullback_swing
 
         signals = await scan_pullback_swing(token, rdb=rdb)
-        await _push_signals(rdb, signals, "S9_PULLBACK_SWING")
+        return await _push_signals(rdb, signals, "S9_PULLBACK_SWING")
     except Exception as exc:
         logger.exception("[Runner] S9 스캔 오류")
+        return 0
 
 
 async def _scan_s10(rdb, token):
@@ -482,14 +546,16 @@ async def _scan_s10(rdb, token):
 
 
 async def _scan_s11(rdb, token):
+    published = 0
     try:
         from strategy_11_frgn_cont import scan_frgn_cont_swing
 
         for market in ("001", "101"):
             signals = await scan_frgn_cont_swing(token, market, rdb=rdb)
-            await _push_signals(rdb, signals, "S11_FRGN_CONT")
+            published += await _push_signals(rdb, signals, "S11_FRGN_CONT")
     except Exception as exc:
         logger.exception("[Runner] S11 스캔 오류")
+    return published
 
 
 async def _scan_s12(rdb, token):
@@ -508,9 +574,10 @@ async def _scan_s13(rdb, token):
         from strategy_13_box_breakout import scan_box_breakout
 
         signals = await scan_box_breakout(token, rdb=rdb)
-        await _push_signals(rdb, signals, "S13_BOX_BREAKOUT")
+        return await _push_signals(rdb, signals, "S13_BOX_BREAKOUT")
     except Exception as exc:
         logger.exception("[Runner] S13 스캔 오류")
+        return 0
 
 
 async def _scan_s14(rdb, token):
@@ -518,9 +585,10 @@ async def _scan_s14(rdb, token):
         from strategy_14_oversold_bounce import scan_oversold_bounce
 
         signals = await scan_oversold_bounce(token, rdb=rdb)
-        await _push_signals(rdb, signals, "S14_OVERSOLD_BOUNCE")
+        return await _push_signals(rdb, signals, "S14_OVERSOLD_BOUNCE")
     except Exception as exc:
         logger.exception("[Runner] S14 스캔 오류")
+        return 0
 
 
 async def _scan_s15(rdb, token):
@@ -528,9 +596,10 @@ async def _scan_s15(rdb, token):
         from strategy_15_momentum_align import scan_momentum_align
 
         signals = await scan_momentum_align(token, rdb=rdb)
-        await _push_signals(rdb, signals, "S15_MOMENTUM_ALIGN")
+        return await _push_signals(rdb, signals, "S15_MOMENTUM_ALIGN")
     except Exception as exc:
         logger.exception("[Runner] S15 스캔 오류")
+        return 0
 
 
 async def _scan_s16(rdb, token):
@@ -538,34 +607,64 @@ async def _scan_s16(rdb, token):
         from strategy_16_accumulation import scan_accumulation_shadow
 
         signals = await scan_accumulation_shadow(token, rdb=rdb)
-        await _push_signals(rdb, signals, "S16_ACCUMULATION_SHADOW")
+        return await _push_signals(rdb, signals, "S16_ACCUMULATION_SHADOW")
     except Exception:
         logger.exception("[Runner] S16 스캔 오류")
+        return 0
 
 
 _SCHEDULE: list[tuple[str, time, time, callable]] = [
-    ("S7", time(10, 0), time(14,  0), _scan_s7),
+    ("S7", time(10, 45), time(14, 0), _scan_s7),
     ("S1", time(8, 30), time(9, 10), _scan_s1),
-    ("S3", time(9, 30), time(14, 30), _scan_s3),
+    ("S3", time(10, 30), time(14, 0), _scan_s3),
     ("S4", time(10, 0), time(14, 30), _scan_s4),
-    ("S5", time(10, 0), time(14, 0), _scan_s5),
-    ("S6", time(9, 30), time(13, 0), _scan_s6),
-    ("S10", time(10, 0), time(14, 0), _scan_s10),
-    ("S11", time(10, 0), time(14, 30), _scan_s11),
-    ("S8", time(10, 0), time(14, 30), _scan_s8),
-    ("S9", time(9, 30), time(13, 0), _scan_s9),
-    ("S13", time(10, 0), time(14, 0), _scan_s13),
-    ("S14", time(9, 30), time(14, 0), _scan_s14),
-    ("S15", time(10, 0), time(14, 30), _scan_s15),
-    ("S16", time(10, 0), time(14, 30), _scan_s16),
+    ("S5", time(10, 15), time(14, 0), _scan_s5),
+    ("S6", time(9, 45), time(13, 0), _scan_s6),
+    ("S10", time(10, 30), time(14, 30), _scan_s10),
+    ("S11", time(10, 45), time(14, 0), _scan_s11),
+    ("S8", time(11, 0), time(14, 0), _scan_s8),
+    ("S9", time(10, 30), time(14, 0), _scan_s9),
+    ("S13", time(11, 15), time(14, 30), _scan_s13),
+    ("S14", time(10, 0), time(14, 0), _scan_s14),
+    ("S15", time(10, 15), time(14, 30), _scan_s15),
+    ("S16", time(11, 30), time(14, 30), _scan_s16),
     ("S12", time(14, 30), time(15, 10), _scan_s12),
 ]
 
+# 대시보드 수동 실행("전략 수동 실행" 패널) 대상 — Java api-orchestrator에 대응 엔드포인트가
+# 없는, Python 전용으로만 구현된 전략들. S1~S7/S10/S12는 이미 Java 쪽에 자체 /run 엔드포인트가
+# 있으므로 여기 포함하지 않는다 (health_server.py의 /strategy/{code}/run 참고).
+MANUAL_RUN_STRATEGIES: dict[str, tuple[str, callable]] = {
+    "s8":  ("S8_GOLDEN_CROSS", _scan_s8),
+    "s9":  ("S9_PULLBACK_SWING", _scan_s9),
+    "s11": ("S11_FRGN_CONT", _scan_s11),
+    "s13": ("S13_BOX_BREAKOUT", _scan_s13),
+    "s14": ("S14_OVERSOLD_BOUNCE", _scan_s14),
+    "s15": ("S15_MOMENTUM_ALIGN", _scan_s15),
+    "s16": ("S16_ACCUMULATION_SHADOW", _scan_s16),
+}
+
+
+async def run_manual_scan(rdb, code: str) -> dict:
+    """관리자 대시보드에서 개별 전략을 즉시 1회 실행한다. 자동 스케줄/오너십 게이트와 무관하게 동작."""
+    entry = MANUAL_RUN_STRATEGIES.get(str(code or "").strip().lower())
+    if entry is None:
+        return {"error": f"unsupported strategy code: {code}"}
+    strategy_name, fn = entry
+    token = await _load_token(rdb)
+    if not token:
+        return {"strategy": strategy_name, "published": 0, "error": "kiwoom:token not available"}
+    published = await fn(rdb, token)
+    return {"strategy": strategy_name, "published": int(published or 0)}
+
 
 async def _run_once(rdb):
+    if not _python_owns_strategy_execution():
+        logger.debug("[Runner] strategy execution owner=%s; Python scan skipped", STRATEGY_EXECUTION_OWNER)
+        return
     now = _current_kst_time()
     active_entries = _active_schedule_entries(now)
-    if not _session_filter_allows_run():
+    if not await _session_filter_allows_run(rdb):
         return
 
     token = await _load_token(rdb)
@@ -582,11 +681,19 @@ async def _run_once(rdb):
         return
 
     tasks = [
-        _run_strategy_with_semaphore(tag, fn(rdb, token), rdb=rdb)
+        _run_strategy_with_semaphore(
+            tag,
+            _run_with_token_context(fn(rdb, token), token),
+            rdb=rdb,
+        )
         for tag, start, end, fn in active_entries
     ]
 
-    logger.debug("[Runner] 전술 %d개 병렬 실행 시작 (세마포어 한도: %d)", len(tasks), MAX_CONCURRENT_STRATEGIES)
+    dispatched_tags = ", ".join(tag for tag, _, _, _ in active_entries)
+    logger.info(
+        "[Runner] 전술 %d개 병렬 실행 시작 (세마포어 한도: %d): %s",
+        len(tasks), MAX_CONCURRENT_STRATEGIES, dispatched_tags,
+    )
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
