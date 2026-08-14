@@ -15,6 +15,9 @@ import time as _time
 from datetime import datetime, time, timedelta, timezone
 
 from http_utils import validate_kiwoom_response, kiwoom_post
+from redis_reader import get_strength_with_status
+from strategy_meta import normalize_market_type as _normalize_market_type
+from toss_client import fetch_market_ranking as _toss_fetch_market_ranking, toss_enabled as _toss_enabled
 from utils import safe_float as _clean, normalize_stock_code
 from config import KIWOOM_BASE_URL, MARKET_LIST as MARKETS
 
@@ -23,8 +26,9 @@ logger = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 
 CANDIDATE_BUILD_INTERVAL_SEC = int(os.getenv("CANDIDATE_BUILD_INTERVAL_SEC", "600"))
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 S3S5_STATUS_TTL_SEC = int(os.getenv("S3S5_STATUS_TTL_SEC", "1800"))
+CANDIDATE_POOL_OWNER = str(os.getenv("CANDIDATE_POOL_OWNER", "PYTHON")).strip().upper()
 
 # 품질 필터 / watchlist ZSET 기능 플래그
 ENABLE_CANDIDATE_QUALITY_FILTER = os.getenv("ENABLE_CANDIDATE_QUALITY_FILTER", "false").lower() in {"1", "true", "yes"}
@@ -47,6 +51,15 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
+# 토스 종목검색(Ranking) 후보풀 보강 — S4/S13은 이미 Kiwoom ka10023(급등종목)로
+# 같은 성격의 후보를 뽑고 있으므로, 이 보강은 새 판단기준이 아니라 "같은 flu_rt
+# 밴드를 만족하는 종목을 더 넓게(Kiwoom 페이지네이션/rate-limit 누락분까지)
+# 찾아내는" 순수 추가(union) 역할이다. 기존 Kiwoom 후보는 그대로 두고 뒤에
+# 덧붙이며, 개별 종목의 최종 진입 여부는 이후 rule score/Claude 게이트가
+# 동일하게 적용한다 (2026-08-11).
+TOSS_RANKING_SUPPLEMENT_ENABLED = _env_flag("TOSS_RANKING_SUPPLEMENT_ENABLED", "true")
+TOSS_RANKING_SUPPLEMENT_LIMIT = _int_env("TOSS_RANKING_SUPPLEMENT_LIMIT", 20)
+
 CANDIDATE_LIMIT_S1 = _int_env("CANDIDATE_LIMIT_S1", 100)
 CANDIDATE_LIMIT_S2 = _int_env("CANDIDATE_LIMIT_S2", 50)
 CANDIDATE_LIMIT_S3 = _int_env("CANDIDATE_LIMIT_S3", 150)
@@ -63,6 +76,8 @@ CANDIDATE_LIMIT_S13 = _int_env("CANDIDATE_LIMIT_S13", 150)
 CANDIDATE_LIMIT_S14 = _int_env("CANDIDATE_LIMIT_S14", 100)
 CANDIDATE_LIMIT_S15 = _int_env("CANDIDATE_LIMIT_S15", 150)
 CANDIDATE_WATCHLIST_PRIORITY_LIMIT = _int_env("CANDIDATE_WATCHLIST_PRIORITY_LIMIT", 300)
+CANDIDATE_LIVE_CONFLUENCE_LIMIT = _int_env("CANDIDATE_LIVE_CONFLUENCE_LIMIT", 100)
+CANDIDATE_LIVE_CONFLUENCE_TTL_SEC = _int_env("CANDIDATE_LIVE_CONFLUENCE_TTL_SEC", 900)
 
 
 def now_kst_str() -> str:
@@ -112,9 +127,9 @@ def _local_candidate_builder_session(now: time) -> str:
         return SESSION_PRE_MARKET
     if time(8, 25) < now < time(9, 5):
         return SESSION_OPENING_RECOVERY
-    if time(9, 5) <= now < time(14, 50):
+    if time(9, 5) <= now < time(14, 30):
         return SESSION_INTRADAY
-    if time(14, 50) <= now <= time(14, 55):
+    if time(14, 30) <= now <= time(15, 10):
         return SESSION_S12_ONLY
     return SESSION_IDLE
 
@@ -237,15 +252,50 @@ _EXCLUDE_STK_NM_KEYWORDS = (
 )
 
 # 전략별 우선순위 가중치 (watchlist ZSET 점수 계산용)
+# NOTE(2026-08-05): S11(120개/시장, 240개 합산)은 S8/S9(220개/시장)와 비슷하거나
+# 더 넓은 유니버스를 갖는 스윙 전략인데도 예전에는 18점(s3/s5/s6/s14와 동일)으로
+# 낮게 책정되어 있었다. STRICT_REST_ENTER_GUARD(queue_worker.py)는 WS 실시간
+# 커버리지(top-200 watchlist)를 벗어난 종목의 ENTER를 강제 CANCEL하는데, S11의
+# 낮은 가중치가 통합 watchlist ZSET(candidates:watchlist:z) 상위 200 슬롯 경쟁에서
+# 불리하게 작동해 정당한 ENTER 신호가 REST-fallback만 남은 채 차단되는 사고가
+# 있었다(2026-08-05 조사). S7/S8/S9와 같은 20점 티어로 상향해 유니버스 크기 대비
+# 형평성을 맞춘다.
+#: 후보 풀 스캔 상한. 전략을 추가할 때 이 값만 올리면 watchlist 통합 루프가
+#: 자동으로 따라온다. 하드코딩된 range(1, 16)이 s16을 누락시킨 사고 재발 방지용.
+_MAX_STRATEGY_NUM = 16
+
 _STRATEGY_PRIORITY_WEIGHT = {
     "s1": 30, "s2": 30, "s4": 30, "s13": 30,
     "s10": 25,
-    "s8": 20, "s9": 20, "s15": 20,
+    "s7": 20, "s8": 20, "s9": 20, "s11": 20, "s15": 20,
     "s12": 15,
-    "s3": 18, "s5": 18, "s6": 18, "s7": 20, "s11": 18, "s14": 18,
+    # s16은 그동안 DB CHECK 제약(V53에서 수정)과 watchlist range 버그로 신호를
+    # 한 건도 낸 적이 없어 실측 성과가 없다. 기존 기본값(15)과 동일하게 두어
+    # 현재 랭킹 동작을 바꾸지 않고, 실제 신호가 쌓인 뒤 티어를 재검토한다.
+    # WS 구독 슬롯이 이미 포화(200 후보 → 70 슬롯) 상태라 섣불리 올리면
+    # 검증된 다른 전략의 실시간 커버리지를 잠식한다.
+    "s16": 15,
+    "s3": 18, "s5": 18, "s6": 18, "s14": 18,
 }
 # 실시간 필수 전략 (추가 가점 부여)
 _REALTIME_CRITICAL_STRATEGIES = {"s1", "s2", "s4", "s13"}
+
+# 즉시 운영에 반영하는 추가 순위정보 소스의 가중치. 점수는 기존 전략별
+# 후보 풀을 제거하지 않고, 같은 풀 안에서 우선순위를 결정하는 데 사용한다.
+_LIVE_CONFLUENCE_WEIGHTS = {
+    "liquidity": 24,       # ka10030 당일 거래량/거래대금 상위
+    "foreign_net_buy": 26, # ka10034 외국인 순매수 상위
+    "same_net_buy": 26,    # ka10062 기관·외국인 동시 순매수
+    "bid_balance": 12,     # ka10020 매수잔량 비율 상위
+    "bid_surge": 7,        # ka10021 매수잔량 급증
+    "ratio_surge": 5,      # ka10022 매수/매도 잔량비율 급증
+}
+
+
+def _is_etf_or_etn_name(stk_nm: object) -> bool:
+    """Return whether a Kiwoom response name identifies an ETF or ETN."""
+    normalized = str(stk_nm or "").upper()
+    return "ETF" in normalized or "ETN" in normalized
 
 
 async def _filter_individual_stocks(rdb, codes: list[str]) -> list[str]:
@@ -269,6 +319,176 @@ async def _filter_individual_stocks(rdb, codes: list[str]) -> list[str]:
     except Exception as exc:
         logger.debug("[builder] ETF 이름 필터 실패 – 원본 반환: %s", exc)
         return codes
+
+
+def _live_confluence_requests(market: str, as_of: datetime | None = None) -> tuple[tuple[str, dict, str, str], ...]:
+    """Return the documented Kiwoom ranking requests used for live prioritization.
+
+    These calls intentionally run only in the intraday builder.  All source
+    results are used immediately to reorder the already strategy-qualified
+    pools; they are never written to a shadow-only key.
+    """
+    as_of = as_of or datetime.now(KST)
+    start_dt = (as_of - timedelta(days=5)).strftime("%Y%m%d")
+    end_dt = as_of.strftime("%Y%m%d")
+    return (
+        ("liquidity", {
+            "mrkt_tp": market, "sort_tp": "3", "mang_stk_incls": "16",
+            "crd_tp": "0", "trde_qty_tp": "0", "pric_tp": "0",
+            "trde_prica_tp": "0", "mrkt_open_tp": "0", "stex_tp": "3",
+        }, "ka10030", "tdy_trde_qty_upper"),
+        ("foreign_net_buy", {
+            "mrkt_tp": market, "trde_tp": "2", "dt": "0", "stex_tp": "3",
+        }, "ka10034", "for_dt_trde_upper"),
+        ("same_net_buy", {
+            "strt_dt": start_dt, "end_dt": end_dt, "mrkt_tp": market,
+            "trde_tp": "1", "sort_cnd": "2", "unit_tp": "1", "stex_tp": "3",
+        }, "ka10062", "eql_nettrde_rank"),
+        ("bid_balance", {
+            "mrkt_tp": market, "sort_tp": "3", "trde_qty_tp": "0010",
+            "stk_cnd": "1", "crd_cnd": "0", "stex_tp": "3",
+        }, "ka10020", "bid_req_upper"),
+        ("bid_surge", {
+            "mrkt_tp": market, "trde_tp": "1", "sort_tp": "1", "tm_tp": "30",
+            "trde_qty_tp": "10", "stk_cnd": "1", "stex_tp": "3",
+        }, "ka10021", "bid_req_sdnin"),
+        ("ratio_surge", {
+            "mrkt_tp": market, "rt_tp": "1", "tm_tp": "30", "trde_qty_tp": "10",
+            "stk_cnd": "1", "stex_tp": "3",
+        }, "ka10022", "req_rt_sdnin"),
+    )
+
+
+async def _fetch_live_rank_items(token: str, api_id: str, body: dict, response_key: str) -> list[dict]:
+    """Fetch one Kiwoom ranking source for the active candidate prioritizer."""
+    headers = {
+        "api-id": api_id,
+        "authorization": f"Bearer {token}",
+        "Content-Type": "application/json;charset=UTF-8",
+    }
+    resp = await kiwoom_post(
+        f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers, body, api_id,
+    )
+    if resp is None:
+        return []
+    data = resp.json()
+    if not validate_kiwoom_response(data, api_id, logger):
+        return []
+    rows = data.get(response_key, [])
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _score_live_confluence(
+    candidate_codes: set[str], source_codes: dict[str, set[str]],
+) -> tuple[dict[str, float], list[str]]:
+    """Score existing strategy candidates and return direct confluence candidates.
+
+    A confluence candidate must be liquid and have either foreign-only or
+    institution-plus-foreign net-buy confirmation.  Order-book sources raise
+    priority but cannot create a candidate alone.
+    """
+    scores: dict[str, float] = {}
+    for code in candidate_codes:
+        score = sum(
+            weight for source, weight in _LIVE_CONFLUENCE_WEIGHTS.items()
+            if code in source_codes.get(source, set())
+        )
+        if score:
+            scores[code] = float(score)
+
+    liquid = source_codes.get("liquidity", set())
+    buy_confirmed = source_codes.get("foreign_net_buy", set()) | source_codes.get("same_net_buy", set())
+    confluence_codes = [
+        code for code in candidate_codes
+        if code in liquid and code in buy_confirmed
+    ]
+    confluence_codes.sort(key=lambda code: (-scores.get(code, 0.0), code))
+    return scores, confluence_codes[:CANDIDATE_LIVE_CONFLUENCE_LIMIT]
+
+
+async def _prioritize_existing_candidate_pools(rdb, market: str, scores: dict[str, float]) -> None:
+    """Reorder live strategy pools in place, preserving membership and each TTL."""
+    if not scores:
+        return
+    for strategy_no in range(1, 16):
+        key = f"candidates:s{strategy_no}:{market}"
+        try:
+            codes = await rdb.lrange(key, 0, -1)
+            ttl = await rdb.ttl(key)
+        except Exception as exc:
+            logger.debug("[builder] live priority pool read failed [%s]: %s", key, exc)
+            continue
+        if not codes or ttl is None or ttl <= 0:
+            continue
+        ranked = sorted(
+            enumerate(codes),
+            key=lambda entry: (-scores.get(normalize_stock_code(entry[1]), 0.0), entry[0]),
+        )
+        prioritized = [code for _, code in ranked]
+        if prioritized != list(codes):
+            await _lpush_with_ttl(rdb, key, prioritized, int(ttl))
+
+
+async def _build_live_confluence(token: str, market: str, rdb) -> None:
+    """Immediately enrich active candidate pools with liquidity, flow, and order-book ranks."""
+    candidate_codes: set[str] = set()
+    for strategy_no in range(1, 16):
+        try:
+            candidate_codes.update(
+                normalize_stock_code(code) for code in await rdb.lrange(f"candidates:s{strategy_no}:{market}", 0, -1)
+                if normalize_stock_code(code)
+            )
+        except Exception:
+            continue
+    if not candidate_codes:
+        return
+
+    source_raw_codes: dict[str, set[str]] = {}
+    for source, body, api_id, response_key in _live_confluence_requests(market):
+        try:
+            items = await _fetch_live_rank_items(token, api_id, body, response_key)
+            codes = [normalize_stock_code(item.get("stk_cd", "")) for item in items]
+            source_raw_codes[source] = {code for code in codes if code}
+        except Exception as exc:
+            # Existing candidate order remains live if a supplementary ranking
+            # source fails; this is a fail-open enrichment, not a shadow path.
+            logger.warning("[builder] live confluence source failed [%s]: %s", api_id, exc)
+            source_raw_codes[source] = set()
+        await asyncio.sleep(_API_INTERVAL)
+
+    raw_codes = sorted({code for codes in source_raw_codes.values() for code in codes})
+    individual_codes = set(await _filter_individual_stocks(rdb, raw_codes))
+    source_codes = {
+        source: {code for code in codes if code in individual_codes}
+        for source, codes in source_raw_codes.items()
+    }
+    scores, confluence_codes = _score_live_confluence(candidate_codes, source_codes)
+    await _prioritize_existing_candidate_pools(rdb, market, scores)
+
+    pipe = rdb.pipeline()
+    confluence_key = f"candidates:confluence:{market}"
+    pipe.delete(confluence_key)
+    if confluence_codes:
+        pipe.rpush(confluence_key, *confluence_codes)
+    pipe.expire(confluence_key, CANDIDATE_LIVE_CONFLUENCE_TTL_SEC)
+    built_at = now_kst_str()
+    for code in candidate_codes:
+        active_sources = [source for source, codes in source_codes.items() if code in codes]
+        key = f"candidate:enrichment:{code}"
+        pipe.hset(key, mapping={
+            "market": market,
+            "score": str(scores.get(code, 0.0)),
+            "source_count": str(len(active_sources)),
+            "sources": ",".join(active_sources),
+            "confluence": str(code in confluence_codes).lower(),
+            "built_at": built_at,
+        })
+        pipe.expire(key, CANDIDATE_LIVE_CONFLUENCE_TTL_SEC)
+    await pipe.execute()
+    logger.info(
+        "[builder] live candidate confluence updated [market=%s candidates=%d confirmed=%d]",
+        market, len(candidate_codes), len(confluence_codes),
+    )
 
 
 def _assess_candidate_quality(stk_cd: str, raw_data: dict, strategy_id: str) -> dict:
@@ -610,8 +830,10 @@ def _rank_ka10029_items(items: list[dict]) -> list[dict]:
 
     return ranked
 
-async def _fetch_ka10029(token: str, market: str) -> list[dict]:
+async def _fetch_ka10029(token: str, market: str, trde_qty_cnd: str | None = None) -> list[dict]:
     """ka10029 예상체결등락률상위 (POST /api/dostk/rkinfo)"""
+    if trde_qty_cnd is None:
+        trde_qty_cnd = os.getenv("S1_KA10029_TRADE_QTY_CONDITION", "0").strip() or "0"
     results = []
     next_key = ""
     while True:
@@ -627,7 +849,7 @@ async def _fetch_ka10029(token: str, market: str) -> list[dict]:
         resp = await kiwoom_post(
             f"{KIWOOM_BASE_URL}/api/dostk/rkinfo", headers,
             {
-                "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "10",
+                "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": trde_qty_cnd,
                 "stk_cnd": "16", "crd_cnd": "0", "pric_cnd": "8", "stex_tp": "3",
             },
             "ka10029",
@@ -687,6 +909,7 @@ async def _build_s1(token: str, market: str, rdb) -> None:
             codes.append(stk_cd)
         if len(codes) >= CANDIDATE_LIMIT_S1:
             break
+    codes = await _filter_individual_stocks(rdb, codes)
     codes = await _persist_candidate_quality_batch(
         rdb,
         strategy_id="s1",
@@ -704,6 +927,7 @@ async def _build_s1(token: str, market: str, rdb) -> None:
         "built_at": now_kst_str(),
         "source_api": "ka10029",
         "source_market": source_market,
+        "trade_qty_condition": os.getenv("S1_KA10029_TRADE_QTY_CONDITION", "0"),
         "source_status": "EMPTY" if not codes else ("FALLBACK_ALL_MARKET" if source_market == "000" and market != "000" else "OK"),
     }
     logger.info(
@@ -739,6 +963,16 @@ async def _build_s7(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= CANDIDATE_LIMIT_S7:
             break
+
+    existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
+    toss_items = await _toss_ranking_supplement(
+        rdb, market, 0.5, 10.0, max(0, CANDIDATE_LIMIT_S7 - len(codes)),
+    )
+    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
+    if toss_items:
+        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S7]
+
+    codes = await _filter_individual_stocks(rdb, codes)
     meta = {
         "raw_count": raw_count,
         "filtered_count": len(codes),
@@ -747,6 +981,7 @@ async def _build_s7(token: str, market: str, rdb) -> None:
         "built_at": now_kst_str(),
         "source_api": "ka10027",
         "source_status": "EMPTY" if not codes else "OK",
+        "toss_supplement_count": len(toss_items),
     }
     await _lpush_with_ttl(rdb, f"candidates:s7:{market}", codes, ttl)
     try:
@@ -794,6 +1029,76 @@ async def _fetch_ka10023(token: str, market: str) -> list[dict]:
         if cont_yn != "Y" or not next_key:
             break
     return results
+
+
+# ── 토스 종목검색(Ranking) 보강 ─────────────────────────────────────────
+# _build_s4/_build_s13가 market="001"/"101" 각각 호출하므로 같은 빌드 사이클
+# 안에서 토스 랭킹을 두 번 조회하지 않도록 짧게(90초) 캐시한다.
+_TOSS_RANKING_CACHE: dict = {"items": None, "expire_at": 0.0}
+
+
+async def _get_toss_ranking_items(rdb) -> list[dict]:
+    now = _time.monotonic()
+    if _TOSS_RANKING_CACHE["items"] is not None and now < _TOSS_RANKING_CACHE["expire_at"]:
+        return _TOSS_RANKING_CACHE["items"]
+    items = await _toss_fetch_market_ranking(
+        rdb, type_="MARKET_TRADING_AMOUNT", market_country="KR",
+        duration="realtime", count=100, exclude_investment_caution=True,
+    )
+    _TOSS_RANKING_CACHE["items"] = items
+    _TOSS_RANKING_CACHE["expire_at"] = now + 90.0
+    return items
+
+
+async def _toss_ranking_supplement(
+    rdb, market: str, flu_lo: float, flu_hi: float, limit: int,
+) -> list[dict]:
+    """토스 거래대금 상위 랭킹에서 strategy의 flu_rt 밴드를 만족하는 종목을
+    market("001"/"101")에 맞게 골라 Kiwoom raw_item과 같은 모양(dict)으로 반환한다.
+    시장 구분을 확인할 수 없는 심볼은 다른 market 풀에 잘못 섞이지 않도록 건너뛴다.
+    """
+    if not TOSS_RANKING_SUPPLEMENT_ENABLED or not _toss_enabled() or limit <= 0:
+        return []
+    try:
+        items = await _get_toss_ranking_items(rdb)
+    except Exception as e:
+        logger.debug("[builder] 토스 랭킹 조회 실패 (무시): %s", e)
+        return []
+
+    out: list[dict] = []
+    for item in items:
+        if len(out) >= limit:
+            break
+        symbol = normalize_stock_code(str(item.get("symbol", "")))
+        if not symbol:
+            continue
+        price = item.get("price") or {}
+        try:
+            change_pct = float(price.get("changeRate")) * 100.0
+        except (TypeError, ValueError):
+            continue
+        if not (flu_lo <= change_pct <= flu_hi):
+            continue
+        try:
+            market_type = _normalize_market_type(
+                await rdb.get(f"stock:market:{symbol}") or await rdb.get(f"stock:market_type:{symbol}")
+            )
+        except Exception:
+            market_type = ""
+        if market_type != market:
+            continue  # 시장 미확인/불일치 — 다른 market 풀 오염 방지, 조용히 skip
+        try:
+            trde_amt_krw = float(item.get("tradingAmount") or 0)
+        except (TypeError, ValueError):
+            trde_amt_krw = 0.0
+        out.append({
+            "stk_cd": symbol,
+            "flu_rt": change_pct,
+            "trde_amt": trde_amt_krw / 1000.0,  # Kiwoom 관례: 천원 단위
+            "trde_qty": _clean(item.get("tradingVolume", 0)),
+            "source": "toss_ranking",
+        })
+    return out
 
 
 # ── ka10027 전일대비등락률상위 공통 ─────────────────────────────────────
@@ -858,18 +1163,11 @@ async def _build_s4(token: str, market: str, rdb) -> None:
 
         # WS 체결강도 확인 — 30초 이내 신선한 데이터만 strong 분류
         try:
-            raw_str = await rdb.lindex(f"ws:strength:{stk_cd}", 0)
-            if raw_str is not None and float(raw_str) >= 115:
-                # 신선도 체크: ws:strength_meta 타임스탬프 확인
-                _meta = await rdb.hgetall(f"ws:strength_meta:{stk_cd}")
-                _upd = _meta.get(b"updated_at_ms") or _meta.get("updated_at_ms") if _meta else None
-                _age_ok = (
-                    _upd is not None
-                    and (_time.time() * 1000 - float(_upd)) < 30_000
-                )
-                if _age_ok:
-                    strong.append(stk_cd)
-                    continue
+            strength_result = await get_strength_with_status(rdb, stk_cd, count=1)
+            strength = strength_result.get("data")
+            if strength is not None and float(strength) >= 115:
+                strong.append(stk_cd)
+                continue
         except Exception:
             pass
         normal.append(stk_cd)
@@ -878,6 +1176,21 @@ async def _build_s4(token: str, market: str, rdb) -> None:
             break
 
     codes = (strong + normal)[:CANDIDATE_LIMIT_S4]
+
+    existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
+    toss_items = await _toss_ranking_supplement(
+        rdb, market, 3.0, 20.0, max(0, CANDIDATE_LIMIT_S4 - len(codes)),
+    )
+    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
+    if toss_items:
+        items = items + toss_items
+        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S4]
+
+    # 토스 랭킹 항목은 종목명이 없어(symbol만 제공) _assess_candidate_quality의
+    # 이름 기반 ETF/ETN 필터가 못 잡는다. stock:code_map 코드 기반 필터를 병합된
+    # 최종 목록에 적용해 출처와 무관하게 ETF/ETN이 후보풀에 들어오지 않게 한다.
+    codes = await _filter_individual_stocks(rdb, codes)
+
     codes = await _persist_candidate_quality_batch(
         rdb,
         strategy_id="s4",
@@ -895,6 +1208,7 @@ async def _build_s4(token: str, market: str, rdb) -> None:
         "built_at": now_kst_str(),
         "source_api": "ka10023",
         "source_status": "EMPTY" if not codes else "OK",
+        "toss_supplement_count": len(toss_items),
     }
     await _lpush_with_ttl(rdb, f"candidates:s4:{market}", codes, ttl)
     try:
@@ -917,6 +1231,16 @@ async def _build_s8(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= CANDIDATE_LIMIT_S8:
             break
+
+    existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
+    toss_items = await _toss_ranking_supplement(
+        rdb, market, 0.5, 8.0, max(0, CANDIDATE_LIMIT_S8 - len(codes)),
+    )
+    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
+    if toss_items:
+        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S8]
+
+    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s8:{market}", codes, 1800)
 
 
@@ -934,6 +1258,16 @@ async def _build_s9(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= CANDIDATE_LIMIT_S9:
             break
+
+    existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
+    toss_items = await _toss_ranking_supplement(
+        rdb, market, 0.5, 8.0, max(0, CANDIDATE_LIMIT_S9 - len(codes)),
+    )
+    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
+    if toss_items:
+        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S9]
+
+    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s9:{market}", codes, 1800)
 
 
@@ -950,6 +1284,18 @@ async def _build_s14(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= CANDIDATE_LIMIT_S14:
             break
+
+    # sort_tp=3(하락률)이라 flu_rt/changeRate 모두 음수 — 밴드도 음수로 맞춘다
+    # (하락 3.0~10.0% == changeRate -10.0~-3.0%).
+    existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
+    toss_items = await _toss_ranking_supplement(
+        rdb, market, -10.0, -3.0, max(0, CANDIDATE_LIMIT_S14 - len(codes)),
+    )
+    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
+    if toss_items:
+        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S14]
+
+    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s14:{market}", codes, 1800)
 
 
@@ -994,9 +1340,15 @@ async def _build_s10(token: str, market: str, rdb) -> None:
         if len(results) >= CANDIDATE_LIMIT_S10:
             break
 
-    # [핵심 수정] 리스트 컴프리헨션 내부에서 정규화 함수 호출
-    # 결과가 100개가 넘지 않도록 슬라이싱하고, 정제된 6자리 코드만 codes에 담깁니다.
-    codes = [normalize_stock_code(x.get("stk_cd")) for x in results if x.get("stk_cd")][:CANDIDATE_LIMIT_S10]
+    # ka10016's stk_cnd has no ETF/ETN exclusion value in the official contract.
+    # Remove explicit ETF/ETN names here, then use stock:code_map as a fallback
+    # for records whose response name was absent or incomplete.
+    codes = [
+        normalize_stock_code(x.get("stk_cd"))
+        for x in results
+        if x.get("stk_cd") and not _is_etf_or_etn_name(x.get("stk_nm"))
+    ][:CANDIDATE_LIMIT_S10]
+    codes = await _filter_individual_stocks(rdb, codes)
     codes = await _persist_candidate_quality_batch(
         rdb,
         strategy_id="s10",
@@ -1129,7 +1481,8 @@ async def _build_s2(token: str, market: str, rdb) -> None:
         },
         {
             "mrkt_tp": market, "bf_mkrt_tp": "1", "stk_cd": "",
-            "motn_tp": "0", "skip_stk": "000000000",
+            # ka10054 skip_stk position 8/9: ETF / ETN exclusion.
+            "motn_tp": "0", "skip_stk": "000000011",
             "trde_qty_tp": "0", "min_trde_qty": "0", "max_trde_qty": "0",
             "trde_prica_tp": "0", "min_trde_prica": "0", "max_trde_prica": "0",
             "motn_drc": "1", "stex_tp": "3",
@@ -1399,6 +1752,18 @@ async def _build_s13(token: str, market: str, rdb) -> None:
                 codes.append(stk_cd)
         if len(codes) >= CANDIDATE_LIMIT_S13:
             break
+
+    existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
+    toss_items = await _toss_ranking_supplement(
+        rdb, market, 3.0, 8.0, max(0, CANDIDATE_LIMIT_S13 - len(codes)),
+    )
+    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
+    if toss_items:
+        items = items + toss_items
+        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S13]
+
+    codes = await _filter_individual_stocks(rdb, codes)
+
     codes = await _persist_candidate_quality_batch(
         rdb,
         strategy_id="s13",
@@ -1479,6 +1844,7 @@ def _calculate_watchlist_priority_score(
     stk_cd: str,
     strategy_ids: list[str],
     quality_data: dict | None = None,
+    enrichment_data: dict | None = None,
 ) -> float:
     """종목의 watchlist 우선순위 점수를 계산한다.
 
@@ -1541,6 +1907,8 @@ def _calculate_watchlist_priority_score(
 
     # REJECT 패널티
     reject_penalty = -30 if cq == "REJECT" else 0
+    enrichment_score = _as_float((enrichment_data or {}).get("score", 0), 0.0)
+    enrichment_bonus = min(30.0, max(0.0, enrichment_score * 0.30))
 
     score = (
         strategy_weight
@@ -1550,6 +1918,7 @@ def _calculate_watchlist_priority_score(
         + confluence_bonus
         + realtime_bonus
         + reject_penalty
+        + enrichment_bonus
     )
     return float(max(0.0, score))
 
@@ -1568,7 +1937,11 @@ async def _refresh_watchlist(rdb, ttl: int = 900) -> None:
     # 전략별 코드 맵: stk_cd → 해당 종목이 출현한 전략 ID 리스트
     code_strategy_map: dict[str, list[str]] = {}
 
-    for n in range(1, 16):
+    # range 상한은 최대 전략 번호 + 1이어야 한다. 2026-08-10까지 range(1, 16)으로
+    # 굳어 있어 s16 후보 풀이 watchlist/ZSET에 한 번도 반영되지 않았고, 그 결과
+    # S16 종목은 websocket-listener의 동적 구독 대상에서 통째로 빠져 있었다.
+    # (같은 날 발견된 trading_signals_strategy_check의 S16 누락과 동일 계열 버그.)
+    for n in range(1, _MAX_STRATEGY_NUM + 1):
         sid = f"s{n}"
         for mkt in MARKETS:
             try:
@@ -1607,11 +1980,18 @@ async def _refresh_watchlist(rdb, ttl: int = 900) -> None:
 
             # 종목별 품질 데이터 로드 (candidate:quality:{stk_cd} hash)
             quality_cache: dict[str, dict] = {}
+            enrichment_cache: dict[str, dict] = {}
             for stk_cd in all_codes:
                 try:
                     qdata = _decode_redis_hash(await rdb.hgetall(f"candidate:quality:{stk_cd}"))
                     if qdata:
                         quality_cache[stk_cd] = qdata
+                except Exception:
+                    pass
+                try:
+                    enrichment = _decode_redis_hash(await rdb.hgetall(f"candidate:enrichment:{stk_cd}"))
+                    if enrichment:
+                        enrichment_cache[stk_cd] = enrichment
                 except Exception:
                     pass
 
@@ -1622,7 +2002,12 @@ async def _refresh_watchlist(rdb, ttl: int = 900) -> None:
             for stk_cd in all_codes:
                 strategy_ids = code_strategy_map.get(stk_cd, [])
                 quality_data = quality_cache.get(stk_cd)
-                score = _calculate_watchlist_priority_score(stk_cd, strategy_ids, quality_data)
+                score = _calculate_watchlist_priority_score(
+                    stk_cd,
+                    strategy_ids,
+                    quality_data,
+                    enrichment_cache.get(stk_cd),
+                )
                 scored_items.append((score, stk_cd))
 
             # redis-py zadd: {member: score} mapping
@@ -1696,16 +2081,6 @@ async def _build_intraday(token: str, rdb, session: str | None = None) -> None:
     """
     s12_only = session == SESSION_S12_ONLY
 
-    if not s12_only:
-        for market in MARKETS:
-            try:
-                if not await rdb.exists(f"candidates:s1:{market}"):
-                    logger.info("[builder] S1 %s missing; rebuilding during intraday", market)
-                    await _build_s1(token, market, rdb)
-                    await asyncio.sleep(_API_INTERVAL)
-            except Exception as e:
-                logger.error("[builder] S1 %s intraday rebuild failed: %s", market, e)
-
     for market in MARKETS:
         builders = [(_build_s12, f"S12 {market}")] if s12_only else [
             (_build_s2,  f"S2 {market}"),
@@ -1734,6 +2109,11 @@ async def _build_intraday(token: str, rdb, session: str | None = None) -> None:
             await _build_s6(token, rdb)
         except Exception as e:
             logger.error("[builder] S6 build failed: %s", e)
+        for market in MARKETS:
+            try:
+                await _build_live_confluence(token, market, rdb)
+            except Exception as e:
+                logger.error("[builder] live confluence build failed [%s]: %s", market, e)
     await _refresh_watchlist(rdb)
 
 
@@ -1741,6 +2121,16 @@ async def _build_intraday(token: str, rdb, session: str | None = None) -> None:
 
 async def run_candidate_builder(rdb) -> None:
     """candidates_builder 메인 루프 – engine.py 에서 asyncio.create_task() 로 기동"""
+    if CANDIDATE_POOL_OWNER != "PYTHON":
+        logger.warning(
+            "[builder] candidate pool owner is %s; Python builder will not write pools",
+            CANDIDATE_POOL_OWNER,
+        )
+        return
+    try:
+        await rdb.set("ops:candidate_pool_owner", "PYTHON")
+    except Exception as exc:
+        logger.warning("[builder] candidate owner marker write failed: %s", exc)
     logger.info("[builder] candidates_builder 시작 (주기=%ds)", CANDIDATE_BUILD_INTERVAL_SEC)
 
     while True:
