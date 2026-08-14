@@ -118,6 +118,13 @@ _STRATEGY_TIMEOUT_OVERRIDES = {
     # calls even with zero wasted requests (fetch coalescing landed the same day and
     # didn't fully fix it) -- S8 timed out 37/37 runs today, S9 4/14. Give them more
     # runway instead of racing the shared rate limiter.
+    #
+    # 2026-08-14 후속: 런웨이를 늘려도 다시 천장에 붙었다. S9 25회 전부 느린 실행
+    # (평균 351s, 최대 441.9s / 450s — 8초 남김), S8 23회 중 22회 느림. 종목당
+    # 순차 API 대기가 4회 x 0.8s라 60종목이면 대기만 192s다. 타임아웃을 또 올리는
+    # 대신 S8/S9_SCAN_LIMIT을 60 -> 40으로 낮춰 호출량 자체를 줄였다(.env).
+    # 후보 풀은 등락률 순위로 정렬돼 있어 꼬리 20종목의 신호 기여가 낮다
+    # (S9는 하루 1270종목 평가에 신호 3건). 타임아웃 값은 안전 여유로 유지한다.
     "S8": int(os.getenv("STRATEGY_TIMEOUT_S8_SEC", "500")),
     "S9": int(os.getenv("STRATEGY_TIMEOUT_S9_SEC", "450")),
 }

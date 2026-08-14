@@ -75,6 +75,26 @@ CANDIDATE_LIMIT_S12 = _int_env("CANDIDATE_LIMIT_S12", 50)
 CANDIDATE_LIMIT_S13 = _int_env("CANDIDATE_LIMIT_S13", 150)
 CANDIDATE_LIMIT_S14 = _int_env("CANDIDATE_LIMIT_S14", 100)
 CANDIDATE_LIMIT_S15 = _int_env("CANDIDATE_LIMIT_S15", 150)
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+# S4/S13은 같은 ka10023(거래량급증 순위)에서 서로 다른 대역을 잘라 쓴다.
+# 2026-08-14(약세장) 관측: 두 풀 모두 하루 종일 5종목뿐이었고 S13은 매 스캔
+# no_candidates였다. 약세장에서 거래량이 급증하는 종목은 대개 +8%를 넘는
+# 극단 무버라 S13의 3~8% 대역이 통째로 비어버린다. 대역을 조금 넓히되
+# 성격은 유지한다(+15%짜리는 박스권 돌파가 아니라 S4 영역).
+S4_MIN_SDNIN_RT = _float_env("S4_MIN_SDNIN_RT", 40.0)
+S4_FLU_LO = _float_env("S4_FLU_LO", 3.0)
+S4_FLU_HI = _float_env("S4_FLU_HI", 20.0)
+S13_MIN_SDNIN_RT = _float_env("S13_MIN_SDNIN_RT", 25.0)
+S13_FLU_LO = _float_env("S13_FLU_LO", 2.0)
+S13_FLU_HI = _float_env("S13_FLU_HI", 9.0)
 CANDIDATE_WATCHLIST_PRIORITY_LIMIT = _int_env("CANDIDATE_WATCHLIST_PRIORITY_LIMIT", 300)
 CANDIDATE_LIVE_CONFLUENCE_LIMIT = _int_env("CANDIDATE_LIVE_CONFLUENCE_LIMIT", 100)
 CANDIDATE_LIVE_CONFLUENCE_TTL_SEC = _int_env("CANDIDATE_LIVE_CONFLUENCE_TTL_SEC", 900)
@@ -1155,7 +1175,7 @@ async def _build_s4(token: str, market: str, rdb) -> None:
         real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         sdnin_rt = _clean(x.get("sdnin_rt", 0))
         flu_rt   = _clean(x.get("flu_rt", 0))
-        if not (sdnin_rt >= 50.0 and 3.0 <= flu_rt <= 20.0):
+        if not (sdnin_rt >= S4_MIN_SDNIN_RT and S4_FLU_LO <= flu_rt <= S4_FLU_HI):
             continue
         stk_cd = real_stk_cd
         if not stk_cd:
@@ -1179,7 +1199,7 @@ async def _build_s4(token: str, market: str, rdb) -> None:
 
     existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
     toss_items = await _toss_ranking_supplement(
-        rdb, market, 3.0, 20.0, max(0, CANDIDATE_LIMIT_S4 - len(codes)),
+        rdb, market, S4_FLU_LO, S4_FLU_HI, max(0, CANDIDATE_LIMIT_S4 - len(codes)),
     )
     toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
     if toss_items:
@@ -1746,7 +1766,7 @@ async def _build_s13(token: str, market: str, rdb) -> None:
         real_stk_cd = normalize_stock_code(x.get("stk_cd", ""))
         sdnin_rt = _clean(x.get("sdnin_rt", 0))
         flu_rt   = _clean(x.get("flu_rt", 0))
-        if sdnin_rt >= 30.0 and 3.0 <= flu_rt <= 8.0:
+        if sdnin_rt >= S13_MIN_SDNIN_RT and S13_FLU_LO <= flu_rt <= S13_FLU_HI:
             stk_cd = real_stk_cd
             if stk_cd:
                 codes.append(stk_cd)
@@ -1755,7 +1775,7 @@ async def _build_s13(token: str, market: str, rdb) -> None:
 
     existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
     toss_items = await _toss_ranking_supplement(
-        rdb, market, 3.0, 8.0, max(0, CANDIDATE_LIMIT_S13 - len(codes)),
+        rdb, market, S13_FLU_LO, S13_FLU_HI, max(0, CANDIDATE_LIMIT_S13 - len(codes)),
     )
     toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
     if toss_items:
