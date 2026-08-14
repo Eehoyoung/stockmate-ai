@@ -10,6 +10,8 @@ const {
     formatSellSignal,
     formatSellRecommendation,
     formatRuleOnlySignal,
+    formatHoldWatch,
+    formatHoldReleased,
     escapeHtml,
 } = require(path.join(__dirname, '../src/utils/formatter'));
 
@@ -177,6 +179,48 @@ test('formatSignal escapes RR regime label', () => {
     }));
     assert.ok(msg.includes('&lt;bull&amp;bear&gt;'));
     assert.ok(!msg.includes('RR/<bull&bear>'));
+});
+
+test('formatSignal renders toss risk line for swing ENTER signals', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S8_GOLDEN_CROSS',
+        toss_risk: {
+            short_selling: { shortSellingAmountRate: '0.12' },
+            credit_trades: { marginLoan: { balanceRate: '0.06' } },
+            warnings: [{ warningType: 'OVERHEATED' }],
+        },
+    }));
+    assert.ok(msg.includes('토스 리스크'));
+    assert.ok(msg.includes('공매도비중 12.0%'));
+    assert.ok(msg.includes('신용융자잔고 6.00%'));
+    assert.ok(msg.includes('매수유의사항[OVERHEATED]'));
+});
+
+test('formatSignal combines investor flow trend with toss risk under one swing block', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S14_OVERSOLD_BOUNCE',
+        investor_flow_trend: {
+            kospi: { foreigner_net_delta: 12000000000, institution_net_delta: -3000000000 },
+        },
+        toss_risk: {
+            short_selling: { shortSellingAmountRate: '0.08' },
+        },
+    }));
+    assert.ok(msg.includes('스윙 참고'));
+    assert.ok(msg.includes('시장수급추세(최근30분)'));
+    assert.ok(msg.includes('코스피(외인+120억/기관-30억)'));
+    assert.ok(msg.includes('토스 리스크'));
+});
+
+test('formatSignal omits swing block entirely when both trend and risk are absent', () => {
+    const msg = formatSignal(makeSignal({ investor_flow_trend: null, toss_risk: null }));
+    assert.ok(!msg.includes('스윙 참고'));
+    assert.ok(!msg.includes('시장수급추세'));
+});
+
+test('formatSignal omits toss risk line when data absent (day strategies)', () => {
+    const msg = formatSignal(makeSignal({ toss_risk: null }));
+    assert.ok(!msg.includes('토스 리스크'));
 });
 
 test('formatSignal skips invalid RR ratio instead of rendering NaN', () => {
@@ -409,6 +453,47 @@ test('SIZE_4 최고 강도 — 하향 사유 없음', () => {
     assert.ok(msg.includes('1.00'), 'weight 1.00 포함');
     assert.ok(!msg.includes('하향 사유'), '하향 사유 없음');
     assert.ok(!msg.includes('관찰 전용'), '관찰 전용 문구 없음');
+});
+
+test('formatHoldWatch는 조건부 진입(관심종목) 라벨과 사유를 포함', () => {
+    const msg = formatHoldWatch({
+        strategy: 'S9_PULLBACK_SWING',
+        stk_cd: '005930',
+        stk_nm: '삼성전자',
+        cur_prc: 10000,
+        ai_score: 72.0,
+        rule_score: 88.0,
+        rr_ratio: 0.9,
+        tp1_price: 11000,
+        sl_price: 9700,
+        hold_reason: 'rr_ratio가 장세별(bull) 임계값 미달',
+    });
+    assert.ok(msg.includes('조건부 진입 (관심종목)'), '조건부 진입 라벨 포함');
+    assert.ok(msg.includes('삼성전자 (005930)'), '종목명 포함');
+    assert.ok(msg.includes('10,000원'), '현재가 포함');
+    assert.ok(msg.includes('rr_ratio가 장세별(bull) 임계값 미달'), 'HOLD 분류 사유 포함');
+});
+
+test('formatHoldWatch는 ai_reason을 hold_reason 폴백으로 사용', () => {
+    const msg = formatHoldWatch({
+        strategy: 'S1_GAP_OPEN',
+        stk_cd: '000660',
+        cur_prc: 5000,
+        ai_reason: 'Claude HOLD | WATCH retained',
+    });
+    assert.ok(msg.includes('Claude HOLD'), 'ai_reason 폴백 사유 포함');
+});
+
+test('formatHoldReleased는 관심 해제 라벨과 해제 사유를 포함', () => {
+    const msg = formatHoldReleased({
+        strategy: 'S9_PULLBACK_SWING',
+        stk_cd: '005930',
+        stk_nm: '삼성전자',
+        release_reason: 'hold monitor max age exceeded 1800s',
+    });
+    assert.ok(msg.includes('관심 해제'), '관심 해제 라벨 포함');
+    assert.ok(msg.includes('삼성전자 (005930)'), '종목명 포함');
+    assert.ok(msg.includes('hold monitor max age exceeded 1800s'), '해제 사유 포함');
 });
 
 console.log(`\nResult: ${passCount} passed, ${failCount} failed`);

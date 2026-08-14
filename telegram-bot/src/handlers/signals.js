@@ -8,6 +8,8 @@ const {
     formatSellSignal,
     formatSellRecommendation,
     formatNewsAlert,
+    formatHoldWatch,
+    formatHoldReleased,
 } = require('../utils/formatter');
 const { formatThreadsSignal, formatThreadsBriefing, computeThreadsRR } = require('../utils/threads_formatter');
 const threads = require('../services/threads');
@@ -28,6 +30,7 @@ const THREADS_MIN_RR = Number(process.env.THREADS_MIN_RR ?? 1.3);
 const THREADS_PREVIEW_CHAT_ID = process.env.TELEGRAM_THREADS_CHAT_ID || null;
 const USER_SEND_DEDUP_TTL_SEC = Number(process.env.USER_SEND_DEDUP_TTL_SEC ?? 7 * 24 * 60 * 60);
 const STATUS_SEND_DEDUP_TTL_SEC = Number(process.env.STATUS_SEND_DEDUP_TTL_SEC ?? 36 * 60 * 60);
+const HOLD_SEND_DEDUP_TTL_SEC = Number(process.env.HOLD_SEND_DEDUP_TTL_SEC ?? 30 * 60);
 const RATE_LIMIT_DEFER_MS = Number(process.env.SIGNAL_RATE_LIMIT_DEFER_MS ?? 60_000);
 const RATE_LIMIT_MAX_DEFER_COUNT = Number(process.env.SIGNAL_RATE_LIMIT_MAX_DEFER_COUNT ?? 3);
 
@@ -205,6 +208,12 @@ function buildUserSendDedupKey(item) {
     if (item.type === 'STATUS_REPORT' || item.type === 'MIDDAY_REPORT') {
         return `telegram:user-send:status:${_stableDatePart(item)}:${_statusLogicalSlot(item)}`;
     }
+    if (item.type === 'HOLD_WATCH' || item.type === 'HOLD_RELEASED') {
+        const stockIdentity = `${_stablePart(item.stk_cd)}:${_stablePart(item.strategy)}`;
+        const identity = _stablePart(item.hold_monitor_key || item.signal_id || item.signalId, stockIdentity);
+        const kind = item.type === 'HOLD_WATCH' ? 'hold-watch' : 'hold-released';
+        return `telegram:user-send:${kind}:${identity}`;
+    }
     return null;
 }
 
@@ -381,6 +390,28 @@ const BROADCAST_HANDLERS = {
         },
     }),
 
+    HOLD_WATCH: (item) => ({
+        type: 'HOLD_WATCH',
+        chatIds: getPrimaryChatIds(),
+        text: formatHoldWatch(item),
+        logMeta: {
+            stk_cd: item.stk_cd,
+            strategy: item.strategy,
+            hold_reason: item.hold_reason,
+        },
+    }),
+
+    HOLD_RELEASED: (item) => ({
+        type: 'HOLD_RELEASED',
+        chatIds: getPrimaryChatIds(),
+        text: formatHoldReleased(item),
+        logMeta: {
+            stk_cd: item.stk_cd,
+            strategy: item.strategy,
+            release_reason: item.release_reason,
+        },
+    }),
+
     OVERNIGHT_HOLD: (item) => ({
         type: 'OVERNIGHT_HOLD',
         text: item.message || `[오버나이트 확인] [${item.strategy}] ${item.stk_cd}`,
@@ -402,7 +433,9 @@ async function processItem(bot, item) {
             const dedupKey = buildUserSendDedupKey(item);
             const dedupTtlSec = (item.type === 'STATUS_REPORT' || item.type === 'MIDDAY_REPORT')
                 ? STATUS_SEND_DEDUP_TTL_SEC
-                : USER_SEND_DEDUP_TTL_SEC;
+                : (item.type === 'HOLD_WATCH' || item.type === 'HOLD_RELEASED')
+                    ? HOLD_SEND_DEDUP_TTL_SEC
+                    : USER_SEND_DEDUP_TTL_SEC;
             const claimed = await _claimUserSend(dedupKey, dedupTtlSec);
             if (!claimed) {
                 logger.info('duplicate user-facing broadcast skipped', {

@@ -62,6 +62,8 @@ function loadSignals() {
             formatSellSignal: (item) => `sell:${item.signal_id || item.stk_cd}:${item.exit_type}`,
             formatSellRecommendation: (item) => `sell-rec:${item.signal_id || item.stk_cd}:${item.recommendation_type || item.exit_type}`,
             formatNewsAlert: () => 'news',
+            formatHoldWatch: (item) => `hold-watch:${item.stk_cd}:${item.hold_reason}`,
+            formatHoldReleased: (item) => `hold-released:${item.stk_cd}:${item.release_reason}`,
         },
     };
     require.cache[threadsFormatterPath] = {
@@ -188,6 +190,37 @@ async function test(name, fn) {
         assert.strictEqual(sends.length, 1);
         assert.strictEqual(sends[0].chatId, '900');
         assert.strictEqual(redisState.setCalls[0].key, 'telegram:user-send:status:2026-05-22:MORNING');
+    });
+
+    await test('deduplicates HOLD_WATCH sends by stock+strategy identity', async () => {
+        const { signals, redisState, sends, bot } = loadSignals();
+        const item = {
+            type: 'HOLD_WATCH',
+            stk_cd: '005930',
+            strategy: 's9',
+            hold_reason: 'rr below threshold',
+        };
+
+        await signals.processItem(bot, item);
+        await signals.processItem(bot, { ...item, hold_reason: 'rr below threshold (recheck)' });
+
+        // HOLD_WATCH goes only to TELEGRAM_PRIMARY_CHAT_ID ('900'), not the full allowed-chat broadcast list.
+        assert.strictEqual(sends.length, 1);
+        assert.strictEqual(sends[0].chatId, '900');
+        assert.strictEqual(redisState.setCalls[0].key, 'telegram:user-send:hold-watch:005930:s9');
+        assert.strictEqual(redisState.setCalls.length, 2);
+    });
+
+    await test('HOLD_RELEASED uses its own dedup namespace distinct from HOLD_WATCH', async () => {
+        const { signals, sends, bot } = loadSignals();
+        const watchItem = { type: 'HOLD_WATCH', stk_cd: '000660', strategy: 's8', hold_reason: 'watching' };
+        const releaseItem = { type: 'HOLD_RELEASED', stk_cd: '000660', strategy: 's8', release_reason: 'timed out' };
+
+        await signals.processItem(bot, watchItem);
+        await signals.processItem(bot, releaseItem);
+
+        // 1 chat (primary) x 2 distinct notice types = 2 sends.
+        assert.strictEqual(sends.length, 2);
     });
 
     if (process.exitCode) process.exit(process.exitCode);

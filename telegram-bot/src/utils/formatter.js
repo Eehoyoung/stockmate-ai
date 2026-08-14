@@ -245,6 +245,91 @@ function _positionSize(aiScore, confidence) {
     return null;
 }
 
+/**
+ * 스윙 전략 공매도/신용/대차/매수유의사항 (토스) — ai-engine analyzer.py의
+ * _fmt_toss_risk_line과 동일한 소스 데이터를 사용자용으로 요약한다.
+ * 참고정보일 뿐 진입/청산 판단에 영향을 주지 않는다.
+ * @param {object|null} tossRisk
+ * @returns {string|null}
+ */
+function _formatTossRiskLine(tossRisk) {
+    if (!tossRisk || typeof tossRisk !== 'object') return null;
+    const parts = [];
+
+    const ss = tossRisk.short_selling;
+    if (ss && ss.shortSellingAmountRate != null) {
+        const rate = Number(ss.shortSellingAmountRate);
+        if (!Number.isNaN(rate)) parts.push(`공매도비중 ${(rate * 100).toFixed(1)}%`);
+    }
+
+    const credit = tossRisk.credit_trades;
+    const balanceRate = credit?.marginLoan?.balanceRate;
+    if (balanceRate != null) {
+        const rate = Number(balanceRate);
+        if (!Number.isNaN(rate)) parts.push(`신용융자잔고 ${(rate * 100).toFixed(2)}%`);
+    }
+
+    const lending = tossRisk.securities_lending;
+    if (lending && lending.balanceQuantity) {
+        parts.push(`대차잔고 ${Number(lending.balanceQuantity).toLocaleString()}주`);
+    }
+
+    const warnings = tossRisk.warnings;
+    if (Array.isArray(warnings) && warnings.length) {
+        const types = [...new Set(warnings.map(w => w?.warningType).filter(Boolean))];
+        if (types.length) parts.push(`⚠️ 매수유의사항[${types.join(',')}]`);
+    }
+
+    if (!parts.length) return null;
+    return `토스 리스크: ${parts.join(' | ')}`;
+}
+
+/**
+ * 최근 30분 시장 전체 수급 추세 (지수 분단위 시계열, 토스) — ai-engine
+ * analyzer.py의 _fmt_investor_flow_trend_line과 동일 소스. 스윙 전략에서만 채워진다.
+ * @param {object|null} trend
+ * @returns {string|null}
+ */
+function _formatInvestorFlowTrendLine(trend) {
+    if (!trend || typeof trend !== 'object') return null;
+    const parts = [];
+    const labels = { kospi: '코스피', kosdaq: '코스닥' };
+    for (const [market, label] of Object.entries(labels)) {
+        const data = trend[market];
+        if (!data || typeof data !== 'object') continue;
+        const fDelta = data.foreigner_net_delta;
+        const iDelta = data.institution_net_delta;
+        if (fDelta == null && iDelta == null) continue;
+        const fmt = (v) => {
+            if (v == null) return 'N/A';
+            const eok = Number(v) / 1e8;
+            const sign = eok >= 0 ? '+' : '';
+            return `${sign}${eok.toFixed(0)}억`;
+        };
+        parts.push(`${label}(외인${fmt(fDelta)}/기관${fmt(iDelta)})`);
+    }
+    if (!parts.length) return null;
+    return `시장수급추세(최근30분): ${parts.join(' | ')}`;
+}
+
+/**
+ * 스윙 전략 종합 리스크·수급 블록 — 시장수급 추세와 종목 리스크를 함께 묶는다.
+ * 두 필드 모두 같은 스윙 게이트를 공유하므로 데이트레이딩 전략에서는 null.
+ * @param {object} item
+ * @returns {string[]}
+ */
+function _formatSwingRiskLines(item) {
+    const lines = [];
+    const trendLine = _formatInvestorFlowTrendLine(item.investor_flow_trend);
+    const riskLine = _formatTossRiskLine(item.toss_risk);
+    if (trendLine || riskLine) {
+        lines.push('📊 <b>스윙 참고 (시장수급·종목 리스크)</b>');
+        if (trendLine) lines.push(trendLine);
+        if (riskLine) lines.push(riskLine);
+    }
+    return lines;
+}
+
 function _formatWon(price) {
     const value = Number(price ?? 0);
     if (!value || value <= 0) return null;
@@ -388,6 +473,8 @@ function formatSignal(item) {
         ].filter(Boolean).join(' | ');
         if (flowLine) lines.push(`수급: ${flowLine}`);
         if (item.volume_profile_adjusted) lines.push('매물대 기준 TP/SL 보정 적용');
+
+        lines.push(..._formatSwingRiskLines(item));
 
         const pos = _positionSize(item.ai_score, item.confidence);
         if (!isS1GapOpen && pos) lines.push(`권장 비중: <b>${pos}</b>`);
@@ -682,9 +769,15 @@ function formatSystemHealth({ queueDepth, errorCount, dailySignals, tradingContr
  * DAILY_REPORT 확장 포맷 – 가상 P&L 포함
  */
 function formatDailyReportEnhanced(item) {
+    const totalSignals = Number(item.total_signals ?? 0);
+    const enterCount = Number(item.enter_count ?? 0);
+    const cancelCount = Number(item.cancel_count ?? 0);
+    const closedCount = Number(item.closed_count ?? 0);
+    const enterRate = totalSignals > 0 ? ((enterCount / totalSignals) * 100).toFixed(1) : '-';
     const lines = [
         `📊 <b>일일 종합 리포트 (${item.date ?? ''})</b>`,
-        `총 신호: <b>${item.total_signals ?? 0}건</b>  |  평균 스코어: ${typeof item.avg_score === 'number' ? item.avg_score.toFixed(1) : '-'}점`,
+        `총 신호: <b>${totalSignals}건</b>  |  평균 스코어: ${typeof item.avg_score === 'number' ? item.avg_score.toFixed(1) : '-'}점`,
+        `ENTER: <b>${enterCount}건</b> (${enterRate}%)  |  CANCEL: ${cancelCount}건  |  CLOSED: ${closedCount}건`,
     ];
 
     // 가상 P&L (새로 추가된 필드)
@@ -972,6 +1065,66 @@ function formatSellSignal(item) {
 }
 
 /**
+ * HOLD_WATCH — 조건부 진입(관심종목) 알림 포맷.
+ * Claude/규칙 판단이 HOLD(WATCH)로 분류된 시점에 1회 발송.
+ */
+function formatHoldWatch(item) {
+    const emoji = STRATEGY_EMOJI[item.strategy] ?? '📌';
+    const stock = item.stk_nm
+        ? `${item.stk_nm} (${item.stk_cd})`
+        : item.stk_cd;
+    const curPrc = normalizeForDisplay(item.cur_prc ?? item.entry_price ?? 0);
+    const aiScore = item.ai_score != null ? Number(item.ai_score).toFixed(1) : null;
+    const ruleScore = item.rule_score != null ? Number(item.rule_score).toFixed(1) : null;
+
+    const lines = [
+        `🔎 <b>[조건부 진입 (관심종목)] ${emoji} ${escapeHtml(item.strategy || '-')}</b>`,
+        `종목: <b>${escapeHtml(stock || '')}</b>`,
+    ];
+    if (curPrc > 0) lines.push(`현재가: <b>${curPrc.toLocaleString()}원</b>`);
+
+    const scoreLine = [
+        aiScore != null ? `AI 스코어: <b>${aiScore}</b>점` : null,
+        ruleScore != null ? `규칙 점수: ${ruleScore}점` : null,
+    ].filter(Boolean).join('  |  ');
+    if (scoreLine) lines.push(scoreLine);
+
+    const tp1 = item.claude_tp1 ?? item.tp1_price;
+    const sl = item.claude_sl ?? item.sl_price;
+    if (tp1) lines.push(`목표가: <b>${normalizeForDisplay(tp1).toLocaleString()}원</b>`);
+    if (sl) lines.push(`손절가: <b>${normalizeForDisplay(sl).toLocaleString()}원</b>`);
+    if (item.rr_ratio != null) lines.push(`R:R: <b>${Number(item.rr_ratio).toFixed(2)}</b>`);
+
+    const reason = item.hold_reason || item.ai_reason;
+    if (reason) lines.push('', `관망 사유: ${escapeHtml(String(reason))}`);
+
+    lines.push('', '조건이 개선되면 추적 관찰 후 진입 신호로 승격되거나, 관심 해제로 안내됩니다.');
+    _appendSellFooter(lines, item);
+    return lines.join('\n');
+}
+
+/**
+ * HOLD_RELEASED — 관심종목 관찰 종료(관심 해제) 알림 포맷.
+ * ENTER로 승격되지 않고 hold monitor 큐에서 제거될 때 발송.
+ */
+function formatHoldReleased(item) {
+    const emoji = STRATEGY_EMOJI[item.strategy] ?? '📌';
+    const stock = item.stk_nm
+        ? `${item.stk_nm} (${item.stk_cd})`
+        : item.stk_cd;
+    const lines = [
+        `🔕 <b>[관심 해제] ${emoji} ${escapeHtml(item.strategy || '-')}</b>`,
+        `종목: <b>${escapeHtml(stock || '')}</b>`,
+        '조건부 진입(관심종목) 관찰을 종료합니다.',
+    ];
+    if (item.release_reason) {
+        lines.push(`해제 사유: ${escapeHtml(String(item.release_reason))}`);
+    }
+    _appendSellFooter(lines, item);
+    return lines.join('\n');
+}
+
+/**
  * NEWS_ALERT 메시지 포맷 (Java 측에서 message 필드가 없을 경우 폴백)
  */
 function formatSellRecommendation(item) {
@@ -1213,4 +1366,5 @@ module.exports = {
     formatSignalHistory, formatSystemHealth,
     formatDailyReportEnhanced, formatCalendarWeek, formatPerformanceDetail: formatPerformanceDetailEnhanced, formatUserSettings: formatUserSettingsEnhanced,
     formatStockScore, formatSellSignal, formatSellRecommendation, formatNewsAlert, formatRuleOnlySignal,
+    formatHoldWatch, formatHoldReleased,
 };
