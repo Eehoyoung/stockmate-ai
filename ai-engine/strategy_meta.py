@@ -154,6 +154,10 @@ DEFAULT_PERSONA = (
 #: - 데이트레이딩 S1/S4/S6: 장 중 빠른 의사결정 필요 → 75
 #: - 수급 스윙 S3/S11: 연속 수급 확인 기준 엄격 → 85
 #: - 나머지: 기본값 80
+#: 주의: get_hold_to_enter_threshold()는 현재 queue_worker/confirm_worker의
+#: 실제 HOLD 판정 경로(risk_decision.keep_hold_as_watch())에서 호출되지 않는다.
+#: Claude HOLD는 점수와 무관하게 항상 HOLD로 유지되며, 이 임계값은 자동 승격에
+#: 영향을 주지 않는다.
 HOLD_TO_ENTER_THRESHOLDS: dict[str, float] = {
     "S1_GAP_OPEN":    75.0,
     "S4_BIG_CANDLE":  75.0,
@@ -166,7 +170,7 @@ _DEFAULT_HOLD_TO_ENTER = 80.0
 
 
 def get_hold_to_enter_threshold(strategy: str | None) -> float:
-    """전략별 HOLD→ENTER 자동 승격 최소 ai_score 반환."""
+    """전략별 HOLD→ENTER 자동 승격 최소 ai_score 반환 (현재 실제 판정 경로에서는 미사용)."""
     if not strategy:
         return _DEFAULT_HOLD_TO_ENTER
     return HOLD_TO_ENTER_THRESHOLDS.get(strategy, _DEFAULT_HOLD_TO_ENTER)
@@ -254,3 +258,115 @@ def get_regime_rr_multiplier(strategy: str | None, regime: str | None) -> float:
     normalized = str(regime or "neutral").lower()
     group = get_strategy_rr_group(strategy)
     return float(_REGIME_RR_MULTIPLIERS.get(normalized, {}).get(group, 1.00))
+
+
+# ── 장세 판단 (단일 소스) ─────────────────────────────────────────────────────
+# queue_worker.py / confirm_worker.py가 각자 동일 로직을 중복 보유했던 것을 통합.
+# scorer.py의 점수 보너스용 장세 판단도 이 함수를 사용해 종목의 실제 시장
+# 구분(KOSPI/KOSDAQ)을 반영하도록 한다 (2026-08-07).
+
+def normalize_market_type(value) -> str:
+    """시장 구분 코드 정규화. KOSPI="001", KOSDAQ="101", 판별 불가 시 ""."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    text = str(value or "").strip().upper()
+    if text in {"001", "0", "KOSPI", "P00101"}:
+        return "001"
+    if text in {"101", "10", "KOSDAQ", "P10102"}:
+        return "101"
+    return ""
+
+
+def regime_from_flu_rt(value) -> str:
+    """지수 등락률로 장세 판단. bull: >=+0.5%, bear: <=-0.5%, sideways: 그 외, neutral: 데이터 없음."""
+    if value is None:
+        return "neutral"
+    try:
+        flu_rt = float(value)
+    except (TypeError, ValueError):
+        return "neutral"
+    if flu_rt >= 0.5:
+        return "bull"
+    if flu_rt <= -0.5:
+        return "bear"
+    return "sideways"
+
+
+# ── 투자자 수급 기반 sideways 보정 (2026-08-11, 토스 시장 수급 연동) ──────────
+# 등락률이 -0.5%~+0.5% 사이(sideways)일 때만 개입한다. 이미 명확히 +-0.5%를
+# 넘긴 가격 신호는 그대로 우선한다 — 수급은 애매한 구간의 타이브레이커일 뿐,
+# 검증되지 않은 새 데이터 소스가 가격 기반 RR 게이트를 뒤엎지 않게 한다.
+# 임계값은 과거 분포 검증 없이 보수적으로(코스피 1조/코스닥 0.2조) 잡은 초기값이며,
+# REGIME_INVESTOR_FLOW_ENABLED=false로 언제든 즉시 끌 수 있다.
+_INVESTOR_FLOW_REGIME_THRESHOLDS = {
+    "kospi": 1.0e12,
+    "kosdaq": 0.2e12,
+}
+
+
+def _investor_flow_nudge(flow: dict | None, market: str) -> str | None:
+    """시장 수급(외국인+기관 순매수)이 임계값을 넘으면 'bull'/'bear', 아니면 None."""
+    if not flow or str(os.getenv("REGIME_INVESTOR_FLOW_ENABLED", "true")).strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    data = flow.get(market)
+    if not isinstance(data, dict):
+        return None
+    threshold = _INVESTOR_FLOW_REGIME_THRESHOLDS.get(market)
+    if not threshold:
+        return None
+    try:
+        net = float(data.get("foreigner_net") or 0) + float(data.get("institution_net") or 0)
+    except (TypeError, ValueError):
+        return None
+    if net >= threshold:
+        return "bull"
+    if net <= -threshold:
+        return "bear"
+    return None
+
+
+def detect_market_regime(ctx: dict, strategy: str = "") -> str:
+    """종목의 실제 시장 구분에 맞는 지수로 장세 판단.
+    KOSPI 종목은 KOSPI200 proxy, KOSDAQ 종목은 KOSDAQ150 proxy를 우선 사용한다.
+    시장 구분이 없을 때만 KOSPI/KOSDAQ 평균으로 폴백한다.
+
+    S1_GAP_OPEN: 08:30~09:00 동시호가 예상 등락률이 있으면 그것을 우선 사용.
+    09:05 이후에는 exp 키 TTL(5분) 만료 → 실제 flu_rt로 자동 전환.
+
+    ctx에 "investor_flow"(시장 전체 투자자 순매수, market:kospi_investor_flow 등에서
+    옵져)가 있으면 sideways 구간에서만 bull/bear 보정에 사용한다.
+    """
+    if strategy == "S1_GAP_OPEN":
+        kospi = ctx.get("kospi_exp_flu_rt") or ctx.get("kospi_flu_rt")
+        kosdaq = ctx.get("kosdaq_exp_flu_rt") or ctx.get("kosdaq_flu_rt")
+    else:
+        kospi = ctx.get("kospi_flu_rt")
+        kosdaq = ctx.get("kosdaq_flu_rt")
+
+    flow = ctx.get("investor_flow")
+    market_type = normalize_market_type(ctx.get("market_type"))
+    if market_type == "001":
+        regime = regime_from_flu_rt(kospi)
+        if regime == "sideways":
+            regime = _investor_flow_nudge(flow, "kospi") or regime
+        return regime
+    if market_type == "101":
+        regime = regime_from_flu_rt(kosdaq)
+        if regime == "sideways":
+            regime = _investor_flow_nudge(flow, "kosdaq") or regime
+        return regime
+
+    vals = []
+    for value in (kospi, kosdaq):
+        try:
+            if value is not None:
+                vals.append(float(value))
+        except (TypeError, ValueError):
+            pass
+    if not vals:
+        return "neutral"
+    avg = sum(vals) / len(vals)
+    regime = regime_from_flu_rt(avg)
+    if regime == "sideways":
+        regime = _investor_flow_nudge(flow, "kospi") or _investor_flow_nudge(flow, "kosdaq") or regime
+    return regime

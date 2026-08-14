@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -7,11 +8,11 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _s8_candles():
+def _s8_candles(today_volume=2500):
     candles = []
     for idx in range(65):
         price = 110 if idx == 0 else 100
-        volume = 2500 if idx == 0 else 1000
+        volume = today_volume if idx == 0 else 1000
         candles.append({
             "cur_prc": str(price),
             "open_pric": "100",
@@ -28,7 +29,11 @@ async def test_s8_enriches_same_time_volume_and_volume_profile(monkeypatch):
 
     rdb = MagicMock()
     rdb.lrange = AsyncMock(side_effect=[["005930"], []])
-    rdb.hgetall = AsyncMock(return_value={"flu_rt": "3.2", "cntr_str": "132"})
+    rdb.hgetall = AsyncMock(return_value={
+        "flu_rt": "3.2",
+        "cntr_str": "132",
+        "updated_at_ms": str(int(time.time() * 1000)),
+    })
 
     fake_tp_sl = MagicMock()
     fake_tp_sl.to_signal_fields.return_value = {
@@ -37,7 +42,8 @@ async def test_s8_enriches_same_time_volume_and_volume_profile(monkeypatch):
         "rr_ratio": 1.5,
     }
 
-    monkeypatch.setattr(s8, "fetch_daily_candles", AsyncMock(return_value=_s8_candles()))
+    # Partial daily volume is only 0.4x; complete ka10055 data must drive the gate.
+    monkeypatch.setattr(s8, "fetch_daily_candles", AsyncMock(return_value=_s8_candles(today_volume=400)))
     monkeypatch.setattr(s8, "detect_golden_cross", lambda candles: (True, False, 1.2))
     monkeypatch.setattr(s8, "calc_rsi", lambda closes, period: [55])
     monkeypatch.setattr(s8, "calc_macd", lambda closes: ([0], [0], [2, 1]))
@@ -47,7 +53,7 @@ async def test_s8_enriches_same_time_volume_and_volume_profile(monkeypatch):
     monkeypatch.setattr(s8, "fetch_stk_nm", AsyncMock(return_value="삼성전자"))
     monkeypatch.setattr(
         s8,
-        "fetch_same_time_volume_ratio",
+        "fetch_same_time_volume_ratio_cached",
         AsyncMock(return_value=({"same_time_volume_ratio": 1.7}, {"api_id": "ka10055"})),
     )
     monkeypatch.setattr(
@@ -67,6 +73,9 @@ async def test_s8_enriches_same_time_volume_and_volume_profile(monkeypatch):
     assert len(result) == 1
     signal = result[0]
     assert signal["same_time_volume_ratio"] == 1.7
+    assert signal["daily_volume_ratio"] == 0.4
+    assert signal["vol_ratio"] == 1.7
+    assert signal["volume_ratio_source"] == "ka10055_same_time"
     assert signal["volume_profile_meta"]["api_id"] == "ka10025"
     assert signal["volume_profile_adjusted"] is True
     assert signal["tp1_price"] == 120

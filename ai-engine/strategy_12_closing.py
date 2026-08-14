@@ -22,10 +22,11 @@ API 실제 스펙 (docs/api_new/ka10027.md 기준):
 import asyncio
 import logging
 import os
+from collections import Counter, defaultdict
 
 import httpx
 
-from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import validate_kiwoom_response, fetch_stk_nm, kiwoom_client, KiwoomReservationUnavailable
 from ma_utils import fetch_daily_candles, _safe_price
 from tp_sl_engine import calc_tp_sl
 
@@ -46,19 +47,23 @@ async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: in
 
     async with kiwoom_client() as client:
         for _ in range(max_pages):
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers={
-                    "api-id": "ka10027", "authorization": f"Bearer {token}",
-                    "Content-Type": "application/json;charset=UTF-8",
-                    "cont-yn": cont_yn, "next-key": next_key
-                },
-                json={
-                    "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "0010",
-                    "stk_cnd": "16", "crd_cnd": "0", "updown_incls": "0",
-                    "pric_cnd": "8", "trde_prica_cnd": "10", "stex_tp": "3"
-                }
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                    headers={
+                        "api-id": "ka10027", "authorization": f"Bearer {token}",
+                        "Content-Type": "application/json;charset=UTF-8",
+                        "cont-yn": cont_yn, "next-key": next_key
+                    },
+                    json={
+                        "mrkt_tp": market, "sort_tp": "1", "trde_qty_cnd": "0010",
+                        "stk_cnd": "16", "crd_cnd": "0", "updown_incls": "0",
+                        "pric_cnd": "8", "trde_prica_cnd": "10", "stex_tp": "3"
+                    }
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S12] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10027")
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10027", logger): break
 
@@ -74,22 +79,26 @@ async def fetch_top_gainers_paged(token: str, market: str = "000", max_pages: in
 async def fetch_inst_netbuy_set(token: str, market: str = "000") -> set[str]:
     """ka10063 장중투자자별매매요청 – 기관 당일 순매수 종목 집합"""
     async with kiwoom_client() as client:
-        resp = await client.post(
-            f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
-            headers={
-                "api-id": "ka10063",
-                "authorization": f"Bearer {token}",
-                "Content-Type": "application/json;charset=UTF-8",
-            },
-            json={
-                "mrkt_tp": market,
-                "amt_qty_tp": "1",
-                "invsr": "7",            # 7: 기관계
-                "frgn_all": "0",
-                "smtm_netprps_tp": "0",  # 기관 단독 순매수
-                "stex_tp": "3",
-            },
-        )
+        try:
+            resp = await client.post(
+                f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
+                headers={
+                    "api-id": "ka10063",
+                    "authorization": f"Bearer {token}",
+                    "Content-Type": "application/json;charset=UTF-8",
+                },
+                json={
+                    "mrkt_tp": market,
+                    "amt_qty_tp": "1",
+                    "invsr": "7",            # 7: 기관계
+                    "frgn_all": "0",
+                    "smtm_netprps_tp": "0",  # 기관 단독 순매수
+                    "stex_tp": "3",
+                },
+            )
+        except KiwoomReservationUnavailable:
+            logger.warning("[S12] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10063")
+            return set()
         resp.raise_for_status()
         data = resp.json()
         if not validate_kiwoom_response(data, "ka10063", logger):
@@ -138,13 +147,31 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
     inst_set_task = fetch_inst_netbuy_set(token, market)
     gainers, inst_set = await asyncio.gather(gainers_task, inst_set_task)
 
+    if not gainers:
+        logger.info("[S12][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
+        return []
+
     results = []
+    reject_counts: Counter = Counter()
+    reject_samples: defaultdict = defaultdict(list)
+    evaluated_count = 0
+
+    def _reject(reason: str, stk_cd: str, **fields) -> None:
+        reject_counts[reason] += 1
+        if len(reject_samples[reason]) < 5:
+            sample = {"stk_cd": stk_cd}
+            sample.update(fields)
+            reject_samples[reason].append(sample)
+
     for item in gainers:
         stk_cd = item.get("stk_cd")
+        evaluated_count += 1
         if not stk_cd or stk_cd not in inst_set:
+            _reject("inst_netbuy_failed", stk_cd or "unknown")
             continue
         # 풀이 있을 경우 풀 내 종목만 처리 (candidates_builder가 이미 flu_rt>0 필터 적용)
         if pool_set and stk_cd not in pool_set:
+            _reject("not_in_pool", stk_cd)
             continue
 
         # 수치 파싱
@@ -153,6 +180,7 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
 
         # 조건 검증: 4% <= 등락률 <= 15% AND 체결강도 >= 110%
         if not (MIN_FLU_RT <= flu_rt <= 15.0) or cntr_str < MIN_CNTR_STR:
+            _reject("flu_rt_or_cntr_str_out_of_range", stk_cd, flu_rt=round(flu_rt, 2), cntr_str=round(cntr_str, 1))
             continue
 
         # 점수 산정: 등락률의 탄력과 체결강도의 밀도를 조합
@@ -200,4 +228,14 @@ async def scan_closing_buy(token: str, market: str = "000", rdb=None) -> list:
             **tp_sl.to_signal_fields(),
         })
 
-    return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    logger.info(
+        "[S12][scan_summary] candidate_count=%d evaluated=%d pass=%d returned=%d rejects=%s samples=%s",
+        len(gainers),
+        evaluated_count,
+        len(results),
+        len(sorted_results),
+        dict(reject_counts),
+        {key: value for key, value in reject_samples.items()},
+    )
+    return sorted_results

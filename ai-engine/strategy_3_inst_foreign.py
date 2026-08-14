@@ -17,7 +17,16 @@ import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from http_utils import fetch_investor_flow_summary_cached, validate_kiwoom_response, fetch_stk_nm, kiwoom_client
+from http_utils import (
+    fetch_intraday_investor_flow_cached,
+    fetch_investor_flow_summary_cached,
+    fetch_stk_nm,
+    get_same_time_volume_ratio_cache,
+    kiwoom_client,
+    KiwoomReservationUnavailable,
+    set_same_time_volume_ratio_cache,
+    validate_kiwoom_response,
+)
 from ma_utils import fetch_daily_candles, _safe_price, _calc_ma
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
@@ -28,8 +37,9 @@ from strategy_shared_cache import cache_get_json, cache_set_json, flag_enabled
 logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
 
-# 키움 REST API 초당 약 5회 제한 → 루프 내 0.25s 대기
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+# 키움 REST API는 TR별로 여러 곳에서 호출되므로 보수적인 간격을 둔다
+# (http_utils._KiwoomRateLimiter 의 light/heavy 티어 기본값 0.8s/1.0s 참고).
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
@@ -97,11 +107,15 @@ async def fetch_intraday_investor(token: str, market_type: str = "000") -> list:
                 "stex_tp": "3"          # KRX
             }
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
-                headers=headers,
-                json=payload
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/mrkcond",
+                    headers=headers,
+                    json=payload
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S3] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10063")
+                break
             resp.raise_for_status()
             data = resp.json()
 
@@ -152,11 +166,15 @@ async def fetch_continuous_netbuy(token: str, market: str) -> dict:
                 "stex_tp": "3"
             }
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/frgnistt",
-                headers=headers,
-                json=payload
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/frgnistt",
+                    headers=headers,
+                    json=payload
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S3] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10131")
+                break
             resp.raise_for_status()
             data = resp.json()
 
@@ -202,6 +220,20 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
 
     now_kst = datetime.now(KST)
     current_time = now_kst.strftime("%H%M%S")
+
+    # 0. 공유(cross-strategy) 캐시 우선 확인 — S7/S8/S9와 같은 Redis 키를 사용해
+    # 겹치는 스캔 시간대(09:30~14:30)에 같은 종목을 중복 조회하지 않는다
+    # (2026-08-05 조사: ka10055 캐싱 부재로 인한 TR 예산 경합).
+    if rdb is not None:
+        shared_summary = await get_same_time_volume_ratio_cache(rdb, stk_cd)
+        if shared_summary is not None:
+            try:
+                shared_ratio = shared_summary.get("same_time_volume_ratio")
+                if shared_ratio is not None:
+                    return float(shared_ratio)
+            except (TypeError, ValueError):
+                pass
+
     use_cache = flag_enabled("S3_KA10055_CACHE_ENABLED") and rdb is not None
     bucket = int(now_kst.timestamp() // max(_KA10055_CACHE_BUCKET_SEC, 1))
     cache_key = f"strategy:s3:ka10055:{stk_cd}:{bucket}"
@@ -216,6 +248,11 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
         else:
             logger.warning(message, *args)
 
+    # tdy_pred("1"=금일, "2"=전일)별 완전 수집 여부. 공유 캐시에는 두 쪽 모두
+    # 정상 종료(cap/루프/레이트리밋 중단 없이)한 경우에만 기록해, 다른 전략이
+    # 부분 데이터를 완전한 값처럼 재사용하지 않도록 한다.
+    completeness: dict[str, bool] = {}
+
     async def get_total_volume(tdy_pred: str) -> int:
         total_qty = 0
         next_key = ""
@@ -224,6 +261,7 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
         requested_next_keys = set()
         prev_page_signature = None
         repeated_page_count = 0
+        completeness[tdy_pred] = False
         async with kiwoom_client() as client:
             while True:
                 page += 1
@@ -252,14 +290,20 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
                     headers["cont-yn"] = "Y"
                     headers["next-key"] = next_key
 
-                resp = await client.post(
-                    f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-                    headers=headers,
-                    json={
-                        "stk_cd": stk_cd,
-                        "tdy_pred": tdy_pred
-                    }
-                )
+                try:
+                    resp = await client.post(
+                        f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+                        headers=headers,
+                        json={
+                            "stk_cd": stk_cd,
+                            "tdy_pred": tdy_pred
+                        }
+                    )
+                except KiwoomReservationUnavailable:
+                    logger.warning(
+                        "[S3] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10055"
+                    )
+                    break
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -267,8 +311,9 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
                     break
 
                 items = data.get("tdy_pred_cntr_qty", [])
-                # 빈 응답 = 휴장·시간외 등 더 이상 데이터 없음 → 즉시 종료
+                # 빈 응답 = 휴장·시간외 등 더 이상 데이터 없음 → 즉시 종료 (정상 종료)
                 if not items:
+                    completeness[tdy_pred] = True
                     break
 
                 page_qty = 0
@@ -311,8 +356,9 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
                 cont_yn = resp.headers.get("cont-yn", "N")
                 next_key = resp.headers.get("next-key", "").strip()
 
-                # 다음 페이지가 없으면 루프 종료
+                # 다음 페이지가 없으면 루프 종료 (정상 종료)
                 if cont_yn != "Y" or not next_key:
+                    completeness[tdy_pred] = True
                     break
 
         return 0 if cap_reached and _KA10055_REQUIRE_COMPLETE else total_qty
@@ -327,6 +373,19 @@ async def fetch_volume_compare(token: str, stk_cd: str, rdb=None, run_stats: Ka1
     ratio = today_qty / prev_qty if prev_qty > 0 else 0.0
     if use_cache:
         await cache_set_json(rdb, cache_key, ratio, _KA10055_CACHE_TTL)
+    # 공유(cross-strategy) 캐시에도 기록 — 양쪽(today/prev) 모두 완전 수집된
+    # 경우에만 기록해 S7/S8/S9가 같은 종목을 재조회하지 않도록 한다.
+    if rdb is not None and completeness.get("1") and completeness.get("2"):
+        await set_same_time_volume_ratio_cache(
+            rdb,
+            stk_cd,
+            {
+                "today_qty": today_qty,
+                "prev_same_time_qty": prev_qty,
+                "same_time_volume_ratio": round(ratio, 3),
+            },
+            meta={"source": "rest", "api_id": "ka10055", "complete": True, "owner": "s3"},
+        )
     return ratio
 
 async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
@@ -379,11 +438,11 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
         if vol_ratio < 1.5:
             continue
 
-        # ka10063 실제 응답 필드: netprps_qty(순매수수량), netprps_amt(순매수금액)
-        # net_buy_amt: 원(KRW) 단위 금액 사용 → scorer S3 `min(25, amt/1_000_000_000*25)` 기준
+        # ka10063 netprps_amt의 공식 단위는 백만원이다. 내부 점수 계약은 원(KRW)이므로
+        # API 경계에서 원으로 정규화한다.
         try:
             raw_amt = str(item.get("netprps_amt", "0")).replace("+", "").replace(",", "")
-            net_buy_amt = int(raw_amt) if raw_amt.lstrip("-").isdigit() else 0
+            net_buy_amt = int(raw_amt) * 1_000_000 if raw_amt.lstrip("-").isdigit() else 0
         except (TypeError, ValueError):
             net_buy_amt = 0
 
@@ -426,9 +485,12 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             lows_d   = [_safe_price(c.get("low_pric"))  for c in candles]
             if len(closes_d) >= 20:
                 ma20 = sum(closes_d[:20]) / 20
-            if len(highs_d) >= 14 and len(lows_d) >= 14 and len(closes_d) >= 14:
+            # calc_atr()은 len(closes) >= period+1(=15)일 때만 index 0이 실제
+            # 계산값이다(14개면 전량 0.0 센티널). 가드를 15로 맞추면 ATR=0.0
+            # (변동성 완전 정체)도 None으로 뭉개지 않고 그대로 쓸 수 있다.
+            if len(highs_d) >= 15 and len(lows_d) >= 15 and len(closes_d) >= 15:
                 atr_vals = calc_atr(highs_d, lows_d, closes_d, 14)
-                atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+                atr_val  = atr_vals[0]
         except Exception as e:
             logger.debug("[S3] 일봉 조회 실패 %s: %s", stk_cd, e)
 
@@ -440,7 +502,7 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
             "stk_nm": stk_nm,
             "cur_prc": cur_prc,
             "strategy": "S3_INST_FRGN",  # scorer.py case 키와 일치
-            "net_buy_amt": net_buy_amt,    # 순매수금액(원) — scorer S3 min(25, amt/1_000_000_000*25)
+            "net_buy_amt": net_buy_amt,    # 순매수금액(원)
             "flu_rt": round(flu_rt, 2),
             "vol_ratio": round(vol_ratio, 2),
             "continuous_days": continuous_days,
@@ -456,4 +518,28 @@ async def scan_inst_foreign(token: str, market: str = "000", rdb=None) -> list:
         })
 
     ka10055_stats.log_summary()
-    return sorted(results, key=lambda x: x.get("net_buy_amt", 0), reverse=True)[:5]
+    top_results = sorted(results, key=lambda x: x.get("net_buy_amt", 0), reverse=True)[:5]
+    # Java transports ka10064 for final candidates; queue_worker applies the
+    # canonical live score/gate adjustment in Python.
+    for signal in top_results:
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            flow, flow_meta = await fetch_intraday_investor_flow_cached(
+                token,
+                signal["stk_cd"],
+                rdb=rdb,
+                market=market,
+            )
+        except Exception as e:
+            flow, flow_meta = {}, {"source": "error", "api_id": "ka10064", "error": str(e)}
+        flow_shadow = {
+            **flow,
+            "source": flow_meta.get("source"),
+            "error": flow_meta.get("error"),
+        }
+        signal["intraday_investor_flow"] = flow_shadow
+        signal["extra"] = {
+            **(signal.get("extra") or {}),
+            "intraday_investor_flow": flow_shadow,
+        }
+    return top_results

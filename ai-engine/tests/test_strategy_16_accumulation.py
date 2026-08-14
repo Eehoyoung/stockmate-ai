@@ -115,6 +115,33 @@ def test_calculate_s16_metrics_promotes_confirmed_setup_to_triggered():
     assert metrics.box_high > metrics.box_low
 
 
+def test_market_cap_input_normalizes_legacy_won_unit():
+    from strategy_16_accumulation import _normalize_market_cap_eok, calculate_s16_metrics
+
+    assert _normalize_market_cap_eok(500_000_000_000) == 5000
+
+    metrics = calculate_s16_metrics(
+        _candles(),
+        market_cap_eok=500_000_000_000,
+        cntr_strength=135,
+        bid_ratio=1.6,
+        supply_score_hint=25,
+    )
+
+    assert metrics.risk_score == 10
+
+
+def test_observed_calendar_days_counts_kst_dates():
+    from datetime import datetime
+    from strategy_16_accumulation import KST, _observed_calendar_days
+
+    first = int(datetime(2026, 7, 1, 15, 0, tzinfo=KST).timestamp())
+    current = int(datetime(2026, 7, 3, 9, 0, tzinfo=KST).timestamp())
+
+    assert _observed_calendar_days(first, current) == 3
+    assert _observed_calendar_days(current, current) == 1
+
+
 def test_calculate_s16_metrics_rejects_overheated_and_out_of_range_market_cap():
     from s16_accumulation_state import STATE_REJECTED
     from strategy_16_accumulation import calculate_s16_metrics

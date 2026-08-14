@@ -108,6 +108,7 @@ def _make_hgetall(
         "acc_trde_qty": "100000",
         "acc_trde_prica": "980000000",
         "cntr_str": "120.0",
+        "updated_at_ms": str(int(time.time() * 1000)),
     }
 
     hoga_hash: dict = {}
@@ -115,6 +116,7 @@ def _make_hgetall(
         hoga_hash = {
             "total_buy_bid_req": str(bid_qty),
             "total_sel_bid_req": str(ask_qty),
+            "updated_at_ms": str(int(time.time() * 1000)),
         }
 
     async def _hgetall(key: str):
@@ -249,7 +251,7 @@ class TestVolRatioAtThresholdPasses:
 # 3. vi_vol_ratio 누락/산출 불가 → SHADOW 처리
 # ══════════════════════════════════════════════════════════════════════════
 
-class TestVolRatioMissingReturnsShadow:
+class TestVolRatioMissingBlocksLiveSignal:
     @pytest.mark.asyncio
     async def test_vol_ratio_missing_key_returns_shadow(self):
         """vi_vol_ratio 키 없음 → volume_quality=UNKNOWN, signal_mode=SHADOW"""
@@ -259,30 +261,21 @@ class TestVolRatioMissingReturnsShadow:
             vi_volume_source="unknown",
         )
         result = await _run_check(rdb, strict_gate=True)
-        # SHADOW → None을 반환하지 않고 payload를 반환하되 signal_mode=SHADOW
-        assert result is not None
-        assert result["volume_quality"] == "UNKNOWN"
-        assert result.get("signal_mode") == "SHADOW"
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_vol_ratio_zero_with_unknown_source_returns_shadow(self):
         """vi_volume_source=unknown + ratio 모두 0 → SHADOW"""
         rdb = _make_rdb(vi_vol_ratio=0.0, vi_amount_ratio=0.0, vi_volume_source="unknown")
         result = await _run_check(rdb, strict_gate=False)
-        assert result is not None
-        assert result["volume_quality"] == "UNKNOWN"
-        assert result.get("signal_mode") == "SHADOW"
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_shadow_payload_contains_required_fields(self):
         """SHADOW 케이스에서도 vi_vol_ratio 등 필드가 payload에 포함됨"""
         rdb = _make_rdb(vi_vol_ratio=None, vi_amount_ratio=None, vi_volume_source="unknown")
         result = await _run_check(rdb, strict_gate=True)
-        assert result is not None
-        assert "vi_vol_ratio" in result
-        assert "vi_amount_ratio" in result
-        assert "volume_quality" in result
-        assert "secondary_vi_risk" in result
+        assert result is None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -418,7 +411,7 @@ class TestPayloadContainsRequiredFields:
 
 class TestStrictGateOffBehavior:
     @pytest.mark.asyncio
-    async def test_gate_off_low_ratio_returns_shadow_not_none(self):
+    async def test_gate_off_low_ratio_blocks_live_signal(self):
         """strict gate=false 에서 배수 미달 → SHADOW payload 반환 (탈락 아님)"""
         rdb = _make_rdb(
             vi_vol_ratio=2.0,
@@ -426,10 +419,7 @@ class TestStrictGateOffBehavior:
             vi_volume_source="candle_avg",
         )
         result = await _run_check(rdb, strict_gate=False)
-        # gate off이면 None 반환하지 않고 SHADOW 처리
-        assert result is not None
-        assert result.get("signal_mode") == "SHADOW"
-        assert result["volume_quality"] == "LOW"
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_gate_off_high_ratio_passes_normally(self):
@@ -441,16 +431,26 @@ class TestStrictGateOffBehavior:
 
 
 class TestPublishableSignal:
-    def test_shadow_signal_is_not_publishable(self):
+    def test_non_live_signal_is_rejected_by_live_configuration(self):
         from strategy_2_vi_pullback import is_publishable_signal
 
-        assert is_publishable_signal({"signal_mode": "SHADOW"}) is False
+        signal = {"signal_mode": "SHADOW"}
+        assert is_publishable_signal(signal) is False
+        assert signal["signal_mode"] == "SHADOW"
 
     def test_normal_signal_is_publishable(self):
         from strategy_2_vi_pullback import is_publishable_signal
 
         assert is_publishable_signal({"signal_mode": "NORMAL"}) is True
         assert is_publishable_signal({"stk_cd": "005930"}) is True
+
+    def test_non_live_signal_is_rejected_when_live_enabled(self, monkeypatch):
+        from strategy_2_vi_pullback import is_publishable_signal
+
+        monkeypatch.setenv("LIVE_ONLY_MODE", "true")
+        signal = {"signal_mode": "SHADOW", "volume_quality": "UNKNOWN"}
+        assert is_publishable_signal(signal) is False
+        assert signal["signal_mode"] == "SHADOW"
 
 
 class TestHandleViEvent:
@@ -465,6 +465,7 @@ class TestHandleViEvent:
             "acc_trde_prica": "1000000000",
             "prev_5m_avg_qty": "20000",
             "prev_5m_avg_amt": "200000000",
+            "updated_at_ms": str(int(time.time() * 1000)),
         })
         rdb.hset = AsyncMock()
         rdb.expire = AsyncMock()

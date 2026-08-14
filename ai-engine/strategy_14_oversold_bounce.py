@@ -43,6 +43,7 @@ import asyncio
 import logging
 import os
 import statistics
+from collections import Counter, defaultdict
 
 from ma_utils import fetch_daily_candles, _safe_price, _safe_vol, _calc_ma
 from indicator_rsi import calc_rsi
@@ -51,6 +52,7 @@ from indicator_bollinger import calc_bollinger
 from indicator_stochastic import calc_stochastic
 from indicator_volume import calc_mfi
 from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
+from redis_reader import get_tick_with_status
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -72,17 +74,34 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         except Exception as e:
             logger.warning(f"[S14] 후보 풀 로드 실패: {e}")
 
-    if not candidates: return []
+    if not candidates:
+        logger.info("[S14][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
+        return []
 
     results = []
+    reject_counts = Counter()
+    reject_samples = defaultdict(list)
+    evaluated_count = 0
+
+    def _reject(reason: str, stk_cd: str, **fields) -> None:
+        reject_counts[reason] += 1
+        if len(reject_samples[reason]) < 5:
+            sample = {"stk_cd": stk_cd}
+            sample.update(fields)
+            reject_samples[reason].append(sample)
+
     for stk_cd in candidates:
-        await asyncio.sleep(float(os.getenv("KIWOOM_API_INTERVAL", "0.25")))
+        await asyncio.sleep(float(os.getenv("KIWOOM_API_INTERVAL", "0.8")))
 
         candles = await fetch_daily_candles(token, stk_cd, target_count=65)
         if len(candles) < 60:
             await asyncio.sleep(1.5)
             candles = await fetch_daily_candles(token, stk_cd, target_count=65)
-        if len(candles) < 60: continue
+        if len(candles) < 60:
+            _reject("short_candles", stk_cd, candles=len(candles))
+            continue
+
+        evaluated_count += 1
 
         # 데이터 파싱
         closes = [_safe_price(c.get("cur_prc")) for c in candles]
@@ -95,42 +114,55 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         # 25~42: 과매도 반등 정상 범위 (D3/D4: 22~38 → 25~42 완화)
         # RSI < 25: 폭락/패닉 후보 — 자동 진입 금지
         # RSI > 42: 약한 눌림/하락 초입 — 전략 철학과 불일치로 제외
+        #
+        # closes 길이는 위에서 이미 60봉 이상으로 보장되어 있어 calc_rsi()의
+        # index 0/1은 항상 실제 계산값이다(0.0도 유효한 RSI). 과거에는
+        # "RSI==0.0이면 데이터 부족"으로 오판해 재조회를 시도했는데, 실제로는
+        # 진짜 극단적 과매도(RSI=0)를 데이터 오류로 착각한 것이었다 — 이
+        # 전략은 어차피 25~42 범위만 통과시키므로 재조회 없이 바로 걸러진다.
         rsi_vals = calc_rsi(closes, 14)
-        rsi_now  = rsi_vals[0] if rsi_vals and rsi_vals[0] != 0.0 else None
+        rsi_now  = rsi_vals[0]
         rsi_prev = rsi_vals[1] if len(rsi_vals) > 1 else None
-        if rsi_now is None:
-            await asyncio.sleep(1.5)
-            candles = await fetch_daily_candles(token, stk_cd, target_count=65)
-            closes  = [_safe_price(c.get("cur_prc")) for c in candles]
-            rsi_vals = calc_rsi(closes, 14)
-            rsi_now  = rsi_vals[0] if rsi_vals and rsi_vals[0] != 0.0 else None
-            rsi_prev = rsi_vals[1] if len(rsi_vals) > 1 else None
-        if rsi_now is None or not (25 <= rsi_now <= 42): continue
+        if not (25 <= rsi_now <= 42):
+            _reject("rsi_out_of_range", stk_cd, rsi=round(rsi_now, 1))
+            continue
 
         ma60 = sum(closes[:60]) / 60
-        if cur_prc < ma60 * 0.88: continue # 추세 완전 붕괴 제외
+        if cur_prc < ma60 * 0.88:
+            _reject("below_ma60_floor", stk_cd, cur_prc=round(cur_prc), ma60=round(ma60, 2))
+            continue # 추세 완전 붕괴 제외
 
         # ── 필수 조건 3 & 4: ATR 변동성 안정 & 당일 급락(-5%) 제외 ──
         atr_vals = calc_atr(highs, lows, closes, 14)
         atr_now = atr_vals[0]
         atr_pct = (atr_now / cur_prc) * 100
-        if atr_pct > 4.0: continue # 변동성 과다(패닉) 구간 제외
+        if atr_pct > 4.0:
+            _reject("atr_pct_over_4", stk_cd, atr_pct=round(atr_pct, 2))
+            continue # 변동성 과다(패닉) 구간 제외
 
         # 실시간 데이터 (Redis)
         flu_rt, cntr_str = 0.0, 100.0
         if rdb:
-            tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
-            if tick:
-                flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", ""))
-                cntr_str = float(str(tick.get("cntr_str", "100")))
+            try:
+                tick_result = await get_tick_with_status(rdb, stk_cd)
+                tick = tick_result.get("data") or {}
+                if tick:
+                    flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", "").replace(",", ""))
+                    cntr_str = float(str(tick.get("cntr_str", "100")).replace("+", "").replace(",", ""))
+            except Exception as e:
+                logger.debug("[S14] realtime tick read failed %s: %s", stk_cd, e)
         if cntr_str <= 100:
             cntr_str, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
 
-        if flu_rt < -5.0: continue # 하락 진행 중인 칼날 제외
+        if flu_rt < -5.0:
+            _reject("flu_rt_below_neg5", stk_cd, flu_rt=round(flu_rt, 2))
+            continue # 하락 진행 중인 칼날 제외
 
         # ── 필수 조건 5: 체결강도 ≥ 105 (매수세 실질 유입 확인) ──
         # 반등 전략에서 매수세 확인이 보너스에 그치면 하락 지속 종목이 섞임
-        if cntr_str < 105.0: continue
+        if cntr_str < 105.0:
+            _reject("cntr_str_below_105", stk_cd, cntr_str=round(cntr_str, 1))
+            continue
 
         # ── 선택 조건 A: Stochastic 골든크로스 ──
         sk, sd = calc_stochastic(highs, lows, closes, 14, 3, 3)
@@ -149,7 +181,9 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
         # cond_count == 0: 반등 단서 없음, 완전 제외
         # cond_count == 1: shadow 기록만 허용 (실전 진입 후보 제외)
         # cond_count >= 2: 실전 진입 후보
-        if cond_count < 1: continue
+        if cond_count < 1:
+            _reject("cond_count_lt1", stk_cd, cond_count=cond_count)
+            continue
         is_shadow = (cond_count == 1)
 
         vol_ma20 = sum(vols[1:21]) / 20
@@ -176,6 +210,10 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
             bb_lower=bb_lower_val, compute_zones=True,
         )
         signal_mode = "SHADOW" if is_shadow else "NORMAL"
+        logger.info(
+            "[S14][pass] stk=%s mode=%s score=%.2f rsi=%.1f cond=%d cntr=%.1f flu_rt=%.2f",
+            stk_cd, signal_mode, score, rsi_now, cond_count, cntr_str, flu_rt,
+        )
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": await fetch_stk_nm(rdb, token, stk_cd),
@@ -203,4 +241,14 @@ async def scan_oversold_bounce(token: str, rdb=None) -> list:
     top_normal = sorted(normal, key=lambda x: x["score"], reverse=True)[:5]
     # shadow 결과는 상위 3개만 포함 (성과 집계용 — 실전 진입 불가)
     top_shadow = sorted(shadow, key=lambda x: x["score"], reverse=True)[:3]
-    return top_normal + top_shadow
+    returned = top_normal + top_shadow
+    logger.info(
+        "[S14][scan_summary] candidate_count=%d evaluated=%d pass=%d returned=%d rejects=%s samples=%s",
+        len(candidates),
+        evaluated_count,
+        len(results),
+        len(returned),
+        dict(reject_counts),
+        {key: value for key, value in reject_samples.items()},
+    )
+    return returned

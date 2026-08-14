@@ -17,6 +17,7 @@ import httpx
 
 from http_utils import fetch_cntr_strength_cached, fetch_hoga, fetch_same_time_volume_ratio, fetch_stk_nm
 from indicator_atr import get_atr_minute
+from redis_reader import get_hoga_with_status, get_tick_with_status
 from tp_sl_engine import calc_tp_sl
 
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
@@ -70,8 +71,12 @@ def _parse_vi_vol_ratio(vi_data: dict) -> tuple[float, float, str]:
 
 
 def is_publishable_signal(signal: dict | None) -> bool:
-    """S2 자동 발행 가능 여부. SHADOW는 관찰/메트릭 전용으로 둔다."""
-    return bool(signal) and signal.get("signal_mode") != "SHADOW"
+    """S2 자동 발행 가능 여부. 실전 기준 미달 후보는 fail-closed로 제외한다."""
+    if not signal:
+        return False
+    if signal.get("signal_mode") != "SHADOW":
+        return True
+    return False
 
 
 async def handle_vi_event(rdb, event: dict):
@@ -110,7 +115,8 @@ async def handle_vi_event(rdb, event: dict):
         if rdb:
             try:
                 # 실시간 체결 체결강도 데이터에서 누적 거래량 차분 시도
-                tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+                tick_result = await get_tick_with_status(rdb, stk_cd)
+                tick = tick_result["data"]
                 if tick:
                     acc_qty_now = _num(tick.get("acc_trde_qty", 0))
                     acc_amt_now = _num(tick.get("acc_trde_prica", 0))
@@ -211,7 +217,7 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
 
     수정 사항 (2026-05-06):
     - vi_vol_ratio < 3.0 OR vi_amount_ratio < 3.0 → hard reject (ENABLE_S2_STRICT_VOLUME_GATE=true)
-    - vi_volume_source=unknown 또는 ratio 산출 불가 → volume_quality=UNKNOWN, signal_mode=SHADOW
+    - vi_volume_source=unknown 또는 ratio 산출 불가 → 실전 신호 생성 보류
     - payload에 vi_vol_ratio, vi_amount_ratio, volume_quality, secondary_vi_risk 포함
     """
     stk_cd = watch_item["stk_cd"]
@@ -221,7 +227,8 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
         return None
 
     # 1. 현재가 조회 (ws:tick)
-    cur = await rdb.hgetall(f"ws:tick:{stk_cd}")
+    tick_result = await get_tick_with_status(rdb, stk_cd)
+    cur = tick_result["data"]
     if not cur:
         return None
 
@@ -242,11 +249,8 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
     signal_mode: str | None = None  # None = 정상 모드
 
     if vol_source == "unknown" or (vi_vol_ratio == 0.0 and vi_amount_ratio == 0.0):
-        # 거래량 데이터 산출 불가
-        volume_quality = "UNKNOWN"
-        signal_mode = "SHADOW"
-        # STRICT gate 여부와 무관하게 SHADOW 처리 (자동 ENTER 불가)
-        logger.debug("[S2] %s vol_ratio 산출 불가 → SHADOW 처리", stk_cd)
+        logger.debug("[S2] %s vol_ratio 산출 불가 → 신호 생성 보류", stk_cd)
+        return None
     elif ENABLE_S2_STRICT_VOLUME_GATE and (
         vi_vol_ratio < VI_VOL_RATIO_THRESHOLD or vi_amount_ratio < VI_AMOUNT_RATIO_THRESHOLD
     ):
@@ -263,10 +267,8 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
         elif vi_vol_ratio >= VI_VOL_RATIO_THRESHOLD or vi_amount_ratio >= VI_AMOUNT_RATIO_THRESHOLD:
             volume_quality = "PARTIAL"
         else:
-            # strict gate 꺼진 상태에서 미달 → 품질 낮음, SHADOW로 처리
-            volume_quality = "LOW"
-            signal_mode = "SHADOW"
-            logger.debug("[S2] %s vol_ratio 미달 (strict gate off) → SHADOW", stk_cd)
+            logger.debug("[S2] %s vol_ratio 미달 (strict gate off) → 신호 생성 보류", stk_cd)
+            return None
 
     # [조건 3] 2차 VI 위험 판단
     secondary_vi_risk = _assess_secondary_vi_risk(vi_data)
@@ -288,7 +290,8 @@ async def check_vi_pullback(token: str, watch_item: dict, rdb=None) -> dict | No
             return None
 
     # [조건 4] 호가잔량 매수/매도 비율 체크 (ws:hoga — 0D 구독 데이터)
-    hoga = await rdb.hgetall(f"ws:hoga:{stk_cd}")
+    hoga_result = await get_hoga_with_status(rdb, stk_cd)
+    hoga = hoga_result["data"]
     bid_qty = _num(hoga.get("total_buy_bid_req", 0))
     ask_qty = _num(hoga.get("total_sel_bid_req", 0))
     bid_ratio = bid_qty / ask_qty if ask_qty > 0 else 0

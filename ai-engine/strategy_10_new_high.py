@@ -10,7 +10,7 @@ from __future__ import annotations
   당일 등락률 2% ~ 15% 범위
     · 2~7%: 정상 신고가 돌파
     · 7~10%: 강한 돌파 감점 (추가 확인 필요)
-    · 10~15%: 과열 후보, signal_mode=SHADOW (자동 진입 금지)
+    · 10~15%: 과열 후보, legacy SHADOW 표기 후 runner에서 LIVE 승격
   윗꼬리 필터: 고가 대비 현재가 3% 이상 밀린 신고가는 감점
   관리종목·ETF 제외
 """
@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import httpx
+from collections import Counter, defaultdict
 from http_utils import (
     apply_volume_profile_rr,
     fetch_cntr_strength_cached,
@@ -27,17 +28,25 @@ from http_utils import (
     fetch_stk_nm,
     fetch_volume_profile,
     kiwoom_client,
+    KiwoomReservationUnavailable,
     validate_kiwoom_response,
 )
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
+from redis_reader import get_tick_with_status
 from tp_sl_engine import calc_tp_sl
 from execution_quality import assess_execution_quality, should_hard_reject
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 NEW_HIGH_TERM = os.getenv("S10_NEW_HIGH_TERM", "250")
+
+
+def _is_etf_or_etn_name(stk_nm: object) -> bool:
+    normalized = str(stk_nm or "").upper()
+    return "ETF" in normalized or "ETN" in normalized
+
 
 async def fetch_new_high_stocks_all(token: str, market: str = "000") -> list[dict]:
     """ka10016 신고저가요청 – 전 종목 수집 (연속조회 대응)"""
@@ -46,32 +55,41 @@ async def fetch_new_high_stocks_all(token: str, market: str = "000") -> list[dic
 
     async with kiwoom_client() as client:
         while True:
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-                headers={
-                    "api-id": "ka10016",
-                    "authorization": f"Bearer {token}",
-                    "cont-yn": cont_yn,
-                    "next-key": next_key,
-                    "Content-Type": "application/json;charset=UTF-8",
-                },
-                json={
-                    "mrkt_tp": market,
-                    "ntl_tp": "1",             # 신고가
-                    "high_low_close_tp": "1",  # 고저기준
-                    "stk_cnd": "1",           # 관리종목·ETF·ETN·스팩 제외
-                    "trde_qty_tp": "00010",    # 만주 이상
-                    "crd_cnd": "0",            # 전체
-                    "updown_incls": "0",       # 상하한 제외
-                    "dt": NEW_HIGH_TERM,
-                    "stex_tp": "3",            # KRX
-                },
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+                    headers={
+                        "api-id": "ka10016",
+                        "authorization": f"Bearer {token}",
+                        "cont-yn": cont_yn,
+                        "next-key": next_key,
+                        "Content-Type": "application/json;charset=UTF-8",
+                    },
+                    json={
+                        "mrkt_tp": market,
+                        "ntl_tp": "1",             # 신고가
+                        "high_low_close_tp": "1",  # 고저기준
+                        # ka10016 supports management/priority-stock filters only;
+                        # ETF/ETN are removed from the response by name below.
+                        "stk_cnd": "1",
+                        "trde_qty_tp": "00010",    # 만주 이상
+                        "crd_cnd": "0",            # 전체
+                        "updown_incls": "0",       # 상하한 제외
+                        "dt": NEW_HIGH_TERM,
+                        "stex_tp": "3",            # KRX
+                    },
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S10] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10016")
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10016", logger):
                 break
 
-            all_items.extend(data.get("ntl_pric", []))
+            all_items.extend(
+                item for item in data.get("ntl_pric", [])
+                if not _is_etf_or_etn_name(item.get("stk_nm"))
+            )
 
             cont_yn = resp.headers.get("cont-yn", "N")
             next_key = resp.headers.get("next-key", "")
@@ -88,25 +106,29 @@ async def fetch_volume_surge_map_all(token: str, market: str = "000") -> dict[st
 
     async with kiwoom_client() as client:
         while True:
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers={
-                    "api-id": "ka10023",
-                    "authorization": f"Bearer {token}",
-                    "cont-yn": cont_yn,
-                    "next-key": next_key,
-                    "Content-Type": "application/json;charset=UTF-8",
-                },
-                json={
-                    "mrkt_tp": market,
-                    "sort_tp": "2",      # 급증률 순
-                    "tm_tp": "2",        # 전일 대비
-                    "trde_qty_tp": "10", # 만주 이상
-                    "stk_cnd": "20",     # [고도화] ETF+ETN+스팩 제외 (명세 기준 20번)
-                    "pric_tp": "8",      # 1천원 이상
-                    "stex_tp": "3",
-                },
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                    headers={
+                        "api-id": "ka10023",
+                        "authorization": f"Bearer {token}",
+                        "cont-yn": cont_yn,
+                        "next-key": next_key,
+                        "Content-Type": "application/json;charset=UTF-8",
+                    },
+                    json={
+                        "mrkt_tp": market,
+                        "sort_tp": "2",      # 급증률 순
+                        "tm_tp": "2",        # 전일 대비
+                        "trde_qty_tp": "10", # 만주 이상
+                        "stk_cnd": "20",     # [고도화] ETF+ETN+스팩 제외 (명세 기준 20번)
+                        "pric_tp": "8",      # 1천원 이상
+                        "stex_tp": "3",
+                    },
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S10] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10023")
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10023", logger):
                 break
@@ -152,6 +174,9 @@ async def _fetch_minute_chart_raw_s10(token: str, stk_cd: str, scope: int = 5) -
             if not validate_kiwoom_response(data, "ka10080", logger):
                 return {}
             return data
+    except KiwoomReservationUnavailable:
+        logger.warning("[S10] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10080")
+        return {}
     except Exception as exc:
         logger.debug("[S10] ka10080 분봉 조회 실패 [%s]: %s", stk_cd, exc)
         return {}
@@ -175,6 +200,9 @@ async def _fetch_hoga_raw_s10(token: str, stk_cd: str) -> dict:
             if not validate_kiwoom_response(data, "ka10004", logger):
                 return {}
             return data
+    except KiwoomReservationUnavailable:
+        logger.warning("[S10] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10004")
+        return {}
     except Exception as exc:
         logger.debug("[S10] ka10004 호가 조회 실패 [%s]: %s", stk_cd, exc)
         return {}
@@ -207,17 +235,21 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         if rdb:
             for item in new_high_items:
                 try:
-                    tick = await rdb.hgetall(f"ws:tick:{item['stk_cd']}")
+                    tick_result = await get_tick_with_status(rdb, item["stk_cd"])
+                    tick = tick_result["data"]
                     if tick:
                         item["flu_rt"]  = tick.get("flu_rt", "0")
                         item["cur_prc"] = tick.get("cur_prc", "0")
                         item["stk_nm"]  = tick.get("stk_nm", "")
                     else:
-                        # ws:tick 미구독 종목 — ws:expected(예상체결) fallback
-                        exp = await rdb.hgetall(f"ws:expected:{item['stk_cd']}")
-                        if exp:
-                            item["flu_rt"]  = exp.get("exp_flu_rt", "0")
-                            item["cur_prc"] = exp.get("exp_cntr_pric", "0")
+                        # 틱 자체가 없는 경우와 "진짜 등락률 0%"를 구분한다.
+                        # 구분이 없던 시절에는 WS 구독 상한(70) 밖으로 밀려나
+                        # 시세를 못 받은 종목이 flu_rt=0.0 → "등락률 범위 초과"로
+                        # 기록되어, 실시간 커버리지 부족이 전략 필터 문제처럼
+                        # 보이는 오진을 몇 주간 유발했다 (2026-08-10 조사).
+                        item["_no_realtime"] = True
+                    # 장중 S10은 opening-auction expected 값으로 fallback하지 않는다.
+                    # stale/missing tick은 아래 등락률 gate에서 안전하게 제외된다.
                 except Exception:
                     pass
     else:
@@ -228,7 +260,22 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             fetch_volume_surge_map_all(token, market),
         )
 
+    if not new_high_items:
+        logger.info("[S10][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
+        return []
+
     results = []
+    reject_counts = Counter()
+    reject_samples = defaultdict(list)
+    evaluated_count = 0
+
+    def _reject(reason: str, stk_cd: str, **fields) -> None:
+        reject_counts[reason] += 1
+        if len(reject_samples[reason]) < 5:
+            sample = {"stk_cd": stk_cd}
+            sample.update(fields)
+            reject_samples[reason].append(sample)
+
     for item in new_high_items:
         stk_cd = item.get("stk_cd")
 
@@ -237,22 +284,33 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
             flu_rt = float(str(item.get("flu_rt", "0")).replace("+", "").replace(",", ""))
             cur_prc = abs(float(str(item.get("cur_prc", "0")).replace("+", "").replace(",", "")))
         except (TypeError, ValueError):
+            _reject("parse_error", stk_cd)
+            continue
+
+        evaluated_count += 1
+
+        # 실시간 시세 미수신은 전략 필터 탈락이 아니라 데이터 커버리지 문제다.
+        # 별도 사유로 계상해야 WS 구독 상한 이슈가 로그에서 즉시 드러난다.
+        if item.get("_no_realtime"):
+            _reject("no_realtime_tick", stk_cd)
             continue
 
         # 진입 조건 1: 등락률 2% ~ 15%
         if not (2.0 <= flu_rt <= 15.0):
+            _reject("flu_rt_out_of_range", stk_cd, flu_rt=round(flu_rt, 2))
             continue
 
         # 등락률 구간 분류 — 스코어링 및 signal_mode에 사용
         # 2~7%: 정상 신고가 돌파
         # 7~10%: 강한 돌파 (추가 확인 필요, 감점)
-        # 10~15%: 과열 후보 (shadow 추적 전용, 자동 진입 금지)
+        # 10~15%: 과열 후보 (legacy SHADOW 표기; 운영 설정으로 LIVE 승격)
         flu_rt_overheat = flu_rt >= 10.0
         flu_rt_strong   = 7.0 <= flu_rt < 10.0
 
         # 진입 조건 2: 거래량 급증 100% 이상 (vol_surge_map 교차 검증)
         sdnin_rt = vol_surge_map.get(stk_cd, 0.0)
         if sdnin_rt < 100.0:
+            _reject("vol_surge_below_100", stk_cd, sdnin_rt=round(sdnin_rt, 1))
             continue
 
         # [수급 보완] 체결강도 + 호가 비율 조회 (ka10046, ka10004)
@@ -277,6 +335,7 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
                 # MA20 이격도 필터 (25% 초과 = 과열 돌파)
                 if closes_d[0] > 0 and ma20 > 0:
                     if (closes_d[0] - ma20) / ma20 * 100 > 25.0:
+                        _reject("ma20_gap_over_25", stk_cd, ma20=round(ma20, 2), cur_prc=round(closes_d[0]))
                         continue
         except Exception as e:
             logger.debug("[S10] 일봉 조회 실패 %s: %s", stk_cd, e)
@@ -316,16 +375,19 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         score += (6 if smart_money > 0 else -5 if smart_money < 0 else 0)
 
         # ATR 계산 (SL/TP 폴백 품질 향상)
+        # calc_atr()은 len(closes) >= period+1(=15)일 때만 index 0이 실제
+        # 계산값이다(14개면 전량 0.0 센티널). 가드를 15로 맞추면 ATR=0.0
+        # (변동성 완전 정체)도 None으로 뭉개지 않고 그대로 쓸 수 있다.
         atr_val = None
-        if len(highs_d) >= 14 and len(lows_d) >= 14 and len(closes_d) >= 14:
+        if len(highs_d) >= 15 and len(lows_d) >= 15 and len(closes_d) >= 15:
             atr_vals = calc_atr(highs_d, lows_d, closes_d, 14)
-            atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+            atr_val  = atr_vals[0]
 
         # 동적 TP/SL (신고가 돌파 = 이전 52주 고점 기준 피보나치 확장)
         tp_sl = calc_tp_sl("S10_NEW_HIGH", cur_prc, highs_d, lows_d, closes_d,
                            stk_cd=stk_cd, ma20=ma20, atr=atr_val)
 
-        # signal_mode: 10~15% 과열 구간은 shadow 추적 전용 (자동 진입 금지)
+        # signal_mode: 10~15% 과열 구간은 원인을 보존한 뒤 LIVE로 승격된다.
         signal_mode = "SHADOW" if flu_rt_overheat else "NORMAL"
         flu_rt_zone = ("overheat" if flu_rt_overheat
                        else "strong" if flu_rt_strong
@@ -368,6 +430,7 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
         )
         if should_hard_reject(eq_result):
             logger.debug("[S10] execution_quality REJECT skip [%s]", stk_cd)
+            _reject("execution_quality_reject", stk_cd, reason=eq_result.get("reject_reason"))
             continue
         if eq_result["execution_quality"] == "REJECT" and signal_mode == "NORMAL":
             signal_mode = "SHADOW"
@@ -416,7 +479,21 @@ async def scan_new_high_swing(token: str, market: str = "000", rdb=None) -> list
                 signal = apply_volume_profile_rr(signal, profile)
         except Exception as e:
             signal["volume_profile_meta"] = {"api_id": "ka10025", "error": str(e)}
+        logger.info(
+            "[S10][pass] stk=%s score=%.2f flu_rt=%.2f sdnin_rt=%.1f signal_mode=%s breakout_quality=%s",
+            stk_cd, score, flu_rt, sdnin_rt, signal_mode, breakout_quality,
+        )
         results.append(signal)
 
     # 상위 5개 종목 반환
-    return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    logger.info(
+        "[S10][scan_summary] candidate_count=%d evaluated=%d pass=%d returned=%d rejects=%s samples=%s",
+        len(new_high_items),
+        evaluated_count,
+        len(results),
+        len(sorted_results),
+        dict(reject_counts),
+        {key: value for key, value in reject_samples.items()},
+    )
+    return sorted_results

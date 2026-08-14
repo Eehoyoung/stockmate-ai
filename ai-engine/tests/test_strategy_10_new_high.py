@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,7 +23,12 @@ async def test_s10_sets_institution_foreign_confirm_and_volume_profile(monkeypat
 
     rdb = MagicMock()
     rdb.lrange = AsyncMock(side_effect=[["005930"], []])
-    rdb.hgetall = AsyncMock(return_value={"flu_rt": "4.5", "cur_prc": "12000", "stk_nm": "삼성전자"})
+    rdb.hgetall = AsyncMock(return_value={
+        "flu_rt": "4.5",
+        "cur_prc": "12000",
+        "stk_nm": "삼성전자",
+        "updated_at_ms": str(int(time.time() * 1000)),
+    })
 
     fake_tp_sl = MagicMock()
     fake_tp_sl.to_signal_fields.return_value = {
@@ -79,3 +85,28 @@ async def test_s10_sets_institution_foreign_confirm_and_volume_profile(monkeypat
     assert signal["investor_smart_money"] == 5000
     assert signal["volume_profile_adjusted"] is True
     assert signal["tp1_price"] == 13000
+
+
+@pytest.mark.asyncio
+async def test_s10_missing_tick_reported_as_no_realtime_not_flu_rt_range(monkeypatch, caplog):
+    """WS 구독 상한 밖으로 밀려 시세를 못 받은 종목은 'no_realtime_tick'으로
+    계상되어야 한다. 예전에는 flu_rt가 0.0으로 남아 'flu_rt_out_of_range'로
+    기록되는 바람에 실시간 커버리지 부족이 전략 필터 문제로 오진됐다."""
+    import logging
+
+    import strategy_10_new_high as s10
+
+    rdb = MagicMock()
+    rdb.lrange = AsyncMock(side_effect=[["005930"], []])
+    # 틱 데이터 없음 -> get_tick_with_status가 빈 data를 반환하는 상황
+    rdb.hgetall = AsyncMock(return_value={})
+
+    monkeypatch.setattr(s10, "fetch_volume_surge_map_all", AsyncMock(return_value={"005930": 180.0}))
+
+    with caplog.at_level(logging.INFO, logger=s10.logger.name):
+        result = await s10.scan_new_high_swing("token", rdb=rdb)
+
+    assert result == []
+    summary = "\n".join(caplog.messages)
+    assert "no_realtime_tick" in summary
+    assert "flu_rt_out_of_range" not in summary

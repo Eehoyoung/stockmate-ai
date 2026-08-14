@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections import Counter, defaultdict
 
 from ma_utils import fetch_daily_candles, fetch_minute_candles, _safe_price, _safe_vol, _calc_ma
 from indicator_ichimoku import calc_ichimoku
@@ -52,14 +53,16 @@ from indicator_volume import get_vwap_minute
 from http_utils import (
     apply_volume_profile_rr,
     fetch_cntr_strength_cached,
-    fetch_same_time_volume_ratio,
+    fetch_same_time_volume_ratio_cached,
     fetch_stk_nm,
     fetch_volume_profile,
+    resolve_effective_volume_ratio,
 )
+from redis_reader import get_strength_with_status, get_tick_with_status
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 _S7_POOL_READ_LIMIT = int(os.getenv("S7_POOL_READ_LIMIT", "180"))
 _S7_SCAN_LIMIT = int(os.getenv("S7_SCAN_LIMIT", "60"))
 
@@ -84,16 +87,29 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             logger.warning("[S7] Redis candidates 조회 실패: %s", e)
 
     if not candidates:
-        logger.debug("[S7] 후보 없음")
+        logger.info("[S7][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
         return []
 
     results = []
+    reject_counts: Counter = Counter()
+    reject_samples: defaultdict = defaultdict(list)
+    evaluated_count = 0
+
+    def _reject(reason: str, stk_cd: str, **fields) -> None:
+        reject_counts[reason] += 1
+        if len(reject_samples[reason]) < 5:
+            sample = {"stk_cd": stk_cd}
+            sample.update(fields)
+            reject_samples[reason].append(sample)
+
     for stk_cd in candidates:
         await asyncio.sleep(_API_INTERVAL)
+        evaluated_count += 1
 
         candles = await fetch_daily_candles(token, stk_cd)
         if len(candles) < _ICHIMOKU_MIN_BARS:
             logger.debug("[S7] %s 일봉 부족: %d봉", stk_cd, len(candles))
+            _reject("daily_bars_insufficient", stk_cd, bars=len(candles))
             continue
 
         # ── OHLCV 파싱 ───────────────────────────────────────────
@@ -110,6 +126,7 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
                 vols.append(v)
 
         if len(closes) < _ICHIMOKU_MIN_BARS:
+            _reject("closes_insufficient_after_parse", stk_cd, closes=len(closes))
             continue
 
         cur_prc = closes[0]
@@ -117,16 +134,20 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
         # ── 일목균형표 계산 ──────────────────────────────────────
         ichi = calc_ichimoku(highs, lows, closes)
         if ichi is None:
+            _reject("ichimoku_calc_failed", stk_cd)
             continue
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 필수 조건 — 3개 모두 충족 필수
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if not ichi.price_above_cloud:
+            _reject("price_below_cloud", stk_cd)
             continue
         if not ichi.tenkan_above_kijun:
+            _reject("tenkan_below_kijun", stk_cd)
             continue
         if not ichi.is_bullish_cloud:
+            _reject("bearish_cloud", stk_cd)
             continue
 
         # ── 실시간 등락률·체결강도 ───────────────────────────────
@@ -134,14 +155,15 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
         cntr_str: float | None = None
         if rdb:
             try:
-                tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+                tick_result = await get_tick_with_status(rdb, stk_cd)
+                tick = tick_result["data"]
                 if tick:
                     flu_rt = float(
                         str(tick.get("flu_rt", "0")).replace("+", "").replace(",", "")
                     )
-                strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 4)
-                if strength_data:
-                    cntr_str = sum(float(s) for s in strength_data) / len(strength_data)
+                strength_result = await get_strength_with_status(rdb, stk_cd, count=5)
+                if strength_result.get("data") is not None:
+                    cntr_str = float(strength_result["data"])
                 elif tick:
                     raw = tick.get("cntr_str", "")
                     if raw:
@@ -166,14 +188,31 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # RSI 계산
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # closes 길이는 _ICHIMOKU_MIN_BARS(78) 이상이 이미 보장되어 있어
+        # calc_rsi()의 index 0은 항상 실제 계산값(0.0도 유효한 RSI)이다.
         rsi_vals = calc_rsi(closes, 14)
-        rsi_now  = rsi_vals[0] if rsi_vals and rsi_vals[0] != 0.0 else None
+        rsi_now  = rsi_vals[0] if rsi_vals else None
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 거래량 비율
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        vol_ma20  = _calc_ma(vols[1:], 20)
-        vol_ratio = vols[0] / vol_ma20 if (vol_ma20 and vol_ma20 > 0) else 1.0
+        vol_ma20 = _calc_ma(vols[1:], 20)
+        daily_volume_ratio = vols[0] / vol_ma20 if (vol_ma20 and vol_ma20 > 0) else 1.0
+
+        same_time_volume_ratio = 0.0
+        same_time_volume_meta = {}
+        volume_summary = {}
+        try:
+            await asyncio.sleep(_API_INTERVAL)
+            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio_cached(token, stk_cd, rdb=rdb)
+            same_time_volume_ratio = float(volume_summary.get("same_time_volume_ratio") or 0.0)
+        except Exception as e:
+            same_time_volume_meta = {"api_id": "ka10055", "error": str(e)}
+        vol_ratio, volume_ratio_source = resolve_effective_volume_ratio(
+            daily_volume_ratio,
+            volume_summary,
+            same_time_volume_meta,
+        )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 선택 조건 평가
@@ -185,22 +224,15 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
 
         cond_count = sum([cond_a, cond_b, cond_c, cond_d])
         if cond_count < 2:
+            _reject("optional_conditions_insufficient", stk_cd, cond_count=cond_count)
             continue
-
-        same_time_volume_ratio = 0.0
-        same_time_volume_meta = {}
-        try:
-            await asyncio.sleep(_API_INTERVAL)
-            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio(token, stk_cd)
-            same_time_volume_ratio = float(volume_summary.get("same_time_volume_ratio") or 0.0)
-        except Exception as e:
-            same_time_volume_meta = {"api_id": "ka10055", "error": str(e)}
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ATR 계산
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 동일하게 closes 길이가 이미 충분히 보장되어 있어 index 0은 항상 실값.
         atr_vals = calc_atr(highs, lows, closes, 14)
-        atr_now  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+        atr_now  = atr_vals[0] if atr_vals else None
         atr_pct  = (atr_now / cur_prc * 100) if atr_now else None
         atr_ok   = atr_pct is not None and 1.0 <= atr_pct <= 3.0
 
@@ -246,6 +278,7 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
         # hard gate: 60분봉 데이터가 있는데 구름 아래이면 가설 무효화
         if h60_ichi_available and not h60_price_above_cloud:
             logger.debug("[S7] %s SKIP — 60분봉 구름 아래 (MTF 가설 무효화)", stk_cd)
+            _reject("h60_below_cloud", stk_cd)
             continue
 
         # 60분봉 MTF 점수 — 데이터 부족 시 -10 패널티로 실질 임계값 상향
@@ -315,6 +348,8 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             "chikou_above":         ichi.chikou_above_price,
             "rsi":                  round(rsi_now, 1) if rsi_now else None,
             "vol_ratio":            round(vol_ratio, 2),
+            "daily_volume_ratio":    round(daily_volume_ratio, 2),
+            "volume_ratio_source":   volume_ratio_source,
             "same_time_volume_ratio": round(same_time_volume_ratio, 2),
             "same_time_volume_meta": same_time_volume_meta,
             "cntr_strength":        round(cntr_str, 1),
@@ -338,4 +373,14 @@ async def scan_ichimoku_breakout(token: str, rdb=None) -> list[dict]:
             signal["volume_profile_meta"] = {"api_id": "ka10025", "error": str(e)}
         results.append(signal)
 
-    return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    logger.info(
+        "[S7][scan_summary] candidate_count=%d evaluated=%d pass=%d returned=%d rejects=%s samples=%s",
+        len(candidates),
+        evaluated_count,
+        len(results),
+        len(sorted_results),
+        dict(reject_counts),
+        {key: value for key, value in reject_samples.items()},
+    )
+    return sorted_results

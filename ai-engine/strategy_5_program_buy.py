@@ -7,6 +7,7 @@ import asyncio
 import httpx
 import logging
 import os
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 
@@ -17,20 +18,21 @@ from http_utils import (
     fetch_program_time_trend,
     fetch_stk_nm,
     kiwoom_client,
+    KiwoomReservationUnavailable,
     program_drop_reason,
     validate_kiwoom_response,
 )
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_atr import calc_atr
 from tp_sl_engine import calc_tp_sl
-from utils import safe_float as clean_val
+from utils import safe_float as clean_val, normalize_stock_code
 from strategy_perf import perf_timer
 from strategy_shared_cache import cache_get_json, cache_set_json, flag_enabled
 
 logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 _S5_CACHE_TTL = int(os.getenv("S5_SHARED_CACHE_TTL", "60"))
 _S5_OVERLAP_LIMIT = int(os.getenv("S5_OVERLAP_LIMIT", "25"))
 _S5_TWO_STAGE_LIMIT = int(os.getenv("S5_TWO_STAGE_LIMIT", "15"))
@@ -67,16 +69,20 @@ async def fetch_progra_netbuy(token: str, market: str, rdb=None) -> dict:
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
-                headers=headers,
-                json={
-                    "trde_upper_tp": "2",  # 2: 순매수상위
-                    "amt_qty_tp": "1",     # 1: 금액
-                    "mrkt_tp": kiwoom_mrkt,
-                    "stex_tp": "3"         # KRX 고정
-                }
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/stkinfo",
+                    headers=headers,
+                    json={
+                        "trde_upper_tp": "2",  # 2: 순매수상위
+                        "amt_qty_tp": "1",     # 1: 금액
+                        "mrkt_tp": kiwoom_mrkt,
+                        "stex_tp": "3"         # KRX 고정
+                    }
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S5] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka90003")
+                break
             resp.raise_for_status()
             data = resp.json()
 
@@ -85,7 +91,7 @@ async def fetch_progra_netbuy(token: str, market: str, rdb=None) -> dict:
 
             items = data.get("prm_netprps_upper_50", [])
             for x in items:
-                stk_cd = x.get("stk_cd")
+                stk_cd = normalize_stock_code(x.get("stk_cd"))
                 if stk_cd:
                     try:
                         cur_prc = abs(int(float(
@@ -94,7 +100,8 @@ async def fetch_progra_netbuy(token: str, market: str, rdb=None) -> dict:
                     except (TypeError, ValueError):
                         cur_prc = 0
                     result[stk_cd] = {
-                        "net_buy_amt": int(clean_val(x.get("prm_netprps_amt", 0))),
+                        # ka90003 공식 단위(백만원)를 내부 표준인 원(KRW)으로 변환한다.
+                        "net_buy_amt": int(clean_val(x.get("prm_netprps_amt", 0)) * 1_000_000),
                         "stk_nm": str(x.get("stk_nm", "")).strip(),
                         "cur_prc": cur_prc,
                         "flu_rt": clean_val(x.get("flu_rt", "0")),
@@ -133,16 +140,20 @@ async def fetch_frgn_inst_upper(token: str, market: str, rdb=None) -> set:
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers=headers,
-                json={
-                    "mrkt_tp": mrkt,
-                    "amt_qty_tp": "1",
-                    "qry_dt_tp": "0",
-                    "stex_tp": "3" # KRX 고정
-                }
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                    headers=headers,
+                    json={
+                        "mrkt_tp": mrkt,
+                        "amt_qty_tp": "1",
+                        "qry_dt_tp": "0",
+                        "stex_tp": "3" # KRX 고정
+                    }
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S5] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka90009")
+                break
             resp.raise_for_status()
             data = resp.json()
             if not validate_kiwoom_response(data, "ka90009", logger):
@@ -151,7 +162,7 @@ async def fetch_frgn_inst_upper(token: str, market: str, rdb=None) -> set:
             items = data.get("frgnr_orgn_trde_upper", [])
             for x in items:
                 # 외인 순매수 종목코드 필드 (명세서 확인 필요: 보통 for_netprps_stk_cd)
-                cd = x.get("for_netprps_stk_cd")
+                cd = normalize_stock_code(x.get("for_netprps_stk_cd"))
                 if cd:
                     result_set.add(cd)
 
@@ -163,18 +174,25 @@ async def fetch_frgn_inst_upper(token: str, market: str, rdb=None) -> set:
         await cache_set_json(rdb, cache_key, sorted(result_set), _S5_CACHE_TTL)
     return result_set
 
-async def check_extra_conditions(token: str, stk_cd: str, market: str = "001", rdb=None) -> bool:
-    """전일 기관 순매수 여부 및 5분봉 5이평선 상단 확인"""
+async def check_extra_conditions(token: str, stk_cd: str, market: str = "001", rdb=None) -> tuple[bool, str | None]:
+    """전일 기관 순매수 여부 및 5분봉 5이평선 상단 확인.
+
+    Returns:
+        (ok, reason) — ok=True 이면 reason=None. ok=False 이면 다음 중 하나:
+          - "inst_netbuy_failed": ka10044 응답에 해당 종목이 없음 (전일 기관 순매수 미포함)
+          - "ma5_failed": ka10080 5분봉 현재가가 5이평선 아래
+          - "api_error": Kiwoom API 오류/레이트리밋/예외/데이터 부족 등
+    """
     cache_key = f"strategy:s5:extra:{market}:{stk_cd}"
     if flag_enabled("S5_EXTRA_CACHE_ENABLED") and rdb is not None:
         cached = await cache_get_json(rdb, cache_key)
-        if isinstance(cached, bool):
-            return cached
+        if isinstance(cached, dict) and "ok" in cached:
+            return bool(cached["ok"]), cached.get("reason")
 
-    async def finish(value: bool) -> bool:
+    async def finish(ok: bool, reason: str | None = None) -> tuple[bool, str | None]:
         if flag_enabled("S5_EXTRA_CACHE_ENABLED") and rdb is not None:
-            await cache_set_json(rdb, cache_key, value, _S5_CACHE_TTL)
-        return value
+            await cache_set_json(rdb, cache_key, {"ok": ok, "reason": reason}, _S5_CACHE_TTL)
+        return ok, reason
 
     try:
         # 최근 영업일 — 주말/공휴일 보정 (월요일 실행 시 일요일→금요일)
@@ -193,10 +211,12 @@ async def check_extra_conditions(token: str, stk_cd: str, market: str = "001", r
             inst_data = inst_resp.json()
             if validate_kiwoom_response(inst_data, "ka10044", logger):
                 netbuy_list = inst_data.get("daly_orgn_trde_stk", [])
-                if not any(item.get("stk_cd") == stk_cd for item in netbuy_list):
-                    return await finish(False)
+                # ka90003/ka90009와 마찬가지로 ka10044 stk_cd도 '_AL' 등의 키움 접미사가
+                # 붙을 수 있어 정규화하지 않으면 교집합이 항상 비게 될 수 있다.
+                if not any(normalize_stock_code(item.get("stk_cd")) == stk_cd for item in netbuy_list):
+                    return await finish(False, "inst_netbuy_failed")
             else:
-                return await finish(False)
+                return await finish(False, "api_error")
 
             # 2. ka10080 5분봉 5이평선 확인
             chart_resp = await client.post(
@@ -210,11 +230,15 @@ async def check_extra_conditions(token: str, stk_cd: str, market: str = "001", r
                 if len(candles) >= 5:
                     cur_prc = clean_val(candles[0].get("cur_prc", 0))
                     ma5 = mean([clean_val(c.get("cur_prc", 0)) for c in candles[:5]])
-                    return await finish(cur_prc >= ma5)
-            return await finish(False)
+                    ok = cur_prc >= ma5
+                    return await finish(ok, None if ok else "ma5_failed")
+            return await finish(False, "api_error")
+    except KiwoomReservationUnavailable:
+        logger.warning("[S5] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10044/ka10080")
+        return False, "api_error"
     except Exception as e:
         logger.debug(f"[S5_Extra] {stk_cd} 필터 제외: {e}")
-        return False
+        return False, "api_error"
 
 async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
     """전술 5 메인 스캔 함수"""
@@ -250,17 +274,33 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
         else _int_env("S5_OVERLAP_LIMIT", _S5_OVERLAP_LIMIT)
     )
     overlap = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:overlap_limit]
-    if flag_enabled("S5_TWO_STAGE_SHADOW"):
+    if flag_enabled("S5_TWO_STAGE_ENABLED"):
         shadow_limit = _int_env("S5_TWO_STAGE_LIMIT", _S5_TWO_STAGE_LIMIT)
         shadow = sorted(overlap_raw, key=lambda c: prog_map[c]["net_buy_amt"], reverse=True)[:shadow_limit]
         logger.info("[S5] two-stage shadow current=%d shadow=%d", len(overlap), len(shadow))
+
+    if not overlap:
+        logger.info("[S5][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
+        return []
+
     results = []
+    reject_counts = Counter()
+    reject_samples = defaultdict(list)
+    evaluated_count = 0
+
+    def _reject(reason: str, stk_cd: str, **fields) -> None:
+        reject_counts[reason] += 1
+        if len(reject_samples[reason]) < 5:
+            sample = {"stk_cd": stk_cd}
+            sample.update(fields)
+            reject_samples[reason].append(sample)
 
     # 3. 교집합 종목들에 대해 정밀 필터 적용 (ka10044+ka10080 × overlap_limit)
     for stk_cd in overlap:
         await asyncio.sleep(_API_INTERVAL) # 과부하 방지
         async with perf_timer("s5_extra", rdb=rdb, fields={"market": market, "stk_cd": stk_cd}):
-            extra_ok = await check_extra_conditions(token, stk_cd, market, rdb=rdb)
+            extra_ok, extra_reason = await check_extra_conditions(token, stk_cd, market, rdb=rdb)
+        evaluated_count += 1
         if extra_ok:
             info = prog_map[stk_cd]
             # ka90003 응답에서 직접 수집한 stk_nm/cur_prc 우선 사용
@@ -288,9 +328,12 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
                 lows_d   = [_safe_price(c.get("low_pric"))  for c in candles]
                 if len(closes_d) >= 20:
                     ma20 = sum(closes_d[:20]) / 20
-                if len(highs_d) >= 14 and len(lows_d) >= 14 and len(closes_d) >= 14:
+                # calc_atr()은 len(closes) >= period+1(=15)일 때만 index 0이
+                # 실제 계산값이다(14개면 전량 0.0 센티널). 가드를 15로 맞추면
+                # ATR=0.0(변동성 완전 정체)도 None으로 뭉개지 않는다.
+                if len(highs_d) >= 15 and len(lows_d) >= 15 and len(closes_d) >= 15:
                     atr_vals = calc_atr(highs_d, lows_d, closes_d, 14)
-                    atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+                    atr_val  = atr_vals[0]
             except Exception as e:
                 logger.debug("[S5] 일봉 조회 실패 %s: %s", stk_cd, e)
 
@@ -316,7 +359,27 @@ async def scan_program_buy(token: str, market: str = "000", rdb=None) -> list:
             signal.update(program_snapshot)
             if program_reason:
                 signal["program_drop_reason"] = program_reason
+            logger.info(
+                "[S5][pass] stk=%s net_buy_amt=%s flu_rt=%s cntr=%s bid_ratio=%s",
+                stk_cd,
+                info.get("net_buy_amt"),
+                info.get("flu_rt"),
+                round(cntr_strength, 1),
+                round(bid_ratio, 2) if bid_ratio is not None else None,
+            )
             results.append(signal)
+        else:
+            _reject(extra_reason or "extra_conditions_failed", stk_cd)
 
     # 순매수 금액 상위 5개 반환
-    return sorted(results, key=lambda x: x["net_buy_amt"], reverse=True)[:5]
+    sorted_results = sorted(results, key=lambda x: x["net_buy_amt"], reverse=True)[:5]
+    logger.info(
+        "[S5][scan_summary] candidate_count=%d evaluated=%d pass=%d returned=%d rejects=%s samples=%s",
+        len(overlap),
+        evaluated_count,
+        len(results),
+        len(sorted_results),
+        dict(reject_counts),
+        {key: value for key, value in reject_samples.items()},
+    )
+    return sorted_results

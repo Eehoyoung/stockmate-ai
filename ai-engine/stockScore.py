@@ -51,11 +51,17 @@ from scorer import rule_score as _rule_score, get_claude_threshold
 from analyzer import analyze_signal
 from tp_sl_engine import calc_tp_sl
 from utils import safe_float as _sf
+from s16_accumulation_state import STATE_TRIGGERED
+from strategy_16_accumulation import (
+    build_s16_signal,
+    calculate_s16_metrics,
+    _normalize_market_cap_eok,
+)
 
 logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
-_API_INTERVAL   = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL   = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 
 
 def _parse_qty(val) -> int:
@@ -101,6 +107,7 @@ class StockSnapshot:
     hoga:      dict            = field(default_factory=dict)
     bid_ratio: Optional[float] = None
     freshness: dict = field(default_factory=dict)
+    market_cap_eok: float = 0.0
 
     # 데이터 신선도 플래그
     ws_online:        bool = False  # tick이 실제 WS 데이터에서 왔는지
@@ -113,6 +120,11 @@ class StockSnapshot:
     frgn_d1:       int  = 0      # 외인 D-1 순매수 수량
     frgn_d2:       int  = 0
     frgn_d3:       int  = 0
+    daily_strength: dict = field(default_factory=dict)
+    investor_flow: dict = field(default_factory=dict)
+    program_snapshot: dict = field(default_factory=dict)
+    program_drop_reason: Optional[str] = None
+    volume_profile: dict = field(default_factory=dict)
     frgn_tot:      int  = 0      # 누적 순매수 수량
     is_inst_frgn:  bool = False   # ka10063 기관+외인 동시순매수 목록에 포함 여부
 
@@ -172,6 +184,7 @@ class StockSnapshot:
             "vi":               self.vi_event,
             "ws_online":        self.ws_online,
             "strength_from_ws": self.strength_from_ws,
+            "market_cap_eok":    self.market_cap_eok,
         }
 
 
@@ -360,6 +373,11 @@ async def collect_snapshot(rdb, stk_cd: str) -> StockSnapshot:
     # flu_rt 폴백: tick 없으면 일봉 기반 계산
     if snap.flu_rt == 0.0 and snap.prev_close > 0 and snap.cur_prc > 0:
         snap.flu_rt = round((snap.cur_prc - snap.prev_close) / snap.prev_close * 100, 2)
+
+    try:
+        snap.market_cap_eok = _normalize_market_cap_eok(await rdb.get(f"stock:mktcap:{stk_cd}"))
+    except Exception as e:
+        logger.debug("[stockScore] market cap cache failed [%s]: %s", stk_cd, e)
 
     # ── 기관/외인 데이터 (API 호출, 실패 허용) ───────────────────
     if token:
@@ -870,6 +888,74 @@ def _check_s15(snap: StockSnapshot) -> Optional[dict]:
 
 # ─── 1차 필터 실행 ─────────────────────────────────────────────
 
+def _s16_supply_score_from_snapshot(snap: StockSnapshot) -> float:
+    daily_strength = getattr(snap, "daily_strength", {}) or {}
+    investor_flow = getattr(snap, "investor_flow", {}) or {}
+    program_snapshot = getattr(snap, "program_snapshot", {}) or {}
+
+    score = 0.0
+    latest = _sf(daily_strength.get("latest") or snap.avg_strength)
+    avg_5 = _sf(daily_strength.get("avg_5") or snap.avg_strength)
+    avg_20 = _sf(daily_strength.get("avg_20"))
+    strong_days = _sf(daily_strength.get("strong_days"))
+    if latest >= 130:
+        score += 5.0
+    elif latest >= 115:
+        score += 3.0
+    if avg_5 >= 125:
+        score += 5.0
+    elif avg_5 >= 112:
+        score += 3.0
+    if avg_20 >= 110:
+        score += 4.0
+    if strong_days >= 4:
+        score += 3.0
+
+    smart_money = _sf(investor_flow.get("smart_money"))
+    foreign = _sf(investor_flow.get("foreign"))
+    institution = _sf(investor_flow.get("institution"))
+    if smart_money > 0:
+        score += 5.0
+    if foreign > 0 and institution > 0:
+        score += 3.0
+
+    net_amt = _sf(program_snapshot.get("program_net_buy_amt"))
+    net_chg = _sf(program_snapshot.get("program_net_buy_amt_chg"))
+    if net_amt > 0:
+        score += 2.0
+    if net_chg > 0:
+        score += 1.0
+    return min(25.0, score)
+
+
+def _check_s16(snap: StockSnapshot) -> Optional[dict]:
+    metrics = calculate_s16_metrics(
+        snap.candles,
+        market_cap_eok=snap.market_cap_eok,
+        cntr_strength=snap.avg_strength,
+        bid_ratio=snap.bid_ratio,
+        supply_score_hint=_s16_supply_score_from_snapshot(snap),
+    )
+    if metrics.state != STATE_TRIGGERED:
+        return None
+
+    signal = build_s16_signal(
+        snap.stk_cd,
+        snap.stk_nm,
+        metrics,
+        market_cap_eok=snap.market_cap_eok,
+    )
+    signal.update({
+        "cntr_strength": round(snap.avg_strength, 1),
+        "bid_ratio": snap.bid_ratio,
+        "vol_ratio": metrics.vol_ratio,
+        "holding_days": 15,
+        "cond_count": 4,
+        "source": "score_command",
+    })
+    return signal
+
+
 _CHECKERS = [
     ("S1_GAP_OPEN",         _check_s1,  None),
     ("S2_VI_PULLBACK",      _check_s2,  "VI 미발동"),
@@ -886,6 +972,7 @@ _CHECKERS = [
     ("S13_BOX_BREAKOUT",    _check_s13, None),
     ("S14_OVERSOLD_BOUNCE", _check_s14, None),
     ("S15_MOMENTUM_ALIGN",  _check_s15, None),
+    ("S16_ACCUMULATION_SHADOW", _check_s16, None),
 ]
 
 
@@ -1006,7 +1093,7 @@ async def score_one_signal(
 
     # 규칙 점수 임계 미달 → 즉시 CANCEL
     signal = _enrich_signal_from_snapshot(signal, snap)
-    if strategy in {"S5_PROG_FRGN", "S13_BOX_BREAKOUT"} and signal.get("program_drop_reason"):
+    if strategy in {"S5_PROG_FRGN", "S13_BOX_BREAKOUT", "S16_ACCUMULATION_SHADOW"} and signal.get("program_drop_reason"):
         logger.info(
             "[stockScore] program flow gate rejected [%s %s]: %s",
             snap.stk_cd,
@@ -1127,6 +1214,7 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
                 "ma60":             snap.ma60,
                 "avg_strength":     snap.avg_strength,
                 "bid_ratio":        snap.bid_ratio,
+                "market_cap_eok":   snap.market_cap_eok,
                 "ws_online":        snap.ws_online,
                 "strength_from_ws": snap.strength_from_ws,
                 "freshness":        snap.freshness,
@@ -1178,6 +1266,7 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
             "ma60":         snap.ma60,
             "avg_strength": snap.avg_strength,
             "bid_ratio":    snap.bid_ratio,
+            "market_cap_eok": snap.market_cap_eok,
             "ws_online":    snap.ws_online,
             "strength_from_ws": snap.strength_from_ws,
             "freshness":    snap.freshness,

@@ -12,15 +12,16 @@ from http_utils import (
     fetch_volume_profile,
     fetch_stk_nm,
     kiwoom_client,
+    KiwoomReservationUnavailable,
     validate_kiwoom_response,
 )
 from indicator_atr import get_atr_minute
 from ma_utils import _safe_price, fetch_daily_candles
-from redis_reader import get_avg_cntr_strength
+from redis_reader import get_strength_with_status
 from tp_sl_engine import calc_tp_sl
 from execution_quality import assess_execution_quality, should_hard_reject
 
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _KST = timezone(timedelta(hours=9))
 logger = logging.getLogger(__name__)
@@ -207,19 +208,23 @@ async def fetch_gap_snapshots(token: str) -> dict[str, dict]:
                     headers["cont-yn"] = "Y"
                     headers["next-key"] = next_key
 
-                resp = await client.post(
-                    f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                    headers=headers,
-                    json={
-                        "mrkt_tp": "000",
-                        "sort_tp": "1",
-                        "trde_qty_cnd": "10",
-                        "stk_cnd": "16",
-                        "crd_cnd": "0",
-                        "pric_cnd": "8",
-                        "stex_tp": "3",
-                    },
-                )
+                try:
+                    resp = await client.post(
+                        f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                        headers=headers,
+                        json={
+                            "mrkt_tp": "000",
+                            "sort_tp": "1",
+                            "trde_qty_cnd": "10",
+                            "stk_cnd": "16",
+                            "crd_cnd": "0",
+                            "pric_cnd": "8",
+                            "stex_tp": "3",
+                        },
+                    )
+                except KiwoomReservationUnavailable:
+                    logger.warning("[S1] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10029")
+                    break
                 data = resp.json()
                 if not validate_kiwoom_response(data, "ka10029", logger):
                     break
@@ -268,12 +273,12 @@ async def fetch_gap_snapshots(token: str) -> dict[str, dict]:
 
 
 async def _get_strength_value(token: str, stk_cd: str, rdb=None) -> tuple[float, str]:
-    """Prefer WS strength cache; use REST ka10046 only when the cache is empty."""
+    """Prefer fresh WS strength; use REST when it is missing or cancelled."""
     if rdb:
         try:
-            strength = await get_avg_cntr_strength(rdb, stk_cd, count=5)
-            if strength > 100.0:
-                return strength, "redis"
+            result = await get_strength_with_status(rdb, stk_cd, count=5)
+            if result.get("data") is not None:
+                return float(result["data"]), str(result.get("source") or "redis")
         except Exception as exc:
             logger.debug("[S1] ws:strength read failed [%s]: %s", stk_cd, exc)
 
@@ -296,19 +301,23 @@ async def fetch_gap_rank(token: str, market: str) -> dict:
             if next_key:
                 headers.update({"cont-yn": "Y", "next-key": next_key})
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers=headers,
-                json={
-                    "mrkt_tp": market,
-                    "sort_tp": "1",
-                    "trde_qty_cnd": "0",
-                    "stk_cnd": "16",
-                    "crd_cnd": "0",
-                    "pric_cnd": "0",
-                    "stex_tp": "3",
-                },
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                    headers=headers,
+                    json={
+                        "mrkt_tp": market,
+                        "sort_tp": "1",
+                        "trde_qty_cnd": "0",
+                        "stk_cnd": "16",
+                        "crd_cnd": "0",
+                        "pric_cnd": "0",
+                        "stex_tp": "3",
+                    },
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S1] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10029")
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10029", logger):
                 break
@@ -362,18 +371,22 @@ async def fetch_credit_filter(token: str, market: str = "000", rdb=None) -> set:
             if next_key:
                 headers.update({"cont-yn": "Y", "next-key": next_key})
 
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
-                headers=headers,
-                json={
-                    "mrkt_tp": market,
-                    "trde_qty_tp": "0",
-                    "stk_cnd": "1",
-                    "updown_incls": "1",
-                    "crd_cnd": "0",
-                    "stex_tp": "3",
-                },
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/rkinfo",
+                    headers=headers,
+                    json={
+                        "mrkt_tp": market,
+                        "trde_qty_tp": "0",
+                        "stk_cnd": "1",
+                        "updown_incls": "1",
+                        "crd_cnd": "0",
+                        "stex_tp": "3",
+                    },
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S1] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10033")
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka10033", logger):
                 break
@@ -424,6 +437,9 @@ async def _fetch_minute_chart_s1(token: str, stk_cd: str, scope: int = 1) -> dic
             if not validate_kiwoom_response(data, "ka10080", logger):
                 return {}
             return data
+    except KiwoomReservationUnavailable:
+        logger.warning("[S1] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10080")
+        return {}
     except Exception as exc:
         logger.debug("[S1] ka10080 분봉 조회 실패 [%s]: %s", stk_cd, exc)
         return {}
@@ -447,6 +463,9 @@ async def _fetch_hoga_raw_s1(token: str, stk_cd: str) -> dict:
             if not validate_kiwoom_response(data, "ka10004", logger):
                 return {}
             return data
+    except KiwoomReservationUnavailable:
+        logger.warning("[S1] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10004")
+        return {}
     except Exception as exc:
         logger.debug("[S1] ka10004 호가 조회 실패 [%s]: %s", stk_cd, exc)
         return {}
@@ -523,7 +542,7 @@ async def scan_gap_opening(token: str, candidates: list, rdb=None) -> list[dict]
 
         # ── 갭 구간 분류 ──
         # 8~12%: 강한 갭, 실행 비용 증가로 감점
-        # 12~15%: 과열 갭, shadow 추적 전용 (자동 진입 금지)
+        # 12~15%: 과열 갭, legacy SHADOW 원인을 보존한 뒤 LIVE로 승격
         gap_overheat = gap_pct >= 12.0
         gap_strong   = 8.0 <= gap_pct < 12.0
 

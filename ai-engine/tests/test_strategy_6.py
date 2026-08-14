@@ -84,20 +84,16 @@ class TestCalcVolumeRatio:
 
 class TestBidRatioLookup:
     @pytest.mark.asyncio
-    async def test_redis_hoga_is_preferred(self):
+    async def test_common_hoga_path_is_used(self):
         from strategy_6_theme import _get_bid_ratio
 
         rdb = MagicMock()
-        rdb.hgetall = AsyncMock(return_value={
-            "total_buy_bid_req": "300",
-            "total_sel_bid_req": "100",
-        })
 
-        with patch("strategy_6_theme.fetch_hoga", new_callable=AsyncMock) as mock_fetch:
+        with patch("strategy_6_theme.fetch_hoga", new=AsyncMock(return_value=3.0)) as mock_fetch:
             ratio = await _get_bid_ratio("token", rdb, "005930")
 
         assert ratio == 3.0
-        mock_fetch.assert_not_awaited()
+        mock_fetch.assert_awaited_once_with("token", "005930", rdb=rdb)
 
     @pytest.mark.asyncio
     async def test_rest_hoga_fallback_when_ws_hoga_missing(self):
@@ -114,15 +110,29 @@ class TestBidRatioLookup:
 
 class TestAccVolumeLookup:
     @pytest.mark.asyncio
-    async def test_redis_tick_bytes_are_decoded(self):
+    async def test_fresh_tick_volume_is_used(self):
         from strategy_6_theme import _get_acc_vol
 
         rdb = MagicMock()
-        rdb.hgetall = AsyncMock(return_value={
-            b"acc_trde_qty": b"1,666,969",
-        })
+        fresh = {
+            "data": {"acc_trde_qty": "1,666,969"},
+            "source": "redis",
+            "status": {"state": "fresh"},
+        }
+        with patch("strategy_6_theme.get_tick_with_status", new=AsyncMock(return_value=fresh)):
+            assert await _get_acc_vol(rdb, "005930") == 1_666_969.0
 
-        assert await _get_acc_vol(rdb, "005930") == 1_666_969.0
+    @pytest.mark.asyncio
+    async def test_stale_strong_tick_volume_is_suppressed(self):
+        from strategy_6_theme import _get_acc_vol
+
+        stale = {
+            "data": {},
+            "source": "stale",
+            "status": {"state": "cancel"},
+        }
+        with patch("strategy_6_theme.get_tick_with_status", new=AsyncMock(return_value=stale)):
+            assert await _get_acc_vol(MagicMock(), "005930") == 0.0
 
     def test_daily_candle_fallback_volume(self):
         from strategy_6_theme import _fallback_acc_vol_from_candles
@@ -202,6 +212,8 @@ async def test_scan_leader_pullback_mode_passes(monkeypatch):
         {"cur_prc": "79000", "high_pric": "81000", "low_pric": "78000", "trde_qty": "1000000"},
         {"cur_prc": "78000", "high_pric": "80000", "low_pric": "77000", "trde_qty": "1000000"},
     ]))
+    monkeypatch.setattr("strategy_6_theme.fetch_investor_flow_summary_cached", AsyncMock(return_value=({}, {})))
+    monkeypatch.setattr("strategy_6_theme.fetch_program_time_trend", AsyncMock(return_value=({}, {})))
     monkeypatch.setattr("strategy_6_theme.calc_tp_sl", MagicMock(return_value=fake_tp_sl))
     monkeypatch.setattr("strategy_6_theme.fetch_stk_nm", AsyncMock(return_value="삼성전자"))
 
@@ -249,6 +261,8 @@ async def test_scan_no_pool_prefilter(monkeypatch):
     monkeypatch.setattr("strategy_6_theme._get_bid_ratio", AsyncMock(return_value=None))
     monkeypatch.setattr("strategy_6_theme._get_acc_vol", AsyncMock(return_value=0.0))
     monkeypatch.setattr("strategy_6_theme.fetch_daily_candles", AsyncMock(return_value=[]))
+    monkeypatch.setattr("strategy_6_theme.fetch_investor_flow_summary_cached", AsyncMock(return_value=({}, {})))
+    monkeypatch.setattr("strategy_6_theme.fetch_program_time_trend", AsyncMock(return_value=({}, {})))
     monkeypatch.setattr("strategy_6_theme.calc_tp_sl", MagicMock(return_value=fake_tp_sl))
     monkeypatch.setattr("strategy_6_theme.fetch_stk_nm", AsyncMock(return_value="삼성전자"))
 

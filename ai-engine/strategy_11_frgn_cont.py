@@ -22,24 +22,30 @@ import logging
 import os
 import asyncio
 import httpx
+from collections import Counter, defaultdict
 
 from http_utils import (
     fetch_cntr_strength_cached,
     fetch_hoga,
+    fetch_intraday_investor_flow_cached,
     fetch_investor_flow_summary_cached,
     fetch_stk_nm,
     kiwoom_client,
+    KiwoomReservationUnavailable,
     validate_kiwoom_response,
 )
 from ma_utils import fetch_daily_candles, _safe_price
 from indicator_bollinger import calc_bollinger
+from redis_reader import get_tick_with_status
 from tp_sl_engine import calc_tp_sl
+from utils import normalize_stock_code
 
 # NOTE: Python 메인 전술 실행자 (strategy_runner.py 에서 호출).
 # Java api-orchestrator 는 토큰 관리·후보 풀 적재(candidates:s{N}:{market})만 담당.
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
+S11_SCAN_LIMIT_PER_MARKET = max(1, int(os.getenv("S11_SCAN_LIMIT_PER_MARKET", "60")))
 
 
 def _parse_qty(val: str) -> int:
@@ -89,6 +95,8 @@ async def fetch_frgn_cont_buy(token: str, market: str = "000", max_pages: int = 
                 if not items:
                     break
 
+                for it in items:
+                    it["stk_cd"] = normalize_stock_code(it.get("stk_cd"))
                 all_items.extend(items)
 
                 # 헤더에서 다음 페이지 정보 추출
@@ -101,6 +109,9 @@ async def fetch_frgn_cont_buy(token: str, market: str = "000", max_pages: int = 
                 # API 호출 부하 조절
                 await asyncio.sleep(0.2)
 
+            except KiwoomReservationUnavailable:
+                logger.warning("[S11] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10035")
+                break
             except Exception as e:
                 logger.error(f"[S11] ka10035 호출 오류: {e}")
                 break
@@ -124,6 +135,7 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
     # 2. 원천 데이터 확보 (연속조회 적용)
     raw_items = await fetch_frgn_cont_buy(token, market, max_pages=2)
     if not raw_items:
+        logger.info("[S11][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
         return []
 
     # 풀이 있으면 풀 종목만 필터
@@ -134,10 +146,37 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
     else:
         logger.debug("[S11] 풀 없음 – ka10035 전수 조회")
 
+    if not raw_items:
+        logger.info("[S11][scan_summary] candidate_count=0 pass=0 rejects={'no_candidates': 1}")
+        return []
+
+    raw_candidate_count = len(raw_items)
+    if raw_candidate_count > S11_SCAN_LIMIT_PER_MARKET:
+        raw_items = raw_items[:S11_SCAN_LIMIT_PER_MARKET]
+        logger.info(
+            "[S11] ranked candidate evaluation bounded market=%s total=%d limit=%d",
+            market,
+            raw_candidate_count,
+            S11_SCAN_LIMIT_PER_MARKET,
+        )
+
     results = []
+    reject_counts = Counter()
+    reject_samples = defaultdict(list)
+    evaluated_count = 0
+
+    def _reject(reason: str, stk_cd: str, **fields) -> None:
+        reject_counts[reason] += 1
+        if len(reject_samples[reason]) < 5:
+            sample = {"stk_cd": stk_cd}
+            sample.update(fields)
+            reject_samples[reason].append(sample)
+
     for item in raw_items:
         stk_cd = item.get("stk_cd")
-        if not stk_cd: continue
+        if not stk_cd:
+            _reject("missing_stk_cd", "unknown")
+            continue
 
         # 2. 순매수 연속성 검증 (D-1, D-2, D-3)
         dm1 = _parse_qty(item.get("dm1", "0"))
@@ -145,18 +184,25 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         dm3 = _parse_qty(item.get("dm3", "0"))
         tot = _parse_qty(item.get("tot", "0"))
 
+        evaluated_count += 1
+
         # 필터: 3일 연속 매수세 확인
         if dm1 <= 0 or dm2 <= 0 or dm3 <= 0 or tot <= 0:
+            _reject("not_cont_buy", stk_cd, dm1=dm1, dm2=dm2, dm3=dm3, tot=tot)
             continue
 
         # 3. 실시간 시장 상황 결합 (Redis)
         flu_rt = 0.0
         cntr_str = 100.0
         if rdb:
-            tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
-            if tick:
-                flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", ""))
-                cntr_str = float(str(tick.get("cntr_str", "100")).replace(",", ""))
+            try:
+                tick_result = await get_tick_with_status(rdb, stk_cd)
+                tick = tick_result.get("data") or {}
+                if tick:
+                    flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", "").replace(",", ""))
+                    cntr_str = float(str(tick.get("cntr_str", "100")).replace("+", "").replace(",", ""))
+            except Exception as e:
+                logger.debug("[S11] realtime tick read failed %s: %s", stk_cd, e)
 
         # WS 미수신 시에는 일봉 시가 대비 등락률과 REST 체결강도로 보강한다.
         if flu_rt == 0.0 or cntr_str <= 100.0:
@@ -181,9 +227,11 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         # 4. 진입 조건 필터링
         # - 당일 마이너스(-)이거나 10% 이상 과열된 종목 제외
         if not (0.0 < flu_rt <= 10.0):
+            _reject("flu_rt_out_of_range", stk_cd, flu_rt=round(flu_rt, 2))
             continue
         # - 체결강도가 100% 미만(매도우위)인 종목 제외
         if cntr_str < 100.0:
+            _reject("cntr_str_below_100", stk_cd, cntr_str=round(cntr_str, 1))
             continue
 
         investor_flow = {}
@@ -207,7 +255,10 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         score = (tot / 1_000_000) * 5 + (dm1 / 1_000_000) * 3 + (flu_rt * 0.5)
         score += (6 if smart_money > 0 else -5 if smart_money < 0 else 0)
         score += (4 if bid_ratio is not None and bid_ratio >= 1.2 else -3 if bid_ratio is not None and bid_ratio < 0.8 else 0)
-        cur_prc = abs(float(str(item.get("cur_prc", "0")).replace("+", "").replace(",", "")))
+        cur_prc = _safe_price(item.get("cur_prc"))
+        if cur_prc <= 0:
+            _reject("missing_cur_prc", stk_cd)
+            continue
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
 
@@ -230,6 +281,10 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
         tp_sl = calc_tp_sl("S11_FRGN_CONT", cur_prc, highs_d, lows_d, closes_d,
                            stk_cd=stk_cd, ma20=ma20, bb_upper=bb_upper)
 
+        logger.info(
+            "[S11][pass] stk=%s score=%.2f flu_rt=%.2f cntr=%.1f tot=%s dm1=%s",
+            stk_cd, score, flu_rt, cntr_str, tot, dm1,
+        )
         results.append({
             "stk_cd": stk_cd,
             "stk_nm": stk_nm,
@@ -252,5 +307,37 @@ async def scan_frgn_cont_swing(token: str, market: str = "000", rdb=None) -> lis
             **tp_sl.to_signal_fields(),
         })
 
-    # 점수 높은 순으로 상위 5개 반환
-    return sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    # Java transports bounded ka10064 data for final candidates; queue_worker
+    # applies the canonical live score/gate adjustment in Python.
+    top_results = sorted(results, key=lambda x: x["score"], reverse=True)[:5]
+    logger.info(
+        "[S11][scan_summary] candidate_count=%d evaluated=%d pass=%d returned=%d rejects=%s samples=%s",
+        len(raw_items),
+        evaluated_count,
+        len(results),
+        len(top_results),
+        dict(reject_counts),
+        {key: value for key, value in reject_samples.items()},
+    )
+    for signal in top_results:
+        try:
+            await asyncio.sleep(0.25)
+            flow, flow_meta = await fetch_intraday_investor_flow_cached(
+                token,
+                signal["stk_cd"],
+                rdb=rdb,
+                market=market,
+            )
+        except Exception as e:
+            flow, flow_meta = {}, {"source": "error", "api_id": "ka10064", "error": str(e)}
+        flow_shadow = {
+            **flow,
+            "source": flow_meta.get("source"),
+            "error": flow_meta.get("error"),
+        }
+        signal["intraday_investor_flow"] = flow_shadow
+        signal["extra"] = {
+            **(signal.get("extra") or {}),
+            "intraday_investor_flow": flow_shadow,
+        }
+    return top_results

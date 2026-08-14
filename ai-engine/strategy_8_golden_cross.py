@@ -30,15 +30,17 @@ from indicator_atr import calc_atr
 from http_utils import (
     apply_volume_profile_rr,
     fetch_cntr_strength_cached,
-    fetch_same_time_volume_ratio,
+    fetch_same_time_volume_ratio_cached,
     fetch_stk_nm,
     fetch_volume_profile,
+    resolve_effective_volume_ratio,
 )
 from tp_sl_engine import calc_tp_sl
+from redis_reader import get_tick_with_status
 from utils import safe_float as clean_num
 
 logger = logging.getLogger(__name__)
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 _POOL_READ_LIMIT = int(os.getenv("S8_POOL_READ_LIMIT", "180"))
 _SCAN_LIMIT = int(os.getenv("S8_SCAN_LIMIT", "60"))
 
@@ -89,15 +91,12 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
         cur_prc = closes[0]
         vol_today = vols[0]
         vol_ma20 = sum(vols[1:21]) / 20 # 전일까지의 20일 평균 거래량
+        daily_volume_ratio = vol_today / vol_ma20 if vol_ma20 > 0 else 0.0
 
         # 조건 2: MA60 지지권 확인 ($Price \ge MA_{60} \times 0.95$)
         ma20 = sum(closes[:20]) / 20
         ma60 = sum(closes[:60]) / 60
         if cur_prc < ma60 * 0.95:
-            continue
-
-        # 조건 3: 거래량 확인 (당일 거래량 ≥ MA20 거래량 × 1.3)
-        if vol_ma20 > 0 and vol_today < vol_ma20 * 1.3:
             continue
 
         # 4. 보조지표 계산 (RSI, MACD)
@@ -118,7 +117,8 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
         flu_rt = 0.0
         cntr_str = 100.0
         if rdb:
-            tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+            tick_result = await get_tick_with_status(rdb, stk_cd)
+            tick = tick_result["data"]
             if tick:
                 flu_rt = clean_num(tick.get("flu_rt", 0))
                 cntr_str = clean_num(tick.get("cntr_str", 100))
@@ -131,26 +131,34 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
 
         same_time_volume_ratio = 0.0
         same_time_volume_meta = {}
+        volume_summary = {}
         try:
             await asyncio.sleep(_API_INTERVAL)
-            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio(token, stk_cd)
+            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio_cached(token, stk_cd, rdb=rdb)
             same_time_volume_ratio = float(volume_summary.get("same_time_volume_ratio") or 0.0)
         except Exception as e:
             same_time_volume_meta = {"api_id": "ka10055", "error": str(e)}
+        vol_ratio, volume_ratio_source = resolve_effective_volume_ratio(
+            daily_volume_ratio,
+            volume_summary,
+            same_time_volume_meta,
+        )
+
+        # 조건 3: 동시간대 거래량 우선, 불완전/실패 시 기존 당일 누적 비율 사용
+        if vol_ma20 > 0 and vol_ratio < 1.3:
+            continue
 
         # 6. 점수 산정 (보너스 포함)
         score = (
                 (20 if is_today_cross else 10)           # 당일 크로스 가점
                 + (12 if 45 <= rsi_now <= 65 else 0)    # RSI 황금구간 보너스
                 + (10 if is_macd_accel else 0)          # MACD 가속 보너스
-                + (vol_today / vol_ma20 * 5)            # 거래량 가중치
+                + (vol_ratio * 5)                       # 유효 거래량 비율 가중치
                 + (cntr_str * 0.05)                     # 체결강도 가중치
                 + (5 if same_time_volume_ratio >= 1.5 else -3 if 0 < same_time_volume_ratio < 0.8 else 0)
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
-        vol_ratio = round(vol_today / vol_ma20, 2) if vol_ma20 > 0 else 0.0
-
         # 볼린저 상단 계산 (TP 후보)
         bb_upper = None
         if len(closes) >= 20:
@@ -159,10 +167,12 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
                 bb_upper = bands[0][0]
 
         # ATR 계산 (SL 폴백용 — MA20이 정상이면 불필요하지만 이격 클 때 중요)
+        # calc_atr()은 len(closes) >= period+1(=15)일 때만 index 0이 실제
+        # 계산값이다. ATR=0.0(변동성 완전 정체)도 None으로 뭉개지 않는다.
         atr_val = None
-        if len(highs) >= 14 and len(lows) >= 14 and len(closes) >= 14:
+        if len(highs) >= 15 and len(lows) >= 15 and len(closes) >= 15:
             atr_vals = calc_atr(highs, lows, closes, 14)
-            atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+            atr_val  = atr_vals[0]
 
         # 동적 TP/SL 계산
         ma5 = sum(closes[:5]) / 5 if len(closes) >= 5 else None
@@ -184,7 +194,9 @@ async def scan_golden_cross(token: str, rdb=None) -> list:
             "gap_pct": round(gap_pct, 2),
             "flu_rt": flu_rt,
             "cntr_strength": round(cntr_str, 1),
-            "vol_ratio": vol_ratio,
+            "vol_ratio": round(vol_ratio, 2),
+            "daily_volume_ratio": round(daily_volume_ratio, 2),
+            "volume_ratio_source": volume_ratio_source,
             "same_time_volume_ratio": round(same_time_volume_ratio, 2),
             "same_time_volume_meta": same_time_volume_meta,
             "is_today_cross": is_today_cross,

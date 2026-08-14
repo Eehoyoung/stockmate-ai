@@ -51,10 +51,11 @@ from indicator_atr import calc_atr
 from indicator_stochastic import calc_stochastic
 from indicator_volume import calc_vwap, get_vwap_minute
 from http_utils import fetch_cntr_strength_cached, fetch_stk_nm
+from redis_reader import get_strength_with_status, get_tick_with_status
 from tp_sl_engine import calc_tp_sl
 
 logger = logging.getLogger(__name__)
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 _POOL_READ_LIMIT = int(os.getenv("S15_POOL_READ_LIMIT", "180"))
 _SCAN_LIMIT = int(os.getenv("S15_SCAN_LIMIT", "60"))
 
@@ -96,7 +97,10 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         await asyncio.sleep(_API_INTERVAL)
 
         candles = await fetch_daily_candles(token, stk_cd)
-        if len(candles) < 35:   # MACD slow(26) + signal(9) 최소 요구량
+        # MACD slow(26)+signal(9)+1 = 36 (indicator_macd.py의 min_required와
+        # 동일 기준) — 이보다 적으면 macd/signal/histogram의 index 0이 아직
+        # calc_ema()의 데이터부족 잔차에 오염될 수 있다.
+        if len(candles) < 36:
             _reject("short_candles", stk_cd, candles=len(candles))
             continue
 
@@ -131,13 +135,13 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         cntr_str: float | None = None
         if rdb:
             try:
-                tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+                tick_result = await get_tick_with_status(rdb, stk_cd)
+                tick = tick_result.get("data") or {}
                 if tick:
                     flu_rt = float(str(tick.get("flu_rt", "0")).replace("+", "").replace(",", ""))
-                strength_data = await rdb.lrange(f"ws:strength:{stk_cd}", 0, 4)
-                if strength_data:
-                    cntr_str = sum(float(s) for s in strength_data) / len(strength_data)
-                elif tick:
+                strength_result = await get_strength_with_status(rdb, stk_cd, count=5)
+                cntr_str = strength_result.get("data")
+                if cntr_str is None and tick:
                     raw = tick.get("cntr_str", "")
                     if raw:
                         cntr_str = float(str(raw).replace("+", "").replace(",", ""))
@@ -160,9 +164,10 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
             continue
 
         # ── RSI 계산 ─────────────────────────────────────────────
+        # closes >= 36으로 이미 보장되어 index 0/1은 항상 실제 계산값이다.
         rsi_vals = calc_rsi(closes, 14)
-        rsi_now  = rsi_vals[0] if rsi_vals and rsi_vals[0] != 0.0 else None
-        rsi_prev = rsi_vals[1] if len(rsi_vals) > 1 and rsi_vals[1] != 0.0 else None
+        rsi_now  = rsi_vals[0]
+        rsi_prev = rsi_vals[1] if len(rsi_vals) > 1 else None
 
         # ── 필수 3: RSI 미과열 ────────────────────────────────────
         if rsi_now and rsi_now > 72:
@@ -179,27 +184,27 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 선택 조건 A: MACD 모멘텀
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # closes >= 36(slow+signal_span+1)으로 이미 보장되어 macd/signal/
+        # histogram의 index 0/1/2는 항상 실제 계산값이다(indicator_macd.py의
+        # _build_macd_result와 동일 근거).
         macd_line, signal_line, histogram = calc_macd(closes, 12, 26, 9)
 
-        macd_now   = macd_line[0] if macd_line  and macd_line[0]  != 0.0 else None
-        sig_now    = signal_line[0] if signal_line and signal_line[0] != 0.0 else None
-        hist_now   = histogram[0] if histogram  and histogram[0]  != 0.0 else None
-        hist_prev  = histogram[1] if len(histogram) > 1 and histogram[1] != 0.0 else None
-        hist_prev2 = histogram[2] if len(histogram) > 2 and histogram[2] != 0.0 else None
+        macd_now   = macd_line[0]
+        sig_now    = signal_line[0]
+        hist_now   = histogram[0]
+        hist_prev  = histogram[1]
+        hist_prev2 = histogram[2]
 
-        macd_gc_today = (macd_now and sig_now
-                         and macd_now > sig_now
-                         and macd_line[1] != 0.0 and signal_line[1] != 0.0
+        macd_gc_today = (macd_now > sig_now
                          and macd_line[1] <= signal_line[1])
 
-        hist_2bar_expand = (hist_now and hist_prev and hist_prev2
-                            and hist_now > 0
+        hist_2bar_expand = (hist_now > 0
                             and hist_now > hist_prev
                             and hist_prev > hist_prev2)
 
         cond_macd = bool(
             macd_gc_today
-            or (macd_now and sig_now and macd_now > 0 and hist_2bar_expand)
+            or (macd_now > 0 and hist_2bar_expand)
         )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -250,20 +255,22 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 보너스: ATR (동적 손절·위험 측정)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # closes >= 36으로 이미 보장되어(>= period+1=15) index 0은 항상 실값.
         atr_vals = calc_atr(highs, lows, closes, 14)
-        atr_now  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
-        atr_pct  = (atr_now / cur_prc * 100) if atr_now else None
+        atr_now  = atr_vals[0]
+        atr_pct  = (atr_now / cur_prc * 100) if cur_prc > 0 else None
         atr_ok   = atr_pct is not None and 1.0 <= atr_pct <= 3.0
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 보너스: Stochastic 중립 이상 확인
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # len(closes) >= 20 = k_period+slowing+d_period 이므로 slow_k[0]은
+        # 항상 실값(0.0도 유효한 %K)이다.
         stoch_ok = False
         if len(closes) >= 20:
             slow_k, slow_d = calc_stochastic(highs, lows, closes,
                                              k_period=14, d_period=3, slowing=3)
-            if slow_k and slow_k[0] != 0.0:
-                stoch_ok = slow_k[0] > 50.0
+            stoch_ok = slow_k[0] > 50.0
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 보너스: VWAP (분봉 당일 강세 확인) – 실패해도 점수 미반영

@@ -11,6 +11,8 @@ from __future__ import annotations
 상위 이탈원 없음 (ka10053 당일상위이탈원 체크)
 """
 from statistics import mean
+from collections import Counter
+import asyncio
 import os
 import logging
 import httpx
@@ -22,6 +24,20 @@ import httpx
 
 logger = logging.getLogger(__name__)
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
+
+
+def _int_env(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(str(os.getenv(name, default)).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+# strategy_runner.py 가 기존에 쓰던 것과 동일한 env var 이름을 유지 (하위 호환)
+_S4_POOL_READ_LIMIT = _int_env("RUNNER_POOL_READ_LIMIT_S4", 100)
+_S4_SCAN_LIMIT = _int_env("RUNNER_SCAN_LIMIT_S4", 30)
+_S4_SIGNAL_LIMIT = _int_env("RUNNER_SIGNAL_LIMIT_S4", 5)
 
 from http_utils import (
     apply_volume_profile_rr,
@@ -30,6 +46,7 @@ from http_utils import (
     fetch_volume_profile,
     validate_kiwoom_response,
     kiwoom_client,
+    KiwoomReservationUnavailable,
 )
 from indicator_atr import get_atr_minute
 from tp_sl_engine import calc_tp_sl
@@ -62,6 +79,9 @@ async def fetch_minute_chart(token: str, stk_cd: str, scope: int = 5) -> list:
             if not validate_kiwoom_response(data, "ka10080", logger):
                 return []
             return data.get("stk_min_pole_chart_qry", [])
+    except KiwoomReservationUnavailable:
+        logger.warning("[S4] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10080")
+        return []
     except Exception as e:
         logger.error("[S4] ka10080 호출 실패 [%s]: %s", stk_cd, e)
         return []
@@ -89,6 +109,9 @@ async def _fetch_minute_chart_raw_s4(token: str, stk_cd: str, scope: int = 5) ->
             if not validate_kiwoom_response(data, "ka10080", logger):
                 return {}
             return data
+    except KiwoomReservationUnavailable:
+        logger.warning("[S4] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10080")
+        return {}
     except Exception as exc:
         logger.debug("[S4] ka10080 raw 조회 실패 [%s]: %s", stk_cd, exc)
         return {}
@@ -112,6 +135,9 @@ async def _fetch_hoga_raw_s4(token: str, stk_cd: str) -> dict:
             if not validate_kiwoom_response(data, "ka10004", logger):
                 return {}
             return data
+    except KiwoomReservationUnavailable:
+        logger.warning("[S4] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka10004")
+        return {}
     except Exception as exc:
         logger.debug("[S4] ka10004 호가 조회 실패 [%s]: %s", stk_cd, exc)
         return {}
@@ -285,3 +311,54 @@ async def check_big_candle(token: str, stk_cd: str, rdb=None) -> dict | None:
     except Exception as exc:
         logger.debug("[S4] ka10025 volume profile failed [%s]: %s", stk_cd, exc)
     return signal
+
+
+async def scan_big_candle(token: str, rdb=None) -> list:
+    """S4 메인 스캔 함수.
+
+    candidates:s4:001 / candidates:s4:101 풀 종목에 대해 check_big_candle()로
+    개별 조건을 평가한다. strategy_runner.py 의 _scan_s4 가 이 함수를 호출한다.
+    (이전에는 러너가 직접 후보 루프를 돌며 스캔 사이클 단위 관측 로그가 없었다.)
+    """
+    kospi: list = []
+    kosdaq: list = []
+    if rdb:
+        try:
+            pool_stop = _S4_POOL_READ_LIMIT - 1
+            kospi = await rdb.lrange("candidates:s4:001", 0, pool_stop)
+            kosdaq = await rdb.lrange("candidates:s4:101", 0, pool_stop)
+        except Exception as e:
+            logger.warning("[S4] candidates 풀 조회 실패: %s", e)
+
+    candidates = list(dict.fromkeys(kospi + kosdaq))[:_S4_SCAN_LIMIT]
+
+    if not candidates:
+        logger.info("[S4][scan_summary] candidate_count=0 evaluated=0 pass=0 rejects={'no_candidates': 1}")
+        return []
+
+    results: list = []
+    reject_counts: Counter = Counter()
+    evaluated_count = 0
+
+    for stk_cd in candidates:
+        await asyncio.sleep(_API_INTERVAL)
+        evaluated_count += 1
+        result = await check_big_candle(token, stk_cd, rdb=rdb)
+        if result:
+            results.append(result)
+            if len(results) >= _S4_SIGNAL_LIMIT:
+                break
+        else:
+            # check_big_candle()은 다양한 개별 조건(몸통비율/거래량/체결강도/신고가 등)을
+            # 뭉뚱그려 None으로 반환하므로 세분화된 사유는 없음 — 필터 로직 변경 없이
+            # 관측용 카운트만 집계한다.
+            reject_counts["condition_not_met"] += 1
+
+    logger.info(
+        "[S4][scan_summary] candidate_count=%d evaluated=%d pass=%d rejects=%s",
+        len(candidates),
+        evaluated_count,
+        len(results),
+        dict(reject_counts),
+    )
+    return results

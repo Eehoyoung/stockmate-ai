@@ -26,11 +26,18 @@ import os
 from ma_utils import fetch_daily_candles, detect_pullback_setup, _safe_price, _safe_vol
 from indicator_rsi import calc_rsi
 from indicator_stochastic import calc_stochastic
-from http_utils import fetch_cntr_strength_cached, fetch_hoga, fetch_same_time_volume_ratio, fetch_stk_nm
+from http_utils import (
+    fetch_cntr_strength_cached,
+    fetch_hoga,
+    fetch_same_time_volume_ratio_cached,
+    fetch_stk_nm,
+    resolve_effective_volume_ratio,
+)
 from tp_sl_engine import calc_tp_sl
+from redis_reader import get_tick_with_status
 
 logger = logging.getLogger(__name__)
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 _POOL_READ_LIMIT = int(os.getenv("S9_POOL_READ_LIMIT", "180"))
 _SCAN_LIMIT = int(os.getenv("S9_SCAN_LIMIT", "60"))
 
@@ -88,10 +95,10 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         if t_close <= t_open: # 음봉 제외
             continue
 
-        # 조건 4: 거래량 확인 (전일 대비 1.1배 이상, 1.3배 미만이면 약한 거래량으로 감점)
-        if vols[1] > 0 and vols[0] < vols[1] * 1.1:
-            continue
-        vol_weak = (vols[1] > 0 and vols[0] < vols[1] * 1.3)  # 1.1~1.3배: 반등 확신 부족
+        # ka10055 실패 시 유지할 기존 일봉 기반 거래량 비율
+        daily_gate_volume_ratio = vols[0] / vols[1] if vols[1] > 0 else 0.0
+        vol_ma20 = sum(vols[1:21]) / 20 if len(vols) >= 21 else 0.0
+        daily_volume_ratio = vols[0] / vol_ma20 if vol_ma20 > 0 else 0.0
 
         # 4. 보조지표 계산 및 하드 게이트 적용
         # 조건 6: RSI(14) ≤ 68 (과매수 상태의 눌림은 배제)
@@ -110,7 +117,8 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         flu_rt = 0.0
         cntr_str = 100.0
         if rdb:
-            tick = await rdb.hgetall(f"ws:tick:{stk_cd}")
+            tick_result = await get_tick_with_status(rdb, stk_cd)
+            tick = tick_result["data"]
             if tick:
                 flu_rt = float(str(tick.get("flu_rt", 0)).replace("+", ""))
                 cntr_str = float(str(tick.get("cntr_str", 100)).replace(",", ""))
@@ -160,12 +168,28 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
 
         same_time_volume_ratio = 0.0
         same_time_volume_meta = {}
+        volume_summary = {}
         try:
             await asyncio.sleep(_API_INTERVAL)
-            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio(token, stk_cd)
+            volume_summary, same_time_volume_meta = await fetch_same_time_volume_ratio_cached(token, stk_cd, rdb=rdb)
             same_time_volume_ratio = float(volume_summary.get("same_time_volume_ratio") or 0.0)
         except Exception as e:
             same_time_volume_meta = {"api_id": "ka10055", "error": str(e)}
+        gate_volume_ratio, volume_ratio_source = resolve_effective_volume_ratio(
+            daily_gate_volume_ratio,
+            volume_summary,
+            same_time_volume_meta,
+        )
+        vol_ratio, _ = resolve_effective_volume_ratio(
+            daily_volume_ratio,
+            volume_summary,
+            same_time_volume_meta,
+        )
+
+        # 조건 4: 동시간대 거래량 우선, 불완전/실패 시 기존 전일 대비 비율 사용
+        if vols[1] > 0 and gate_volume_ratio < 1.1:
+            continue
+        vol_weak = vols[1] > 0 and gate_volume_ratio < 1.3
 
         # 6. 최종 점수 산정
         # pct_ma5 구간별 처리:
@@ -189,9 +213,6 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
         )
 
         stk_nm = await fetch_stk_nm(rdb, token, stk_cd)
-        vol_ma20 = sum(vols[1:21]) / 20 if len(vols) >= 21 else 0
-        vol_ratio = round(vols[0] / vol_ma20, 2) if vol_ma20 > 0 else 0.0
-
         # 동적 TP/SL 계산 (highs/lows 이미 추출됨)
         ma5  = sum(closes[:5])  / 5  if len(closes) >= 5  else None
         ma20 = sum(closes[:20]) / 20 if len(closes) >= 20 else None
@@ -211,7 +232,9 @@ async def scan_pullback_swing(token: str, rdb=None) -> list:
             "rsi": round(rsi_now, 1),
             "stoch_gc": stoch_gc,
             "cntr_strength": round(cntr_str, 1),
-            "vol_ratio": vol_ratio,
+            "vol_ratio": round(vol_ratio, 2),
+            "daily_volume_ratio": round(daily_volume_ratio, 2),
+            "volume_ratio_source": volume_ratio_source,
             "same_time_volume_ratio": round(same_time_volume_ratio, 2),
             "same_time_volume_meta": same_time_volume_meta,
             "bid_ratio": round(bid_ratio, 3) if bid_ratio is not None else None,

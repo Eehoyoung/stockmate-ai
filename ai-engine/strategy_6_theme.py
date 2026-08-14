@@ -22,30 +22,20 @@ from http_utils import (
     fetch_program_time_trend,
     fetch_stk_nm,
     kiwoom_client,
+    KiwoomReservationUnavailable,
     validate_kiwoom_response,
 )
 from indicator_atr import calc_atr
 from ma_utils import _safe_price, fetch_daily_candles
+from redis_reader import get_tick_with_status
 from tp_sl_engine import calc_tp_sl
 from utils import safe_float as clean_num
 
 logger = logging.getLogger(__name__)
 
-_API_INTERVAL   = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL   = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
-
-def _redis_text(value) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="ignore")
-    return str(value)
-
-
-def _redis_hash_text(data: dict | None) -> dict[str, str]:
-    decoded: dict[str, str] = {}
-    for key, value in (data or {}).items():
-        decoded[_redis_text(key)] = _redis_text(value)
-    return decoded
 
 # ── 모드 상수 ──────────────────────────────────────────────────────────────
 S6_MODE_LEADER    = "LEADER_PULLBACK"
@@ -97,16 +87,6 @@ def _calc_volume_ratio(acc_vol: float, candles: list[dict]) -> float:
 async def _get_bid_ratio(token: str, rdb, stk_cd: str) -> float | None:
     """Redis ws:hoga에서 총매수잔량/총매도잔량. 데이터 없으면 None."""
     try:
-        if rdb:
-            hoga = _redis_hash_text(await rdb.hgetall(f"ws:hoga:{stk_cd}"))
-            if hoga:
-                buy  = clean_num(hoga.get("total_buy_bid_req", 0))
-                sell = clean_num(hoga.get("total_sel_bid_req", 0))
-                if sell > 0:
-                    return round(buy / sell, 2)
-    except Exception:
-        pass
-    try:
         ratio = await fetch_hoga(token, stk_cd, rdb=rdb)
         return round(float(ratio), 2) if ratio is not None else None
     except Exception:
@@ -138,7 +118,8 @@ async def _get_acc_vol(rdb, stk_cd: str) -> float:
     if not rdb:
         return 0.0
     try:
-        tick = _redis_hash_text(await rdb.hgetall(f"ws:tick:{stk_cd}"))
+        tick_result = await get_tick_with_status(rdb, stk_cd)
+        tick = tick_result.get("data") or {}
         if tick:
             return clean_num(tick.get("acc_trde_qty", 0))
     except Exception:
@@ -174,11 +155,15 @@ async def fetch_theme_groups(token: str) -> list:
             }
             if next_key:
                 headers.update({"cont-yn": "Y", "next-key": next_key})
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/thme",
-                headers=headers,
-                json={"qry_tp": "1", "date_tp": "1", "flu_pl_amt_tp": "3", "stex_tp": "3"},
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/thme",
+                    headers=headers,
+                    json={"qry_tp": "1", "date_tp": "1", "flu_pl_amt_tp": "3", "stex_tp": "3"},
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S6] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka90001")
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka90001", logger):
                 break
@@ -202,11 +187,15 @@ async def fetch_theme_stocks(token: str, thema_grp_cd: str) -> list:
             }
             if next_key:
                 headers.update({"cont-yn": "Y", "next-key": next_key})
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/thme",
-                headers=headers,
-                json={"date_tp": "1", "thema_grp_cd": thema_grp_cd, "stex_tp": "3"},
-            )
+            try:
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/thme",
+                    headers=headers,
+                    json={"date_tp": "1", "thema_grp_cd": thema_grp_cd, "stex_tp": "3"},
+                )
+            except KiwoomReservationUnavailable:
+                logger.warning("[S6] Kiwoom rate limiter unavailable — 부분 결과로 조기 종료 (api=%s)", "ka90002")
+                break
             data = resp.json()
             if not validate_kiwoom_response(data, "ka90002", logger):
                 break
@@ -318,9 +307,12 @@ async def scan_theme_laggard(token: str, rdb=None) -> list:
                 lows_d   = [_safe_price(c.get("low_pric"))  for c in candles]
                 if len(closes_d) >= 5:
                     ma5 = sum(closes_d[:5]) / 5
-                if len(highs_d) >= 14 and len(lows_d) >= 14 and len(closes_d) >= 14:
+                # calc_atr()은 len(closes) >= period+1(=15)일 때만 index 0이
+                # 실제 계산값이다(14개면 전량 0.0 센티널). 가드를 15로 맞추면
+                # ATR=0.0(변동성 완전 정체)도 None으로 뭉개지 않는다.
+                if len(highs_d) >= 15 and len(lows_d) >= 15 and len(closes_d) >= 15:
                     atr_vals = calc_atr(highs_d, lows_d, closes_d, 14)
-                    atr_val  = atr_vals[0] if atr_vals and atr_vals[0] != 0.0 else None
+                    atr_val  = atr_vals[0]
             except Exception as e:
                 logger.debug("[S6] 일봉 조회 실패 %s: %s", stk_cd, e)
 

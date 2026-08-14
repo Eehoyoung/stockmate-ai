@@ -56,6 +56,7 @@ S16_CANDIDATE_LIMIT = int(os.getenv("S16_CANDIDATE_LIMIT", "40"))
 S16_SIGNAL_LIMIT = int(os.getenv("S16_SIGNAL_LIMIT", "5"))
 S16_RECHECK_SEC = int(os.getenv("S16_RECHECK_SEC", "1800"))
 S16_TRIGGER_DEDUP_TTL_SEC = int(os.getenv("S16_TRIGGER_DEDUP_TTL_SEC", "21600"))
+S16_MIN_OBSERVE_DAYS = int(os.getenv("S16_MIN_OBSERVE_DAYS", "2"))
 
 
 @dataclass
@@ -96,6 +97,22 @@ def _pct(new: float, old: float) -> float:
 def _avg(values: Iterable[float]) -> float:
     vals = [v for v in values if v > 0]
     return sum(vals) / len(vals) if vals else 0.0
+
+
+def _normalize_market_cap_eok(value) -> float:
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    market_cap = _sf(value, 0.0)
+    return market_cap / 100_000_000 if market_cap > 10_000_000 else market_cap
+
+
+def _observed_calendar_days(first_seen_at: int, now: int) -> int:
+    try:
+        first = datetime.fromtimestamp(max(1, int(first_seen_at)), KST).date()
+        current = datetime.fromtimestamp(max(1, int(now)), KST).date()
+        return max(1, (current - first).days + 1)
+    except Exception:
+        return 1
 
 
 def _recent_high(candles: list[dict], days: int) -> float:
@@ -154,6 +171,7 @@ def calculate_s16_metrics(
     bid_ratio: float | None = None,
     supply_score_hint: float = 0.0,
 ) -> S16Metrics:
+    market_cap_eok = _normalize_market_cap_eok(market_cap_eok)
     if len(candles) < max(25, min(S16_LOOKBACK_DAYS, 60)):
         return S16Metrics(STATE_REJECTED, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "not enough daily candles")
 
@@ -260,6 +278,7 @@ def calculate_s16_metrics(
 
 
 def build_s16_signal(stk_cd: str, stk_nm: str, metrics: S16Metrics, *, market_cap_eok: float = 0.0) -> dict:
+    market_cap_eok = _normalize_market_cap_eok(market_cap_eok)
     return {
         "stk_cd": normalize_stock_code(stk_cd),
         "stk_nm": stk_nm,
@@ -367,7 +386,7 @@ async def _read_candidate_codes(rdb, market: str) -> list[str]:
 async def _market_cap_eok(rdb, stk_cd: str) -> float:
     try:
         raw = await rdb.get(f"stock:mktcap:{stk_cd}")
-        return _sf(raw, 0.0)
+        return _normalize_market_cap_eok(raw)
     except Exception:
         return 0.0
 
@@ -391,11 +410,12 @@ async def _evaluate_code(token: str, rdb, stk_cd: str) -> dict | None:
 
     now = int(time.time())
     previous = await load_watch_state(rdb, code)
-    observe_days = (previous.observe_days + 1) if previous else 0
+    first_seen_at = previous.first_seen_at if previous else now
+    observe_days = _observed_calendar_days(first_seen_at, now)
     state = S16WatchState(
         stk_cd=code,
         state=metrics.state,
-        first_seen_at=previous.first_seen_at if previous else now,
+        first_seen_at=first_seen_at,
         last_seen_at=now,
         observe_days=observe_days,
         market_cap_eok=market_cap,
@@ -412,6 +432,20 @@ async def _evaluate_code(token: str, rdb, stk_cd: str) -> dict | None:
     )
     await save_watch_state(rdb, state, next_check_at=now + S16_RECHECK_SEC)
     if metrics.state != STATE_TRIGGERED:
+        return None
+    if observe_days < S16_MIN_OBSERVE_DAYS:
+        await record_event(
+            rdb,
+            {
+                "stk_cd": code,
+                "state": metrics.state,
+                "enqueued": False,
+                "score": metrics.total_score,
+                "blocked_reason": "observe_days",
+                "observe_days": observe_days,
+                "min_observe_days": S16_MIN_OBSERVE_DAYS,
+            },
+        )
         return None
 
     stk_nm = await fetch_stk_nm(rdb, token, code)
