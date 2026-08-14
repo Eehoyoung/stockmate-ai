@@ -17,7 +17,7 @@ from health_server import run_health_server, set_redis
 from logger import get_logger, setup_logging
 from ws_client import run_ws_loop
 
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+load_dotenv()  # 서비스별 .env 없이 상위 디렉터리로 탐색 — 저장소 루트 .env로 통합 (2026-08-12)
 
 setup_logging(
     service="websocket-listener",

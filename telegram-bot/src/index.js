@@ -1,6 +1,10 @@
 'use strict';
 
-require('dotenv').config();
+const path = require('node:path');
+
+// 서비스별 .env 없이 저장소 루트 .env 하나로 통합 (2026-08-12).
+// Node dotenv는 python-dotenv와 달리 상위 디렉터리 자동 탐색이 없어 경로를 명시한다.
+require('dotenv').config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 const dns = require('node:dns');
 const originalLookup = dns.lookup.bind(dns);
