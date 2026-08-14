@@ -26,6 +26,8 @@ ws_client.py
 """
 
 import asyncio
+from collections import defaultdict, deque
+import hashlib
 import json
 import logging
 import os
@@ -43,7 +45,7 @@ from health_server import (
     record_subscription_ack,
 )
 import market_session
-from redis_writer import write_tick, write_expected, write_hoga, write_program, write_vi, write_heartbeat
+from redis_writer import write_tick, write_expected, write_hoga, write_program, write_vi, write_heartbeat, get_runtime_flag
 from token_loader import load_token
 
 KST = timezone(timedelta(hours=9))
@@ -54,6 +56,12 @@ _MARKET_CLOSE_HOUR  = (20, 10)  # 20:10 – NXT 포함 종료
 _WEEKDAYS           = {0, 1, 2, 3, 4}  # Mon=0 … Fri=4
 
 BYPASS_MARKET_HOURS = os.getenv("BYPASS_MARKET_HOURS", "false").lower() in ("1", "true", "yes")
+
+
+async def _bypass_market_hours(rdb) -> bool:
+    """대시보드 flags:bypass_market_hours 오버라이드가 있으면 그 값을, 없으면 env 기본값을 사용."""
+    return await get_runtime_flag(rdb, "bypass_market_hours", BYPASS_MARKET_HOURS)
+
 
 def _now_kst() -> datetime:
     """현재 KST 시각 반환 (timezone-aware)"""
@@ -81,6 +89,7 @@ async def _wait_for_market_open():
     60초 단위로 깨어나 재확인 (외부에서 취소 가능).
     """
     while True:
+        set_ws_session(_get_market_session())
         if _is_market_hours():
             return  # 장 운영 중 → 즉시 반환
 
@@ -119,16 +128,21 @@ WS_SILENCE_TIMEOUT_SEC = 90  # 이 초 이상 메시지 없으면 dead connectio
 
 WS_CONTROL_MIN_INTERVAL_MS = int(os.getenv("WS_CONTROL_MIN_INTERVAL_MS", "500"))
 WS_CONTROL_BACKOFF_SEC = float(os.getenv("WS_CONTROL_BACKOFF_SEC", "30"))
-WS_GROUP_MAX_ITEMS = int(os.getenv("WS_GROUP_MAX_ITEMS", "200"))
+WS_GROUP_MAX_ITEMS = max(1, min(100, int(os.getenv("WS_GROUP_MAX_ITEMS", "100"))))
+WS_DYNAMIC_REG_ENABLED = os.getenv("WS_DYNAMIC_REG_ENABLED", "false").lower() in ("1", "true", "yes")
+WS_CONTROL_ACK_TIMEOUT_SEC = max(1.0, float(os.getenv("WS_CONTROL_ACK_TIMEOUT_SEC", "10")))
 
 _ws_control_lock = asyncio.Lock()
 _ws_control_last_sent_at = 0.0
 _ws_control_backoff_until = 0.0
+_pending_ws_controls = defaultdict(deque)
+_ws_control_sequence = 0
+_ws_connection_generation = 0
 
 
-async def _send_ws_control(ws, payload: dict):
+async def _send_ws_control(ws, payload: dict, *, full_snapshot: bool = False):
     """Throttle Kiwoom REG/REMOVE control packets across concurrent tasks."""
-    global _ws_control_last_sent_at
+    global _ws_control_last_sent_at, _ws_control_sequence
     async with _ws_control_lock:
         now = time.monotonic()
         if _ws_control_backoff_until > now:
@@ -138,8 +152,116 @@ async def _send_ws_control(ws, payload: dict):
         wait = min_interval - (now - _ws_control_last_sent_at)
         if wait > 0:
             await asyncio.sleep(wait)
-        await ws.send(json.dumps(payload))
+        _ws_control_sequence += 1
+        operation = {
+            "operation_id": _ws_control_sequence,
+            "trnm": str(payload.get("trnm", "")),
+            "grp_no": str(payload.get("grp_no", "")),
+            "data": payload.get("data") or [],
+            "full_snapshot": full_snapshot,
+            "sent_at_ms": int(time.time() * 1000),
+            "generation": _ws_connection_generation,
+        }
+        operation["item_hash"] = hashlib.sha256(
+            json.dumps(operation["data"], sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
+        # Kiwoom REG/REMOVE ACK responses always echo grp_no="" (empirically verified
+        # across production logs), never the grp_no that was actually sent. Keying the
+        # pending queue by (trnm, grp_no) therefore never matches a real ACK and every
+        # operation silently times out even when Kiwoom answers immediately. Kiwoom does
+        # echo trnm correctly, and responses arrive in the order requests were sent over
+        # the single serialized connection (guarded by _ws_control_lock), so FIFO-per-trnm
+        # is the only reliable correlation available.
+        key = operation["trnm"]
+        _pending_ws_controls[key].append(operation)
+        try:
+            await ws.send(json.dumps(payload))
+        except Exception:
+            _pending_ws_controls[key].pop()
+            if not _pending_ws_controls[key]:
+                _pending_ws_controls.pop(key, None)
+            raise
         _ws_control_last_sent_at = time.monotonic()
+        return operation["operation_id"]
+
+
+async def _apply_ws_control_ack(rdb, trnm: str, grp_no: str, return_code: str):
+    """Commit subscription state only after the matching Kiwoom ACK succeeds.
+
+    Kiwoom's ACK payload never echoes the grp_no we sent (it is always ""), so the
+    incoming grp_no cannot be used to key the pending-operation lookup. Match FIFO by
+    trnm only; see _send_ws_control for the reasoning.
+    """
+    key = trnm
+    pending = _pending_ws_controls.get(key)
+    operation = pending.popleft() if pending else None
+    if pending is not None and not pending:
+        _pending_ws_controls.pop(key, None)
+    if operation is None or return_code != "0":
+        return operation
+
+    for entry in operation["data"]:
+        items = [str(code) for code in (entry.get("item") or []) if code is not None]
+        for ttype in (entry.get("type") or []):
+            state_key = f"ws:subscribed:{ttype}"
+            if trnm == "REG" and operation["full_snapshot"]:
+                await _replace_subscription_set(rdb, state_key, items)
+            elif trnm == "REG":
+                for code in items:
+                    await _add_subscription_code(rdb, state_key, code)
+            elif trnm == "REMOVE":
+                for code in items:
+                    await _remove_subscription_code(rdb, state_key, code)
+    return operation
+
+
+async def _expire_pending_ws_controls(rdb) -> list[dict]:
+    """Expire ACK-less operations without modifying the last acknowledged state."""
+    cutoff_ms = int(time.time() * 1000 - WS_CONTROL_ACK_TIMEOUT_SEC * 1000)
+    expired: list[dict] = []
+    for key in list(_pending_ws_controls.keys()):
+        queue = _pending_ws_controls.get(key)
+        while queue and queue[0]["sent_at_ms"] <= cutoff_ms:
+            operation = queue.popleft()
+            expired.append(operation)
+            for entry in operation["data"]:
+                for ttype in (entry.get("type") or []):
+                    status_key = f"status:ws_subscription_rejected:{operation['grp_no']}:{ttype}"
+                    try:
+                        await rdb.hset(status_key, mapping={
+                            "reason": "ACK_TIMEOUT",
+                            "operation_id": str(operation["operation_id"]),
+                            "generation": str(operation["generation"]),
+                            "item_hash": operation["item_hash"],
+                            "updated_at_ms": str(int(time.time() * 1000)),
+                        })
+                        await rdb.expire(status_key, 600)
+                    except Exception:
+                        pass
+            record_subscription_ack(
+                operation["trnm"], operation["grp_no"], "ACK_TIMEOUT", "ack deadline exceeded",
+                operation_id=operation["operation_id"],
+                item_count=sum(len(row.get("item") or []) for row in operation["data"]),
+            )
+            logger.error(
+                "[WS] ACK timeout operation_id=%s generation=%s grp=%s hash=%s",
+                operation["operation_id"], operation["generation"], operation["grp_no"], operation["item_hash"],
+            )
+            _backoff_ws_control(f"ACK_TIMEOUT:{operation['trnm']}:{operation['grp_no']}")
+        if queue is not None and not queue:
+            _pending_ws_controls.pop(key, None)
+    return expired
+
+
+async def _ack_timeout_watcher(rdb):
+    while True:
+        try:
+            await asyncio.sleep(1.0)
+            await _expire_pending_ws_controls(rdb)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[WS] ACK timeout watcher failed: %s", exc)
 
 
 def _backoff_ws_control(reason: str):
@@ -152,13 +274,17 @@ def _backoff_ws_control(reason: str):
 
 
 async def _replace_subscription_set(rdb, key: str, codes: list[str]):
-    """Persist actual subscribed codes so monitors can use the real WS scope."""
+    """Persist connection-scoped subscription state without a time-based expiry.
+
+    The WS connection explicitly clears these sets on every reconnect. Expiring
+    them while the connection is alive loses local state before the 5-minute
+    phase refresh and causes duplicate REG requests to accumulate server-side.
+    """
     try:
         uniq = [code for code in dict.fromkeys(codes) if code]
         await rdb.delete(key)
         if uniq:
             await rdb.sadd(key, *uniq)
-            await rdb.expire(key, 180)
     except Exception as e:
         logger.debug("[WS] subscription set refresh failed %s: %s", key, e)
 
@@ -168,7 +294,6 @@ async def _add_subscription_code(rdb, key: str, code: str):
         return
     try:
         await rdb.sadd(key, code)
-        await rdb.expire(key, 180)
     except Exception as e:
         logger.debug("[WS] subscription set add failed %s %s: %s", key, code, e)
 
@@ -212,8 +337,8 @@ async def _send_remove(ws, grp_no: str, ttype: str, items: list[str]):
 async def _clear_subscription_type(ws, rdb, grp_no: str, ttype: str):
     """Idempotently release one realtime type using local subscription state."""
     codes = await _get_subscription_codes(rdb, ttype)
+    await _replace_subscription_set(rdb, f"ws:desired:{ttype}", [])
     sent = await _send_remove(ws, grp_no, ttype, codes)
-    await _replace_subscription_set(rdb, f"ws:subscribed:{ttype}", [])
     if sent:
         logger.info("[WS] subscription cleared grp=%s type=%s count=%d", grp_no, ttype, len(codes))
     return sent
@@ -221,8 +346,12 @@ async def _clear_subscription_type(ws, rdb, grp_no: str, ttype: str):
 
 async def _reset_local_subscription_sets(rdb):
     """Clear Redis subscription tracking for a freshly established WS connection."""
+    global _ws_connection_generation
+    _ws_connection_generation += 1
+    _pending_ws_controls.clear()
     for ttype in ("0B", "0H", "0D", "0w", "1h"):
         await _replace_subscription_set(rdb, f"ws:subscribed:{ttype}", [])
+        await _replace_subscription_set(rdb, f"ws:desired:{ttype}", [])
 
 
 async def _get_candidates(rdb, market: str = "001") -> list[str]:
@@ -381,21 +510,52 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
         logger.info("[WS] session=%s, all subscriptions cleared", session)
         return
 
-    # 키움 WS 프로토콜: item 배열에 종목코드 목록, type 배열에 실시간 항목을 담아 전송
+    # 키움 WS 프로토콜: item 배열에 종목코드 목록, type 배열에 실시간 항목을 담아 전송.
+    # 매번 전체 목록을 REG로 재전송하면 Kiwoom 측 그룹당 등록 개수가 중복 누적되어
+    # "허용 개수 초과" 거부로 이어지므로, 이미 구독 중인 종목은 다시 보내지 않고
+    # 차집합(diff)만 REG/REMOVE 한다.
+    subscribed_counts: dict[str, int] = {}
     for grp_no, ttype, items in groups:
         if not items:
             continue
-        items = list(dict.fromkeys(items))[:WS_GROUP_MAX_ITEMS]
-        for i in range(0, len(items), 100):
-            batch = items[i:i + 100]
+        deduped = list(dict.fromkeys(items))
+        items = deduped[:WS_GROUP_MAX_ITEMS]
+        subscribed_counts[ttype] = len(items)
+        # 그룹 상한에 걸려 잘려나간 종목은 실시간 시세를 전혀 받지 못한다.
+        # 그 종목을 평가하는 전략(S10 등)은 flu_rt를 0.0으로 읽어 "등락률 범위
+        # 초과"로 오탐 제외하게 되므로, 절단이 발생하면 반드시 눈에 띄어야 한다.
+        dropped = len(deduped) - len(items)
+        if dropped > 0:
+            logger.warning(
+                "[WS] 구독 상한 초과 – type=%s 후보 %d개 중 %d개만 구독, %d개 실시간 누락 "
+                "(WS_GROUP_MAX_ITEMS=%d)",
+                ttype, len(deduped), len(items), dropped, WS_GROUP_MAX_ITEMS,
+            )
+        await _replace_subscription_set(rdb, f"ws:desired:{ttype}", items)
+
+        current = set(await _get_subscription_codes(rdb, ttype))
+        desired = set(items)
+        to_remove = list(current - desired)
+        to_add = [code for code in items if code not in current]
+
+        if to_remove:
+            await _send_remove(ws, grp_no, ttype, to_remove)
+            logger.info("[WS] 구독 해제 grp=%s type=%s %d개", grp_no, ttype, len(to_remove))
+            await asyncio.sleep(0.3)
+
+        if not to_add:
+            continue
+
+        for i in range(0, len(to_add), 100):
+            batch = to_add[i:i + 100]
             payload = {
                 "trnm":    "REG",
                 "grp_no":  grp_no,
-                "refresh": "0" if i == 0 else "1",
+                "refresh": "1",
                 "data":    [{"item": batch, "type": [ttype]}],
             }
-            await _send_ws_control(ws, payload)
-            logger.info("[WS] 구독 grp=%s type=%s %d개", grp_no, ttype, len(batch))
+            await _send_ws_control(ws, payload, full_snapshot=False)
+            logger.info("[WS] 구독 grp=%s type=%s %d개(신규)", grp_no, ttype, len(batch))
             await asyncio.sleep(0.3)
 
     # 0H is only valid through opening_auction; make later sessions explicitly release it.
@@ -406,13 +566,16 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
         except Exception:
             pass
 
-    subscribed_map = {ttype: items for _, ttype, items in groups}
-    await _replace_subscription_set(rdb, "ws:subscribed:0B", subscribed_map.get("0B", []))
-    await _replace_subscription_set(rdb, "ws:subscribed:0H", subscribed_map.get("0H", []))
-    await _replace_subscription_set(rdb, "ws:subscribed:0D", subscribed_map.get("0D", []))
-    await _replace_subscription_set(rdb, "ws:subscribed:0w", subscribed_map.get("0w", []))
-    await _replace_subscription_set(rdb, "ws:subscribed:1h", subscribed_map.get("1h", []))
-    logger.info("[WS] 구독 설정 완료 (phase=%s, 후보=%d개)", phase, len(all_cands))
+    # len(all_cands)만 찍으면 상한 절단이 보이지 않는다. 실제 구독 수를 함께
+    # 남겨야 "후보 200개"가 곧 "실시간 200개"라는 오해가 생기지 않는다.
+    tick_subscribed = subscribed_counts.get("0B", 0)
+    logger.info(
+        "[WS] 구독 설정 완료 (phase=%s, 후보=%d개, 실시간구독=%s, 틱(0B)=%d개)",
+        phase,
+        len(all_cands),
+        ", ".join(f"{t}:{n}" for t, n in sorted(subscribed_counts.items())) or "없음",
+        tick_subscribed,
+    )
 
 
 async def _phase_watcher(ws, rdb):
@@ -466,7 +629,15 @@ async def _handle_message(msg_str: str, ws, rdb, pg_pool=None):
             rc = str(msg.get("return_code", ""))
             grp_no = str(msg.get("grp_no", ""))
             return_msg = str(msg.get("return_msg", ""))
-            record_subscription_ack(trnm, grp_no, rc, return_msg)
+            operation = await _apply_ws_control_ack(rdb, trnm, grp_no, rc)
+            record_subscription_ack(
+                trnm,
+                grp_no,
+                rc,
+                return_msg,
+                operation_id=operation.get("operation_id") if operation else None,
+                item_count=sum(len(row.get("item") or []) for row in operation.get("data", [])) if operation else 0,
+            )
             status_key = f"status:ws_subscription_ack:{grp_no or 'unknown'}"
             try:
                 await rdb.hset(status_key, mapping={
@@ -474,6 +645,7 @@ async def _handle_message(msg_str: str, ws, rdb, pg_pool=None):
                     "grp_no": grp_no,
                     "return_code": rc,
                     "return_msg": return_msg,
+                    "operation_id": str(operation.get("operation_id", "")) if operation else "",
                     "updated_at_ms": str(int(time.time() * 1000)),
                 })
                 await rdb.expire(status_key, 600)
@@ -516,6 +688,8 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
     while True:
         try:
             await asyncio.sleep(WATCHLIST_POLL_SEC)
+            if not WS_DYNAMIC_REG_ENABLED:
+                continue
             watchlist, top100 = await _get_ranked_candidates(rdb)
             if not watchlist:
                 continue
@@ -548,7 +722,6 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                     payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "1",
                                "data": [{"item": [code], "type": [ttype]}]}
                     await _send_ws_control(ws, payload)
-                    await _add_subscription_code(rdb, f"ws:subscribed:{ttype}", code)
                 subscribed_set.add(code)
                 logger.info("[WS] 동적 구독 추가 [%s]", code)
 
@@ -557,7 +730,6 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                     if code not in set(await _get_subscription_codes(rdb, ttype)):
                         continue
                     await _send_remove(ws, grp_no, ttype, [code])
-                    await _remove_subscription_code(rdb, f"ws:subscribed:{ttype}", code)
                 subscribed_set.discard(code)
                 logger.info("[WS] 동적 구독 해제 [%s]", code)
 
@@ -640,7 +812,8 @@ async def run_ws_loop(rdb, pg_pool=None):
 
     while True:
         # ── 장 운영 시간 외이면 개장까지 대기 ──────────────────────
-        if not BYPASS_MARKET_HOURS:
+        bypass_market_hours = await _bypass_market_hours(rdb)
+        if not bypass_market_hours:
             await _wait_for_market_open()
         else:
             # bypass 모드: MAX_RECONNECTS 초과 시 5분 대기 후 리셋
@@ -721,23 +894,16 @@ async def run_ws_loop(rdb, pg_pool=None):
                 heartbeat_task = asyncio.create_task(_heartbeat_writer(rdb))
                 phase_task     = asyncio.create_task(_phase_watcher(ws, rdb))
                 silence_task   = asyncio.create_task(_silence_watchdog(ws, last_msg_holder))
+                ack_timeout_task = asyncio.create_task(_ack_timeout_watcher(rdb))
 
                 try:
                     await message_task  # 서버가 연결을 닫을 때까지 대기
                 finally:
-                    watchlist_task.cancel()
-                    heartbeat_task.cancel()
-                    phase_task.cancel()
-                    silence_task.cancel()
-                    message_task.cancel()
+                    tasks = [watchlist_task, heartbeat_task, phase_task, silence_task, ack_timeout_task, message_task]
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
                     set_ws_connected(False)
-
-            # 연결이 최소 유지 시간 이상 유지된 경우에만 카운터 리셋
-            elapsed = _time.monotonic() - connect_time
-            if elapsed >= MIN_CONNECTED_SEC:
-                reconnect_count = 0
-                delay_sec       = BASE_RECONNECT_MS / 1000
-                logger.info("[WS] 연결 %.1f초 유지 후 종료 – 카운터 리셋", elapsed)
 
         except ConnectionClosed as e:
             close_code = e.rcvd.code if e.rcvd else None
@@ -767,8 +933,20 @@ async def run_ws_loop(rdb, pg_pool=None):
                          extra={"error_code": reason})
             set_ws_connected(False, reason=reason)
 
+        # 연결이 최소 유지 시간 이상 유지됐다면 종료 경로(정상/ConnectionClosed/
+        # OSError/기타 예외)와 무관하게 백오프 카운터를 리셋한다. 키움 WS는
+        # close frame 없는 ConnectionClosed 로 끊기는 경우가 대부분이라, 이 리셋을
+        # try 블록의 정상 종료 경로에만 두면 사실상 리셋이 거의 발생하지 않아
+        # 지수 백오프가 하루 종일 300초 상한까지 누적된 채 유지되는 문제가 있었다.
+        if connect_time is not None:
+            elapsed = _time.monotonic() - connect_time
+            if elapsed >= MIN_CONNECTED_SEC:
+                reconnect_count = 0
+                delay_sec       = BASE_RECONNECT_MS / 1000
+                logger.info("[WS] 연결 %.1f초 유지 후 종료 – 카운터 리셋", elapsed)
+
         # ── 재연결 전 시장 시간 판단 ──────────────────────────────
-        if not BYPASS_MARKET_HOURS and not _is_market_hours():
+        if not bypass_market_hours and not _is_market_hours():
             logger.info("[WS] 장 종료 / 비운영 시간 감지 – 개장 대기 모드로 전환")
             reconnect_count = 0
             delay_sec       = BASE_RECONNECT_MS / 1000
@@ -779,7 +957,7 @@ async def run_ws_loop(rdb, pg_pool=None):
         reconnect_count += 1
         if reconnect_count > MAX_RECONNECTS:
             # bypass 모드 또는 장 운영 중: 프로세스 종료 대신 5분 대기 후 재시도
-            if BYPASS_MARKET_HOURS or _is_market_hours():
+            if bypass_market_hours or _is_market_hours():
                 logger.warning(
                     "[WS] 최대 재연결 %d회 초과 – %.0f분 대기 후 재시도",
                     MAX_RECONNECTS, MAX_RECONNECT_SEC / 60,
