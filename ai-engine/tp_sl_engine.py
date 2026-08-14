@@ -1785,6 +1785,12 @@ def _tp_sl_new_high(
     )
 
 
+# S11: swing_low/MA20 이 진입가에 지나치게 근접해 SL이 과도하게 타이트해지는
+# 것을 막기 위한 최소 SL 이격 비율 (파일 전체에서 반복되는 0.94~0.98 캡 스타일과
+# 일관되게 2% 로 설정).
+_S11_MIN_SL_GAP_PCT = 0.02
+
+
 def _tp_sl_frgn_cont(
     cur_prc:  float,
     highs:    list[float],
@@ -1828,6 +1834,15 @@ def _tp_sl_frgn_cont(
     if sl_price >= cur_prc:
         sl_price  = int(cur_prc * 0.95)
         sl_method = "pct_5%_fallback"
+
+    # 최소 SL 거리 하한: swing_low가 진입가 바로 아래(0.1~0.2% 이내)에 있거나
+    # MA20이 진입가에 거의 붙어있는 돌파 직후 케이스에서 SL이 지나치게 타이트해져
+    # rr_ratio가 비정상적으로 부풀려지는 것을 방지 (관측 사례: rr_ratio 10~28배).
+    # swing_low/MA20 분기 양쪽 모두에 최종적으로 적용된다.
+    _min_sl_gap_price = int(cur_prc * (1 - _S11_MIN_SL_GAP_PCT))
+    if sl_price > _min_sl_gap_price:
+        sl_price  = _min_sl_gap_price
+        sl_method = sl_method + "+min_gap_2pct"
 
     tp2_price = None
     if bb_upper and bb_upper > cur_prc:

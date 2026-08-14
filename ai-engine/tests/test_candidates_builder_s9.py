@@ -119,6 +119,59 @@ async def test_build_intraday_s12_only_suppresses_other_candidate_refreshes(monk
     rdb.exists.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_build_intraday_does_not_rebuild_expired_opening_s1_pool(monkeypatch):
+    import candidates_builder
+
+    calls = []
+
+    async def fake_builder(token, market, rdb):
+        calls.append(market)
+
+    async def fail_s1(*args, **kwargs):
+        raise AssertionError("S1 must not be rebuilt after its opening scan window")
+
+    async def fake_refresh(rdb):
+        calls.append("refresh")
+
+    async def fake_sleep(_seconds):
+        return None
+
+    rdb = MagicMock()
+    rdb.exists = AsyncMock(return_value=False)
+
+    monkeypatch.setattr(candidates_builder, "MARKETS", ["001", "101"])
+    monkeypatch.setattr(candidates_builder, "_build_s1", fail_s1)
+    for name in [
+        "_build_s2",
+        "_build_s3",
+        "_build_s4",
+        "_build_s5",
+        "_build_s6",
+        "_build_s7",
+        "_build_s8",
+        "_build_s9",
+        "_build_s10",
+        "_build_s11",
+        "_build_s12",
+        "_build_s13",
+        "_build_s14",
+        "_build_s15",
+    ]:
+        monkeypatch.setattr(candidates_builder, name, fake_builder)
+    monkeypatch.setattr(candidates_builder, "_refresh_watchlist", fake_refresh)
+    monkeypatch.setattr(candidates_builder.asyncio, "sleep", fake_sleep)
+
+    await candidates_builder._build_intraday(
+        "token",
+        rdb,
+        session=candidates_builder.SESSION_INTRADAY,
+    )
+
+    assert calls[-1] == "refresh"
+    rdb.exists.assert_not_awaited()
+
+
 def test_local_candidate_builder_session_splits_s12_after_1450():
     from datetime import time
 
@@ -129,10 +182,10 @@ def test_local_candidate_builder_session_splits_s12_after_1450():
     assert candidates_builder._local_candidate_builder_session(time(8, 25, 1)) == candidates_builder.SESSION_OPENING_RECOVERY
     assert candidates_builder._local_candidate_builder_session(time(9, 4, 59)) == candidates_builder.SESSION_OPENING_RECOVERY
     assert candidates_builder._local_candidate_builder_session(time(9, 5)) == candidates_builder.SESSION_INTRADAY
-    assert candidates_builder._local_candidate_builder_session(time(14, 49, 59)) == candidates_builder.SESSION_INTRADAY
-    assert candidates_builder._local_candidate_builder_session(time(14, 50)) == candidates_builder.SESSION_S12_ONLY
-    assert candidates_builder._local_candidate_builder_session(time(14, 55)) == candidates_builder.SESSION_S12_ONLY
-    assert candidates_builder._local_candidate_builder_session(time(14, 55, 1)) == candidates_builder.SESSION_IDLE
+    assert candidates_builder._local_candidate_builder_session(time(14, 29, 59)) == candidates_builder.SESSION_INTRADAY
+    assert candidates_builder._local_candidate_builder_session(time(14, 30)) == candidates_builder.SESSION_S12_ONLY
+    assert candidates_builder._local_candidate_builder_session(time(15, 10)) == candidates_builder.SESSION_S12_ONLY
+    assert candidates_builder._local_candidate_builder_session(time(15, 10, 1)) == candidates_builder.SESSION_IDLE
 
 
 def test_external_candidate_builder_session_keeps_weekends_idle():
@@ -206,3 +259,42 @@ async def test_filter_individual_stocks_handles_none_names():
     result = await candidates_builder._filter_individual_stocks(rdb, codes)
 
     assert result == codes
+
+
+@pytest.mark.asyncio
+async def test_refresh_watchlist_includes_s16_pool(monkeypatch):
+    """s16 후보 풀도 watchlist에 통합되어야 한다.
+
+    range(1, 16) 하드코딩 탓에 s16이 통째로 빠져 있었고, 그 결과 S16 종목은
+    websocket-listener의 실시간 구독 대상에서 영구 제외됐다 (2026-08-10 수정).
+    """
+    import candidates_builder
+
+    monkeypatch.setattr(candidates_builder, "MARKETS", ["001"])
+    monkeypatch.setattr(candidates_builder, "ENABLE_WATCHLIST_ZSET", False)
+
+    async def fake_lrange(key, start, end):
+        return {
+            "candidates:s16:001": ["016160"],
+            "candidates:s1:001": ["000100"],
+        }.get(key, [])
+
+    added = {}
+
+    def fake_sadd(key, *codes):
+        added.setdefault(key, set()).update(codes)
+
+    pipe = MagicMock()
+    pipe.delete = MagicMock()
+    pipe.sadd = MagicMock(side_effect=fake_sadd)
+    pipe.expire = MagicMock()
+    pipe.execute = AsyncMock()
+
+    rdb = MagicMock()
+    rdb.lrange = AsyncMock(side_effect=fake_lrange)
+    rdb.pipeline = MagicMock(return_value=pipe)
+
+    await candidates_builder._refresh_watchlist(rdb)
+
+    assert "016160" in added["candidates:watchlist"], "s16 후보가 watchlist에 누락됨"
+    assert "000100" in added["candidates:watchlist"]

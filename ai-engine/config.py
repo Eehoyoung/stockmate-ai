@@ -44,7 +44,9 @@ MARKET_LIST = ["001", "101"]
 
 # Kiwoom 조건식 공통 필터 (순위/등락률 API 계열에서 재사용)
 COMMON_FILTERS = {
-    "stk_cnd": "1",       # 관리종목·ETF·ETN·스팩 제외
+    # ka10027/ka10029: ETF+ETN 제외. stk_cnd enum is API-specific; do not
+    # reuse this value for APIs such as ka10016 that do not define code 16.
+    "stk_cnd": "16",
     "updown_incls": "0",   # 상하한 미포함
     "trde_qty_tp": "10",   # 만주 이상
     "stex_tp": "3",        # KRX

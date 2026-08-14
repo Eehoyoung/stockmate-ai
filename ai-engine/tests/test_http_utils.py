@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import asyncio
 import json
+import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,21 +39,222 @@ def test_classify_kiwoom_return_code():
 
 
 @pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
-def test_global_rate_limiter_wait_timeout_uses_local_fallback():
+def test_global_rate_limiter_wait_timeout_fails_closed():
     import http_utils
 
-    limiter = http_utils._KiwoomRateLimiter(rate=1000.0)
+    limiter = http_utils._KiwoomRateLimiter(real_rate=1000.0)
     limiter._global_wait_ms = 0
-    limiter._fallback_interval_ms = 1000
-    limiter._fallback_last = http_utils._time.monotonic()
     fake_redis = MagicMock()
     fake_redis.set = AsyncMock(return_value=False)
     limiter._redis_client = lambda: fake_redis
 
-    with patch("http_utils.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+    with pytest.raises(http_utils.KiwoomReservationUnavailable, match="deadline"):
         _run(limiter._acquire_global())
 
-    assert mock_sleep.await_count >= 1
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+def test_rate_limiter_paces_per_tr_independently(monkeypatch):
+    """키움 공지(2026-06-12): REST는 TR당 초당 5건이며 TR끼리는 서로 경합하지 않는다.
+
+    서로 다른 api_id(TR)는 상대방의 페이싱 대기에 영향받지 않고, 같은 api_id는
+    설정된 간격만큼 페이싱되어야 한다.
+    """
+    import http_utils
+    import time as _time
+
+    # .env가 KIWOOM_REST_RATE_PER_TR을 명시적으로 설정해두므로, 이 테스트가
+    # 의도하는 생성자 오버라이드(real_rate=1.0)가 os.getenv에 가려지지 않도록
+    # 환경변수를 비운다(운영 코드는 env 우선이 맞고, 이건 테스트 격리 문제).
+    monkeypatch.delenv("KIWOOM_REST_RATE_PER_TR", raising=False)
+    monkeypatch.delenv("KIWOOM_REST_RATE_HEAVY_TR", raising=False)
+
+    # 느린 TR(1req/s)을 하나 만들어 로컬 페이싱 큐를 채워둔다.
+    limiter = http_utils._KiwoomRateLimiter(real_rate=1.0)
+    limiter._global_enabled = False  # Redis 코디네이션은 이 테스트의 관심사가 아님
+    # _metric()이 실제 Redis로 연결을 시도해 테스트 환경에서 타임아웃으로
+    # 지연되지 않도록 목으로 대체한다(기존 rate limiter 테스트와 동일한 방식).
+    fake_redis = MagicMock()
+    fake_redis.hincrby = AsyncMock(return_value=0)
+    fake_redis.expire = AsyncMock(return_value=True)
+    limiter._redis_client = lambda: fake_redis
+
+    async def scenario():
+        await limiter.acquire("ka10029")  # 첫 호출은 즉시 통과, ka10029 페이싱 타이머 시작
+
+        started = _time.monotonic()
+        await limiter.acquire("ka10063")  # 무관한 TR -> ka10029 대기와 경합하지 않아야 함
+        other_tr_wait = _time.monotonic() - started
+
+        started = _time.monotonic()
+        await limiter.acquire("ka10029")  # 같은 TR -> 최소 간격(1초)만큼 대기해야 함
+        same_tr_wait = _time.monotonic() - started
+        return other_tr_wait, same_tr_wait
+
+    other_tr_wait, same_tr_wait = _run(scenario())
+    assert other_tr_wait < 0.2
+    assert same_tr_wait >= 0.9
+
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+def test_rate_limiter_heavy_tr_uses_longer_interval_than_light_tr(monkeypatch):
+    """2026-08-05 재설계: 차트/대량조회/페이지네이션 TR(heavy)은 일반 TR(light)보다
+    더 보수적인 간격을 사용해야 한다."""
+    import http_utils
+
+    # .env의 KIWOOM_REST_RATE_PER_TR/HEAVY_TR이 생성자 오버라이드를 가리지 않도록 격리.
+    monkeypatch.delenv("KIWOOM_REST_RATE_PER_TR", raising=False)
+    monkeypatch.delenv("KIWOOM_REST_RATE_HEAVY_TR", raising=False)
+
+    limiter = http_utils._KiwoomRateLimiter(real_rate=5.0, real_rate_heavy=2.0)
+    limiter._global_enabled = False
+    fake_redis = MagicMock()
+    fake_redis.hincrby = AsyncMock(return_value=0)
+    fake_redis.expire = AsyncMock(return_value=True)
+    limiter._redis_client = lambda: fake_redis
+
+    assert limiter._is_heavy("ka10055") is True
+    assert limiter._is_heavy("ka10029") is False
+    assert limiter._local_interval("ka10055") == pytest.approx(0.5)
+    assert limiter._local_interval("ka10029") == pytest.approx(0.2)
+
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+def test_rate_limiter_heavy_tr_ids_env_override(monkeypatch):
+    """KIWOOM_HEAVY_TR_IDS 환경변수로 heavy TR 목록을 덮어쓸 수 있어야 한다."""
+    import http_utils
+
+    monkeypatch.setenv("KIWOOM_HEAVY_TR_IDS", "ka99999")
+    limiter = http_utils._KiwoomRateLimiter(real_rate=5.0, real_rate_heavy=2.0)
+
+    assert limiter._is_heavy("ka99999") is True
+    # ka10055는 기본 heavy 목록에 있지만, env로 목록을 완전히 덮어썼으므로 light가 된다.
+    assert limiter._is_heavy("ka10055") is False
+
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+class TestKiwoomPostGenericRetryBackoff:
+    """kiwoom_post()의 일반(비-429) HTTP 오류 재시도는 0.5s→1s→2s 지수 백오프를 적용해야 한다."""
+
+    def test_generic_http_error_retries_with_increasing_backoff(self):
+        import http_utils
+
+        request = httpx.Request("POST", "https://example.com")
+        error_resp = httpx.Response(500, request=request)
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        ok_resp.raise_for_status = MagicMock()
+
+        call_count = {"n": 0}
+
+        async def fake_post(url, headers=None, json=None):
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                raise httpx.HTTPStatusError("server error", request=request, response=error_resp)
+            return ok_resp
+
+        fake_client = MagicMock()
+        fake_client.post = AsyncMock(side_effect=fake_post)
+        fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+        fake_client.__aexit__ = AsyncMock(return_value=False)
+
+        sleep_calls = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        with patch.object(http_utils, "kiwoom_client", return_value=fake_client), \
+             patch("asyncio.sleep", new=fake_sleep):
+            resp = _run(http_utils.kiwoom_post(
+                "https://example.com", {}, {}, "ka10001", max_retries=2,
+            ))
+
+        assert resp is ok_resp
+        assert sleep_calls == [0.5, 1.0]
+
+    def test_generic_http_error_exhausts_retries_and_returns_none(self):
+        import http_utils
+
+        request = httpx.Request("POST", "https://example.com")
+        error_resp = httpx.Response(500, request=request)
+
+        async def fake_post(url, headers=None, json=None):
+            raise httpx.HTTPStatusError("server error", request=request, response=error_resp)
+
+        fake_client = MagicMock()
+        fake_client.post = AsyncMock(side_effect=fake_post)
+        fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+        fake_client.__aexit__ = AsyncMock(return_value=False)
+
+        sleep_calls = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        with patch.object(http_utils, "kiwoom_client", return_value=fake_client), \
+             patch("asyncio.sleep", new=fake_sleep):
+            resp = _run(http_utils.kiwoom_post(
+                "https://example.com", {}, {}, "ka10001", max_retries=2,
+            ))
+
+        assert resp is None
+        assert sleep_calls == [0.5, 1.0]
+
+
+@pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
+class TestFetchSameTimeVolumeRatioCached:
+    """S3/S7/S8/S9가 공유하는 ka10055 캐시 래퍼 회귀 테스트 (2026-08-05 추가)."""
+
+    def test_cache_hit_skips_rest_fetch(self):
+        import http_utils
+
+        rdb = MagicMock()
+        cached_payload = json.dumps({
+            "summary": {"same_time_volume_ratio": 1.9},
+            "meta": {"source": "redis", "api_id": "ka10055", "complete": True},
+        })
+        rdb.get = AsyncMock(return_value=cached_payload)
+
+        with patch.object(http_utils, "fetch_same_time_volume_ratio", new=AsyncMock()) as fetch_mock:
+            summary, meta = _run(http_utils.fetch_same_time_volume_ratio_cached("token", "005930", rdb=rdb))
+
+        fetch_mock.assert_not_called()
+        assert summary["same_time_volume_ratio"] == 1.9
+        assert meta["source"] == "redis"
+
+    def test_cache_miss_fetches_and_writes_cache_only_when_complete(self):
+        import http_utils
+
+        rdb = MagicMock()
+        rdb.get = AsyncMock(return_value=None)
+        rdb.set = AsyncMock(return_value=True)
+
+        fetch_mock = AsyncMock(return_value=(
+            {"same_time_volume_ratio": 2.1},
+            {"source": "rest", "api_id": "ka10055", "complete": True},
+        ))
+        with patch.object(http_utils, "fetch_same_time_volume_ratio", new=fetch_mock):
+            summary, meta = _run(http_utils.fetch_same_time_volume_ratio_cached("token", "005930", rdb=rdb))
+
+        fetch_mock.assert_awaited_once()
+        rdb.set.assert_awaited_once()
+        assert summary["same_time_volume_ratio"] == 2.1
+        assert meta["complete"] is True
+
+    def test_incomplete_fetch_is_not_cached(self):
+        import http_utils
+
+        rdb = MagicMock()
+        rdb.get = AsyncMock(return_value=None)
+        rdb.set = AsyncMock(return_value=True)
+
+        fetch_mock = AsyncMock(return_value=(
+            {"same_time_volume_ratio": 0.0},
+            {"source": "rest", "api_id": "ka10055", "complete": False},
+        ))
+        with patch.object(http_utils, "fetch_same_time_volume_ratio", new=fetch_mock):
+            _run(http_utils.fetch_same_time_volume_ratio_cached("token", "005930", rdb=rdb))
+
+        rdb.set.assert_not_called()
 
 
 @pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
@@ -324,11 +526,12 @@ class TestHttpUtilsFallback:
 # fetch_hoga_rest 테스트
 # ---------------------------------------------------------------------------
 
-def _make_httpx_response(payload: dict) -> MagicMock:
+def _make_httpx_response(payload: dict, headers: dict | None = None) -> MagicMock:
     """httpx.Response를 흉내내는 MagicMock 생성 (kiwoom_post 반환값용)"""
     resp = MagicMock()
     resp.json.return_value = payload
     resp.raise_for_status = MagicMock()
+    resp.headers = headers or {"cont-yn": "N", "next-key": ""}
     return resp
 
 
@@ -734,6 +937,8 @@ class TestKiwoomSupplyAndProfileHelpers:
         import http_utils
         from http_utils import fetch_volume_profile
 
+        http_utils._VOLUME_PROFILE_MARKET_CACHE.clear()
+
         with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = _make_httpx_response({
                 "return_code": "0",
@@ -755,6 +960,8 @@ class TestKiwoomSupplyAndProfileHelpers:
         import http_utils
         from http_utils import fetch_volume_profile
 
+        http_utils._VOLUME_PROFILE_MARKET_CACHE.clear()
+
         with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = _make_httpx_response({
                 "return_code": "0",
@@ -767,6 +974,30 @@ class TestKiwoomSupplyAndProfileHelpers:
         assert meta["target_verified"] is False
         assert "target not verified" in meta["error"]
         assert profile["target_verified"] is False
+
+    @pytest.mark.asyncio
+    async def test_fetch_volume_profile_reuses_market_response_for_multiple_stocks(self):
+        import http_utils
+        from http_utils import fetch_volume_profile
+
+        http_utils._VOLUME_PROFILE_MARKET_CACHE.clear()
+        payload = {
+            "return_code": "0",
+            "prps_cnctr": [
+                {"stk_cd": "005930", "cur_prc": "1000", "pric_strt": "900", "pric_end": "950", "prps_rt": "+60.00"},
+                {"stk_cd": "000660", "cur_prc": "2000", "pric_strt": "1900", "pric_end": "1950", "prps_rt": "+55.00"},
+            ],
+        }
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _make_httpx_response(payload)
+            first, first_meta = await fetch_volume_profile("token", "005930", market="001")
+            second, second_meta = await fetch_volume_profile("token", "000660", market="001")
+
+        assert first["target_verified"] is True
+        assert second["target_verified"] is True
+        assert first_meta["source"] == "rest"
+        assert second_meta["source"] == "memory"
+        assert mock_post.await_count == 1
 
     @pytest.mark.asyncio
     async def test_fetch_program_snapshot_reads_0w_hash(self):
@@ -798,6 +1029,40 @@ class TestKiwoomSupplyAndProfileHelpers:
 
         assert meta["api_id"] == "ka10055"
         assert summary["same_time_volume_ratio"] == 3.0
+        assert meta["complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_fetch_same_time_volume_ratio_follows_continuation_pages(self):
+        import http_utils
+        from http_utils import fetch_same_time_volume_ratio
+
+        responses = [
+            _make_httpx_response(
+                {"return_code": "0", "tdy_pred_cntr_qty": [{"cntr_tm": "091000", "cntr_qty": "+300"}]},
+                {"cont-yn": "Y", "next-key": "today-2"},
+            ),
+            _make_httpx_response(
+                {"return_code": "0", "tdy_pred_cntr_qty": [{"cntr_tm": "090500", "cntr_qty": "+200"}]},
+            ),
+            _make_httpx_response(
+                {"return_code": "0", "tdy_pred_cntr_qty": [{"cntr_tm": "091000", "cntr_qty": "+100"}]},
+                {"cont-yn": "Y", "next-key": "prev-2"},
+            ),
+            _make_httpx_response(
+                {"return_code": "0", "tdy_pred_cntr_qty": [{"cntr_tm": "090500", "cntr_qty": "+100"}]},
+            ),
+        ]
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.side_effect = responses
+            summary, meta = await fetch_same_time_volume_ratio("token", "005930")
+
+        assert summary["today_qty"] == 500
+        assert summary["prev_same_time_qty"] == 200
+        assert summary["same_time_volume_ratio"] == 2.5
+        assert meta["complete"] is True
+        assert meta["today_pages"] == 2
+        assert meta["prev_pages"] == 2
+        assert mock_post.await_args_list[1].args[1]["next-key"] == "today-2"
 
     @pytest.mark.asyncio
     async def test_fetch_program_time_trend_parses_ka90008(self):
@@ -807,7 +1072,7 @@ class TestKiwoomSupplyAndProfileHelpers:
         with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = _make_httpx_response({
                 "return_code": "0",
-                "stk_tm_prm_trde_trn": [
+                "stk_tm_prm_trde_trnsn": [
                     {"prm_netprps_amt": "+1000"},
                     {"prm_netprps_amt": "-500"},
                     {"prm_netprps_amt": "+250"},
@@ -818,3 +1083,33 @@ class TestKiwoomSupplyAndProfileHelpers:
         assert meta["api_id"] == "ka90008"
         assert summary["latest_net_buy_amt"] == 1000.0
         assert summary["positive_count"] == 2
+
+    def test_summarize_intraday_investor_flow_derives_slope_and_positive_reversal(self):
+        from http_utils import summarize_intraday_investor_flow
+
+        summary = summarize_intraday_investor_flow([
+            {"tm": "101000", "frgnr_invsr": "+80", "orgn": "+20"},
+            {"tm": "100000", "frgnr_invsr": "+20", "orgn": "+10"},
+            {"tm": "095000", "frgnr_invsr": "+30", "orgn": "+20"},
+        ])
+
+        assert summary["latest_combined"] == 100.0
+        assert summary["combined_slope"] == 25.0
+        assert summary["latest_delta"] == 70.0
+        assert summary["previous_delta"] == -20.0
+        assert summary["recent_reversal"] is True
+        assert summary["recent_reversal_direction"] == "positive"
+
+    @pytest.mark.asyncio
+    async def test_fetch_intraday_investor_flow_is_soft_when_api_empty(self):
+        import http_utils
+        from http_utils import fetch_intraday_investor_flow
+
+        with patch.object(http_utils, "kiwoom_post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = _make_httpx_response({"return_code": "0", "opmr_invsr_trde_chart": []})
+            summary, meta = await fetch_intraday_investor_flow("token", "005930", market="001")
+
+        assert summary == {}
+        assert meta["api_id"] == "ka10064"
+        assert meta["error"] == "empty records"
+        assert mock_post.await_args.args[2]["mrkt_tp"] == "001"

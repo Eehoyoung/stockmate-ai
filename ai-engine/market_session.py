@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 from enum import Enum
 
 
@@ -27,6 +28,11 @@ AFTER_MARKET_START = datetime.time(15, 40)
 POST_QUIET_START = datetime.time(20, 0)
 CLOSED_START = datetime.time(20, 10)
 FORCE_CLOSE_TIME = datetime.time(14, 50)
+CONFIGURED_HOLIDAYS = {
+    datetime.date.fromisoformat(value.strip())
+    for value in os.getenv("KRX_HOLIDAYS", "").split(",")
+    if value.strip()
+}
 
 
 def now_kst() -> datetime.datetime:
@@ -46,9 +52,21 @@ def is_weekday(date: datetime.date | None = None) -> bool:
     return target.weekday() < 5
 
 
+def is_market_holiday(date: datetime.date | None = None) -> bool:
+    target = date or now_kst().date()
+    return target in CONFIGURED_HOLIDAYS or (
+        target.year >= 2026 and target.month == 7 and target.day == 17
+    )
+
+
+def is_market_open_day(date: datetime.date | None = None) -> bool:
+    target = date or now_kst().date()
+    return is_weekday(target) and not is_market_holiday(target)
+
+
 def current_session(date_time: datetime.datetime | None = None) -> MarketSession:
     target = _as_kst_datetime(date_time)
-    if not is_weekday(target.date()):
+    if not is_market_open_day(target.date()):
         return MarketSession.CLOSED
 
     now = target.time()
@@ -87,7 +105,7 @@ def is_market_hours(date_time: datetime.datetime | None = None) -> bool:
 def is_force_close_time(date_time: datetime.datetime | None = None) -> bool:
     target = _as_kst_datetime(date_time)
     now = target.time()
-    return is_weekday(target.date()) and FORCE_CLOSE_TIME <= now < MARKET_CLOSE
+    return is_market_open_day(target.date()) and FORCE_CLOSE_TIME <= now < MARKET_CLOSE
 
 
 def is_trading_active(date_time: datetime.datetime | None = None) -> bool:
@@ -108,14 +126,14 @@ def should_force_close(date_time: datetime.datetime | None = None) -> bool:
 def get_candidate_builder_session(date_time: datetime.datetime | datetime.time | None = None) -> str:
     """Return the candidate-builder phase for the current KST session.
 
-    The 14:50-14:55 window is intentionally separated so only S12 candidates are
-    refreshed while other intraday pools stop producing late-session entries.
+    From 14:30 through the S12 scan close at 15:10, refresh only S12 candidates.
+    All other strategy scan windows have closed by 14:30.
     """
     if isinstance(date_time, datetime.time):
         now = date_time
     else:
         target = _as_kst_datetime(date_time)
-        if not is_weekday(target.date()):
+        if not is_market_open_day(target.date()):
             return "idle"
         now = target.time()
 
@@ -123,8 +141,8 @@ def get_candidate_builder_session(date_time: datetime.datetime | datetime.time |
         return "pre_market"
     if datetime.time(8, 25) < now < datetime.time(9, 5):
         return "opening_recovery"
-    if datetime.time(9, 5) <= now < datetime.time(14, 50):
+    if datetime.time(9, 5) <= now < datetime.time(14, 30):
         return "intraday"
-    if datetime.time(14, 50) <= now <= datetime.time(14, 55):
+    if datetime.time(14, 30) <= now <= datetime.time(15, 10):
         return "s12_only"
     return "idle"

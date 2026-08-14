@@ -291,6 +291,7 @@ async def _publish_status_report(rdb) -> None:
 
     payload = {
         "type": "STATUS_REPORT",
+        "logical_slot": now_kst.strftime("%H:%M"),
         "message": _build_message(
             now_kst, active, pool_counts, queue_counts, ws_online, recent_stats,
             position_count=position_count,

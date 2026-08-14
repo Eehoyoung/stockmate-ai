@@ -203,6 +203,40 @@ async def get_hoga_data(rdb, stk_cd: str) -> dict:
     return data or {}
 
 
+async def get_realtime_hash_with_status(
+    rdb,
+    stk_cd: str,
+    kind: str,
+    *,
+    now_ms: int | None = None,
+) -> dict:
+    """Read a realtime hash and suppress values beyond the cancel cutoff.
+
+    Only ``fresh`` and ``caution`` observations are returned as usable data.
+    Missing timestamps are treated as missing instead of silently becoming a
+    strong market observation.
+    """
+    if kind not in {"tick", "hoga"}:
+        raise ValueError(f"unsupported realtime hash kind: {kind}")
+    key = f"ws:{kind}:{stk_cd}"
+    raw = await rdb.hgetall(key)
+    status = freshness_status(raw or {}, kind, now_ms=now_ms)
+    if status["state"] in {"fresh", "caution"}:
+        return {"data": raw or {}, "status": status, "source": "redis"}
+    source = "stale" if status["state"] == "cancel" else "missing"
+    return {"data": {}, "status": status, "source": source}
+
+
+async def get_tick_with_status(rdb, stk_cd: str, *, now_ms: int | None = None) -> dict:
+    """Return freshness-checked ``ws:tick`` data."""
+    return await get_realtime_hash_with_status(rdb, stk_cd, "tick", now_ms=now_ms)
+
+
+async def get_hoga_with_status(rdb, stk_cd: str, *, now_ms: int | None = None) -> dict:
+    """Return freshness-checked ``ws:hoga`` data."""
+    return await get_realtime_hash_with_status(rdb, stk_cd, "hoga", now_ms=now_ms)
+
+
 async def get_strength_with_status(
     rdb,
     stk_cd: str,
@@ -367,9 +401,31 @@ async def push_hold_monitor_queue(rdb, payload: dict, *, delay_sec: float = 0.0)
         stk_cd = str(item.get("stk_cd") or "").strip()
         key = str(item.get("hold_monitor_key") or _hold_monitor_key(item))
         now = time.time()
+        existing_score = await rdb.zscore(HOLD_MONITOR_QUEUE, key)
+        existing_item = None
+        if existing_score is not None and not item.get("hold_monitor_recheck"):
+            raw_existing = await rdb.hget(HOLD_MONITOR_ITEMS, key)
+            if raw_existing:
+                try:
+                    existing_item = json.loads(raw_existing)
+                except (TypeError, json.JSONDecodeError):
+                    existing_item = None
         item["hold_monitor_key"] = key
-        item.setdefault("hold_monitor_enqueued_at", now)
-        item["hold_monitor_next_check_at"] = now + max(0.0, float(delay_sec))
+        item.setdefault(
+            "hold_monitor_enqueued_at",
+            (existing_item or {}).get("hold_monitor_enqueued_at", now),
+        )
+        if existing_score is None:
+            # A newly routed WATCH has just completed its initial decision
+            # path.  Seed the monitor cooldown so it cannot immediately send
+            # the same candidate through a second full AI analysis.
+            item.setdefault("hold_monitor_last_ai_at", now)
+        if existing_score is not None and not item.get("hold_monitor_recheck"):
+            # Repeated scanner output for the same WATCH must refresh its data,
+            # but must not postpone the already scheduled evaluation forever.
+            item["hold_monitor_next_check_at"] = float(existing_score)
+        else:
+            item["hold_monitor_next_check_at"] = now + max(0.0, float(delay_sec))
         serialized = json.dumps(item, ensure_ascii=False, default=str)
     except Exception as exc:
         logger.error("[Reader] hold_monitor_queue serialization failed: %s", exc)
@@ -425,6 +481,19 @@ async def clear_hold_monitor_queue(rdb) -> None:
     await rdb.delete(HOLD_MONITOR_WATCHLIST)
 
 
+async def get_all_hold_monitor_items(rdb) -> list[dict]:
+    """Return all currently tracked HOLD monitor items (read before a bulk clear)."""
+    raw_items = await rdb.hgetall(HOLD_MONITOR_ITEMS)
+    items: list[dict] = []
+    for raw in (raw_items or {}).values():
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        try:
+            items.append(json.loads(text))
+        except (TypeError, json.JSONDecodeError) as exc:
+            logger.warning("[Reader] hold monitor item JSON parse failed during bulk read: %s", exc)
+    return items
+
+
 async def get_sector_overheat_count(rdb, sector: str) -> int:
     """Java SignalService 가 signal:sector:{sector} 에 기록하는 1시간 카운터를 읽는다."""
     if not sector:
@@ -460,6 +529,110 @@ async def get_market_index_exp_flu_rt(rdb) -> dict:
         }
     except Exception:
         return {"kospi_exp_flu_rt": None, "kosdaq_exp_flu_rt": None}
+
+
+async def get_market_investor_flow(rdb) -> dict:
+    """TossMarketScheduler(Java)가 캐시한 시장 전체(코스피/코스닥) 투자자별 순매수
+    금액(원)을 읽는다. Kiwoom에는 없던 데이터 — analyzer.py 프롬프트 참고정보와
+    strategy_meta.detect_market_regime()의 sideways 보정에 사용한다.
+    값이 없으면(토스 비활성/폴링 실패) 빈 dict를 반환한다."""
+    result: dict = {}
+    try:
+        raw_kospi = await rdb.get("market:kospi_investor_flow")
+        raw_kosdaq = await rdb.get("market:kosdaq_investor_flow")
+    except Exception:
+        return result
+    for market, raw in (("kospi", raw_kospi), ("kosdaq", raw_kosdaq)):
+        if not raw:
+            continue
+        try:
+            result[market] = json.loads(raw)
+        except Exception:
+            continue
+    return result
+
+
+async def get_market_index_series(rdb, market: str, *, minutes: int = 60) -> list[dict]:
+    """market:{market}_index_ts ZSET에서 최근 N분간의 분단위 지수값/등락률 시계열을
+    시간 오름차순으로 반환한다. TossMarketScheduler(Java)가 1분마다 기록한다.
+    항목: {"ts": ISO8601, "value": float, "fluRt": float}. 실패/미설정 시 빈 리스트."""
+    if not rdb or market not in ("kospi", "kosdaq"):
+        return []
+    key = f"market:{market}_index_ts"
+    min_score = time.time() - minutes * 60
+    try:
+        raw_items = await rdb.zrangebyscore(key, min_score, "+inf")
+    except Exception:
+        return []
+    result: list[dict] = []
+    for raw in raw_items:
+        try:
+            result.append(json.loads(raw))
+        except Exception:
+            continue
+    return result
+
+
+async def get_market_investor_flow_series(rdb, market: str, *, minutes: int = 60) -> list[dict]:
+    """market:{market}_investor_flow_ts ZSET에서 최근 N분간의 투자자별 순매수 스냅샷
+    시계열(시간 오름차순)을 반환한다. investor-trading API는 1d 집계만 제공하므로
+    각 항목은 "당일 누적치의 그 시점 스냅샷"이며, 연속 항목의 차이가 곧 그 구간의
+    순매수 유입량이다. 실패/미설정 시 빈 리스트."""
+    if not rdb or market not in ("kospi", "kosdaq"):
+        return []
+    key = f"market:{market}_investor_flow_ts"
+    min_score = time.time() - minutes * 60
+    try:
+        raw_items = await rdb.zrangebyscore(key, min_score, "+inf")
+    except Exception:
+        return []
+    result: list[dict] = []
+    for raw in raw_items:
+        try:
+            result.append(json.loads(raw))
+        except Exception:
+            continue
+    return result
+
+
+def summarize_market_flow_trend(series: list[dict]) -> dict:
+    """get_market_investor_flow_series()가 반환한 시간 오름차순 시계열에서 창구간
+    추세를 요약한다. 각 스냅샷이 '당일 누적치의 그 시점 값'이므로 최신-최초 델타가
+    곧 그 구간에 새로 유입/유출된 순매수 금액이다. 표본이 2개 미만이면 빈 dict —
+    참고정보일 뿐 어떤 게이트에도 쓰이지 않는다(순수 함수, I/O 없음)."""
+    if len(series) < 2:
+        return {}
+    first, last = series[0], series[-1]
+
+    def _delta(field: str) -> float | None:
+        try:
+            return round(float(last.get(field) or 0) - float(first.get(field) or 0), 0)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "sample_count": len(series),
+        "window_start_ts": first.get("ts"),
+        "window_end_ts": last.get("ts"),
+        "foreigner_net_delta": _delta("foreigner_net"),
+        "institution_net_delta": _delta("institution_net"),
+        "latest_foreigner_net": last.get("foreigner_net"),
+        "latest_institution_net": last.get("institution_net"),
+    }
+
+
+async def get_runtime_flag(rdb, name: str, default: bool) -> bool:
+    """대시보드가 flags:{name} 에 저장한 런타임 오버라이드가 있으면 그 값을, 없으면 env 기본값을 반환."""
+    if rdb is None:
+        return default
+    try:
+        raw = await rdb.get(f"flags:{name}")
+    except Exception:
+        return default
+    if raw is None:
+        return default
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+    return text.strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def get_stock_market_cap(rdb, stk_cd: str) -> int | None:

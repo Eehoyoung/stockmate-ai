@@ -423,7 +423,7 @@ class TestGetStrengthWithStatus:
 
 class TestHoldMonitorWatchlist:
     def test_push_hold_monitor_queue_tracks_watchlist_code(self):
-        rdb = _make_rdb(hset=1, zadd=1, expire=True, sadd=1)
+        rdb = _make_rdb(zscore=None, hget=None, hset=1, zadd=1, expire=True, sadd=1)
         payload = {"strategy": "S8_GOLDEN_CROSS", "stk_cd": "005930", "action": "HOLD"}
 
         from redis_reader import HOLD_MONITOR_TTL_SEC, push_hold_monitor_queue
@@ -433,6 +433,40 @@ class TestHoldMonitorWatchlist:
         assert key == "S8_GOLDEN_CROSS:005930"
         rdb.sadd.assert_awaited_once_with("hold_monitor:watchlist", "005930")
         rdb.expire.assert_any_await("hold_monitor:watchlist", HOLD_MONITOR_TTL_SEC)
+        stored = json.loads(rdb.hset.await_args.args[2])
+        assert stored["hold_monitor_last_ai_at"] >= stored["hold_monitor_enqueued_at"]
+
+    def test_duplicate_watch_refresh_preserves_original_schedule_and_age(self):
+        existing = {
+            "strategy": "S11_FRGN_CONT",
+            "stk_cd": "005930",
+            "hold_monitor_enqueued_at": 100.0,
+            "hold_monitor_next_check_at": 160.0,
+        }
+        rdb = _make_rdb(
+            zscore=160.0,
+            hget=json.dumps(existing),
+            hset=1,
+            zadd=1,
+            expire=True,
+            sadd=1,
+        )
+
+        from redis_reader import push_hold_monitor_queue
+
+        _run(push_hold_monitor_queue(rdb, {
+            "strategy": "S11_FRGN_CONT",
+            "stk_cd": "005930",
+            "cntr_strength": 135.0,
+        }))
+
+        stored = json.loads(rdb.hset.await_args.args[2])
+        assert stored["hold_monitor_enqueued_at"] == 100.0
+        assert stored["hold_monitor_next_check_at"] == 160.0
+        assert stored["cntr_strength"] == 135.0
+        rdb.zadd.assert_awaited_once_with(
+            "hold_monitor_queue", {"S11_FRGN_CONT:005930": 160.0}
+        )
 
     def test_clear_hold_monitor_queue_deletes_watchlist(self):
         rdb = _make_rdb(delete=1)
@@ -445,3 +479,118 @@ class TestHoldMonitorWatchlist:
         assert "hold_monitor_queue" in deleted
         assert "hold_monitor:items" in deleted
         assert "hold_monitor:watchlist" in deleted
+
+
+# ──────────────────────────────────────────────────────────────────
+# get_market_index_series / get_market_investor_flow_series 테스트
+# (TossMarketScheduler.java가 1분마다 ZADD하는 market:{market}_index_ts /
+#  market:{market}_investor_flow_ts를 읽는 Python 쪽 헬퍼)
+# ──────────────────────────────────────────────────────────────────
+
+class TestGetMarketIndexSeries:
+    def test_returns_parsed_items_in_ascending_order(self):
+        items = [
+            json.dumps({"ts": "2026-08-11T09:01:00+09:00", "value": 3200.1, "fluRt": 0.12}),
+            json.dumps({"ts": "2026-08-11T09:02:00+09:00", "value": 3201.5, "fluRt": 0.16}),
+        ]
+        rdb = _make_rdb(zrangebyscore=items)
+
+        from redis_reader import get_market_index_series
+
+        result = _run(get_market_index_series(rdb, "kospi", minutes=30))
+
+        assert [r["value"] for r in result] == [3200.1, 3201.5]
+        rdb.zrangebyscore.assert_awaited_once()
+        assert rdb.zrangebyscore.await_args.args[0] == "market:kospi_index_ts"
+
+    def test_invalid_market_returns_empty_without_calling_redis(self):
+        rdb = MagicMock()
+        rdb.zrangebyscore = AsyncMock(return_value=[])
+
+        from redis_reader import get_market_index_series
+
+        result = _run(get_market_index_series(rdb, "kospi200", minutes=30))
+
+        assert result == []
+        rdb.zrangebyscore.assert_not_called()
+
+    def test_redis_failure_returns_empty_list(self):
+        rdb = MagicMock()
+        rdb.zrangebyscore = AsyncMock(side_effect=Exception("boom"))
+
+        from redis_reader import get_market_index_series
+
+        result = _run(get_market_index_series(rdb, "kosdaq"))
+
+        assert result == []
+
+    def test_malformed_json_entries_are_skipped(self):
+        rdb = _make_rdb(zrangebyscore=["not-json", json.dumps({"ts": "t", "value": 1.0, "fluRt": 0.0})])
+
+        from redis_reader import get_market_index_series
+
+        result = _run(get_market_index_series(rdb, "kospi"))
+
+        assert len(result) == 1
+        assert result[0]["value"] == 1.0
+
+
+class TestGetMarketInvestorFlowSeries:
+    def test_returns_parsed_snapshots(self):
+        items = [
+            json.dumps({"ts": "2026-08-11T09:01:00+09:00", "foreigner_net": 100}),
+            json.dumps({"ts": "2026-08-11T09:02:00+09:00", "foreigner_net": 150}),
+        ]
+        rdb = _make_rdb(zrangebyscore=items)
+
+        from redis_reader import get_market_investor_flow_series
+
+        result = _run(get_market_investor_flow_series(rdb, "kosdaq", minutes=15))
+
+        assert [r["foreigner_net"] for r in result] == [100, 150]
+        assert rdb.zrangebyscore.await_args.args[0] == "market:kosdaq_investor_flow_ts"
+
+    def test_none_rdb_returns_empty(self):
+        from redis_reader import get_market_investor_flow_series
+
+        result = _run(get_market_investor_flow_series(None, "kospi"))
+
+        assert result == []
+
+
+class TestSummarizeMarketFlowTrend:
+    def test_computes_delta_between_first_and_last_snapshot(self):
+        from redis_reader import summarize_market_flow_trend
+
+        series = [
+            {"ts": "2026-08-11T09:00:00+09:00", "foreigner_net": 1000, "institution_net": 500},
+            {"ts": "2026-08-11T09:15:00+09:00", "foreigner_net": 1000, "institution_net": 500},
+            {"ts": "2026-08-11T09:30:00+09:00", "foreigner_net": 1500, "institution_net": 200},
+        ]
+
+        result = summarize_market_flow_trend(series)
+
+        assert result["sample_count"] == 3
+        assert result["foreigner_net_delta"] == 500
+        assert result["institution_net_delta"] == -300
+        assert result["latest_foreigner_net"] == 1500
+        assert result["window_start_ts"] == "2026-08-11T09:00:00+09:00"
+        assert result["window_end_ts"] == "2026-08-11T09:30:00+09:00"
+
+    def test_fewer_than_two_samples_returns_empty(self):
+        from redis_reader import summarize_market_flow_trend
+
+        assert summarize_market_flow_trend([]) == {}
+        assert summarize_market_flow_trend([{"foreigner_net": 1}]) == {}
+
+    def test_malformed_values_yield_none_delta(self):
+        from redis_reader import summarize_market_flow_trend
+
+        series = [
+            {"ts": "t1", "foreigner_net": "not-a-number"},
+            {"ts": "t2", "foreigner_net": 100},
+        ]
+
+        result = summarize_market_flow_trend(series)
+
+        assert result["foreigner_net_delta"] is None

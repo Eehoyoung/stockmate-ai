@@ -4,7 +4,29 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from scorer import MIN_SCORE, rule_score, get_claude_threshold, should_skip_ai, _safe_float
+from unittest.mock import AsyncMock
+from scorer import MIN_SCORE, check_daily_limit, rule_score, get_claude_threshold, should_skip_ai, _safe_float
+
+
+@pytest.mark.asyncio
+async def test_hold_recheck_daily_budget_uses_separate_redis_key():
+    rdb = AsyncMock()
+    rdb.eval.return_value = [1, 1]
+
+    assert await check_daily_limit(rdb, scope="hold_recheck") is True
+
+    key = rdb.eval.await_args.args[2]
+    assert key.startswith("claude:daily_hold_recheck_calls:")
+    assert rdb.eval.await_args.args[3] == 150
+
+
+@pytest.mark.asyncio
+async def test_daily_budget_rejection_does_not_increment_counter():
+    rdb = AsyncMock()
+    rdb.eval.return_value = [0, 100]
+
+    assert await check_daily_limit(rdb) is False
+    rdb.incr.assert_not_awaited()
 
 
 # ??????????????????????????????????????????????????????????????????
@@ -642,6 +664,31 @@ class TestThresholdAndSkipAi:
 # ??????????????????????????????????????????????????????????????????
 
 class TestCommonPenalties:
+    def test_acc_trade_amount_penalty_uses_million_krw_unit(self):
+        signal = _signal("S15_MOMENTUM_ALIGN", score=55, cond_count=3, rsi=55)
+        low_ctx = _ctx(strength=120, flu_rt=2.0, bid_ratio=1.5)
+        high_ctx = _ctx(strength=120, flu_rt=2.0, bid_ratio=1.5)
+        low_ctx["tick"]["acc_trde_prica"] = "999"    # 9.99억원
+        high_ctx["tick"]["acc_trde_prica"] = "1000"  # 10억원
+
+        _, low_components = rule_score(signal, low_ctx)
+        _, high_components = rule_score(signal, high_ctx)
+
+        assert low_components["risk_penalty"] == high_components["risk_penalty"] - 10.0
+        assert high_components["acc_trde_prica_eok"] == 10.0
+
+    def test_missing_acc_trade_amount_does_not_add_liquidity_penalty(self):
+        signal = _signal("S15_MOMENTUM_ALIGN", score=55, cond_count=3, rsi=55)
+        missing_ctx = _ctx(strength=120, flu_rt=2.0, bid_ratio=1.5)
+        high_ctx = _ctx(strength=120, flu_rt=2.0, bid_ratio=1.5)
+        high_ctx["tick"]["acc_trde_prica"] = "1000"
+
+        _, missing_components = rule_score(signal, missing_ctx)
+        _, high_components = rule_score(signal, high_ctx)
+
+        assert missing_components["risk_penalty"] == high_components["risk_penalty"]
+        assert missing_components["acc_trde_prica_eok"] is None
+
     def test_unknown_strategy_zero_score(self):
         signal = _signal("UNKNOWN_STRATEGY")
         ctx = _ctx()
@@ -663,6 +710,36 @@ class TestCommonPenalties:
         score, _ = rule_score(signal, {})
         assert isinstance(score, float)
         assert 0.0 <= score <= 100.0
+
+
+class TestMarketRegimeDetection:
+    def test_regime_uses_stocks_own_market_not_kospi_kosdaq_average(self):
+        # KOSPI +1.0% / KOSDAQ -1.0%: averaging both indices would land on
+        # "sideways" (avg=0.0), but a KOSPI stock should be judged against
+        # KOSPI alone, which is a clean "bull" (>=0.5%).
+        signal = _signal("S8_GOLDEN_CROSS", score=60)
+        ctx = _ctx(strength=120, flu_rt=2.0, bid_ratio=1.5)
+        ctx["kospi_flu_rt"] = 1.0
+        ctx["kosdaq_flu_rt"] = -1.0
+        ctx["market_type"] = "001"
+
+        _, components = rule_score(signal, ctx)
+
+        assert components["regime"] == "bull"
+        # S8_GOLDEN_CROSS is in the bull-aligned strategy set -> +5pt bonus,
+        # not the +3pt "sideways" bonus the old average-based logic gave it.
+        assert components["regime_bonus"] == 5.0
+
+    def test_regime_falls_back_to_average_when_market_type_missing(self):
+        signal = _signal("S8_GOLDEN_CROSS", score=60)
+        ctx = _ctx(strength=120, flu_rt=2.0, bid_ratio=1.5)
+        ctx["kospi_flu_rt"] = 1.0
+        ctx["kosdaq_flu_rt"] = -1.0
+
+        _, components = rule_score(signal, ctx)
+
+        assert components["regime"] == "sideways"
+        assert components["regime_bonus"] == 3.0
 
 
 class TestSwingScoreBoosts:

@@ -70,13 +70,16 @@ async def get_active_position(pool, stk_cd: str) -> Optional[dict]:
         rows = await pool.fetch(
             """
             SELECT id, stk_cd, stk_nm, strategy, market_type, entry_price, tp1_price, tp2_price, sl_price,
-                   signal_status, exit_type, created_at, executed_at,
+                   signal_status, exit_type, created_at, executed_at, entry_qty, remaining_qty,
                    position_status, entry_at, tp1_hit_at, peak_price, trailing_pct, trailing_activation,
                    trailing_basis, strategy_version, time_stop_type, time_stop_minutes, time_stop_session,
                    monitor_enabled, is_overnight, overnight_verdict, overnight_score
             FROM trading_signals
             WHERE stk_cd = $1
               AND position_status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+              AND executed_at IS NOT NULL
+              AND COALESCE(entry_qty, 0) > 0
+              AND COALESCE(remaining_qty, entry_qty, 0) > 0
               AND COALESCE(monitor_enabled, TRUE) = TRUE
             ORDER BY COALESCE(entry_at, executed_at, created_at) DESC
             """,
@@ -96,9 +99,13 @@ async def count_active_positions(pool) -> int:
     try:
         rows = await pool.fetch(
             """
-            SELECT id, signal_status, exit_type, position_status, monitor_enabled
+            SELECT id, signal_status, exit_type, position_status, monitor_enabled,
+                   executed_at, entry_qty, remaining_qty
             FROM trading_signals
             WHERE position_status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+              AND executed_at IS NOT NULL
+              AND COALESCE(entry_qty, 0) > 0
+              AND COALESCE(remaining_qty, entry_qty, 0) > 0
             """
         )
         count = 0
@@ -150,12 +157,15 @@ async def get_active_positions(pool) -> list[dict]:
                 id, stk_cd, stk_nm, strategy, market_type,
                 entry_price, tp1_price, tp2_price, sl_price,
                 tp_method, sl_method, rr_ratio,
-                signal_status, exit_type, created_at, executed_at,
+                signal_status, exit_type, created_at, executed_at, entry_qty, remaining_qty,
                 position_status, entry_at, tp1_hit_at, peak_price, trailing_pct, trailing_activation,
                 trailing_basis, strategy_version, time_stop_type, time_stop_minutes, time_stop_session,
                 monitor_enabled, is_overnight, overnight_verdict, overnight_score
             FROM trading_signals
             WHERE position_status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+              AND executed_at IS NOT NULL
+              AND COALESCE(entry_qty, 0) > 0
+              AND COALESCE(remaining_qty, entry_qty, 0) > 0
               AND COALESCE(monitor_enabled, TRUE) = TRUE
             ORDER BY COALESCE(entry_at, executed_at, created_at)
             """

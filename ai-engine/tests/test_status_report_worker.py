@@ -1,6 +1,7 @@
 import asyncio
+import json
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from status_report_worker import KST, _next_report_slot
 
@@ -62,3 +63,24 @@ def test_s2_worker_status_is_loaded_from_redis_hash():
 
     assert result == {"last_event": "published"}
     rdb.hgetall.assert_awaited_once_with("status:s2_vi_watch_worker")
+
+
+def test_published_status_report_has_distinct_logical_slot():
+    from status_report_worker import _publish_status_report
+
+    rdb = AsyncMock()
+    rdb.llen.return_value = 0
+    rdb.hgetall.return_value = {}
+    rdb.type.return_value = "none"
+    rdb.get.return_value = None
+    rdb.keys.return_value = []
+    report_time = kst_datetime(2026, 8, 3, 12, 0, 0)
+
+    with patch("status_report_worker.datetime") as dt:
+        dt.now.return_value = report_time
+        asyncio.get_event_loop().run_until_complete(_publish_status_report(rdb))
+
+    payload = json.loads(rdb.lpush.await_args.args[1])
+    assert payload["type"] == "STATUS_REPORT"
+    assert payload["logical_slot"] == "12:00"
+    assert payload["timestamp"].startswith("2026-08-03T12:00:00")

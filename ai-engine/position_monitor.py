@@ -186,8 +186,6 @@ REVERSAL_CLAUDE_ENABLED = os.getenv("REVERSAL_CLAUDE_ENABLED", "true").lower() =
 # 포지션당 Claude 호출 쿨다운 (초) — 동일 포지션에 연속 호출 방지
 _CLAUDE_CALL_COOLDOWN   = int(os.getenv("REVERSAL_CLAUDE_COOLDOWN_SEC", "120"))
 REDIS_TOKEN_KEY         = "kiwoom:token"
-SELL_RECO_QUEUE_KEY     = os.getenv("SELL_RECOMMENDATION_QUEUE", "ai_scored_queue")
-SELL_RECO_DEDUP_TTL_SEC = int(os.getenv("SELL_RECOMMENDATION_DEDUP_TTL_SEC", "43200"))
 
 # {position_id: last_claude_call_ts}
 _last_claude_call: dict[int, float] = {}
@@ -284,13 +282,6 @@ async def _check_position(rdb, pg_pool, pos: dict):
     # ── 1. SL_HIT ────────────────────────────────────────────
     if sl_price > 0 and cur_prc <= sl_price:
         pnl_pct = _pnl(entry_price, cur_prc)
-        await _publish_sell_recommendation(
-            rdb, pos, cur_prc, "SL", pnl_pct,
-            trigger_price=sl_price,
-            urgent=True,
-            partial=False,
-            reassessment=reassessment,
-        )
         ok = await close_open_position(
             pg_pool, position_id,
             signal_id=signal_id,
@@ -319,14 +310,6 @@ async def _check_position(rdb, pg_pool, pos: dict):
             "time_stop_minutes": pos.get("time_stop_minutes"),
             "time_stop_session": pos.get("time_stop_session"),
         }
-        await _publish_sell_recommendation(
-            rdb, pos, cur_prc, "TIME_STOP", pnl_pct,
-            trigger_price=cur_prc,
-            urgent=False,
-            partial=False,
-            reassessment=reassessment,
-            extra=extra,
-        )
         ok = await close_open_position(
             pg_pool, position_id,
             signal_id=signal_id,
@@ -348,14 +331,6 @@ async def _check_position(rdb, pg_pool, pos: dict):
                 trailing_threshold = int(peak_price * (1.0 - trailing_pct / 100.0))
                 if cur_prc <= trailing_threshold:
                     pnl_pct = _pnl(entry_price, cur_prc)
-                    await _publish_sell_recommendation(
-                        rdb, pos, cur_prc, "TRAILING", pnl_pct,
-                        trigger_price=trailing_threshold,
-                        urgent=True,
-                        partial=False,
-                        reassessment=reassessment,
-                        extra={"peak_price": peak_price, "trailing_pct": trailing_pct},
-                    )
                     ok = await close_open_position(
                         pg_pool, position_id,
                         signal_id=signal_id,
@@ -379,13 +354,6 @@ async def _check_position(rdb, pg_pool, pos: dict):
             realized_pnl_pct=pnl_pct,
         )
         if ok:
-            await _publish_sell_recommendation(
-                rdb, pos, cur_prc, "TP", pnl_pct,
-                trigger_price=tp1_price,
-                urgent=False,
-                partial=False,
-                reassessment=reassessment,
-            )
             await _publish_sell(rdb, pos, cur_prc, "TP1_HIT", pnl_pct, partial=False)
         return
 
@@ -399,14 +367,6 @@ async def _check_position(rdb, pg_pool, pos: dict):
         trailing_threshold = int(peak_price * (1.0 - trailing_pct / 100.0))
         if cur_prc <= trailing_threshold:
             pnl_pct = _pnl(entry_price, cur_prc)
-            await _publish_sell_recommendation(
-                rdb, pos, cur_prc, "TRAILING", pnl_pct,
-                trigger_price=trailing_threshold,
-                urgent=True,
-                partial=False,
-                reassessment=reassessment,
-                extra={"peak_price": peak_price, "trailing_pct": trailing_pct},
-            )
             ok = await close_open_position(
                 pg_pool, position_id,
                 signal_id=signal_id,
@@ -512,95 +472,6 @@ async def _load_reassessment(rdb, position_id: int) -> dict:
     except Exception as exc:
         logger.debug("[PosMon] reassessment load failed position_id=%s: %s", position_id, exc)
         return {}
-
-
-async def _publish_sell_recommendation(
-    rdb,
-    pos: dict,
-    cur_prc: int,
-    recommendation_type: str,
-    pnl_pct: float,
-    *,
-    trigger_price: int,
-    urgent: bool,
-    partial: bool,
-    reassessment: dict | None = None,
-    extra: dict | None = None,
-):
-    position_id = pos["id"]
-    dedup_key = f"sell_reco_dedup:{position_id}:{recommendation_type}"
-    try:
-        is_new = await rdb.set(dedup_key, "1", nx=True, ex=SELL_RECO_DEDUP_TTL_SEC)
-    except Exception as exc:
-        logger.debug("[PosMon] sell recommendation dedup failed position_id=%s type=%s: %s",
-                     position_id, recommendation_type, exc)
-        is_new = True
-    if not is_new:
-        return
-
-    stk_nm = pos.get("stk_nm", "")
-    if not stk_nm:
-        try:
-            token = await rdb.get(REDIS_TOKEN_KEY)
-            if token:
-                stk_nm = await fetch_stk_nm(rdb, token, pos["stk_cd"])
-        except Exception as exc:
-            logger.debug("[PosMon] stk_nm lookup failed [%s]: %s", pos["stk_cd"], exc)
-
-    reason_summary = _build_recommendation_reason(recommendation_type, reassessment or {}, extra or {})
-    payload = {
-        "type": "SELL_RECOMMENDATION",
-        "action": "SELL_RECOMMENDATION",
-        "recommendation_type": recommendation_type,
-        "position_id": position_id,
-        "signal_id": pos.get("signal_id"),
-        "stk_cd": pos["stk_cd"],
-        "stk_nm": stk_nm,
-        "strategy": pos.get("strategy", ""),
-        "entry_price": pos.get("entry_price"),
-        "cur_prc": cur_prc,
-        "trigger_price": trigger_price,
-        "sl_price": pos.get("sl_price"),
-        "tp1_price": pos.get("tp1_price"),
-        "tp2_price": pos.get("tp2_price"),
-        "realized_pnl_pct": round(pnl_pct, 4),
-        "partial": partial,
-        "urgent": urgent,
-        "reason_summary": reason_summary,
-        "trend_state": (reassessment or {}).get("trend_state"),
-        "momentum_state": (reassessment or {}).get("momentum_state"),
-        "exit_bias": (reassessment or {}).get("exit_bias"),
-        "timestamp": datetime.now(KST).isoformat(),
-    }
-    if extra:
-        payload.update(extra)
-
-    try:
-        serialized = json.dumps(payload, ensure_ascii=False, default=str)
-        await rdb.lpush(SELL_RECO_QUEUE_KEY, serialized)
-        await rdb.expire(SELL_RECO_QUEUE_KEY, 43200)
-        logger.info("[PosMon] SELL_RECOMMENDATION published stk_cd=%s type=%s partial=%s urgent=%s",
-                    pos["stk_cd"], recommendation_type, partial, urgent)
-    except Exception as exc:
-        logger.error("[PosMon] SELL_RECOMMENDATION publish failed stk_cd=%s: %s", pos["stk_cd"], exc)
-
-
-def _build_recommendation_reason(recommendation_type: str, reassessment: dict, extra: dict) -> str:
-    base_map = {
-        "TP1": "TP1 도달로 부분매도 추천",
-        "SL": "손절가 이탈로 즉시 손절 추천",
-        "TRAILING": "트레일링 스탑 발동으로 잔여 물량 매도 추천",
-        "TIME_STOP": "시간 손절 기준 도달로 포지션 정리 추천",
-    }
-    parts = [base_map.get(recommendation_type, recommendation_type)]
-    summary = reassessment.get("reason_summary")
-    if summary:
-        parts.append(summary)
-    if recommendation_type == "TRAILING" and extra.get("peak_price") and extra.get("trailing_pct") is not None:
-        parts.append(f"고점 {int(extra['peak_price']):,}원 대비 {float(extra['trailing_pct']):.1f}% 하락")
-    if recommendation_type == "TIME_STOP" and extra.get("time_stop_reason"):
-        parts.append(str(extra["time_stop_reason"]))
-    return " / ".join(parts)
 
 
 async def _publish_sell(

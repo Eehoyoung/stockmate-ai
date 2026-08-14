@@ -248,3 +248,67 @@ def test_invalid_tp_sl_geometry_remains_hard_skip():
     assert result.rr_ratio == 0.0
     assert result.skip_entry is True
     assert "strategy advisory min_rr" not in (result.rr_skip_reason or "")
+
+
+def test_s11_frgn_cont_swing_low_near_price_respects_min_sl_gap():
+    """S11: swing_low가 진입가의 99.8% (0.2% 이내)에 있어도 SL이 진입가 대비
+    최소 2% 이격을 유지해야 한다.
+
+    2026-08-05 운영 관측: SL이 진입가 대비 0.1~0.2%만 떨어져 있어 rr_ratio가
+    10~28배로 튀는 이상치가 다수 발생 (예: 255440 rr_ratio=28.70, 365330
+    rr_ratio=14.87). swing_low fallback 분기(ma20_gap > 6%)에서 `swing_lows[0]`
+    이 cur_prc에 얼마나 가까운지에 대한 하한이 없던 것이 원인.
+    """
+    cur_prc = 10000.0
+    # 단일 국소 저점(local min)이 cur_prc*0.998 지점에 위치하도록 구성
+    # (다른 인덱스는 단조 증감이라 find_swing_lows가 이 지점만 후보로 반환한다)
+    lows = [
+        9999, 9997, 9995, 9993, 9991, 9989, 9987, 9985,
+        9980,  # local min == cur_prc * 0.998
+        9985, 9987, 9989, 9991, 9993, 9995, 9997, 9999,
+    ]
+    highs = [10050] * len(lows)
+    closes = [cur_prc] * len(lows)
+
+    result = calc_tp_sl(
+        strategy="S11_FRGN_CONT",
+        cur_prc=cur_prc,
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        stk_cd="005930",
+        ma20=cur_prc * 0.90,  # MA20 gap(10%) > 6% → swing_low fallback 분기 사용
+    )
+
+    payload = result.to_signal_fields()
+    sl_gap_pct = (cur_prc - payload["sl_price"]) / cur_prc
+
+    assert sl_gap_pct >= 0.0199  # 최소 2% 이격 (정수 반올림 오차 허용)
+    assert "min_gap" in payload["sl_method"]
+    # 회귀 방지: 예전 로직대로면 sl_price ≈ 9880 (gap 1.2%) → rr_ratio가
+    # 비정상적으로 커졌던 원인. 이제는 최소 이격이 강제되어야 한다.
+    assert payload["rr_ratio"] < 10.0
+
+
+def test_s11_frgn_cont_ma20_branch_also_respects_min_sl_gap():
+    """S11: MA20 분기(ma20_gap<=6%)에서도 MA20이 진입가보다 높은 경우
+    (돌파 직후 재차 눌림) SL이 최소 2% 이격을 벗어나지 않는지 확인."""
+    cur_prc = 10000.0
+    lows = [9500.0] * 10
+    highs = [10500.0] * 10
+    closes = [cur_prc] * 10
+
+    result = calc_tp_sl(
+        strategy="S11_FRGN_CONT",
+        cur_prc=cur_prc,
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        stk_cd="005930",
+        ma20=cur_prc * 1.01,  # MA20이 진입가보다 살짝 위 → ma20*0.98 이 지나치게 타이트
+    )
+
+    payload = result.to_signal_fields()
+    sl_gap_pct = (cur_prc - payload["sl_price"]) / cur_prc
+
+    assert sl_gap_pct >= 0.0199

@@ -71,7 +71,7 @@ async def run_health_server(port: int, rdb) -> None:
             "session_controls": {
                 "strategy_session_filter": _env_flag("ENABLE_STRATEGY_SESSION_FILTER"),
                 "strategy_session_dry_run": _env_flag("STRATEGY_SESSION_DRY_RUN"),
-                "strategy_session_fail_open": _env_flag("STRATEGY_SESSION_FAIL_OPEN", "true"),
+                "strategy_session_fail_open": _env_flag("STRATEGY_SESSION_FAIL_OPEN", "false"),
                 "session_enter_guard": _env_flag("SESSION_ENTER_GUARD_ENABLED"),
                 "bypass_market_hours": _env_flag("BYPASS_MARKET_HOURS"),
             },
@@ -83,7 +83,7 @@ async def run_health_server(port: int, rdb) -> None:
 
     async def _candidates_handler(request):
         markets = ["001", "101"]
-        strategies = [f"s{n}" for n in range(1, 16)]
+        strategies = [f"s{n}" for n in range(1, 17)]
         pool_status = {}
         try:
             for strategy in strategies:
@@ -99,6 +99,23 @@ async def run_health_server(port: int, rdb) -> None:
             "total_candidates": sum(pool_status.values()),
             "pools": pool_status,
         })
+
+    async def _strategy_run_handler(request):
+        """관리자 대시보드의 '전략 수동 실행' 패널이 호출하는 엔드포인트.
+        S8/S9/S11/S13~S16처럼 Java api-orchestrator에 대응 /run 엔드포인트가 없는
+        Python 전용 전략을 즉시 1회 스캔한다. api-orchestrator가 서버사이드로 프록시한다."""
+        from strategy_runner import run_manual_scan
+
+        code = request.match_info.get("code", "").strip()
+        try:
+            result = await run_manual_scan(rdb, code)
+        except Exception as e:
+            logger.error("[Health] /strategy/%s/run error: %s", code, e)
+            return web.json_response({"error": str(e)}, status=500)
+
+        if "error" in result:
+            return web.json_response(result, status=400)
+        return web.json_response(result)
 
     async def _analyze_handler(request):
         from claude_analyst import analyze_stock_for_user
@@ -125,29 +142,49 @@ async def run_health_server(port: int, rdb) -> None:
         enable_ai = request.rel_url.query.get("ai", "true").lower() != "false"
         refresh = request.rel_url.query.get("refresh", "false").lower() in {"1", "true", "yes", "on"}
         cache_ttl = int(os.getenv("SCORE_COMMAND_CACHE_TTL_SEC", "60"))
-        cache_key = f"score:command:{stk_cd}:ai:{str(enable_ai).lower()}"
+        claude_cache_key = f"score:command:claude:{stk_cd}"
         try:
-            if not refresh and cache_ttl > 0:
-                cached = await rdb.get(cache_key)
-                if cached:
-                    if isinstance(cached, bytes):
-                        cached = cached.decode("utf-8")
-                    data = json.loads(cached)
-                    data["used_cache"] = True
-                    return web.json_response(
-                        data,
-                        dumps=lambda o: json.dumps(o, ensure_ascii=False, default=str),
-                    )
-
             if enable_ai:
-                score_result, claude_result = await asyncio.gather(
-                    score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai),
-                    analyze_stock_for_user(rdb, stk_cd),
-                    return_exceptions=True,
-                )
+                claude_used_cache = False
+                cached = None
+                try:
+                    if not refresh and cache_ttl > 0:
+                        cached = await rdb.get(claude_cache_key)
+                    if cached:
+                        if isinstance(cached, bytes):
+                            cached = cached.decode("utf-8")
+                        loaded = json.loads(cached)
+                        if isinstance(loaded, dict):
+                            claude_result = loaded
+                            claude_used_cache = True
+                        else:
+                            claude_result = None
+                    else:
+                        claude_result = None
+                except Exception as exc:
+                    logger.debug("[Health] /score/%s claude cache read failed: %s", stk_cd, exc)
+                    cached = None
+                    claude_used_cache = False
+                    claude_result = None
+
+                if claude_used_cache:
+                    try:
+                        score_result = await score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai)
+                    except Exception as exc:
+                        score_result = exc
+                else:
+                    score_result, claude_result = await asyncio.gather(
+                        score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai),
+                        analyze_stock_for_user(rdb, stk_cd),
+                        return_exceptions=True,
+                    )
             else:
-                score_result = await score_stock_strategies(stk_cd, rdb, enable_ai=False)
+                try:
+                    score_result = await score_stock_strategies(stk_cd, rdb, enable_ai=False)
+                except Exception as exc:
+                    score_result = exc
                 claude_result = {}
+                claude_used_cache = False
             if isinstance(score_result, Exception):
                 logger.error("[Health] /score/%s score error: %s", stk_cd, score_result)
                 score_result = {"stk_cd": stk_cd, "results": [], "no_match": True, "error": str(score_result)}
@@ -178,12 +215,13 @@ async def run_health_server(port: int, rdb) -> None:
             else:
                 score_result["claude_full"] = {"error": "skipped_fast_mode"}
             score_result["score_mode"] = "deep" if enable_ai else "fast"
-            score_result["used_cache"] = False
-            if cache_ttl > 0 and not score_result.get("error"):
+            score_result["used_cache"] = claude_used_cache
+            score_result["cache_scope"] = "claude_only" if enable_ai else "none"
+            if enable_ai and cache_ttl > 0 and not score_result.get("error") and not claude_result.get("error") and not claude_used_cache:
                 try:
                     await rdb.set(
-                        cache_key,
-                        json.dumps(score_result, ensure_ascii=False, default=str),
+                        claude_cache_key,
+                        json.dumps(claude_result, ensure_ascii=False, default=str),
                         ex=cache_ttl,
                     )
                 except Exception as cache_error:
@@ -215,6 +253,7 @@ async def run_health_server(port: int, rdb) -> None:
     app = web.Application()
     app.router.add_get("/health", _health_handler)
     app.router.add_get("/candidates", _candidates_handler)
+    app.router.add_post("/strategy/{code}/run", _strategy_run_handler)
     app.router.add_get("/analyze/{stk_cd}", _analyze_handler)
     app.router.add_get("/score/{stk_cd}", _score_handler)
     app.router.add_get("/news/brief", _news_brief_handler)

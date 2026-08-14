@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -96,7 +97,7 @@ class TestQueueWorkerHappyPath:
                      "reason": "strong setup",
                  },
              ) as mock_analyze, \
-             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 
@@ -108,9 +109,40 @@ class TestQueueWorkerHappyPath:
         assert "persona" in analyzed_signal
         assert "시초가 갭" in analyzed_signal["persona"]
         assert captured[0]["persona"] == analyzed_signal["persona"]
-        assert captured[0]["rule_score"] == 75.0
+        assert captured[0]["rule_score"] == 79.17
+        assert captured[0]["shadow_feature_live"]["mode"] == "LIVE"
         assert captured[0]["ai_score"] == 81.0
         assert captured[0]["action"] == "ENTER"
+
+    def test_toss_risk_propagates_from_ctx_to_payload(self):
+        """queue_worker가 market_ctx["toss_risk"]를 최종 텔레그램 페이로드로 전달하는지
+        확인 — telegram-bot formatter._formatTossRiskLine가 소비하는 필드."""
+        item = _signal(cur_prc=10000, tp1_price=12000, sl_price=9500, rr_ratio=4.0)
+        rdb = _make_rdb(json.dumps(item))
+        captured = []
+
+        async def capture_push(_rdb, payload):
+            captured.append(payload)
+
+        ctx_with_toss = {**_ctx(), "toss_risk": {"short_selling": {"shortSellingAmountRate": "0.1"}}}
+
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=ctx_with_toss), \
+             patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
+             patch("queue_worker.should_skip_ai", return_value=False), \
+             patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
+             patch(
+                 "queue_worker.analyze_signal",
+                 new_callable=AsyncMock,
+                 return_value={"action": "ENTER", "ai_score": 81.0, "confidence": "HIGH", "reason": "ok"},
+             ), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
+            from queue_worker import process_one
+
+            result = _run(process_one(rdb))
+
+        assert result is True
+        assert captured[0]["toss_risk"] == {"short_selling": {"shortSellingAmountRate": "0.1"}}
 
     def test_enter_signal_creates_shadow_trade_record(self):
         item = _signal(entry_price=10000, cur_prc=10000, tp1_price=10800, tp2_price=11200, sl_price=9700, rr_ratio=2.6)
@@ -121,7 +153,7 @@ class TestQueueWorkerHappyPath:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
-             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
              patch(
                  "queue_worker.analyze_signal",
                  new_callable=AsyncMock,
@@ -146,16 +178,9 @@ class TestQueueWorkerHappyPath:
             result = _run(process_one(rdb, pg_pool=pg_pool))
 
         assert result is True
-        mock_shadow.assert_awaited_once()
-        kwargs = mock_shadow.await_args.kwargs
-        assert kwargs["signal_id"] == 101
-        assert kwargs["entry_price"] == 10000
-        assert kwargs["tp1_price"] == 10900
-        assert kwargs["tp2_price"] == 11300
-        assert kwargs["sl_price"] == 9600
-        assert kwargs["data_quality"] == "OK"
+        mock_shadow.assert_not_awaited()
 
-    def test_cancel_signal_creates_cancelled_shadow_trade_record(self):
+    def test_cancel_signal_does_not_create_shadow_trade_in_live_only_mode(self):
         item = _signal(entry_price=10000, cur_prc=10000, tp1_price=10800, sl_price=9700, rr_ratio=2.6)
         rdb = _make_rdb(json.dumps(item))
         pg_pool = object()
@@ -187,22 +212,19 @@ class TestQueueWorkerHappyPath:
             result = _run(process_one(rdb, pg_pool=pg_pool))
 
         assert result is True
-        mock_shadow.assert_awaited_once()
-        kwargs = mock_shadow.await_args.kwargs
-        assert kwargs["data_quality"] == "CANCEL_SHADOW"
-        assert kwargs["initial_status"] == "CANCELLED"
+        mock_shadow.assert_not_awaited()
 
     def test_resolve_bid_ratio_falls_back_to_signal_buy_sell_requests(self):
         from queue_worker import _resolve_bid_ratio
 
         ratio = _resolve_bid_ratio(
             {"buy_req": "5,233", "sel_req": "3,118"},
-            {"hoga": {}},
+            {"hoga": {}, "signal_fallback_allowed": True},
         )
 
         assert ratio == 1.678
 
-    def test_resolve_bid_ratio_prefers_explicit_signal_bid_ratio(self):
+    def test_resolve_bid_ratio_prefers_fresh_hoga_over_signal_bid_ratio(self):
         from queue_worker import _resolve_bid_ratio
 
         ratio = _resolve_bid_ratio(
@@ -210,7 +232,7 @@ class TestQueueWorkerHappyPath:
             {"hoga": {"total_buy_bid_req": "300", "total_sel_bid_req": "100"}},
         )
 
-        assert ratio == 1.55
+        assert ratio == 3.0
 
     def test_process_one_persists_ctx_bid_ratio_and_volume_alias(self):
         item = _signal(
@@ -261,11 +283,11 @@ class TestQueueWorkerHappyPath:
             result = _run(process_one(rdb))
 
         assert result is True
-        assert captured[0]["rule_score"] == 75.0
+        assert captured[0]["rule_score"] == 79.17
         assert captured[0]["execution_decision"] == "WATCH"
         assert captured[0]["action"] == "HOLD"
 
-    def test_signal_cntr_strength_is_used_for_market_ctx_and_payload(self):
+    def test_fresh_ctx_strength_outranks_signal_strength(self):
         item = _signal(cntr_strength=257.2, cur_prc=10000, tp1_price=12000, sl_price=9500, rr_ratio=4.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
@@ -287,7 +309,7 @@ class TestQueueWorkerHappyPath:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
-             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
              patch("queue_worker.analyze_signal", side_effect=fake_analyze), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
@@ -295,9 +317,9 @@ class TestQueueWorkerHappyPath:
             result = _run(process_one(rdb))
 
         assert result is True
-        assert seen_ctx["strength"] == 257.2
-        assert captured[0]["cntr_strength"] == 257.2
-        assert "257.2" in captured[0]["ai_reason"]
+        assert seen_ctx["strength"] == 120.0
+        assert captured[0]["cntr_strength"] == 120.0
+        assert "120.0" in captured[0]["ai_reason"]
 
     def test_high_score_hold_routes_to_watch_monitor(self):
         item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=2.0, bid_ratio=2.0)
@@ -311,7 +333,7 @@ class TestQueueWorkerHappyPath:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
-             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
              patch(
                  "queue_worker.analyze_signal",
                  new_callable=AsyncMock,
@@ -463,7 +485,7 @@ class TestQueueWorkerFailures:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
-             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
              patch(
                  "queue_worker.analyze_signal",
                  new_callable=AsyncMock,
@@ -488,11 +510,14 @@ class TestQueueWorkerFailures:
         item = _signal(strategy="S4_BIG_CANDLE", cntr_strength=114.9, bid_ratio=1.19)
         rdb = _make_rdb(json.dumps(item))
         captured = []
+        live_ctx = _ctx()
+        live_ctx["strength"] = 114.9
+        live_ctx["hoga"] = {"total_buy_bid_req": "119", "total_sel_bid_req": "100"}
 
         async def capture_push(_rdb, payload):
             captured.append(payload)
 
-        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+        with patch("queue_worker._build_market_ctx", new_callable=AsyncMock, return_value=live_ctx), \
              patch("queue_worker.rule_score", return_value=(80.0, {"body": 30.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock) as mock_limit, \
@@ -538,7 +563,9 @@ class TestQueueWorkerFailures:
             result = _run(process_one(rdb))
 
         assert result is True
-        mock_score_push.assert_not_awaited()
+        mock_score_push.assert_awaited_once()
+        notice = mock_score_push.await_args.args[1]
+        assert notice["type"] == "HOLD_WATCH"
         assert captured[0]["action"] == "HOLD"
         assert captured[0]["s8_zone_status"] == "caution"
         assert captured[0]["s8_zone_entry_policy"] == "momentum_chase_size_down"
@@ -663,7 +690,7 @@ class TestQueueWorkerFailures:
             result = _run(process_one(rdb))
 
         assert result is True
-        mock_score_push.assert_not_awaited()
+        mock_score_push.assert_awaited_once()
         assert captured[0]["action"] == "HOLD"
         assert captured[0]["cancel_type"] == "S8_WAIT_PULLBACK"
         assert captured[0]["s8_zone_entry_policy"] == "wait_pullback"
@@ -734,7 +761,9 @@ class TestQueueWorkerFailures:
         from queue_worker import _hard_gate_failure
 
         signal = {"strategy": "S1_GAP_OPEN", "cntr_strength": 160.0, "bid_ratio": 0.7, "rr_ratio": 1.3}
-        reason = _hard_gate_failure(signal, _ctx())
+        ctx = {"freshness": {"strength": {"state": "cancel"}, "hoga": {"state": "cancel"}},
+               "signal_fallback_allowed": True}
+        reason = _hard_gate_failure(signal, ctx)
 
         assert reason is None
         assert signal["hard_gate_bid_ratio_rescued"] is True
@@ -743,7 +772,9 @@ class TestQueueWorkerFailures:
         from queue_worker import _hard_gate_failure
 
         signal = {"strategy": "S1_GAP_OPEN", "cntr_strength": 180.0, "bid_ratio": 0.25, "rr_ratio": 2.0}
-        reason = _hard_gate_failure(signal, _ctx())
+        ctx = {"freshness": {"strength": {"state": "cancel"}, "hoga": {"state": "cancel"}},
+               "signal_fallback_allowed": True}
+        reason = _hard_gate_failure(signal, ctx)
 
         assert reason is not None
         assert "bid_ratio" in reason
@@ -753,9 +784,11 @@ class TestQueueWorkerFailures:
 
         weak_bid = {"strategy": "S1_GAP_OPEN", "cntr_strength": 180.0, "bid_ratio": 0.59, "rr_ratio": 2.0}
         pass_bid = {"strategy": "S1_GAP_OPEN", "cntr_strength": 180.0, "bid_ratio": 0.60, "rr_ratio": 2.0}
+        ctx = {"freshness": {"strength": {"state": "cancel"}, "hoga": {"state": "cancel"}},
+               "signal_fallback_allowed": True}
 
-        assert _hard_gate_failure(weak_bid, _ctx()) is not None
-        assert _hard_gate_failure(pass_bid, _ctx()) is None
+        assert _hard_gate_failure(weak_bid, ctx) is not None
+        assert _hard_gate_failure(pass_bid, ctx) is None
         assert pass_bid["hard_gate_bid_ratio_rescued"] is True
 
     def test_s1_fallback_quality_requires_live_strength_and_bid(self):
@@ -827,7 +860,7 @@ class TestQueueWorkerFailures:
                      "claude_sl": 9900,
                  },
              ), \
-             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 
@@ -856,7 +889,7 @@ class TestQueueWorkerFailures:
              patch("queue_worker.rule_score", return_value=(75.0, {"gap": 20.0})), \
              patch("queue_worker.should_skip_ai", return_value=False), \
              patch("queue_worker.check_daily_limit", new_callable=AsyncMock, return_value=True), \
-             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
              patch(
                  "queue_worker.analyze_signal",
                  new_callable=AsyncMock,
@@ -870,7 +903,7 @@ class TestQueueWorkerFailures:
                      "claude_sl": 9700,
                  },
              ), \
-             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx: payload), \
+             patch("queue_worker._apply_session_enter_guard", side_effect=lambda payload, ctx, **_kwargs: payload), \
              patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 
@@ -1438,7 +1471,7 @@ class TestFreshnessPhase0Defects:
             "tick": {"cur_prc": 50000.0},
             "freshness": {
                 "tick":     {"state": "fresh"},
-                "hoga":     {"state": "cancel"},
+                "hoga":     {"state": "fresh"},
                 "strength": {"state": "fresh"},
             },
         }
@@ -1449,6 +1482,69 @@ class TestFreshnessPhase0Defects:
         assert result_stale["quality_components"]["bid"] == 0.0
         assert result_fresh["quality_components"]["bid"] == 10.0
         assert result_stale["signal_quality_score"] < result_fresh["signal_quality_score"]
+
+
+class TestSignalFallbackAge:
+    def test_exact_age_boundary_is_allowed(self):
+        from queue_worker import _signal_age_info
+
+        info = _signal_age_info({"enqueued_at": 970.0}, now_ts=1000.0, max_age_sec=30.0)
+
+        assert info["age_sec"] == 30.0
+        assert info["fallback_allowed"] is True
+
+    def test_over_age_boundary_is_rejected(self):
+        from queue_worker import _signal_age_info
+
+        info = _signal_age_info({"enqueued_at": 969.999}, now_ts=1000.0, max_age_sec=30.0)
+
+        assert info["age_sec"] > 30.0
+        assert info["fallback_allowed"] is False
+
+    def test_missing_or_nonfinite_timestamp_is_rejected(self):
+        from queue_worker import _signal_age_info
+
+        assert _signal_age_info({}, now_ts=1000.0)["fallback_allowed"] is False
+        assert _signal_age_info({"enqueued_at": "NaN"}, now_ts=1000.0)["fallback_allowed"] is False
+
+    def test_future_timestamp_clamps_age_to_zero(self):
+        from queue_worker import _signal_age_info
+
+        info = _signal_age_info({"enqueued_at": 1001.0}, now_ts=1000.0)
+
+        assert info["age_sec"] == 0.0
+        assert info["fallback_allowed"] is True
+
+    def test_expired_signal_fields_and_cancelled_ctx_are_removed_before_scoring(self):
+        from queue_worker import _sanitize_unusable_scoring_inputs
+
+        signal = {
+            "cur_prc": 50000,
+            "flu_rt": 2.0,
+            "bid_ratio": 2.5,
+            "buy_req": 250,
+            "sel_req": 100,
+            "cntr_strength": 180.0,
+        }
+        ctx = {
+            "tick": {"cur_prc": 49900},
+            "hoga": {"total_buy_bid_req": 300, "total_sel_bid_req": 100},
+            "strength": 175.0,
+            "signal_fallback_allowed": False,
+            "freshness": {
+                "tick": {"state": "cancel"},
+                "hoga": {"state": "cancel"},
+                "strength": {"state": "cancel"},
+            },
+        }
+
+        _sanitize_unusable_scoring_inputs(ctx, signal)
+
+        assert ctx["tick"] == {}
+        assert ctx["hoga"] == {}
+        assert ctx["strength"] == 0.0
+        assert not ({"cur_prc", "flu_rt", "bid_ratio", "buy_req", "sel_req",
+                     "cntr_strength"} & signal.keys())
 
 
 class TestRefreshStaleCtxBypass:
@@ -1486,6 +1582,56 @@ class TestRefreshStaleCtxBypass:
         assert ctx["freshness"]["hoga"]["source"] == "rest"
         assert ctx["freshness"]["hoga"]["state"] == "caution"
 
+    def test_tick_signal_fallback_preserves_cumulative_trade_amount(self):
+        ctx = {
+            "tick": {
+                "cur_prc": "49900",
+                "flu_rt": "1.8",
+                "acc_trde_qty": "250000",
+                "acc_trde_prica": "12500",
+            },
+            "freshness": {
+                "tick": {"state": "cancel", "age_ms": 12000},
+                "hoga": {"state": "fresh", "age_ms": 100},
+                "strength": {"state": "fresh", "age_ms": 100},
+            },
+        }
+        signal = {"cur_prc": "50000", "flu_rt": "2.0", "enqueued_at": time.time()}
+        rdb = self._make_rdb_with_token()
+
+        with patch("queue_worker.ENABLE_SCORING_DATA_RETRY", True), \
+             patch("queue_worker.ENABLE_TICK_REST_FALLBACK", False), \
+             patch("queue_worker.ENABLE_CHART_RETRY", False):
+            from queue_worker import _refresh_stale_ctx
+            _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S8_GOLDEN_CROSS"))
+
+        assert ctx["tick"]["cur_prc"] == 50000.0
+        assert ctx["tick"]["flu_rt"] == 2.0
+        assert ctx["tick"]["acc_trde_qty"] == "250000"
+        assert ctx["tick"]["acc_trde_prica"] == "12500"
+
+    def test_stale_signal_cannot_refresh_tick(self):
+        ctx = {
+            "tick": {"cur_prc": "49900", "acc_trde_qty": "250000"},
+            "freshness": {
+                "tick": {"state": "cancel", "age_ms": 12000},
+                "hoga": {"state": "fresh", "age_ms": 100},
+                "strength": {"state": "fresh", "age_ms": 100},
+            },
+        }
+        signal = {"cur_prc": "50000", "enqueued_at": time.time() - 31.0}
+        rdb = self._make_rdb_with_token()
+
+        with patch("queue_worker.ENABLE_SCORING_DATA_RETRY", True), \
+             patch("queue_worker.ENABLE_TICK_REST_FALLBACK", False), \
+             patch("queue_worker.ENABLE_CHART_RETRY", False):
+            from queue_worker import _refresh_stale_ctx
+            _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S8_GOLDEN_CROSS"))
+
+        assert ctx["tick"]["cur_prc"] == "49900"
+        assert ctx["freshness"]["tick"]["state"] == "cancel"
+        assert "tick:signal_stale_or_undated" in ctx["refresh_meta"]["retry_failures"]
+
     def test_strength_cancel_calls_rest_not_redis(self):
         """strength state=cancel → fetch_cntr_strength_rest 호출, stale ws:strength 재사용 없음 (결함 1)"""
         ctx = {
@@ -1511,7 +1657,7 @@ class TestRefreshStaleCtxBypass:
         assert ctx["freshness"]["strength"]["source"] == "rest"
         assert ctx["strength"] == 118.0
 
-    def test_hoga_signal_bid_takes_priority_over_rest(self):
+    def test_hoga_rest_takes_priority_over_recent_signal_bid(self):
         """hoga cancel + signal에 bid_ratio 있음 → REST 호출 없이 signal fallback 사용"""
         ctx = {
             "freshness": {
@@ -1520,17 +1666,40 @@ class TestRefreshStaleCtxBypass:
                 "strength": {"state": "fresh",  "age_ms": 100},
             },
         }
-        signal = {"cur_prc": "50000", "bid_ratio": 2.5}
+        signal = {"cur_prc": "50000", "bid_ratio": 2.5, "enqueued_at": time.time()}
         rdb = self._make_rdb_with_token()
 
-        with patch("queue_worker._fetch_hoga_rest", new_callable=AsyncMock) as mock_hoga_rest, \
+        with patch("queue_worker._fetch_hoga_rest", new_callable=AsyncMock, return_value=(1.8, {"latency_ms": 50})) as mock_hoga_rest, \
              patch("queue_worker.ENABLE_SCORING_DATA_RETRY", True), \
              patch("queue_worker.ENABLE_TICK_REST_FALLBACK", False), \
              patch("queue_worker.ENABLE_CHART_RETRY", False):
             from queue_worker import _refresh_stale_ctx
             _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S7_ICHIMOKU_BREAKOUT"))
 
-        mock_hoga_rest.assert_not_awaited()
+        mock_hoga_rest.assert_awaited_once()
+        assert ctx["freshness"]["hoga"]["source"] == "rest"
+        assert ctx["hoga"]["total_buy_bid_req"] == 1.8
+
+    def test_recent_hoga_signal_is_used_only_after_rest_failure(self):
+        ctx = {
+            "freshness": {
+                "tick": {"state": "fresh", "age_ms": 100},
+                "hoga": {"state": "cancel", "age_ms": 12000},
+                "strength": {"state": "fresh", "age_ms": 100},
+            },
+        }
+        signal = {"bid_ratio": 2.5, "enqueued_at": time.time()}
+        rdb = self._make_rdb_with_token()
+
+        with patch("queue_worker._fetch_hoga_rest", new_callable=AsyncMock,
+                   return_value=(None, {"error": "empty"})) as mock_hoga_rest, \
+             patch("queue_worker.ENABLE_SCORING_DATA_RETRY", True), \
+             patch("queue_worker.ENABLE_TICK_REST_FALLBACK", False), \
+             patch("queue_worker.ENABLE_CHART_RETRY", False):
+            from queue_worker import _refresh_stale_ctx
+            _run(_refresh_stale_ctx(ctx, "005930", rdb, signal, "S7_ICHIMOKU_BREAKOUT"))
+
+        mock_hoga_rest.assert_awaited_once()
         assert ctx["freshness"]["hoga"]["source"] == "signal_fallback"
         assert ctx["hoga"]["total_buy_bid_req"] == 2.5
 

@@ -46,7 +46,7 @@ _NEWS_API_BLOCK_KEY = "claude:news_api_blocked"
 _MIN_API_BLOCK_TTL_SEC = 3600
 _MAX_API_BLOCK_TTL_SEC = 172800
 _SLOT_LABELS = {
-    "MORNING": "08:00 오전 브리핑",
+    "MORNING": "07:50 오전 브리핑",
     "MIDMORNING": "10:30 장중 오전 브리핑",
     "MIDDAY": "12:30 장중 브리핑",
     "AFTERNOON": "14:00 장중 오후 브리핑",

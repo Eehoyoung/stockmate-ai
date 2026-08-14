@@ -5,7 +5,7 @@ news_scheduler.py
 
 고정 시각에만 뉴스 수집/분석을 수행하고 Redis 및 텔레그램 브리핑 큐를 갱신한다.
 정규 브리핑 시각:
-  08:00 / 12:30 / 15:40 (평일)
+  07:50 / 10:30 / 12:30 / 14:00 / 15:40 (평일)
 """
 
 import asyncio
@@ -27,7 +27,7 @@ NEWS_ENABLED = os.getenv("NEWS_ENABLED", "true").lower() == "true"
 NEWS_LIVE_CACHE_TTL_SEC = int(os.getenv("NEWS_LIVE_CACHE_TTL_SEC", "600"))
 
 _SLOTS: list[dict[str, object]] = [
-    {"time": (8, 0), "name": "MORNING"},
+    {"time": (7, 50), "name": "MORNING"},
     {"time": (10, 30), "name": "MIDMORNING"},
     {"time": (12, 30), "name": "MIDDAY"},
     {"time": (14, 0), "name": "AFTERNOON"},
@@ -122,7 +122,7 @@ def _paragraph_bullets(value: str, limit: int = 5) -> list[str]:
 
 def _slot_header(slot_name: str) -> str:
     return {
-        "MORNING": "🧠 <b>[오전 시황 브리핑 08:00]</b>",
+        "MORNING": "🧠 <b>[오전 시황 브리핑 07:50]</b>",
         "MIDMORNING": "📍 <b>[장중 오전 브리핑 10:30]</b>",
         "MIDDAY": "📊 <b>[장중 시황 브리핑 12:30]</b>",
         "AFTERNOON": "📌 <b>[장중 오후 브리핑 14:00]</b>",

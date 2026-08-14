@@ -10,7 +10,9 @@ from market_session import (
     get_candidate_builder_session,
     is_auction_time,
     is_force_close_time,
+    is_market_holiday,
     is_market_hours,
+    is_market_open_day,
     is_pre_market,
     is_trading_active,
     is_weekday,
@@ -20,6 +22,7 @@ from market_session import (
 
 MONDAY = datetime.date(2026, 5, 4)
 SATURDAY = datetime.date(2026, 5, 2)
+CONSTITUTION_DAY_2026 = datetime.date(2026, 7, 17)
 
 
 def _at(date, hour, minute, second=0):
@@ -62,11 +65,21 @@ def test_force_close_matches_dedicated_force_close_window():
 
 def test_weekend_never_enters_trading_sessions():
     assert not is_weekday(SATURDAY)
+    assert not is_market_open_day(SATURDAY)
     assert not is_pre_market(_at(SATURDAY, 8, 30))
     assert not is_auction_time(_at(SATURDAY, 8, 30))
     assert not is_market_hours(_at(SATURDAY, 9, 0))
     assert not is_trading_active(_at(SATURDAY, 9, 0))
     assert not should_force_close(_at(SATURDAY, 14, 50))
+
+
+def test_default_holiday_never_enters_trading_sessions():
+    assert is_weekday(CONSTITUTION_DAY_2026)
+    assert is_market_holiday(CONSTITUTION_DAY_2026)
+    assert not is_market_open_day(CONSTITUTION_DAY_2026)
+    assert current_session(_at(CONSTITUTION_DAY_2026, 9, 0)) == MarketSession.CLOSED
+    assert not is_trading_active(_at(CONSTITUTION_DAY_2026, 9, 0))
+    assert not should_force_close(_at(CONSTITUTION_DAY_2026, 14, 50))
 
 
 def test_candidate_builder_session_preserves_legacy_windows():
@@ -75,10 +88,10 @@ def test_candidate_builder_session_preserves_legacy_windows():
     assert get_candidate_builder_session(datetime.time(8, 25, 1)) == "opening_recovery"
     assert get_candidate_builder_session(datetime.time(9, 4, 59)) == "opening_recovery"
     assert get_candidate_builder_session(datetime.time(9, 5)) == "intraday"
-    assert get_candidate_builder_session(datetime.time(14, 49, 59)) == "intraday"
-    assert get_candidate_builder_session(datetime.time(14, 50)) == "s12_only"
-    assert get_candidate_builder_session(datetime.time(14, 55)) == "s12_only"
-    assert get_candidate_builder_session(datetime.time(14, 55, 1)) == "idle"
+    assert get_candidate_builder_session(datetime.time(14, 29, 59)) == "intraday"
+    assert get_candidate_builder_session(datetime.time(14, 30)) == "s12_only"
+    assert get_candidate_builder_session(datetime.time(15, 10)) == "s12_only"
+    assert get_candidate_builder_session(datetime.time(15, 10, 1)) == "idle"
 
 
 def test_candidate_builder_session_keeps_weekends_idle_with_datetime():

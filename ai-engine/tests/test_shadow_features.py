@@ -24,6 +24,20 @@ def _min_candle(o=10000, h=10500, l=9800, c=10200, vol=50000):
     return _daily_candle(o, h, l, c, vol)
 
 
+def test_live_feature_adjustment_uses_observational_inputs():
+    from shadow_features import compute_live_feature_adjustment
+
+    result = compute_live_feature_adjustment({
+        "orderbook": {"imbalance_total": 0.5},
+        "relative_strength": {"rs_pct": 2.0},
+        "tick_pressure": {"buy_pressure_label": "strong"},
+        "intraday_investor_flow": {"combined_slope": 1, "latest_delta": 10},
+    })
+    assert result["mode"] == "LIVE"
+    assert result["score_adjustment"] == 15.0
+    assert result["hard_reject"] is False
+
+
 # ── compute_orderbook_imbalance ───────────────────────────────────────────────
 
 class TestOrderbookImbalance:
@@ -323,7 +337,7 @@ class TestComputeAllShadowFeatures:
         result = compute_all_shadow_features({}, {})
         assert set(result.keys()) == {
             "orderbook", "relative_strength", "tick_pressure",
-            "cvd", "anchored_vwap", "adx",
+            "cvd", "anchored_vwap", "adx", "intraday_investor_flow",
         }
 
     def test_without_candles_cvd_vwap_adx_none(self):
@@ -385,3 +399,32 @@ class TestComputeAllShadowFeatures:
         assert result["orderbook"]["imbalance_total"] > 0
         assert result["relative_strength"]["rs_trend"] == "outperform"
         assert result["tick_pressure"]["buy_pressure_label"] == "moderate"
+
+    def test_preserves_python_intraday_flow_for_shadow_analysis(self):
+        from shadow_features import compute_all_shadow_features
+
+        flow = {
+            "combined_slope": 25.0,
+            "latest_delta": 70.0,
+            "recent_reversal": True,
+            "recent_reversal_direction": "positive",
+        }
+        result = compute_all_shadow_features({"extra": {"intraday_investor_flow": flow}}, {})
+
+        assert result["intraday_investor_flow"] == flow
+
+    def test_normalizes_java_s11_flat_flow_extra(self):
+        from shadow_features import compute_all_shadow_features
+
+        result = compute_all_shadow_features({
+            "s11_flow_combined_slope": -12.5,
+            "s11_flow_latest_delta": 5.0,
+            "s11_flow_recent_reversal": True,
+            "s11_flow_recent_reversal_direction": "positive",
+            "s11_investor_flow_source": "REMOTE_SUCCESS",
+        }, {})
+
+        flow = result["intraday_investor_flow"]
+        assert flow["combined_slope"] == -12.5
+        assert flow["recent_reversal_direction"] == "positive"
+        assert flow["source"] == "REMOTE_SUCCESS"

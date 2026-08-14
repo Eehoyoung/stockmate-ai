@@ -142,6 +142,10 @@ def _is_active_signal(signal_status: Optional[str], exit_type: Optional[str]) ->
 def _is_monitorable_position(row) -> bool:
     if not row or row["exit_type"]:
         return False
+    if not row.get("executed_at") or int(row.get("entry_qty") or 0) <= 0:
+        return False
+    if int(row.get("remaining_qty") or row.get("entry_qty") or 0) <= 0:
+        return False
     position_status = str(row["position_status"] or "ACTIVE")
     if position_status not in ACTIVE_POSITION_STATES:
         return False
@@ -448,7 +452,7 @@ async def create_shadow_trade(
         or now_utc
     )
     latency_ms = max(0, int((now_utc - signal_time).total_seconds() * 1000))
-    detail = data_quality_detail or {
+    detail = dict(data_quality_detail or {
         "rr_ratio": _opt_num(payload.get("rr_ratio")),
         "raw_rr": _opt_num(payload.get("raw_rr")),
         "effective_rr": _opt_num(payload.get("effective_rr")),
@@ -456,7 +460,9 @@ async def create_shadow_trade(
         "tp_policy_version": payload.get("tp_policy_version"),
         "sl_policy_version": payload.get("sl_policy_version"),
         "exit_policy_version": payload.get("exit_policy_version"),
-    }
+    })
+    if isinstance(payload.get("shadow_features"), dict):
+        detail["shadow_features"] = payload["shadow_features"]
     try:
         await pool.execute(
             """
@@ -646,6 +652,7 @@ async def update_signal_score(
     allow_reentry: Optional[bool] = None,
     time_stop_deadline_at: Optional[datetime] = None,
     stk_nm: Optional[str] = None,
+    shadow_features: Optional[dict] = None,
 ) -> bool:
     if not signal_id:
         return False
@@ -686,7 +693,11 @@ async def update_signal_score(
                 allow_overnight  = COALESCE($31, allow_overnight),
                 allow_reentry    = COALESCE($32, allow_reentry),
                 stk_nm           = COALESCE($34, stk_nm),
-                time_stop_deadline_at = COALESCE($33, time_stop_deadline_at)
+                time_stop_deadline_at = COALESCE($33, time_stop_deadline_at),
+                shadow_features  = CASE
+                    WHEN $35::jsonb IS NULL THEN shadow_features
+                    ELSE COALESCE(shadow_features, '{}'::jsonb) || $35::jsonb
+                END
             WHERE id = $1
             """,
             signal_id,
@@ -723,6 +734,7 @@ async def update_signal_score(
             _opt_bool(allow_reentry),
             time_stop_deadline_at,
             stk_nm,
+            json.dumps(shadow_features, ensure_ascii=False, default=str) if shadow_features else None,
         )
         return True
     except Exception as e:
@@ -853,8 +865,8 @@ async def insert_python_signal(
                     json.dumps(signal.get("shadow_features")) if signal.get("shadow_features") else None,
                     # stk_nm ($57)
                     _clip_str(signal.get("stk_nm"), 40),
-                    # TODO: 계좌 API 연동 후 실제 주문 수량 계산으로 교체 (계좌잔고 / 진입가 × 비중)
-                    10,  # entry_qty ($58) — 임시 고정값
+                    # 수량은 실제 주문/사용자 체결 증거가 전달된 경우에만 기록한다.
+                    _opt_int(signal.get("entry_qty")),  # entry_qty ($58)
                 )
                 if row:
                     signal_id = row["id"]
@@ -1213,14 +1225,13 @@ async def confirm_open_position(
                             WHEN signal_status IN ('PENDING', 'CANCELLED') OR signal_status IS NULL THEN 'SENT'
                             ELSE signal_status
                         END,
-                        position_status = 'ACTIVE',
+                        position_status = NULL,
                         ai_score = COALESCE($2, ai_score),
                         tp1_price = COALESCE($3::NUMERIC, tp1_price),
                         tp2_price = COALESCE($4::NUMERIC, tp2_price),
                         sl_price = COALESCE($5::NUMERIC, sl_price),
                         rr_ratio = COALESCE($6::NUMERIC, rr_ratio),
-                        entry_at = COALESCE(entry_at, executed_at, created_at, NOW()),
-                        monitor_enabled = TRUE,
+                        monitor_enabled = FALSE,
                         is_overnight = FALSE,
                         overnight_verdict = NULL,
                         overnight_score = NULL,
@@ -1294,8 +1305,8 @@ async def confirm_open_position(
                 await _insert_position_state_event(
                     conn,
                     signal_id=signal_id,
-                    event_type="POSITION_OPENED",
-                    position_status="ACTIVE",
+                    event_type="SIGNAL_CONFIRMED",
+                    position_status=None,
                     payload={
                         "rr_ratio": round(rr_ratio, 3) if rr_ratio is not None else None,
                         "effective_rr": _opt_num(effective_rr or rr_ratio),
@@ -1417,6 +1428,84 @@ async def insert_rule_cancel_signal(
         return False
 
 
+
+
+async def insert_signal_freshness_log(
+    pool,
+    *,
+    signal_id: Optional[int],
+    stk_cd: str,
+    strategy: str,
+    action: Optional[str],
+    freshness_status: Optional[str] = None,
+    snapshot: Optional[dict] = None,
+) -> bool:
+    """스코어링 시점의 tick/hoga/strength/vi 신선도·REST 폴백 스냅샷을 별도 테이블에 기록한다.
+
+    snapshot 은 scoring_pipeline.status_metrics.build_market_data_observability() 가
+    반환하는 구조({fields, cache_fields, rest})를 그대로 받는다. cleanup.signal-data-freshness-log
+    보관 정책(기본 3일)으로 주기적으로 삭제되므로 실시간 신호와 별개로 짧게 감사용으로만 쌓인다.
+    """
+    snapshot = snapshot or {}
+    fields = snapshot.get("fields") or {}
+    rest = snapshot.get("rest") or {}
+
+    def _field(kind: str, key: str):
+        value = (fields.get(kind) or {}).get(key)
+        if key == "age_ms" and value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+        return value
+
+    try:
+        await pool.execute(
+            """
+            INSERT INTO signal_data_freshness_log (
+                signal_id, stk_cd, strategy, action, freshness_status,
+                tick_state, tick_source, tick_age_ms,
+                hoga_state, hoga_source, hoga_age_ms,
+                strength_state, strength_source, strength_age_ms,
+                vi_state, vi_source, vi_age_ms,
+                rest_fallback_used, rest_fallback_fields, rest_failure_classes,
+                raw_payload, created_at
+            ) VALUES (
+                $1, $2, $3, $4, $5,
+                $6, $7, $8,
+                $9, $10, $11,
+                $12, $13, $14,
+                $15, $16, $17,
+                $18, $19::jsonb, $20::jsonb,
+                $21::jsonb, NOW()
+            )
+            """,
+            signal_id,
+            normalize_stock_code(stk_cd),
+            strategy,
+            action,
+            freshness_status,
+            _field("tick", "state"),
+            _field("tick", "source"),
+            _field("tick", "age_ms"),
+            _field("hoga", "state"),
+            _field("hoga", "source"),
+            _field("hoga", "age_ms"),
+            _field("strength", "state"),
+            _field("strength", "source"),
+            _field("strength", "age_ms"),
+            _field("vi", "state"),
+            _field("vi", "source"),
+            _field("vi", "age_ms"),
+            bool(rest.get("fallback_used")),
+            json.dumps(rest.get("fallback_fields") or [], ensure_ascii=False),
+            json.dumps(rest.get("failure_classes") or [], ensure_ascii=False),
+            json.dumps(snapshot, ensure_ascii=False, default=str) if snapshot else None,
+        )
+        return True
+    except Exception as e:
+        logger.debug("[DBWriter] insert_signal_freshness_log error signal_id=%s: %s", signal_id, e)
+        return False
 
 
 async def mark_tp1_hit(pool, position_id: int, cur_prc: int) -> bool:

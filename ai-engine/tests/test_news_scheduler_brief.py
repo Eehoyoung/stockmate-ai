@@ -17,11 +17,11 @@ class FakeRedis:
 def test_next_run_slot_morning():
     info = _next_run_slot(datetime(2026, 4, 20, 7, 0, 0, tzinfo=KST))
     assert info["slot"]["name"] == "MORNING"
-    assert info["run_at"] == datetime(2026, 4, 20, 8, 0, 0, tzinfo=KST)
+    assert info["run_at"] == datetime(2026, 4, 20, 7, 50, 0, tzinfo=KST)
 
 
 def test_next_run_slot_midday():
-    info = _next_run_slot(datetime(2026, 4, 20, 8, 1, 0, tzinfo=KST))
+    info = _next_run_slot(datetime(2026, 4, 20, 7, 51, 0, tzinfo=KST))
     assert info["slot"]["name"] == "MIDMORNING"
     assert info["run_at"] == datetime(2026, 4, 20, 10, 30, 0, tzinfo=KST)
 
@@ -35,14 +35,14 @@ def test_next_run_slot_close():
 def test_next_run_slot_next_business_day():
     info = _next_run_slot(datetime(2026, 4, 17, 15, 41, 0, tzinfo=KST))
     assert info["slot"]["name"] == "MORNING"
-    assert info["run_at"] == datetime(2026, 4, 20, 8, 0, 0, tzinfo=KST)
+    assert info["run_at"] == datetime(2026, 4, 20, 7, 50, 0, tzinfo=KST)
 
 
 def test_next_run_slot_keeps_kst_on_monday_premarket():
     info = _next_run_slot(datetime(2026, 4, 20, 7, 29, 0, tzinfo=KST))
     assert info["slot"]["name"] == "MORNING"
     assert info["run_at"].tzinfo == KST
-    assert info["run_at"] == datetime(2026, 4, 20, 8, 0, 0, tzinfo=KST)
+    assert info["run_at"] == datetime(2026, 4, 20, 7, 50, 0, tzinfo=KST)
 
 
 def test_news_prompt_limits_items_and_description_length():

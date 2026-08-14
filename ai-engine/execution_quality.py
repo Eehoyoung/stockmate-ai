@@ -6,11 +6,9 @@ execution_quality.py
 역할:
 - 호가(ka10004)·분봉(ka10080) 데이터를 받아 추격 리스크 점수를 산출한다.
 - 전략 파일에서 dict 형태로 hoga_data / candle_data를 전달받으며, Redis 없이 동작한다.
-- feature flag에 따라 shadow(필드 기록만) 또는 hard_gate(REJECT 시 탈락) 모드로 동작한다.
+- live hard gate 설정에 따라 REJECT 후보를 즉시 탈락시킨다.
 
 Feature flags:
-  ENABLE_EXECUTION_QUALITY_SHADOW   = true  (기본값)
-    → REJECT여도 전략에서 None 반환하지 않음. payload에 필드만 포함.
   ENABLE_EXECUTION_QUALITY_HARD_GATE = false (기본값)
     → true로 변경 시 REJECT이면 전략이 해당 종목을 탈락(None 반환)시킬 수 있음.
 """
@@ -22,9 +20,6 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
-ENABLE_EXECUTION_QUALITY_SHADOW: bool = (
-    os.getenv("ENABLE_EXECUTION_QUALITY_SHADOW", "true").lower() == "true"
-)
 ENABLE_EXECUTION_QUALITY_HARD_GATE: bool = (
     os.getenv("ENABLE_EXECUTION_QUALITY_HARD_GATE", "false").lower() == "true"
 )
@@ -444,11 +439,8 @@ def should_hard_reject(eq_result: dict) -> bool:
     """
     HARD_GATE 모드에서 해당 종목을 탈락시킬지 판단.
 
-    SHADOW=true이면 항상 False(탈락하지 않음).
-    HARD_GATE=true이고 SHADOW=false이면 REJECT 등급에서 True 반환.
+    LIVE 운영에서 HARD_GATE=true이면 REJECT 등급에서 True 반환.
     """
-    if ENABLE_EXECUTION_QUALITY_SHADOW:
-        return False
     if ENABLE_EXECUTION_QUALITY_HARD_GATE:
         return eq_result.get("execution_quality") == "REJECT"
     return False

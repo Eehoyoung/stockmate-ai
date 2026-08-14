@@ -357,6 +357,93 @@ def compute_adx(
 
 # ── 7. 통합 진입점 ─────────────────────────────────────────────────────────────
 
+def _extract_intraday_investor_flow(signal: dict) -> Optional[dict]:
+    """Normalize Python/Java ka10064 enrichment into one shadow feature."""
+    extra = signal.get("extra") if isinstance(signal.get("extra"), dict) else {}
+    direct = signal.get("intraday_investor_flow") or extra.get("intraday_investor_flow")
+    if isinstance(direct, dict):
+        return dict(direct)
+
+    # Java strategy extras are flattened by TradingSignalDto.toQueuePayload.
+    aliases = {
+        "observed_at": ("s3_flow_observed_at", "s11_flow_observed_at"),
+        "sample_count": ("s3_flow_sample_count", "s11_flow_sample_count"),
+        "latest_foreign": ("s3_foreign_amount", "s11_foreign_amount"),
+        "latest_institution": ("s3_institution_amount", "s11_institution_amount"),
+        "latest_combined": ("s3_latest_combined_amount", "s11_latest_combined_amount"),
+        "combined_slope": ("s3_flow_combined_slope", "s11_flow_combined_slope"),
+        "foreign_slope": ("s3_flow_foreign_slope", "s11_flow_foreign_slope"),
+        "institution_slope": ("s3_flow_institution_slope", "s11_flow_institution_slope"),
+        "latest_delta": ("s3_flow_latest_delta", "s11_flow_latest_delta"),
+        "recent_reversal": ("s3_flow_recent_reversal", "s11_flow_recent_reversal"),
+        "recent_reversal_direction": (
+            "s3_flow_recent_reversal_direction",
+            "s11_flow_recent_reversal_direction",
+        ),
+        "source": ("s3_investor_flow_source", "s11_investor_flow_source"),
+    }
+    normalized = {}
+    for target, keys in aliases.items():
+        for key in keys:
+            value = signal.get(key, extra.get(key))
+            if value is not None:
+                normalized[target] = value
+                break
+    return normalized or None
+
+
+def compute_live_feature_adjustment(features: dict) -> dict:
+    """Convert previously observational features into a bounded live score adjustment."""
+    adjustment = 0.0
+    reasons: list[str] = []
+
+    orderbook = features.get("orderbook") or {}
+    imbalance = _sf(orderbook.get("imbalance_total"), None)
+    if imbalance is not None:
+        delta = max(-4.0, min(4.0, imbalance * 8.0))
+        adjustment += delta
+        reasons.append(f"orderbook={delta:+.1f}")
+
+    relative = features.get("relative_strength") or {}
+    rs_pct = _sf(relative.get("rs_pct"), None)
+    if rs_pct is not None:
+        delta = max(-4.0, min(4.0, rs_pct * 1.5))
+        adjustment += delta
+        reasons.append(f"relative_strength={delta:+.1f}")
+
+    pressure = features.get("tick_pressure") or {}
+    label = str(pressure.get("buy_pressure_label") or "").lower()
+    delta = {"strong": 4.0, "moderate": 1.5, "weak": -4.0}.get(label, 0.0)
+    adjustment += delta
+    if label:
+        reasons.append(f"tick_pressure={delta:+.1f}")
+
+    flow = features.get("intraday_investor_flow") or {}
+    slope = _sf(flow.get("combined_slope"), None)
+    latest_delta = _sf(flow.get("latest_delta"), None)
+    reversal = bool(flow.get("recent_reversal"))
+    reversal_direction = str(flow.get("recent_reversal_direction") or "").lower()
+    flow_delta = 0.0
+    if slope is not None:
+        flow_delta += 3.0 if slope > 0 else (-3.0 if slope < 0 else 0.0)
+    if latest_delta is not None:
+        flow_delta += 2.0 if latest_delta > 0 else (-2.0 if latest_delta < 0 else 0.0)
+    if reversal:
+        flow_delta += 2.0 if reversal_direction in {"up", "positive", "buy"} else -2.0
+    flow_delta = max(-6.0, min(6.0, flow_delta))
+    adjustment += flow_delta
+    if flow:
+        reasons.append(f"investor_flow={flow_delta:+.1f}")
+
+    adjustment = round(max(-15.0, min(15.0, adjustment)), 2)
+    return {
+        "score_adjustment": adjustment,
+        "reasons": reasons,
+        "hard_reject": adjustment <= -12.0,
+        "mode": "LIVE",
+    }
+
+
 def compute_all_shadow_features(
     signal: dict,
     ctx: dict,
@@ -436,5 +523,8 @@ def compute_all_shadow_features(
             result["adx"] = None
     else:
         result["adx"] = None
+
+    # ka10064 is normalized here and consumed by the live feature adjustment.
+    result["intraday_investor_flow"] = _extract_intraday_investor_flow(signal)
 
     return result
