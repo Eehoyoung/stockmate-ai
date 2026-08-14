@@ -18,13 +18,32 @@ from typing import Optional
 
 import httpx
 
-from http_utils import validate_kiwoom_response, kiwoom_client
+from http_utils import validate_kiwoom_response, kiwoom_client, coalesce_request
+from toss_client import fetch_stock_candles as _toss_fetch_stock_candles, toss_enabled as _toss_enabled
 
 logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
 KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _DEFAULT_TIMEOUT = 10.0
-_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.25"))
+_API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
+_TOSS_CANDLE_FALLBACK_ENABLED = os.getenv("TOSS_CANDLE_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+# ka10081 호출은 함수 시그니처상 rdb를 받지 않는(token만 받는) 20여개 호출부를
+# 그대로 유지하기 위해, 토스 토큰 조회용 Redis 연결을 이 모듈이 지연 생성해 자체
+# 보유한다 — http_utils.py의 _GlobalRateLimiter._redis_client()와 동일 패턴.
+_toss_fallback_redis = None
+
+
+def _get_toss_fallback_redis():
+    global _toss_fallback_redis
+    if _toss_fallback_redis is None:
+        import redis.asyncio as _redis_async
+        from config import REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
+        _toss_fallback_redis = _redis_async.Redis(
+            host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
+            decode_responses=True, socket_connect_timeout=1.0, socket_timeout=1.0,
+        )
+    return _toss_fallback_redis
 
 
 # ──────────────────────────────────────────────────────────────
@@ -124,7 +143,7 @@ _CANDLE_CACHE: dict[str, tuple[list[dict], float]] = {}
 _CANDLE_CACHE_TTL = int(os.getenv("MA_CACHE_TTL_SEC", "3600"))
 
 # 분봉 캐시: {(stk_cd, tic_scope): (candles, expire_at)}
-_MIN_CANDLE_CACHE: dict[tuple[str, str], tuple[list[dict], float]] = {}
+_MIN_CANDLE_CACHE: dict[tuple[str, str, str], tuple[list[dict], float]] = {}
 # scope 별 캐시 TTL – 단기 프레임일수록 짧게 유지해 stale 봉 사용을 방지
 _MIN_CACHE_TTL_BY_SCOPE: dict[str, int] = {
     "1":  int(os.getenv("RSI_MIN_CACHE_TTL_1M_SEC",  "15")),
@@ -156,11 +175,67 @@ async def fetch_daily_candles(token: str, stk_cd: str, target_count: int = 120) 
     :param stk_cd:
     :param token:
     :param target_count: 최소로 확보하고자 하는 봉 수 (기본 120봉)
+
+    같은 (stk_cd, target_count)에 대한 동시 호출은 진행 중인 태스크를 공유한다.
+    2026-08-06: 10:00-14:30에 11~13개 전략이 동시 스케줄되며 대부분 같은 종목의
+    일봉을 각자 따로 요청해 공유 TR 레이트리밋 예산을 불필요하게 나눠 쓰다가
+    S8/S9/S11이 300초 타임아웃으로 후보를 통째로 잃는 사례가 반복됐다. 캐시가
+    아직 없는 상태에서 여러 전략이 동시에 같은 종목을 요청해도 실제 Kiwoom
+    호출은 한 번만 나가도록 한다.
     """
     cached = _candle_cache_get(stk_cd)
     if cached is not None and len(cached) >= target_count:
         return cached
 
+    return await coalesce_request(
+        ("ka10081", stk_cd, target_count),
+        lambda: _fetch_daily_candles_uncached(token, stk_cd, target_count),
+    )
+
+
+def _toss_candles_to_kiwoom_shape(toss_candles: list[dict]) -> list[dict]:
+    """토스 /api/v1/candles 응답을 ka10081 호출부가 기대하는 필드명으로 변환한다.
+    두 소스 모두 최신봉이 index 0이라 순서 반전은 필요 없다."""
+    converted = []
+    for c in toss_candles:
+        ts = str(c.get("timestamp") or "")
+        dt = ts[:10].replace("-", "") if len(ts) >= 10 else ""
+        converted.append({
+            "cur_prc": c.get("closePrice", "0"),
+            "open_pric": c.get("openPrice", "0"),
+            "high_pric": c.get("highPrice", "0"),
+            "low_pric": c.get("lowPrice", "0"),
+            "trde_qty": c.get("volume", "0"),
+            "dt": dt,
+            "source": "toss_candle_fallback",
+        })
+    return converted
+
+
+async def _try_toss_candle_fallback(stk_cd: str, target_count: int, kiwoom_count: int) -> list[dict] | None:
+    """Kiwoom ka10081이 글로벌 리미터 혼잡 등으로 실패/부족할 때만 호출되는 폴백.
+    부분 병합은 하지 않는다 — 날짜 정렬/중복 제거 로직이 미묘하게 어긋나면 MA
+    계산이 조용히 틀어질 수 있어(금융 로직) 리스크가 크다. 대신 토스가 Kiwoom보다
+    더 많은 봉을 확보했을 때만 전체를 토스 결과로 교체하는 단순한 규칙을 쓴다."""
+    if not _TOSS_CANDLE_FALLBACK_ENABLED or not _toss_enabled():
+        return None
+    try:
+        toss_candles = await _toss_fetch_stock_candles(
+            _get_toss_fallback_redis(), stk_cd, interval="1d", count=min(max(target_count, 1), 200),
+        )
+    except Exception as e:
+        logger.debug("[ma] 토스 캔들 폴백 실패 [%s]: %s", stk_cd, e)
+        return None
+    if len(toss_candles) <= kiwoom_count:
+        return None
+    logger.info(
+        "[ma] 토스 캔들 폴백 사용 [%s] kiwoom=%d개 → 토스 %d개로 대체",
+        stk_cd, kiwoom_count, len(toss_candles),
+    )
+    return _toss_candles_to_kiwoom_shape(toss_candles)
+
+
+async def _fetch_daily_candles_uncached(token: str, stk_cd: str, target_count: int) -> list[dict]:
     all_candles = []
     cont_yn = "N"
     next_key = ""
@@ -215,6 +290,11 @@ async def fetch_daily_candles(token: str, stk_cd: str, target_count: int = 120) 
                 logger.error(f"[ma] ka10081 연속조회 중 오류 [%s]: %s", stk_cd, e)
                 break
 
+    if len(all_candles) < target_count:
+        fallback = await _try_toss_candle_fallback(stk_cd, target_count, len(all_candles))
+        if fallback:
+            all_candles = fallback
+
     if all_candles:
         _candle_cache_set(stk_cd, all_candles)
 
@@ -225,36 +305,78 @@ async def fetch_minute_candles(
     token: str,
     stk_cd: str,
     tic_scope: str = "5",
+    base_dt: str | None = None,
 ) -> list[dict]:
     """
     ka10080 주식분봉차트조회요청.
     오류 시 빈 리스트. 결과는 최신순(index 0 = 가장 최근 봉).
     """
-    key = (stk_cd, tic_scope)
+    base_dt = base_dt or datetime.now(KST).strftime("%Y%m%d")
+    key = (stk_cd, tic_scope, base_dt)
     entry = _MIN_CANDLE_CACHE.get(key)
     if entry and _time.monotonic() < entry[1]:
         return entry[0]
 
+    # ka10080은 heavy TR(최대 5페이지 순회)이고 여러 지표 모듈이 같은 종목/스코프를
+    # 동시에 요청한다. 캐시가 비어 있는 동안 몰리는 중복 호출을 하나로 합친다.
+    return await coalesce_request(
+        ("ka10080", stk_cd, tic_scope, base_dt),
+        lambda: _fetch_minute_candles_uncached(token, stk_cd, tic_scope, base_dt, key),
+    )
+
+
+async def _fetch_minute_candles_uncached(
+    token: str,
+    stk_cd: str,
+    tic_scope: str,
+    base_dt: str,
+    key: tuple,
+) -> list[dict]:
     try:
+        headers = {
+            "api-id": "ka10080",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        body = {
+            "stk_cd": stk_cd.strip(),
+            "tic_scope": tic_scope,
+            "upd_stkpc_tp": "1",
+            "base_dt": base_dt,
+        }
+        candles: list[dict] = []
+        seen_times: set[str] = set()
+        seen_next_keys: set[str] = set()
+        max_pages = max(1, int(os.getenv("KIWOOM_MINUTE_MAX_PAGES", "5")))
         async with kiwoom_client() as client:
-            resp = await client.post(
-                f"{KIWOOM_BASE_URL}/api/dostk/chart",
-                headers={
-                    "api-id": "ka10080",
-                    "authorization": f"Bearer {token}",
-                    "Content-Type": "application/json;charset=UTF-8",
-                },
-                json={
-                    "stk_cd": stk_cd.strip(),
-                    "tic_scope": tic_scope,
-                    "upd_stkpc_tp": "1",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if not validate_kiwoom_response(data, "ka10080", logger):
-                return []
-            candles = data.get("stk_min_pole_chart_qry", [])
+            for _ in range(max_pages):
+                resp = await client.post(
+                    f"{KIWOOM_BASE_URL}/api/dostk/chart",
+                    headers=headers,
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if not validate_kiwoom_response(data, "ka10080", logger):
+                    return []
+                for candle in data.get("stk_min_pole_chart_qry", []):
+                    candle_time = str(candle.get("cntr_tm", ""))
+                    if candle_time and candle_time in seen_times:
+                        continue
+                    if candle_time:
+                        seen_times.add(candle_time)
+                    candles.append(candle)
+
+                cont_yn = str(resp.headers.get("cont-yn", "N")).upper()
+                next_key = str(resp.headers.get("next-key", "")).strip()
+                if cont_yn != "Y":
+                    break
+                if not next_key or next_key in seen_next_keys:
+                    logger.warning("[ma] ka10080 continuation incomplete [%s/%s]", stk_cd, tic_scope)
+                    break
+                seen_next_keys.add(next_key)
+                headers["cont-yn"] = "Y"
+                headers["next-key"] = next_key
             if candles:
                 _MIN_CANDLE_CACHE[key] = (candles, _time.monotonic() + _min_cache_ttl(tic_scope))
             return candles
@@ -273,6 +395,39 @@ def _is_bar_closed(tic_scope: str) -> bool:
         return secs_into_bar >= 30
     except Exception:
         return True
+
+
+def filter_closed_minute_candles(
+    candles: list[dict],
+    tic_scope: str,
+    *,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Return only ka10080 bars whose full interval has elapsed.
+
+    ``cntr_tm`` is the bar timestamp in YYYYMMDDHHmmss. Malformed timestamps are
+    excluded so a live strategy cannot accidentally treat an unknown bar as final.
+    """
+    try:
+        scope = max(1, int(tic_scope))
+    except (TypeError, ValueError):
+        return []
+    current = now or datetime.now(KST)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=KST)
+    else:
+        current = current.astimezone(KST)
+
+    closed: list[dict] = []
+    for candle in candles or []:
+        raw = str(candle.get("cntr_tm", ""))[:14]
+        try:
+            started_at = datetime.strptime(raw, "%Y%m%d%H%M%S").replace(tzinfo=KST)
+        except (TypeError, ValueError):
+            continue
+        if started_at + timedelta(minutes=scope) <= current:
+            closed.append(candle)
+    return closed
 
 
 async def fetch_minute_candles_with_status(
@@ -294,7 +449,8 @@ async def fetch_minute_candles_with_status(
             is_current_bar_closed : bool,
         }
     """
-    key = (stk_cd, tic_scope)
+    base_dt = datetime.now(KST).strftime("%Y%m%d")
+    key = (stk_cd, tic_scope, base_dt)
     now_mono = _time.monotonic()
     entry = _MIN_CANDLE_CACHE.get(key)
 
@@ -310,7 +466,7 @@ async def fetch_minute_candles_with_status(
             "is_current_bar_closed": _is_bar_closed(tic_scope),
         }
 
-    candles = await fetch_minute_candles(token, stk_cd, tic_scope)
+    candles = await fetch_minute_candles(token, stk_cd, tic_scope, base_dt=base_dt)
     return candles, {
         "scope": f"{tic_scope}m",
         "candle_count": len(candles),
@@ -605,13 +761,21 @@ def detect_pullback_setup(candles: list[dict]) -> tuple[bool, float, float]:
 
 def detect_box_breakout(candles: list[dict],
                         box_period: int = 15,
-                        max_range_pct: float = 8.0,
-                        vol_mul: float = 2.0) -> tuple[bool, float]:
+                        max_range_pct: float = 8.0) -> tuple[bool, float]:
     """
-    박스권 돌파 감지 (일봉 기반).
+    박스권 돌파 감지 (일봉 기반) — 박스 형태·가격 돌파만 판정한다.
+
+    거래량 급증 확인은 여기서 하지 않는다. 예전에는 이 함수 안에서
+    "오늘 누적거래량(t_vol, 장중 계속 불어나는 값) >= 15일 평균 *하루 전체*
+    거래량 * vol_mul"을 게이트로 걸었는데, 이건 시간대 편향이 있다 — 예를
+    들어 11시에 스캔하면 t_vol은 하루치의 일부에 불과해서 실제로 강한
+    돌파가 나와도 게이트를 통과하기 어렵다(2026-08-13 트레이더 리뷰에서
+    발견). 거래량 판정은 호출부(strategy_13_box_breakout.py)에서 ka10055
+    전일 동시간대 비교(resolve_effective_volume_ratio, S7/S8/S9와 동일
+    패턴)로 시간대 편향 없이 수행한다.
 
     반환: (is_breakout, box_range_pct)
-    - is_breakout    : 박스권 상단 돌파 + 양봉 + 거래량 급증 동시 충족
+    - is_breakout    : 박스권 상단 돌파 + 양봉 동시 충족 (거래량 제외)
     - box_range_pct  : 박스권 폭 (%)
     """
     if len(candles) < box_period + 2:
@@ -622,21 +786,17 @@ def detect_box_breakout(candles: list[dict],
 
     t_close = _safe_price(today.get("cur_prc"))
     t_open  = _safe_price(today.get("open_pric"))
-    t_high  = _safe_price(today.get("high_pric"))
-    t_vol   = _safe_vol(today.get("trde_qty"))
 
     if t_close <= 0 or t_open <= 0:
         return False, 0.0
 
-    highs, lows, vols = [], [], []
+    highs, lows = [], []
     for c in box_cs:
         h = _safe_price(c.get("high_pric"))
         l = _safe_price(c.get("low_pric"))
-        v = _safe_vol(c.get("trde_qty"))
         if h > 0 and l > 0:
             highs.append(h)
             lows.append(l)
-            vols.append(v)
 
     if not highs:
         return False, 0.0
@@ -651,11 +811,6 @@ def detect_box_breakout(candles: list[dict],
 
     # 돌파 조건: 오늘 종가 > 박스 상단 + 양봉
     if t_close <= box_high or t_close <= t_open:
-        return False, box_range_pct
-
-    # 거래량 급증
-    vol_avg = sum(vols) / len(vols) if vols else 0
-    if vol_avg > 0 and t_vol < vol_avg * vol_mul:
         return False, box_range_pct
 
     return True, box_range_pct

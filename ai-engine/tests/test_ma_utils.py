@@ -302,3 +302,316 @@ class TestFetchMultiScopeCandles:
 
         # default scopes = ("5", "30", "60")
         assert set(result.keys()) == {"5", "30", "60"}
+
+
+class _MinuteResponse:
+    def __init__(self, rows, headers=None):
+        self._rows = rows
+        self.headers = headers or {"cont-yn": "N", "next-key": ""}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"return_code": "0", "stk_min_pole_chart_qry": self._rows}
+
+
+class _MinuteClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.post = AsyncMock(side_effect=self.responses)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_fetch_minute_candles_follows_ka10080_continuation_and_sends_base_date():
+    import ma_utils
+
+    ma_utils._MIN_CANDLE_CACHE.clear()
+    client = _MinuteClient([
+        _MinuteResponse(
+            [{"cntr_tm": "20260803100000", "cur_prc": "100"}],
+            {"cont-yn": "Y", "next-key": "page-2"},
+        ),
+        _MinuteResponse([{"cntr_tm": "20260803095900", "cur_prc": "99"}]),
+    ])
+    with patch("ma_utils.kiwoom_client", return_value=client):
+        rows = _run(ma_utils.fetch_minute_candles("tok", "005930", "1", base_dt="20260803"))
+
+    assert [row["cur_prc"] for row in rows] == ["100", "99"]
+    assert client.post.await_count == 2
+    assert client.post.await_args_list[0].kwargs["json"]["base_dt"] == "20260803"
+    assert client.post.await_args_list[1].kwargs["headers"]["next-key"] == "page-2"
+
+
+class _DailyResponse:
+    def __init__(self, rows, headers=None):
+        self._rows = rows
+        self.headers = headers or {"cont-yn": "N", "next-key": ""}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"return_code": "0", "stk_dt_pole_chart_qry": self._rows}
+
+
+class _DailyClient:
+    """post()마다 짧게 sleep해 동시 호출이 실제로 겹치도록 만든다."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.call_count = 0
+
+        async def _post(*args, **kwargs):
+            self.call_count += 1
+            await asyncio.sleep(0.05)
+            return _DailyResponse(self._rows)
+
+        self.post = AsyncMock(side_effect=_post)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_fetch_daily_candles_coalesces_concurrent_calls_for_same_stock():
+    import ma_utils
+
+    import http_utils
+    ma_utils._CANDLE_CACHE.clear()
+    http_utils._INFLIGHT_REQUESTS.clear()
+    rows = [_daily_candle(f"2026080{i}") for i in range(1, 6)]
+    client = _DailyClient(rows)
+
+    with patch("ma_utils.kiwoom_client", return_value=client):
+        results = _run(asyncio.gather(
+            ma_utils.fetch_daily_candles("tok", "005930", target_count=5),
+            ma_utils.fetch_daily_candles("tok", "005930", target_count=5),
+            ma_utils.fetch_daily_candles("tok", "005930", target_count=5),
+        ))
+
+    assert client.call_count == 1
+    assert all(r == results[0] for r in results)
+    assert len(results[0]) == 5
+    # 완료 후에는 in-flight 등록이 정리되어 다음 호출은 캐시를 사용한다.
+    assert http_utils._INFLIGHT_REQUESTS == {}
+
+
+def test_fetch_daily_candles_does_not_coalesce_different_target_counts():
+    import ma_utils
+
+    import http_utils
+    ma_utils._CANDLE_CACHE.clear()
+    http_utils._INFLIGHT_REQUESTS.clear()
+    rows = [_daily_candle(f"2026080{i}") for i in range(1, 6)]
+    client = _DailyClient(rows)
+
+    with patch("ma_utils.kiwoom_client", return_value=client):
+        results = _run(asyncio.gather(
+            ma_utils.fetch_daily_candles("tok", "005930", target_count=5),
+            ma_utils.fetch_daily_candles("tok", "005930", target_count=2),
+        ))
+
+    # 서로 다른 target_count는 별도 요청으로 처리되어야 한다 (부족한 봉 수 반환 방지).
+    assert client.call_count == 2
+    assert len(results[0]) == 5
+    assert len(results[1]) == 5  # 한 페이지에 5건이 오므로 두 요청 모두 5건을 받는다
+
+
+class TestTossCandleFallback:
+    """ka10081 글로벌 리미터 혼잡 등으로 봉이 부족할 때 토스 캔들로 대체하는 폴백.
+    부분 병합은 하지 않고, 토스가 더 많은 봉을 확보했을 때만 전체 교체한다."""
+
+    def test_converts_toss_shape_to_kiwoom_fields(self):
+        import ma_utils
+
+        toss_candles = [
+            {"timestamp": "2026-08-11T09:00:00+09:00", "openPrice": "71600",
+             "highPrice": "72300", "lowPrice": "71500", "closePrice": "72000", "volume": "3521000"},
+        ]
+        converted = ma_utils._toss_candles_to_kiwoom_shape(toss_candles)
+
+        assert converted[0]["cur_prc"] == "72000"
+        assert converted[0]["open_pric"] == "71600"
+        assert converted[0]["high_pric"] == "72300"
+        assert converted[0]["low_pric"] == "71500"
+        assert converted[0]["trde_qty"] == "3521000"
+        assert converted[0]["dt"] == "20260811"
+
+    def test_fallback_replaces_when_toss_has_more_candles(self):
+        import ma_utils
+
+        ma_utils._CANDLE_CACHE.clear()
+        rows = [_daily_candle(f"2026080{i}") for i in range(1, 3)]  # kiwoom 2건 (부족)
+        client = _DailyClient(rows)
+        toss_candles = [
+            {"timestamp": f"2026-08-{d:02d}T09:00:00+09:00", "openPrice": "100",
+             "highPrice": "110", "lowPrice": "90", "closePrice": "105", "volume": "1000"}
+            for d in range(1, 6)  # toss 5건 (더 많음)
+        ]
+
+        with patch("ma_utils.kiwoom_client", return_value=client), \
+             patch("ma_utils._toss_enabled", return_value=True), \
+             patch("ma_utils._toss_fetch_stock_candles", new_callable=AsyncMock, return_value=toss_candles):
+            result = _run(ma_utils.fetch_daily_candles("tok", "005930", target_count=5))
+
+        assert len(result) == 5
+        assert result[0]["source"] == "toss_candle_fallback"
+
+    def test_fallback_not_used_when_kiwoom_has_enough(self):
+        import ma_utils
+
+        ma_utils._CANDLE_CACHE.clear()
+        rows = [_daily_candle(f"2026080{i}") for i in range(1, 6)]  # kiwoom 5건 (충분)
+        client = _DailyClient(rows)
+        toss_mock = AsyncMock(return_value=[{"timestamp": "2026-08-01T09:00:00+09:00"}] * 10)
+
+        with patch("ma_utils.kiwoom_client", return_value=client), \
+             patch("ma_utils._toss_enabled", return_value=True), \
+             patch("ma_utils._toss_fetch_stock_candles", toss_mock):
+            result = _run(ma_utils.fetch_daily_candles("tok", "005930", target_count=5))
+
+        assert len(result) == 5
+        assert "source" not in result[0]
+        toss_mock.assert_not_called()
+
+    def test_fallback_skipped_when_toss_disabled(self):
+        import ma_utils
+
+        ma_utils._CANDLE_CACHE.clear()
+        rows = [_daily_candle("20260801")]  # kiwoom 1건 (부족)
+        client = _DailyClient(rows)
+        toss_mock = AsyncMock(return_value=[{"timestamp": "2026-08-01T09:00:00+09:00"}] * 10)
+
+        with patch("ma_utils.kiwoom_client", return_value=client), \
+             patch("ma_utils._toss_enabled", return_value=False), \
+             patch("ma_utils._toss_fetch_stock_candles", toss_mock):
+            result = _run(ma_utils.fetch_daily_candles("tok", "005930", target_count=5))
+
+        assert len(result) == 1
+        toss_mock.assert_not_called()
+
+    def test_fallback_exception_is_swallowed(self):
+        import ma_utils
+
+        ma_utils._CANDLE_CACHE.clear()
+        rows = [_daily_candle("20260801")]
+        client = _DailyClient(rows)
+
+        with patch("ma_utils.kiwoom_client", return_value=client), \
+             patch("ma_utils._toss_enabled", return_value=True), \
+             patch("ma_utils._toss_fetch_stock_candles", new_callable=AsyncMock, side_effect=Exception("boom")):
+            result = _run(ma_utils.fetch_daily_candles("tok", "005930", target_count=5))
+
+        assert len(result) == 1  # kiwoom 결과 그대로 유지
+
+
+def test_filter_closed_minute_candles_excludes_live_and_malformed_bars():
+    from ma_utils import filter_closed_minute_candles
+
+    now = datetime(2026, 8, 3, 10, 3, 0, tzinfo=KST)
+    rows = [
+        {"cntr_tm": "20260803100000", "cur_prc": "101"},  # closes 10:05
+        {"cntr_tm": "20260803095500", "cur_prc": "100"},  # closed 10:00
+        {"cntr_tm": "bad-time", "cur_prc": "99"},
+    ]
+
+    closed = filter_closed_minute_candles(rows, "5", now=now)
+
+    assert [row["cur_prc"] for row in closed] == ["100"]
+
+
+def test_vwap_uses_only_current_session_rows():
+    import indicator_volume
+
+    today = datetime.now(KST).strftime("%Y%m%d")
+    rows = [
+        {"cntr_tm": f"{today}000000", "high_pric": "110", "low_pric": "90", "cur_prc": "100", "trde_qty": "10"},
+        {"cntr_tm": "19990101100000", "high_pric": "1010", "low_pric": "990", "cur_prc": "1000", "trde_qty": "1000"},
+    ]
+    with patch("indicator_volume.fetch_minute_candles", AsyncMock(return_value=rows)):
+        result = _run(indicator_volume.get_vwap_minute("tok", "005930", "1"))
+
+    assert result.vwap == 100.0
+
+
+# ── detect_box_breakout (S13 2026-08-13 거래량 게이트 제거 회귀) ──────────────
+
+def _box_candle(cur_prc=100, open_pric=100, high_pric=100, low_pric=100, trde_qty=1000):
+    return {
+        "cur_prc": str(cur_prc), "open_pric": str(open_pric),
+        "high_pric": str(high_pric), "low_pric": str(low_pric),
+        "trde_qty": str(trde_qty),
+    }
+
+
+def _box_candles(today: dict, box_high=102, box_low=98, fill=46):
+    """[0]=오늘, [1:16]=박스권(15개), [16:16+fill]=채움."""
+    box = [_box_candle(cur_prc=100, open_pric=100, high_pric=box_high, low_pric=box_low) for _ in range(15)]
+    padding = [_box_candle(cur_prc=100, open_pric=100, high_pric=box_high, low_pric=box_low) for _ in range(fill)]
+    return [today] + box + padding
+
+
+class TestDetectBoxBreakout:
+    def test_breakout_detected_with_low_volume_today(self):
+        """핵심 회귀: 거래량 게이트를 제거했으므로, 오늘 거래량이 아주 낮아도
+        (예: 100주) 박스 상단 돌파 + 양봉 조건만 맞으면 돌파로 판정해야 한다."""
+        from ma_utils import detect_box_breakout
+
+        today = _box_candle(cur_prc=110, open_pric=100, high_pric=112, low_pric=98, trde_qty=100)
+        candles = _box_candles(today)
+
+        is_breakout, box_range_pct = detect_box_breakout(candles, box_period=15, max_range_pct=8.0)
+
+        assert is_breakout is True
+        assert box_range_pct == pytest.approx(4.08, abs=0.01)
+
+    def test_no_breakout_when_close_below_box_high(self):
+        from ma_utils import detect_box_breakout
+
+        today = _box_candle(cur_prc=101, open_pric=100, high_pric=101, low_pric=99, trde_qty=100)
+        candles = _box_candles(today)
+
+        is_breakout, _ = detect_box_breakout(candles, box_period=15, max_range_pct=8.0)
+
+        assert is_breakout is False
+
+    def test_no_breakout_when_bearish_candle(self):
+        """종가가 박스 상단을 넘었어도 음봉(종가<시가)이면 돌파로 인정하지 않는다."""
+        from ma_utils import detect_box_breakout
+
+        today = _box_candle(cur_prc=105, open_pric=110, high_pric=112, low_pric=104, trde_qty=100)
+        candles = _box_candles(today)
+
+        is_breakout, _ = detect_box_breakout(candles, box_period=15, max_range_pct=8.0)
+
+        assert is_breakout is False
+
+    def test_no_breakout_when_box_range_too_wide(self):
+        from ma_utils import detect_box_breakout
+
+        today = _box_candle(cur_prc=130, open_pric=120, high_pric=132, low_pric=118, trde_qty=100)
+        candles = _box_candles(today, box_high=120, box_low=90)  # (120-90)/90 = 33% > 8%
+
+        is_breakout, box_range_pct = detect_box_breakout(candles, box_period=15, max_range_pct=8.0)
+
+        assert is_breakout is False
+        assert box_range_pct > 8.0
+
+    def test_insufficient_candles_returns_false(self):
+        from ma_utils import detect_box_breakout
+
+        today = _box_candle(cur_prc=110, open_pric=100)
+        candles = [today] + [_box_candle() for _ in range(10)]  # box_period(15)+2 미만
+
+        is_breakout, box_range_pct = detect_box_breakout(candles, box_period=15, max_range_pct=8.0)
+
+        assert is_breakout is False
+        assert box_range_pct == 0.0
