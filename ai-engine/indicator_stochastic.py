@@ -4,7 +4,7 @@ indicator_stochastic.py
 
 데이터 소스:
   - 일봉: ka10081 주식일봉차트조회요청 (ma_utils.fetch_daily_candles 재사용)
-  - 분봉: ka10080 주식분봉차트조회요청 (indicator_rsi.fetch_minute_candles 재사용)
+  - 분봉: ka10080 주식분봉차트조회요청 (ma_utils.fetch_minute_candles 재사용)
 
 표준 파라미터: k_period=14, d_period=3, slowing=3
 %K = (현재가 - N일 최저가) / (N일 최고가 - N일 최저가) × 100
@@ -18,8 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from ma_utils import fetch_daily_candles, _safe_price
-from indicator_rsi import fetch_minute_candles
+from ma_utils import fetch_daily_candles, fetch_minute_candles, filter_closed_minute_candles, _safe_price
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +188,7 @@ async def get_stochastic_minute(
         StochasticResult.
     """
     candles = await fetch_minute_candles(token, stk_cd, tic_scope)
+    candles = filter_closed_minute_candles(candles, tic_scope)
     return _build_stoch_result(stk_cd, candles, k_period, d_period, slowing)
 
 
@@ -221,9 +221,11 @@ def _build_stoch_result(
     slow_k, slow_d = calc_stochastic(highs, lows, closes,
                                       k_period, d_period, slowing)
 
+    # min_req = k_period + slowing + d_period가 보장되므로 calc_stochastic()의
+    # 데이터부족 0.0 센티널 구간은 index 0/1에 걸리지 않는다. 여기서 0.0
+    # 여부로 None 처리하면 진짜 %K=0.0(기간 최안값 마감)이 조용히 사라진다.
     def _val(lst: list[float], idx: int) -> Optional[float]:
-        v = lst[idx] if idx < len(lst) else 0.0
-        return v if v != 0.0 else None
+        return lst[idx] if idx < len(lst) else None
 
     return StochasticResult(
         stk_cd=stk_cd,

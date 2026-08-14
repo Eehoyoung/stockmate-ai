@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from ma_utils import fetch_daily_candles, fetch_minute_candles, _safe_price, _safe_vol  # noqa: F401
+from ma_utils import fetch_daily_candles, fetch_minute_candles, filter_closed_minute_candles, _safe_price, _safe_vol  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,7 @@ async def get_rsi_minute(
         RSIResult – rsi, rsi_prev 포함.
     """
     candles = await fetch_minute_candles(token, stk_cd, tic_scope)
+    candles = filter_closed_minute_candles(candles, tic_scope)
     return _build_rsi_result(stk_cd, candles, period, price_key="cur_prc")
 
 
@@ -187,9 +188,13 @@ def _build_rsi_result(
     if len(closes) < period + 2:
         return RSIResult(stk_cd=stk_cd, period=period)
 
+    # len(closes) >= period + 2가 보장되므로 calc_rsi()의 데이터부족 0.0
+    # 센티널 구간(가장 오래된 period개 봉)은 index 0/1에 절대 걸리지 않는다.
+    # 여기서 0.0 여부로 None 처리하면 진짜 RSI=0.0(완전 과매도)이 조용히
+    # 사라진다 — index 0/1은 항상 실제 계산값이므로 그대로 사용한다.
     rsi_vals = calc_rsi(closes, period)
-    rsi_latest = rsi_vals[0] if rsi_vals[0] != 0.0 else None
-    rsi_prev   = rsi_vals[1] if len(rsi_vals) > 1 and rsi_vals[1] != 0.0 else None
+    rsi_latest = rsi_vals[0]
+    rsi_prev   = rsi_vals[1] if len(rsi_vals) > 1 else None
 
     return RSIResult(
         stk_cd=stk_cd,

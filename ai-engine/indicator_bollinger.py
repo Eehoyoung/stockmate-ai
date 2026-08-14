@@ -16,8 +16,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-from ma_utils import fetch_daily_candles, _safe_price
-from indicator_rsi import fetch_minute_candles
+from ma_utils import fetch_daily_candles, fetch_minute_candles, filter_closed_minute_candles, _safe_price
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +162,7 @@ async def get_bollinger_minute(
         BollingerResult.
     """
     candles = await fetch_minute_candles(token, stk_cd, tic_scope)
+    candles = filter_closed_minute_candles(candles, tic_scope)
     return _build_bollinger_result(stk_cd, candles, period, num_std,
                                    price_key="cur_prc")
 

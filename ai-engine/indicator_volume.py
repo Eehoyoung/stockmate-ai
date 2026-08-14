@@ -4,22 +4,24 @@ indicator_volume.py
 
 데이터 소스:
   - 일봉: ka10081 주식일봉차트조회요청 (ma_utils.fetch_daily_candles 재사용)
-  - 분봉: ka10080 주식분봉차트조회요청 (indicator_rsi.fetch_minute_candles 재사용)
+  - 분봉: ka10080 주식분봉차트조회요청 (ma_utils.fetch_minute_candles 재사용)
 
 구현 지표:
-  OBV  (On Balance Volume)       : 누적 거래량 방향성 지표
   MFI  (Money Flow Index)        : 거래대금 기반 RSI 형 지표
   VWAP (Volume Weighted Avg Price): 거래량 가중 평균 가격 (당일 분봉 기반)
-  VR   (Volume Ratio)            : 현재 거래량 / N일 평균 거래량
+
+OBV(On Balance Volume), VR(Volume Ratio)은 아직 구현되어 있지 않다. 필요 시
+calc_obv/calc_vr을 이 파일에 추가하고 본 docstring도 함께 갱신할 것.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
-from ma_utils import fetch_daily_candles, fetch_minute_candles, _safe_price, _safe_vol
+from ma_utils import KST, fetch_daily_candles, fetch_minute_candles, filter_closed_minute_candles, _safe_price, _safe_vol
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +136,66 @@ def calc_mfi(
 
 
 # ──────────────────────────────────────────────────────────────
+# 일봉 / 분봉 MFI
+# ──────────────────────────────────────────────────────────────
+
+async def get_mfi_daily(
+    token: str,
+    stk_cd: str,
+    period: int = 14,
+) -> MFIResult:
+    """
+    일봉 기반 MFI 반환 (ka10081).
+
+    Returns:
+        MFIResult – mfi, mfi_prev 포함.
+        데이터 부족 또는 오류 시 mfi=None.
+    """
+    candles = await fetch_daily_candles(token, stk_cd)
+    return _build_mfi_result(stk_cd, candles, period)
+
+
+async def get_mfi_minute(
+    token: str,
+    stk_cd: str,
+    tic_scope: str = "5",
+    period: int = 14,
+) -> MFIResult:
+    """분봉 기반 MFI 반환 (ka10080)."""
+    candles = await fetch_minute_candles(token, stk_cd, tic_scope)
+    candles = filter_closed_minute_candles(candles, tic_scope)
+    return _build_mfi_result(stk_cd, candles, period)
+
+
+def _build_mfi_result(
+    stk_cd: str,
+    candles: list[dict],
+    period: int,
+) -> MFIResult:
+    highs, lows, closes, volumes = [], [], [], []
+    for c in candles:
+        h = _safe_price(c.get("high_pric"))
+        l = _safe_price(c.get("low_pric"))
+        p = _safe_price(c.get("cur_prc"))
+        v = _safe_vol(c.get("trde_qty"))
+        if h > 0 and l > 0 and p > 0:
+            highs.append(h)
+            lows.append(l)
+            closes.append(p)
+            volumes.append(v)
+
+    # period + 2 이상을 요구해 index 0/1이 항상 calc_mfi()의 실제 계산값이
+    # 되도록 보장한다(indicator_rsi.py와 동일 근거). MFI=0.0(완전 유출)도
+    # 유효한 신호이므로 여기서 None으로 치환하지 않는다.
+    if len(closes) < period + 2:
+        return MFIResult(stk_cd=stk_cd, period=period)
+
+    mfi_vals = calc_mfi(highs, lows, closes, volumes, period)
+    return MFIResult(stk_cd=stk_cd, period=period,
+                     mfi=mfi_vals[0], mfi_prev=mfi_vals[1])
+
+
+# ──────────────────────────────────────────────────────────────
 # 순수 계산 함수 – VWAP
 # ──────────────────────────────────────────────────────────────
 
@@ -190,6 +252,15 @@ async def get_vwap_minute(
         당일 분봉 전체를 사용해 VWAP 계산.
     """
     candles = await fetch_minute_candles(token, stk_cd, tic_scope)
+    candles = filter_closed_minute_candles(candles, tic_scope)
+    if not candles:
+        return VWAPResult(stk_cd=stk_cd)
+
+    session_dt = datetime.now(KST).strftime("%Y%m%d")
+    candles = [
+        candle for candle in candles
+        if str(candle.get("cntr_tm", "")).startswith(session_dt)
+    ]
     if not candles:
         return VWAPResult(stk_cd=stk_cd)
 

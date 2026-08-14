@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from ma_utils import fetch_daily_candles, fetch_minute_candles, _safe_price
+from ma_utils import fetch_daily_candles, fetch_minute_candles, filter_closed_minute_candles, _safe_price
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +184,7 @@ async def get_atr_minute(
 ) -> ATRResult:
     """분봉 기반 ATR 반환 (ka10080)."""
     candles = await fetch_minute_candles(token, stk_cd, tic_scope)
+    candles = filter_closed_minute_candles(candles, tic_scope)
     return _build_atr_result(stk_cd, candles, period)
 
 
@@ -205,10 +206,13 @@ def _build_atr_result(
     if len(closes) < period + 1:
         return ATRResult(stk_cd=stk_cd, period=period)
 
+    # len(closes) >= period + 1이 보장되므로 calc_atr()의 데이터부족 0.0
+    # 센티널 구간은 index 0에 걸리지 않는다. 여기서 0.0 여부로 None 처리하면
+    # 진짜 ATR=0.0(변동성 완전 정체)이 조용히 사라진다.
     atr_vals = calc_atr(highs, lows, closes, period)
-    atr = atr_vals[0] if atr_vals[0] != 0.0 else None
+    atr = atr_vals[0]
     cur_prc = closes[0]
-    atr_pct = (atr / cur_prc * 100) if atr and cur_prc > 0 else None
+    atr_pct = (atr / cur_prc * 100) if atr is not None and cur_prc > 0 else None
 
     return ATRResult(stk_cd=stk_cd, period=period, atr=atr,
                      atr_pct=atr_pct, cur_prc=cur_prc)
