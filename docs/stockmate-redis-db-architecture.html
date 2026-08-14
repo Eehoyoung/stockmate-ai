@@ -1,0 +1,1225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Stockmate Data Architecture</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:736px;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Stockmate Data Architecture" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Stockmate Data Architecture&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(--background) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: light-dark(rgb(255 255 255), rgb(24 24 24));
+  --foreground: light-dark(rgb(26 28 31), rgb(255 255 255));
+  --card: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(rgb(255 255 255), rgb(45 45 45));
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(rgb(51 156 255), rgb(131 195 255));
+  --primary-foreground: light-dark(rgb(255 255 255), rgb(13 13 13));
+  --secondary: light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: light-dark(
+    rgb(26 28 31 / 49.4%),
+    rgb(255 255 255 / 49.8%)
+  );
+  --accent: light-dark(rgb(229 242 255), rgb(13 39 63));
+  --accent-foreground: var(--primary);
+  --destructive: light-dark(rgb(226 85 7), rgb(255 133 73));
+  --border: light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%));
+  --input: light-dark(
+    rgb(26 28 31 / 11.8%),
+    color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+  );
+  --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
+  --font-size-base: 14px;
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: 12.5px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+  --color-background-primary: var(--background);
+  --color-text-primary: var(--foreground);
+  --color-border-secondary: var(--border);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--viz-font-weight-medium);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;stockmate-arch&quot;&gt;
+  &lt;style&gt;
+    #stockmate-arch{color:var(--foreground);font-family:system-ui,sans-serif}
+    #stockmate-arch .hero{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:18px}
+    #stockmate-arch .viz-stat{padding:14px}
+    #stockmate-arch .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0 18px}
+    #stockmate-arch .controls label{flex:1;min-width:210px}
+    #stockmate-arch .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+    #stockmate-arch .overview{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;margin:16px 0 24px}
+    #stockmate-arch .layer{padding:14px;border-left:4px solid var(--viz-series-1);background:color-mix(in srgb,var(--viz-series-1) 9%,transparent)}
+    #stockmate-arch .layer.db{border-left-color:var(--viz-series-2);background:color-mix(in srgb,var(--viz-series-2) 9%,transparent)}
+    #stockmate-arch .arrow{text-align:center;color:var(--muted-foreground)}
+    #stockmate-arch .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    #stockmate-arch article{border-top:1px solid var(--border);padding:14px 0}
+    #stockmate-arch article h3{margin:0 0 6px;overflow-wrap:anywhere}
+    #stockmate-arch .meta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+    #stockmate-arch .type{display:inline-block;padding:2px 7px;border-radius:999px;background:var(--muted);color:var(--muted-foreground)}
+    #stockmate-arch .ttl{display:inline-block;padding:2px 7px;border-radius:999px;background:color-mix(in srgb,var(--viz-series-3) 16%,transparent)}
+    #stockmate-arch .cols{display:flex;gap:5px;flex-wrap:wrap}
+    #stockmate-arch .col{padding:4px 7px;border:1px solid var(--border);border-radius:6px;font-family:ui-monospace,monospace;overflow-wrap:anywhere}
+    #stockmate-arch .rel{margin-top:8px;color:var(--muted-foreground)}
+    #stockmate-arch .empty{padding:28px 0;color:var(--muted-foreground)}
+    #stockmate-arch .note{margin:18px 0;color:var(--muted-foreground)}
+    #stockmate-arch [hidden]{display:none!important}
+    @media(max-width:600px){#stockmate-arch .hero,#stockmate-arch .grid{grid-template-columns:1fr}#stockmate-arch .overview{grid-template-columns:1fr}#stockmate-arch .arrow{transform:rotate(90deg)}}
+  &lt;/style&gt;
+  &lt;div class=&quot;hero&quot;&gt;
+    &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;Redis key family&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot; id=&quot;redis-count&quot;&gt;&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;코드에서 확인된 운영 패턴&lt;/div&gt;&lt;/div&gt;
+    &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;PostgreSQL relation&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot; id=&quot;db-count&quot;&gt;&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;활성 테이블·파티션·뷰&lt;/div&gt;&lt;/div&gt;
+    &lt;div class=&quot;card viz-stat&quot;&gt;&lt;div class=&quot;text-muted&quot;&gt;Schema source&lt;/div&gt;&lt;div class=&quot;viz-stat-value&quot;&gt;V1–V49&lt;/div&gt;&lt;div class=&quot;text-small&quot;&gt;Flyway 최종 상태 기준&lt;/div&gt;&lt;/div&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;overview&quot; aria-label=&quot;데이터 흐름&quot;&gt;
+    &lt;div class=&quot;layer&quot;&gt;&lt;strong&gt;Redis&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small&quot;&gt;실시간 시세 · 후보 · 큐 · 상태 · 단기 캐시&lt;/span&gt;&lt;/div&gt;
+    &lt;div class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;⇄&lt;/div&gt;
+    &lt;div class=&quot;layer db&quot;&gt;&lt;strong&gt;PostgreSQL&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small&quot;&gt;신호 · 포지션 · 성과 · 감사 · 장기 시계열&lt;/span&gt;&lt;/div&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;tabs&quot; role=&quot;group&quot; aria-label=&quot;보고서 영역&quot;&gt;
+    &lt;button class=&quot;btn btn-primary&quot; type=&quot;button&quot; data-tab=&quot;redis&quot; aria-pressed=&quot;true&quot;&gt;Redis 구조&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-tab=&quot;db&quot; aria-pressed=&quot;false&quot;&gt;DB 구조&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-tab=&quot;relations&quot; aria-pressed=&quot;false&quot;&gt;관계·수명주기&lt;/button&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;controls&quot;&gt;
+    &lt;label class=&quot;form-label&quot;&gt;검색&lt;input id=&quot;arch-search&quot; class=&quot;form-control&quot; type=&quot;search&quot; placeholder=&quot;key, table, column, TTL 검색&quot;&gt;&lt;/label&gt;
+    &lt;label class=&quot;form-label&quot;&gt;분류&lt;select id=&quot;arch-filter&quot; class=&quot;form-select&quot;&gt;&lt;option value=&quot;all&quot;&gt;전체&lt;/option&gt;&lt;/select&gt;&lt;/label&gt;
+  &lt;/div&gt;
+  &lt;section id=&quot;redis-panel&quot;&gt;&lt;div id=&quot;redis-grid&quot; class=&quot;grid&quot;&gt;&lt;/div&gt;&lt;/section&gt;
+  &lt;section id=&quot;db-panel&quot; hidden&gt;&lt;div id=&quot;db-grid&quot; class=&quot;grid&quot;&gt;&lt;/div&gt;&lt;/section&gt;
+  &lt;section id=&quot;relations-panel&quot; hidden&gt;
+    &lt;div class=&quot;table-responsive&quot;&gt;&lt;table class=&quot;table&quot;&gt;&lt;thead&gt;&lt;tr&gt;&lt;th&gt;원천&lt;/th&gt;&lt;th&gt;관계&lt;/th&gt;&lt;th&gt;대상&lt;/th&gt;&lt;th&gt;삭제/보존&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;&lt;tbody id=&quot;rel-body&quot;&gt;&lt;/tbody&gt;&lt;/table&gt;&lt;/div&gt;
+    &lt;p class=&quot;note&quot;&gt;실시간 tick은 Redis에서 초·분 단위로 소멸하고, 보존 대상만 PostgreSQL 파티션으로 이동합니다. &lt;code&gt;must_persist=true&lt;/code&gt; 행은 retention 정책에서도 보존됩니다.&lt;/p&gt;
+  &lt;/section&gt;
+  &lt;p class=&quot;note&quot;&gt;TTL은 코드 기본값입니다. 환경변수로 재정의되는 항목과 TTL이 쓰기 시 갱신되는 collection은 실제 운영값이 달라질 수 있습니다. DB는 마이그레이션 V49까지 적용된 논리 구조이며, V34에서 제거된 &lt;code&gt;trade_path_bars&lt;/code&gt;, &lt;code&gt;strategy_bucket_stats&lt;/code&gt;, &lt;code&gt;open_positions_legacy&lt;/code&gt;는 제외했습니다.&lt;/p&gt;
+  &lt;script&gt;
+  (()=&gt;{
+    const redis=[
+      [&#x27;realtime&#x27;,&#x27;ws:tick:{stk_cd}&#x27;,&#x27;HASH&#x27;,&#x27;600s&#x27;,&#x27;cur_prc, pred_pre, flu_rt, acc_trde_qty, acc_trde_prica, cntr_str, updated_at&#x27;,&#x27;WebSocket 체결 최신 snapshot&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:hoga:{stk_cd}&#x27;,&#x27;HASH&#x27;,&#x27;120s&#x27;,&#x27;total_bid_qty, total_ask_qty, bid_ask_ratio, updated_at&#x27;,&#x27;호가 잔량 snapshot&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:strength:{stk_cd}&#x27;,&#x27;LIST&#x27;,&#x27;writer 정책&#x27;,&#x27;체결강도 표본(JSON/수치)&#x27;,&#x27;최근 표본을 LTRIM하여 유지&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:strength_meta:{stk_cd}&#x27;,&#x27;HASH&#x27;,&#x27;writer 정책&#x27;,&#x27;updated_at, sample_count&#x27;,&#x27;체결강도 freshness metadata&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:expected:{stk_cd}&#x27;,&#x27;HASH&#x27;,&#x27;300s&#x27;,&#x27;exp_prc, exp_flu_rt, updated_at&#x27;,&#x27;동시호가 예상체결&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:program:{stk_cd}&#x27;,&#x27;HASH&#x27;,&#x27;900s&#x27;,&#x27;program buy/sell/net fields, updated_at&#x27;,&#x27;프로그램 매매 최신값&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:program_history:{stk_cd}&#x27;,&#x27;LIST&#x27;,&#x27;900s&#x27;,&#x27;프로그램 매매 시계열&#x27;,&#x27;최근 기록 LTRIM&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:py_heartbeat&#x27;,&#x27;HASH&#x27;,&#x27;90s&#x27;,&#x27;updated_at, state&#x27;,&#x27;Python WebSocket listener 생존 확인&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:connected&#x27;,&#x27;STRING&#x27;,&#x27;연결 중&#x27;,&#x27;boolean/status&#x27;,&#x27;WebSocket 연결 상태&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:subscribed:{ttype}&#x27;,&#x27;SET&#x27;,&#x27;180s&#x27;,&#x27;stock codes&#x27;,&#x27;거래 타입별 구독 집합&#x27;],
+      [&#x27;realtime&#x27;,&#x27;ws:db_writer:event_mode&#x27;,&#x27;STRING&#x27;,&#x27;운영 설정&#x27;,&#x27;mode&#x27;,&#x27;DB writer 이벤트 저장 모드&#x27;],
+      [&#x27;queue&#x27;,&#x27;telegram_queue&#x27;,&#x27;LIST&#x27;,&#x27;43200s&#x27;,&#x27;signal JSON&#x27;,&#x27;전략 신호 → scoring 진입 큐&#x27;],
+      [&#x27;queue&#x27;,&#x27;ai_scored_queue&#x27;,&#x27;LIST&#x27;,&#x27;43200s&#x27;,&#x27;scored signal JSON&#x27;,&#x27;점수 완료 → Telegram 큐&#x27;],
+      [&#x27;queue&#x27;,&#x27;error_queue&#x27;,&#x27;LIST&#x27;,&#x27;86400s&#x27;,&#x27;failed payload + error&#x27;,&#x27;실패 payload 격리&#x27;],
+      [&#x27;queue&#x27;,&#x27;vi_watch_queue&#x27;,&#x27;LIST&#x27;,&#x27;7200s&#x27;,&#x27;VI event JSON&#x27;,&#x27;VI 눌림목 이벤트 큐&#x27;],
+      [&#x27;queue&#x27;,&#x27;human_confirm_queue&#x27;,&#x27;LIST&#x27;,&#x27;설정값&#x27;,&#x27;confirmation JSON&#x27;,&#x27;사람 확인 요청&#x27;],
+      [&#x27;queue&#x27;,&#x27;hold_monitor:items&#x27;,&#x27;HASH&#x27;,&#x27;43200s&#x27;,&#x27;item_id → signal JSON&#x27;,&#x27;보류 신호 원본&#x27;],
+      [&#x27;queue&#x27;,&#x27;hold_monitor_queue&#x27;,&#x27;ZSET&#x27;,&#x27;43200s&#x27;,&#x27;item_id → due epoch&#x27;,&#x27;재평가 예정 시각&#x27;],
+      [&#x27;queue&#x27;,&#x27;hold_monitor:watchlist&#x27;,&#x27;SET&#x27;,&#x27;43200s&#x27;,&#x27;stock codes&#x27;,&#x27;보류 감시 종목&#x27;],
+      [&#x27;queue&#x27;,&#x27;s16:trigger_queue&#x27;,&#x27;LIST&#x27;,&#x27;21600s&#x27;,&#x27;S16 trigger JSON&#x27;,&#x27;누적매집 shadow trigger&#x27;],
+      [&#x27;candidate&#x27;,&#x27;candidates:s{1..15}:{market}&#x27;,&#x27;LIST&#x27;,&#x27;1200–3600s&#x27;,&#x27;stock codes&#x27;,&#x27;전략별 후보; S1 3600, S7/8/9/10/14 1800, S11 2400, 기타 주로 1200&#x27;],
+      [&#x27;candidate&#x27;,&#x27;candidates:raw:{source_api}:{market}&#x27;,&#x27;LIST&#x27;,&#x27;전략 TTL&#x27;,&#x27;raw candidate rows&#x27;,&#x27;API 원천 후보&#x27;],
+      [&#x27;candidate&#x27;,&#x27;candidates:qualified:{strategy}:{market}&#x27;,&#x27;LIST&#x27;,&#x27;전략 TTL&#x27;,&#x27;qualified rows&#x27;,&#x27;품질 필터 통과 후보&#x27;],
+      [&#x27;candidate&#x27;,&#x27;candidates:watchlist&#x27;,&#x27;SET&#x27;,&#x27;900s&#x27;,&#x27;stock codes&#x27;,&#x27;WebSocket 통합 구독 풀&#x27;],
+      [&#x27;candidate&#x27;,&#x27;candidates:watchlist:priority&#x27;,&#x27;ZSET&#x27;,&#x27;900s&#x27;,&#x27;stock code → priority&#x27;,&#x27;구독 우선순위&#x27;],
+      [&#x27;candidate&#x27;,&#x27;candidate:quality:meta:{strategy}:{market}&#x27;,&#x27;HASH&#x27;,&#x27;후보 TTL&#x27;,&#x27;count/source/quality&#x27;,&#x27;후보 빌드 품질 정보&#x27;],
+      [&#x27;cache&#x27;,&#x27;kiwoom:token / kiwoom:access_token&#x27;,&#x27;STRING&#x27;,&#x27;API 만료 15분 전&#x27;,&#x27;access token&#x27;,&#x27;Kiwoom 인증 캐시&#x27;],
+      [&#x27;cache&#x27;,&#x27;kiwoom:global_rate_limit:lock&#x27;,&#x27;STRING&#x27;,&#x27;짧은 lock&#x27;,&#x27;owner&#x27;,&#x27;전역 REST 호출 제한&#x27;],
+      [&#x27;cache&#x27;,&#x27;kiwoom:ka10061:flow:{stk_cd}:{days}&#x27;,&#x27;STRING(JSON)&#x27;,&#x27;설정값&#x27;,&#x27;investor flow snapshot&#x27;,&#x27;투자자 수급 캐시&#x27;],
+      [&#x27;cache&#x27;,&#x27;kiwoom:ka10064:flow:{market}:{stk_cd}:{sample_limit}&#x27;,&#x27;STRING(JSON)&#x27;,&#x27;10s 공용 snapshot&#x27;,&#x27;slope/delta/reversal/source&#x27;,&#x27;상위 후보 수급 shadow transport&#x27;],
+      [&#x27;cache&#x27;,&#x27;strategy:s3:ka10055:{stk_cd}:{bucket}&#x27;,&#x27;STRING(JSON)&#x27;,&#x27;30s&#x27;,&#x27;volume ratio&#x27;,&#x27;동시간 거래량 비율&#x27;],
+      [&#x27;cache&#x27;,&#x27;strategy:s5:ka90003:{market}&#x27;,&#x27;STRING(JSON)&#x27;,&#x27;60s&#x27;,&#x27;program ranking&#x27;,&#x27;S5 공용 캐시&#x27;],
+      [&#x27;cache&#x27;,&#x27;stock:mktcap:{stk_cd}&#x27;,&#x27;STRING&#x27;,&#x27;86400s&#x27;,&#x27;market cap&#x27;,&#x27;시가총액 캐시&#x27;],
+      [&#x27;cache&#x27;,&#x27;stock:rsi14:{stk_cd}&#x27;,&#x27;STRING&#x27;,&#x27;1200s&#x27;,&#x27;RSI14&#x27;,&#x27;S15 후보용 RSI 캐시&#x27;],
+      [&#x27;dedup&#x27;,&#x27;signal:stock:{stk_cd}:{strategy}:{signal_id}&#x27;,&#x27;STRING&#x27;,&#x27;1800s/7200s&#x27;,&#x27;1&#x27;,&#x27;장중/스윙 신호 중복 방지&#x27;],
+      [&#x27;dedup&#x27;,&#x27;sell_reco_dedup:{position_id}:{recommendation_type}&#x27;,&#x27;STRING&#x27;,&#x27;설정값&#x27;,&#x27;1&#x27;,&#x27;매도 권고 중복 방지&#x27;],
+      [&#x27;dedup&#x27;,&#x27;telegram:user-send:status:{...}&#x27;,&#x27;STRING&#x27;,&#x27;129600s/604800s&#x27;,&#x27;timestamp&#x27;,&#x27;상태/사용자 전송 중복 방지&#x27;],
+      [&#x27;status&#x27;,&#x27;signal:daily_count:{date}&#x27;,&#x27;STRING/COUNTER&#x27;,&#x27;일 단위&#x27;,&#x27;count&#x27;,&#x27;일일 신호 수&#x27;],
+      [&#x27;status&#x27;,&#x27;signal:sector:{sector}&#x27;,&#x27;STRING/COUNTER&#x27;,&#x27;일 단위&#x27;,&#x27;count&#x27;,&#x27;섹터별 신호 수&#x27;],
+      [&#x27;status&#x27;,&#x27;status:last_signal:{strategy}&#x27;,&#x27;HASH/STRING&#x27;,&#x27;600s&#x27;,&#x27;last signal fields&#x27;,&#x27;전략별 최신 신호&#x27;],
+      [&#x27;status&#x27;,&#x27;status:signals_10m:{strategy}&#x27;,&#x27;HASH&#x27;,&#x27;600s&#x27;,&#x27;rolling counters&#x27;,&#x27;10분 전략 신호 집계&#x27;],
+      [&#x27;status&#x27;,&#x27;status:decisions_10m:{strategy}:{decision}&#x27;,&#x27;COUNTER&#x27;,&#x27;600s&#x27;,&#x27;count&#x27;,&#x27;ENTER/BLOCK/CANCEL 집계&#x27;],
+      [&#x27;status&#x27;,&#x27;status:freshness_decision:{date}:{strategy}&#x27;,&#x27;HASH&#x27;,&#x27;172800s&#x27;,&#x27;source/state/age/fallback&#x27;,&#x27;신선도 의사결정 감사&#x27;],
+      [&#x27;status&#x27;,&#x27;status:market_data_observability:{date}:{strategy}&#x27;,&#x27;HASH&#x27;,&#x27;172800s&#x27;,&#x27;source/state/age/cache/budget&#x27;,&#x27;시장 데이터 품질 관측&#x27;],
+      [&#x27;status&#x27;,&#x27;status:strategy_latency:{strategy}&#x27;,&#x27;HASH&#x27;,&#x27;1800s&#x27;,&#x27;latency/count/error&#x27;,&#x27;전략 실행 지연&#x27;],
+      [&#x27;status&#x27;,&#x27;status:candidates_builder:{strategy}:{market}&#x27;,&#x27;HASH&#x27;,&#x27;1800s&#x27;,&#x27;build status/count/source&#x27;,&#x27;후보 생성 상태&#x27;],
+      [&#x27;status&#x27;,&#x27;ops:strategy_execution_owner&#x27;,&#x27;STRING&#x27;,&#x27;프로세스 수명&#x27;,&#x27;PYTHON/JAVA&#x27;,&#x27;전략 실행 단일 소유자&#x27;],
+      [&#x27;status&#x27;,&#x27;ops:scheduler:*:last_status / last_success_at&#x27;,&#x27;STRING&#x27;,&#x27;43200s–7d&#x27;,&#x27;status/timestamp&#x27;,&#x27;스케줄러 운영 상태&#x27;],
+      [&#x27;status&#x27;,&#x27;calendar:pre_event&#x27;,&#x27;STRING&#x27;,&#x27;7200s&#x27;,&#x27;true&#x27;,&#x27;경제 이벤트 사전 통제&#x27;],
+      [&#x27;status&#x27;,&#x27;news:trading_control / news:market_sentiment&#x27;,&#x27;STRING&#x27;,&#x27;뉴스 갱신 주기&#x27;,&#x27;control/sentiment&#x27;,&#x27;뉴스 기반 거래 통제&#x27;],
+      [&#x27;status&#x27;,&#x27;monitor:ws_reconnect_count&#x27;,&#x27;COUNTER&#x27;,&#x27;86400s&#x27;,&#x27;count&#x27;,&#x27;WebSocket 재연결 횟수&#x27;]
+    ];
+    const db=[
+      [&#x27;core&#x27;,&#x27;kiwoom_tokens&#x27;,&#x27;id BIGSERIAL PK|access_token TEXT NN|token_type VARCHAR(50)|expires_at TIMESTAMPTZ|created_at TIMESTAMPTZ|is_active BOOLEAN NN|updated_at TIMESTAMPTZ&#x27;,&#x27;활성 토큰 저장&#x27;],
+      [&#x27;core&#x27;,&#x27;trading_signals&#x27;,&#x27;id BIGINT PK|stk_cd VARCHAR(20) NN|stk_nm VARCHAR(40)|strategy VARCHAR(30) NN|signal_score FLOAT8|entry_price FLOAT8|target_price FLOAT8|stop_price FLOAT8|tp1_price FLOAT8|tp2_price FLOAT8|sl_price FLOAT8|target_pct FLOAT8|stop_pct FLOAT8|gap_pct FLOAT8|cntr_strength FLOAT8|bid_ratio FLOAT8|vol_ratio FLOAT8|pullback_pct FLOAT8|theme_name VARCHAR(100)|entry_type VARCHAR(30)|market_type VARCHAR(10)|signal_status VARCHAR(20)|extra_info TEXT|rule_score NUMERIC(5,2)|ai_score NUMERIC(5,2)|rr_ratio NUMERIC(5,2)|action VARCHAR(20)|confidence VARCHAR(10)|ai_reason TEXT|tp_method VARCHAR(200)|sl_method VARCHAR(200)|skip_entry BOOLEAN|scored_at TIMESTAMPTZ|ma5_at_signal NUMERIC|ma20_at_signal NUMERIC|ma60_at_signal NUMERIC|rsi14_at_signal NUMERIC|bb_upper_at_sig NUMERIC|bb_lower_at_sig NUMERIC|atr_at_signal NUMERIC|market_flu_rt NUMERIC|news_sentiment VARCHAR(20)|news_ctrl VARCHAR(20)|position_status VARCHAR(20)|sector VARCHAR(50)|entry_qty INTEGER|entry_amount NUMERIC|entry_at TIMESTAMPTZ|peak_price NUMERIC|trailing_pct NUMERIC|trailing_activation NUMERIC|trailing_stop_price NUMERIC|strategy_version VARCHAR(40)|time_stop_type VARCHAR(30)|time_stop_minutes INTEGER|time_stop_deadline_at TIMESTAMPTZ|monitor_enabled BOOLEAN|is_overnight BOOLEAN|overnight_verdict VARCHAR(20)|overnight_score NUMERIC|raw_rr NUMERIC|single_tp_rr NUMERIC|effective_rr NUMERIC|min_rr_ratio NUMERIC|rr_skip_reason TEXT|allow_overnight BOOLEAN|allow_reentry BOOLEAN|buy_zone_low NUMERIC|buy_zone_high NUMERIC|buy_zone_anchors TEXT|buy_zone_strength SMALLINT|sell_zone1_low NUMERIC|sell_zone1_high NUMERIC|sell_zone2_low NUMERIC|sell_zone2_high NUMERIC|zone_rr NUMERIC|shadow_features JSONB|created_at TIMESTAMPTZ|executed_at TIMESTAMPTZ|closed_at TIMESTAMPTZ|realized_pnl FLOAT8&#x27;,&#x27;중앙 aggregate: 신호와 포지션 상태 통합&#x27;],
+      [&#x27;market&#x27;,&#x27;vi_events&#x27;,&#x27;id BIGSERIAL PK|stk_cd VARCHAR(20)|stk_nm VARCHAR(40)|vi_type VARCHAR(20)|vi_status VARCHAR(2)|trigger_price FLOAT8|reference_price FLOAT8|vi_price FLOAT8|acc_volume BIGINT|ref_price FLOAT8|upper_limit FLOAT8|lower_limit FLOAT8|market_type VARCHAR(10)|released_at TIMESTAMPTZ|created_at TIMESTAMPTZ&#x27;,&#x27;VI 발동·해제 이력&#x27;],
+      [&#x27;market&#x27;,&#x27;ws_tick_data&#x27;,&#x27;id BIGSERIAL PK|stk_cd VARCHAR(20)|cur_prc FLOAT8|pred_pre FLOAT8|flu_rt FLOAT8|cntr_qty BIGINT|acc_trde_qty BIGINT|acc_trde_prica BIGINT|cntr_str FLOAT8|total_bid_qty BIGINT|total_ask_qty BIGINT|bid_ask_ratio FLOAT8|tick_type VARCHAR(4)|must_persist BOOLEAN|created_at TIMESTAMPTZ&#x27;,&#x27;legacy/보존 체결 heap&#x27;],
+      [&#x27;market&#x27;,&#x27;ws_tick_data_partitioned&#x27;,&#x27;id BIGINT|stk_cd VARCHAR(20) NN|cur_prc FLOAT8|pred_pre FLOAT8|flu_rt FLOAT8|acc_trde_qty BIGINT|acc_trde_prica BIGINT|cntr_str FLOAT8|total_bid_qty BIGINT|total_ask_qty BIGINT|bid_ask_ratio FLOAT8|tick_type VARCHAR(4)|must_persist BOOLEAN NN|source_created_at TIMESTAMPTZ|created_at TIMESTAMPTZ NN|legacy_ws_tick_data_id BIGINT&#x27;,&#x27;created_at 일별 RANGE partition; 기본 partition 포함&#x27;],
+      [&#x27;market&#x27;,&#x27;ws_tick_data_summary&#x27;,&#x27;id BIGSERIAL PK|bucket_started_at TIMESTAMPTZ NN|bucket_minutes INTEGER NN|stk_cd VARCHAR(20) NN|tick_type VARCHAR(4)|sample_count BIGINT|open_prc FLOAT8|high_prc FLOAT8|low_prc FLOAT8|close_prc FLOAT8|avg_flu_rt FLOAT8|max_acc_trde_qty BIGINT|max_acc_trde_prica BIGINT|avg_cntr_str FLOAT8|avg_bid_ask_ratio FLOAT8|must_persist BOOLEAN|created_at TIMESTAMPTZ|updated_at TIMESTAMPTZ&#x27;,&#x27;tick 집계&#x27;],
+      [&#x27;market&#x27;,&#x27;ws_tick_feature_snapshot&#x27;,&#x27;id BIGSERIAL PK|stk_cd VARCHAR(20) NN|snapshot_at TIMESTAMPTZ NN|source_bucket_minutes INTEGER|cur_prc FLOAT8|flu_rt FLOAT8|acc_trde_qty BIGINT|acc_trde_prica BIGINT|cntr_str FLOAT8|bid_ask_ratio FLOAT8|feature_snapshot JSONB|must_persist BOOLEAN|created_at TIMESTAMPTZ&#x27;,&#x27;전략 feature snapshot&#x27;],
+      [&#x27;market&#x27;,&#x27;daily_indicators&#x27;,&#x27;id BIGSERIAL PK|date DATE NN|stk_cd VARCHAR(20) NN|close_price NUMERIC|open_price NUMERIC|high_price NUMERIC|low_price NUMERIC|volume BIGINT|volume_ratio NUMERIC|ma5 NUMERIC|ma20 NUMERIC|ma60 NUMERIC|ma120 NUMERIC|vol_ma20 BIGINT|rsi14 NUMERIC|stoch_k NUMERIC|stoch_d NUMERIC|bb_upper NUMERIC|bb_mid NUMERIC|bb_lower NUMERIC|bb_width_pct NUMERIC|pct_b NUMERIC|atr14 NUMERIC|atr_pct NUMERIC|macd_line NUMERIC|macd_signal NUMERIC|macd_hist NUMERIC|is_bullish_aligned BOOLEAN|is_above_ma20 BOOLEAN|is_new_high_52w BOOLEAN|golden_cross_today BOOLEAN|swing_high_20d NUMERIC|swing_low_20d NUMERIC|swing_high_60d NUMERIC|swing_low_60d NUMERIC|computed_at TIMESTAMPTZ&#x27;,&#x27;종목별 일봉 지표&#x27;],
+      [&#x27;market&#x27;,&#x27;stock_master&#x27;,&#x27;stk_cd VARCHAR(20) PK|stk_nm VARCHAR(100) NN|market VARCHAR(10)|sector VARCHAR(50)|industry VARCHAR(50)|listed_at DATE|par_value INTEGER|listed_shares BIGINT|market_cap BIGINT|is_active BOOLEAN|last_price NUMERIC|last_price_date DATE|updated_at TIMESTAMPTZ&#x27;,&#x27;종목 마스터&#x27;],
+      [&#x27;context&#x27;,&#x27;economic_events&#x27;,&#x27;id BIGSERIAL PK|event_date DATE|title VARCHAR(200)|importance VARCHAR(20)|country VARCHAR(10)|event_name VARCHAR(100) NN|event_type VARCHAR(20) NN|event_time TIME|expected_impact VARCHAR(10) NN|description TEXT|notified BOOLEAN NN|created_at TIMESTAMPTZ&#x27;,&#x27;경제 일정&#x27;],
+      [&#x27;context&#x27;,&#x27;news_analysis&#x27;,&#x27;id BIGSERIAL PK|headline TEXT NN|sentiment VARCHAR(20) NN|sector VARCHAR(50)|trading_ctrl VARCHAR(20) NN|sectors TEXT|risk_factors TEXT|summary TEXT|confidence VARCHAR(10)|news_count INTEGER|analyzed_at TIMESTAMPTZ NN&#x27;,&#x27;뉴스 분석&#x27;],
+      [&#x27;context&#x27;,&#x27;market_daily_context&#x27;,&#x27;id BIGSERIAL PK|date DATE NN UQ|kospi_open NUMERIC|kospi_close NUMERIC|kospi_change_pct NUMERIC|kospi_volume BIGINT|kosdaq_open NUMERIC|kosdaq_close NUMERIC|kosdaq_change_pct NUMERIC|kosdaq_volume BIGINT|advancing_stocks INTEGER|declining_stocks INTEGER|unchanged_stocks INTEGER|advance_decline_ratio NUMERIC|frgn_net_buy_kospi NUMERIC|inst_net_buy_kospi NUMERIC|frgn_net_buy_kosdaq NUMERIC|inst_net_buy_kosdaq NUMERIC|news_sentiment VARCHAR(20)|news_trading_ctrl VARCHAR(20)|vix_equivalent NUMERIC|economic_event_today BOOLEAN|economic_event_nm VARCHAR(200)|total_signals_today INTEGER|signal_win_rate_today NUMERIC|avg_pnl_pct_today NUMERIC|recorded_at TIMESTAMPTZ&#x27;,&#x27;일별 시장 context&#x27;],
+      [&#x27;strategy&#x27;,&#x27;signal_score_components&#x27;,&#x27;id BIGSERIAL PK|signal_id BIGINT FK NN|strategy VARCHAR(30) NN|base_score NUMERIC|time_bonus NUMERIC|vol_score NUMERIC|momentum_score NUMERIC|technical_score NUMERIC|demand_score NUMERIC|risk_penalty NUMERIC|strategy_components JSONB|total_score NUMERIC|threshold_used NUMERIC|passed_threshold BOOLEAN|computed_at TIMESTAMPTZ NN&#x27;,&#x27;신호 점수 근거&#x27;],
+      [&#x27;strategy&#x27;,&#x27;strategy_param_history&#x27;,&#x27;id BIGSERIAL PK|strategy VARCHAR(30) NN|param_name VARCHAR(50) NN|old_value VARCHAR(100)|new_value VARCHAR(100) NN|changed_at TIMESTAMPTZ NN|changed_by VARCHAR(50)|reason TEXT&#x27;,&#x27;전략 파라미터 변경 감사&#x27;],
+      [&#x27;strategy&#x27;,&#x27;candidate_pool_history&#x27;,&#x27;id BIGSERIAL PK|date DATE NN|strategy VARCHAR(30) NN|market VARCHAR(10) NN|stk_cd VARCHAR(20) NN|stk_nm VARCHAR(100)|pool_score NUMERIC|appear_count INTEGER|first_seen TIMESTAMPTZ|last_seen TIMESTAMPTZ|led_to_signal BOOLEAN|signal_id BIGINT FK&#x27;,&#x27;후보→신호 전환 이력&#x27;],
+      [&#x27;strategy&#x27;,&#x27;strategy_daily_stats&#x27;,&#x27;id BIGSERIAL PK|date DATE NN|strategy VARCHAR(30) NN|total_signals INTEGER|enter_count INTEGER|cancel_count INTEGER|skip_entry_count INTEGER|tp1_hit_count INTEGER|tp2_hit_count INTEGER|sl_hit_count INTEGER|force_close_count INTEGER|expired_count INTEGER|overnight_count INTEGER|win_rate NUMERIC|avg_rule_score NUMERIC|avg_ai_score NUMERIC|avg_rr_ratio NUMERIC|pct_above_threshold NUMERIC|avg_pnl_pct NUMERIC|total_pnl_abs NUMERIC|avg_hold_min NUMERIC|best_pnl_pct NUMERIC|worst_pnl_pct NUMERIC|threshold_snapshot NUMERIC|updated_at TIMESTAMPTZ&#x27;,&#x27;전략 일별 성과&#x27;],
+      [&#x27;risk&#x27;,&#x27;risk_events&#x27;,&#x27;id BIGSERIAL PK|event_type VARCHAR(30) NN|stk_cd VARCHAR(20)|strategy VARCHAR(30)|signal_id BIGINT FK|threshold_value NUMERIC|actual_value NUMERIC|description TEXT|action_taken VARCHAR(100)|occurred_at TIMESTAMPTZ&#x27;,&#x27;리스크 통제 감사&#x27;],
+      [&#x27;risk&#x27;,&#x27;ai_cancel_signal&#x27;,&#x27;id BIGSERIAL PK|signal_id BIGINT FK|stk_cd VARCHAR(20) NN|strategy VARCHAR(30) NN|ai_score NUMERIC|confidence VARCHAR(10)|reason TEXT|cancel_reason TEXT|raw_payload JSONB|created_at TIMESTAMPTZ&#x27;,&#x27;AI 취소 감사&#x27;],
+      [&#x27;risk&#x27;,&#x27;rule_cancel_signal&#x27;,&#x27;id BIGSERIAL PK|signal_id BIGINT FK|stk_cd VARCHAR(20) NN|strategy VARCHAR(30) NN|rule_score NUMERIC|cancel_type VARCHAR(40) NN|reason TEXT|raw_payload JSONB|created_at TIMESTAMPTZ&#x27;,&#x27;규칙 취소 감사&#x27;],
+      [&#x27;position&#x27;,&#x27;position_state_events&#x27;,&#x27;id BIGSERIAL PK|signal_id BIGINT FK NN|event_type VARCHAR(40) NN|event_ts TIMESTAMPTZ NN|position_status VARCHAR(20)|peak_price NUMERIC|trailing_stop_price NUMERIC|payload JSONB&#x27;,&#x27;포지션 상태 이벤트&#x27;],
+      [&#x27;position&#x27;,&#x27;trade_plans&#x27;,&#x27;id BIGSERIAL PK|signal_id BIGINT FK NN|strategy_code VARCHAR(30) NN|strategy_version VARCHAR(40)|plan_name VARCHAR(50) NN|tp_model VARCHAR(200)|sl_model VARCHAR(200)|tp_price NUMERIC|sl_price NUMERIC|tp_pct NUMERIC|sl_pct NUMERIC|planned_rr NUMERIC|effective_rr NUMERIC|time_stop_type VARCHAR(30)|time_stop_minutes INTEGER|time_stop_session VARCHAR(30)|trailing_rule VARCHAR(200)|partial_tp_rule VARCHAR(200)|planned_exit_priority VARCHAR(200)|variant_rank INTEGER|created_at TIMESTAMPTZ&#x27;,&#x27;매매 계획 variant&#x27;],
+      [&#x27;position&#x27;,&#x27;trade_outcomes&#x27;,&#x27;id BIGSERIAL PK|signal_id BIGINT FK NN|plan_id BIGINT FK|exit_reason VARCHAR(20) NN|exit_ts TIMESTAMPTZ NN|exit_price NUMERIC|filled_qty INTEGER|realized_rr_gross NUMERIC|realized_rr_net NUMERIC|realized_pnl NUMERIC|tp_hit_before_sl_flag BOOLEAN|tp_reached_within_horizon_flag BOOLEAN|timeout_flag BOOLEAN|touch_mode VARCHAR(20)|execution_quality_flag VARCHAR(20)&#x27;,&#x27;매매 결과&#x27;],
+      [&#x27;position&#x27;,&#x27;overnight_evaluations&#x27;,&#x27;id BIGSERIAL PK|signal_id BIGINT FK|position_id BIGINT|stk_cd VARCHAR(20) NN|strategy VARCHAR(30)|java_overnight_score NUMERIC|final_score NUMERIC|verdict VARCHAR(20)|confidence VARCHAR(10)|reason TEXT|pnl_pct NUMERIC|flu_rt NUMERIC|cntr_strength NUMERIC|rsi14 NUMERIC|ma_alignment VARCHAR(30)|bid_ratio NUMERIC|entry_price NUMERIC|cur_prc_at_eval NUMERIC|score_components JSONB|next_day_open NUMERIC|next_day_pnl_pct NUMERIC|verdict_correct BOOLEAN|evaluated_at TIMESTAMPTZ&#x27;,&#x27;오버나잇 평가&#x27;],
+      [&#x27;position&#x27;,&#x27;shadow_trades&#x27;,&#x27;id BIGSERIAL PK|signal_id BIGINT FK NN|strategy VARCHAR(30) NN|stk_cd VARCHAR(20)|stk_nm VARCHAR(100)|entry_price NUMERIC NN|tp1_price NUMERIC|tp2_price NUMERIC|sl_price NUMERIC|signal_time TIMESTAMPTZ NN|opened_at TIMESTAMPTZ|closed_at TIMESTAMPTZ|status VARCHAR(20)|max_favorable_excursion NUMERIC|max_adverse_excursion NUMERIC|max_favorable_price NUMERIC|max_adverse_price NUMERIC|last_price NUMERIC|result VARCHAR(20)|realized_pnl_simulated NUMERIC|exit_reason VARCHAR(40)|latency_ms INTEGER|data_quality VARCHAR(20)|data_quality_detail JSONB|created_at TIMESTAMPTZ|updated_at TIMESTAMPTZ&#x27;,&#x27;shadow 성과 추적&#x27;],
+      [&#x27;portfolio&#x27;,&#x27;portfolio_config&#x27;,&#x27;id INTEGER PK|total_capital NUMERIC NN|max_position_pct NUMERIC NN|max_position_count INTEGER NN|max_sector_pct NUMERIC NN|daily_loss_limit_pct NUMERIC NN|daily_loss_limit_abs NUMERIC|max_drawdown_pct NUMERIC NN|sl_mandatory BOOLEAN NN|min_rr_ratio NUMERIC NN|enabled_strategies JSONB NN|sizing_method VARCHAR(20) NN|updated_at TIMESTAMPTZ|updated_by VARCHAR(50)&#x27;,&#x27;포트폴리오 설정 singleton&#x27;],
+      [&#x27;portfolio&#x27;,&#x27;daily_pnl&#x27;,&#x27;id BIGSERIAL PK|date DATE NN UQ|total_signals INTEGER|enter_count INTEGER|cancel_count INTEGER|closed_count INTEGER|tp_hit_count INTEGER|sl_hit_count INTEGER|force_close_count INTEGER|win_rate NUMERIC|gross_pnl_abs NUMERIC|net_pnl_abs NUMERIC|gross_pnl_pct NUMERIC|net_pnl_pct NUMERIC|avg_pnl_per_trade NUMERIC|max_intraday_loss_pct NUMERIC|daily_loss_limit_hit BOOLEAN|cumulative_pnl_abs NUMERIC|cumulative_pnl_pct NUMERIC|peak_capital NUMERIC|current_drawdown_pct NUMERIC|kospi_change_pct NUMERIC|kosdaq_change_pct NUMERIC|market_sentiment VARCHAR(20)|aggregated_at TIMESTAMPTZ&#x27;,&#x27;일별 손익&#x27;],
+      [&#x27;confirm&#x27;,&#x27;human_confirm_requests&#x27;,&#x27;id BIGSERIAL PK|request_key VARCHAR(80) NN UQ|signal_id BIGINT FK|stk_cd VARCHAR(16) NN|stk_nm VARCHAR(120)|strategy VARCHAR(64) NN|rule_score NUMERIC|rr_ratio NUMERIC|status VARCHAR(24) NN|payload JSONB NN|requested_at TIMESTAMPTZ NN|expires_at TIMESTAMPTZ NN|decided_at TIMESTAMPTZ|decision_chat_id BIGINT|decision_message_id BIGINT|last_sent_at TIMESTAMPTZ|last_enqueued_at TIMESTAMPTZ|ai_score NUMERIC|ai_action VARCHAR(24)|ai_confidence VARCHAR(24)|ai_reason TEXT&#x27;,&#x27;사람 확인 상태 머신&#x27;],
+      [&#x27;view&#x27;,&#x27;open_positions / v_active_positions&#x27;,&#x27;view&#x27;,&#x27;trading_signals의 활성 position projection&#x27;],
+      [&#x27;view&#x27;,&#x27;v_strategy_performance_30d / v_score_outcome_correlation / v_portfolio_risk_snapshot&#x27;,&#x27;view&#x27;,&#x27;성과·점수·포트폴리오 위험 조회&#x27;],
+      [&#x27;view&#x27;,&#x27;v_daily_cancel_summary / v_signal_cancel_audit / v_freshness_cancel_audit&#x27;,&#x27;view&#x27;,&#x27;취소 및 freshness 감사 조회&#x27;]
+    ];
+    const relations=[
+      [&#x27;trading_signals.id&#x27;,&#x27;1 → N&#x27;,&#x27;signal_score_components.signal_id&#x27;,&#x27;ON DELETE CASCADE&#x27;],
+      [&#x27;trading_signals.id&#x27;,&#x27;1 → N&#x27;,&#x27;position_state_events.signal_id&#x27;,&#x27;ON DELETE CASCADE&#x27;],
+      [&#x27;trading_signals.id&#x27;,&#x27;1 → N&#x27;,&#x27;trade_plans.signal_id&#x27;,&#x27;ON DELETE CASCADE&#x27;],
+      [&#x27;trading_signals.id&#x27;,&#x27;1 → N&#x27;,&#x27;trade_outcomes.signal_id&#x27;,&#x27;ON DELETE CASCADE&#x27;],
+      [&#x27;trading_signals.id&#x27;,&#x27;1 → N&#x27;,&#x27;shadow_trades.signal_id&#x27;,&#x27;ON DELETE CASCADE&#x27;],
+      [&#x27;trading_signals.id&#x27;,&#x27;1 → N&#x27;,&#x27;risk_events / cancel_signal.signal_id&#x27;,&#x27;SET NULL&#x27;],
+      [&#x27;trading_signals.id&#x27;,&#x27;1 → N&#x27;,&#x27;candidate_pool_history.signal_id&#x27;,&#x27;SET NULL&#x27;],
+      [&#x27;trading_signals.id&#x27;,&#x27;1 → N&#x27;,&#x27;human_confirm_requests.signal_id&#x27;,&#x27;FK; 요청 만료 후 cleanup&#x27;],
+      [&#x27;trade_plans.id&#x27;,&#x27;1 → N&#x27;,&#x27;trade_outcomes.plan_id&#x27;,&#x27;ON DELETE CASCADE&#x27;],
+      [&#x27;Redis ws:*&#x27;,&#x27;snapshot → event&#x27;,&#x27;ws_tick_data_partitioned&#x27;,&#x27;일별 partition; 기본 보존 3일 정책&#x27;],
+      [&#x27;Redis telegram_queue&#x27;,&#x27;pipeline&#x27;,&#x27;trading_signals&#x27;,&#x27;12시간 queue TTL; DB 장기 보존&#x27;],
+      [&#x27;Redis candidates:*&#x27;,&#x27;selected candidate&#x27;,&#x27;candidate_pool_history&#x27;,&#x27;후보 TTL 20–60분; DB 일별 이력&#x27;]
+    ];
+    let active=&#x27;redis&#x27;; const root=document.getElementById(&#x27;stockmate-arch&#x27;); const search=root.querySelector(&#x27;#arch-search&#x27;); const filter=root.querySelector(&#x27;#arch-filter&#x27;);
+    root.querySelector(&#x27;#redis-count&#x27;).textContent=redis.length; root.querySelector(&#x27;#db-count&#x27;).textContent=db.length;
+    function esc(s){return String(s).replace(/[&amp;&lt;&gt;&quot;&#x27;]/g,c=&gt;({&#x27;&amp;&#x27;:&#x27;&amp;amp;&#x27;,&#x27;&lt;&#x27;:&#x27;&amp;lt;&#x27;,&#x27;&gt;&#x27;:&#x27;&amp;gt;&#x27;,&#x27;&quot;&#x27;:&#x27;&amp;quot;&#x27;,&quot;&#x27;&quot;:&#x27;&amp;#39;&#x27;}[c]))}
+    function categories(){const rows=active===&#x27;redis&#x27;?redis:active===&#x27;db&#x27;?db:[]; return [...new Set(rows.map(r=&gt;r[0]))].sort()}
+    function fillFilter(){const old=filter.value; filter.innerHTML=&#x27;&lt;option value=&quot;all&quot;&gt;전체&lt;/option&gt;&#x27;+categories().map(x=&gt;`&lt;option value=&quot;${esc(x)}&quot;&gt;${esc(x)}&lt;/option&gt;`).join(&#x27;&#x27;); if([...filter.options].some(o=&gt;o.value===old))filter.value=old}
+    function render(){const q=search.value.trim().toLowerCase(),f=filter.value; if(active===&#x27;relations&#x27;)return; const rows=active===&#x27;redis&#x27;?redis:db; const target=root.querySelector(active===&#x27;redis&#x27;?&#x27;#redis-grid&#x27;:&#x27;#db-grid&#x27;); const shown=rows.filter(r=&gt;(f===&#x27;all&#x27;||r[0]===f)&amp;&amp;r.join(&#x27; &#x27;).toLowerCase().includes(q)); target.innerHTML=shown.map(r=&gt;active===&#x27;redis&#x27;?`&lt;article&gt;&lt;h3&gt;&lt;code&gt;${esc(r[1])}&lt;/code&gt;&lt;/h3&gt;&lt;div class=&quot;meta&quot;&gt;&lt;span class=&quot;type&quot;&gt;${esc(r[0])} · ${esc(r[2])}&lt;/span&gt;&lt;span class=&quot;ttl&quot;&gt;TTL ${esc(r[3])}&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;cols&quot;&gt;${r[4].split(&#x27;,&#x27;).map(c=&gt;`&lt;span class=&quot;col&quot;&gt;${esc(c.trim())}&lt;/span&gt;`).join(&#x27;&#x27;)}&lt;/div&gt;&lt;div class=&quot;rel text-small&quot;&gt;${esc(r[5])}&lt;/div&gt;&lt;/article&gt;`:`&lt;article&gt;&lt;h3&gt;&lt;code&gt;${esc(r[1])}&lt;/code&gt;&lt;/h3&gt;&lt;div class=&quot;meta&quot;&gt;&lt;span class=&quot;type&quot;&gt;${esc(r[0])}&lt;/span&gt;&lt;span class=&quot;ttl&quot;&gt;${r[2]===&#x27;view&#x27;?&#x27;VIEW&#x27;:r[2].split(&#x27;|&#x27;).length+&#x27; columns&#x27;}&lt;/span&gt;&lt;/div&gt;${r[2]===&#x27;view&#x27;?&#x27;&#x27;:`&lt;div class=&quot;cols&quot;&gt;${r[2].split(&#x27;|&#x27;).map(c=&gt;`&lt;span class=&quot;col&quot;&gt;${esc(c)}&lt;/span&gt;`).join(&#x27;&#x27;)}&lt;/div&gt;`}&lt;div class=&quot;rel text-small&quot;&gt;${esc(r[3])}&lt;/div&gt;&lt;/article&gt;`).join(&#x27;&#x27;)||&#x27;&lt;div class=&quot;empty&quot;&gt;검색 결과가 없습니다.&lt;/div&gt;&#x27;}
+    root.querySelector(&#x27;#rel-body&#x27;).innerHTML=relations.map(r=&gt;`&lt;tr&gt;${r.map(c=&gt;`&lt;td&gt;&lt;code&gt;${esc(c)}&lt;/code&gt;&lt;/td&gt;`).join(&#x27;&#x27;)}&lt;/tr&gt;`).join(&#x27;&#x27;);
+    root.querySelectorAll(&#x27;[data-tab]&#x27;).forEach(b=&gt;b.addEventListener(&#x27;click&#x27;,()=&gt;{active=b.dataset.tab; root.querySelectorAll(&#x27;[data-tab]&#x27;).forEach(x=&gt;{const on=x===b;x.classList.toggle(&#x27;btn-primary&#x27;,on);x.setAttribute(&#x27;aria-pressed&#x27;,String(on))}); [&#x27;redis&#x27;,&#x27;db&#x27;,&#x27;relations&#x27;].forEach(x=&gt;root.querySelector(&#x27;#&#x27;+x+&#x27;-panel&#x27;).hidden=x!==active); fillFilter();render()}));
+    search.addEventListener(&#x27;input&#x27;,render);filter.addEventListener(&#x27;change&#x27;,render);fillFilter();render();
+  })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>
