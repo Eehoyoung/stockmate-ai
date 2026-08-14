@@ -80,7 +80,15 @@ def set_ws_session(session: str | None) -> None:
     _current_session = session
 
 
-def record_subscription_ack(trnm: str, grp_no: str | None, return_code: str, return_msg: str = "") -> None:
+def record_subscription_ack(
+    trnm: str,
+    grp_no: str | None,
+    return_code: str,
+    return_msg: str = "",
+    *,
+    operation_id: int | None = None,
+    item_count: int = 0,
+) -> None:
     """Record the latest Kiwoom REG/REMOVE acknowledgement per group."""
     key = str(grp_no or "unknown")
     _subscription_ack[key] = {
@@ -88,6 +96,8 @@ def record_subscription_ack(trnm: str, grp_no: str | None, return_code: str, ret
         "grp_no": key,
         "return_code": str(return_code),
         "return_msg": return_msg or "",
+        "operation_id": operation_id,
+        "item_count": item_count,
         "updated_at": time.monotonic(),
     }
 
@@ -172,6 +182,8 @@ async def _health_handler(request):
                 "grp_no": value.get("grp_no"),
                 "return_code": value.get("return_code"),
                 "return_msg": value.get("return_msg") or None,
+                "operation_id": value.get("operation_id"),
+                "item_count": value.get("item_count", 0),
                 "age_sec": _mono_to_ago_sec(value.get("updated_at")),
             }
             for key, value in _subscription_ack.items()
@@ -181,12 +193,20 @@ async def _health_handler(request):
     # UP       : WS 연결 + Redis OK
     # DEGRADED : WS 연결 + Redis 이상 | WS 끊김 + Redis OK
     # DOWN     : WS 끊김 + Redis 이상
-    if _ws_connected and redis_info["ok"]:
+    expected_offline = _current_session in {"post_quiet", "closed"}
+    if redis_info["ok"] and (_ws_connected or expected_offline):
         overall = "UP"
     elif not _ws_connected and not redis_info["ok"]:
         overall = "DOWN"
     else:
         overall = "DEGRADED"
+
+    if expected_offline:
+        trading_readiness = {"status": "NOT_APPLICABLE", "reason": f"session:{_current_session}"}
+    elif _ws_connected and redis_info["ok"]:
+        trading_readiness = {"status": "READY", "reason": None}
+    else:
+        trading_readiness = {"status": "NOT_READY", "reason": _disconnect_reason or "dependency_unavailable"}
 
     body = {
         "status":             overall,
@@ -196,11 +216,20 @@ async def _health_handler(request):
         "redis":              redis_info,
         "last_message_ago_sec": last_msg_ago,
         "telegram_sender":    tg_info,
+        "trading_readiness":  trading_readiness,
     }
 
     # HTTP 상태코드: UP=200, DEGRADED=200(운영 판단 가능), DOWN=503
     http_status = 503 if overall == "DOWN" else 200
     return _json_response(body, status=http_status, request=request)
+
+
+async def _ready_handler(request):
+    health = await _health_handler(None)
+    body = json.loads(health.text)
+    readiness = body.get("trading_readiness", {})
+    status = 200 if readiness.get("status") in {"READY", "NOT_APPLICABLE"} else 503
+    return _json_response(readiness, status=status, request=request)
 
 
 # ── 서버 실행 ────────────────────────────────────────────────
@@ -214,6 +243,7 @@ async def run_health_server(port: int = 8081):
 
     app = web.Application()
     app.router.add_get("/health", _health_handler)
+    app.router.add_get("/ready", _ready_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()

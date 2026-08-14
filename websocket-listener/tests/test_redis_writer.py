@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
@@ -45,6 +46,7 @@ class FakeRedis:
         self.hashes = {}
         self.lists = {}
         self.sets = []
+        self.values = {}
         self.pipeline_batches = []
 
     def pipeline(self, transaction=False):
@@ -77,8 +79,11 @@ class FakeRedis:
         self.lranges.append((key, start, end))
         return self.lists.get(key, [])[start:end + 1]
 
-    async def set(self, key, value, ex=None):
-        self.calls.append(("set", key, value, ex))
+    async def set(self, key, value, ex=None, nx=False):
+        self.calls.append(("set", key, value, ex, nx))
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
         self.sets.append((key, value, ex))
         return True
 
@@ -162,16 +167,29 @@ class RedisWriterTests(IsolatedAsyncioTestCase):
 
         heartbeat_expires = [item for item in rdb.expires if item == ("ws:py_heartbeat", 90)]
         heartbeat_sets = [item for item in rdb.sets if item[0] == "ws:heartbeat"]
+        event_mode_sets = [item for item in rdb.sets if item[0] == "ws:db_writer:event_mode"]
         self.assertEqual(len(heartbeat_expires), 2)
         self.assertEqual(len(heartbeat_sets), 2)
+        self.assertEqual(len(event_mode_sets), 2)
+        self.assertTrue(all(item[1] == "1" and item[2] == 120 for item in event_mode_sets))
 
-    async def test_vi_watch_queue_is_not_suppressed(self):
+    def test_s2_window_uses_open_day_and_1450_exclusive_boundary(self):
+        kst = timezone(timedelta(hours=9))
+        self.assertTrue(redis_writer._is_s2_window_open(datetime(2026, 8, 3, 9, 0, tzinfo=kst)))
+        self.assertTrue(redis_writer._is_s2_window_open(datetime(2026, 8, 3, 14, 49, 59, tzinfo=kst)))
+        self.assertFalse(redis_writer._is_s2_window_open(datetime(2026, 8, 3, 14, 50, tzinfo=kst)))
+        self.assertFalse(redis_writer._is_s2_window_open(datetime(2026, 8, 2, 10, 0, tzinfo=kst)))
+
+    async def test_duplicate_vi_release_watch_is_suppressed_atomically(self):
         os.environ["WS_REDIS_PIPELINE_ENABLED"] = "1"
         os.environ["WS_REDIS_EXPIRE_THROTTLE_MS"] = "1000"
         os.environ["WS_REDIS_DEDUPE_ENABLED"] = "1"
         rdb = FakeRedis()
 
-        with patch("redis_writer._now_ms", side_effect=[1000, 1100]):
+        with (
+            patch("redis_writer._now_ms", side_effect=[1000, 1100]),
+            patch("redis_writer._is_s2_window_open", return_value=True),
+        ):
             await redis_writer.write_vi(rdb, {"9001": "005930", "9068": "2", "1221": "1000"}, "005930")
             await redis_writer.write_vi(rdb, {"9001": "005930", "9068": "2", "1221": "1000"}, "005930")
 
@@ -182,8 +200,83 @@ class RedisWriterTests(IsolatedAsyncioTestCase):
             if command[0] == "lpush" and command[1] == "vi_watch_queue"
         ]
         queue_expires = [item for item in rdb.expires if item == ("vi_watch_queue", 7200)]
-        self.assertEqual(len(queue_pushes), 2)
-        self.assertEqual(len(queue_expires), 2)
+        self.assertEqual(len(queue_pushes), 1)
+        self.assertEqual(len(queue_expires), 1)
+        dedup_sets = [
+            call for call in rdb.calls
+            if call[0] == "set" and call[1].startswith("vi:release:queue_dedup:")
+        ]
+        self.assertEqual(len(dedup_sets), 2)
+        self.assertTrue(all(call[4] is True for call in dedup_sets))
+        self.assertTrue(all(call[3] == redis_writer._VI_RELEASE_QUEUE_DEDUP_SEC for call in dedup_sets))
+
+    async def test_vi_release_watch_suppresses_outside_s2_window(self):
+        rdb = FakeRedis()
+
+        with patch("redis_writer._is_s2_window_open", return_value=False):
+            await redis_writer.write_vi(
+                rdb,
+                {
+                    "9001": "005930",
+                    "302": "삼성전자",
+                    "9068": "2",
+                    "1221": "70000",
+                },
+                "005930",
+            )
+
+        queue_pushes = [
+            command
+            for batch in rdb.pipeline_batches
+            for command in batch
+            if command[0] == "lpush" and command[1] == "vi_watch_queue"
+        ]
+        self.assertEqual(queue_pushes, [])
+        self.assertEqual(rdb.hashes["vi:005930"]["status"], "released")
+
+    async def test_vi_release_watch_suppresses_etn_product(self):
+        rdb = FakeRedis()
+
+        await redis_writer.write_vi(
+            rdb,
+            {
+                "9001": "760008",
+                "302": "키움 코스닥 150 TR ETN",
+                "9068": "2",
+                "1221": "9400",
+            },
+            "760008",
+        )
+
+        queue_pushes = [
+            command
+            for batch in rdb.pipeline_batches
+            for command in batch
+            if command[0] == "lpush" and command[1] == "vi_watch_queue"
+        ]
+        self.assertEqual(queue_pushes, [])
+
+    async def test_vi_release_watch_suppresses_active_etf_without_etf_suffix(self):
+        rdb = FakeRedis()
+
+        await redis_writer.write_vi(
+            rdb,
+            {
+                "9001": "0208N0",
+                "302": "IBK 코스피액티브",
+                "9068": "2",
+                "1221": "7580",
+            },
+            "0208N0",
+        )
+
+        queue_pushes = [
+            command
+            for batch in rdb.pipeline_batches
+            for command in batch
+            if command[0] == "lpush" and command[1] == "vi_watch_queue"
+        ]
+        self.assertEqual(queue_pushes, [])
 
     async def test_strength_ltrim_and_lrange_sampling_are_throttled(self):
         os.environ["WS_REDIS_LTRIM_THROTTLE_MS"] = "1000"

@@ -1,4 +1,5 @@
-from datetime import datetime, time as dtime, timedelta, timezone
+import os
+from datetime import date, datetime, time as dtime, timedelta, timezone
 
 KST = timezone(timedelta(hours=9))
 
@@ -22,6 +23,11 @@ ACTIVE_SESSIONS = {
     "after_preopen",
     "after_market",
 }
+CONFIGURED_HOLIDAYS = {
+    date.fromisoformat(value.strip())
+    for value in os.getenv("KRX_HOLIDAYS", "").split(",")
+    if value.strip()
+}
 
 
 def now_kst() -> datetime:
@@ -32,8 +38,19 @@ def is_weekday(dt: datetime) -> bool:
     return dt.weekday() in WEEKDAYS
 
 
+def is_market_holiday(dt: datetime) -> bool:
+    target = dt.date()
+    return target in CONFIGURED_HOLIDAYS or (
+        target.year >= 2026 and target.month == 7 and target.day == 17
+    )
+
+
+def is_market_open_day(dt: datetime) -> bool:
+    return is_weekday(dt) and not is_market_holiday(dt)
+
+
 def current_session(dt: datetime) -> str:
-    if not is_weekday(dt):
+    if not is_market_open_day(dt):
         return "closed"
 
     current_time = dt.time()
@@ -59,7 +76,7 @@ def is_trading_active(dt: datetime) -> bool:
 
 
 def is_early_connect_window(dt: datetime) -> bool:
-    if not is_weekday(dt):
+    if not is_market_open_day(dt):
         return False
     return EARLY_CONNECT_START <= dt.time() < PRE_MARKET_START
 
@@ -69,7 +86,7 @@ def should_keep_ws_connected(dt: datetime) -> bool:
 
 
 def next_ws_connect_time(dt: datetime) -> datetime:
-    if is_weekday(dt) and dt.time() < EARLY_CONNECT_START:
+    if is_market_open_day(dt) and dt.time() < EARLY_CONNECT_START:
         return dt.replace(
             hour=EARLY_CONNECT_START.hour,
             minute=EARLY_CONNECT_START.minute,
@@ -77,14 +94,15 @@ def next_ws_connect_time(dt: datetime) -> datetime:
             microsecond=0,
         )
 
-    days_ahead = 1
-    if dt.weekday() >= 4:
-        days_ahead = 7 - dt.weekday()
-
     base = dt.replace(
         hour=EARLY_CONNECT_START.hour,
         minute=EARLY_CONNECT_START.minute,
         second=0,
         microsecond=0,
     )
-    return base + timedelta(days=days_ahead)
+    days_ahead = 1
+    while True:
+        candidate = base + timedelta(days=days_ahead)
+        if is_market_open_day(candidate):
+            return candidate
+        days_ahead += 1

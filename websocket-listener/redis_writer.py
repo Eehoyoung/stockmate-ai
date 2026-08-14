@@ -10,20 +10,41 @@ import os
 import re
 import time
 from collections import deque
+from datetime import time as dtime
 from inspect import isawaitable
 
 from db_writer import insert_tick_event, insert_vi_event, mark_event_mode
+from market_session import is_market_open_day, now_kst
 
 logger = logging.getLogger(__name__)
 
 _NO_SUPPRESSION_MARKERS = ("queue", "control", "token", "heartbeat")
 _NO_SUPPRESSION_EXACT = {"vi_watch_queue", "ws:heartbeat", "ws:py_heartbeat"}
+_FUND_PRODUCT_NAME_MARKERS = (
+    "ETF", "ETN", "레버리지", "인버스", "2X", "곱버스", "선물", "합성", "액티브",
+)
+
+
+def _is_etf_or_etn_name(value) -> bool:
+    normalized = str(value or "").upper()
+    return any(marker in normalized for marker in _FUND_PRODUCT_NAME_MARKERS)
 
 _last_expire_ms: dict[str, int] = {}
 _last_ltrim_ms: dict[str, int] = {}
 _last_write_sig: dict[str, tuple[int, str]] = {}
 _strength_samples: dict[str, deque[float]] = {}
 _strength_sample_counts: dict[str, int] = {}
+_VI_RELEASE_QUEUE_DEDUP_SEC = 660  # release watch window (10m) plus buffer
+_S2_WINDOW_START = dtime(9, 0)
+_S2_WINDOW_END = dtime(14, 50)
+
+
+def _is_s2_window_open(date_time=None) -> bool:
+    target = date_time or now_kst()
+    return (
+        is_market_open_day(target)
+        and _S2_WINDOW_START <= target.time() < _S2_WINDOW_END
+    )
 
 # 5분 평균 거래량 산출용 누적 스냅샷 (S2 VI 거래량 배수 계산에 사용)
 _5MIN_MS = 5 * 60 * 1000
@@ -251,6 +272,20 @@ def _normalize_stock_code(stk_cd: str | None) -> str:
     return base
 
 
+async def get_runtime_flag(rdb, name: str, default: bool) -> bool:
+    """대시보드가 flags:{name} 에 저장한 런타임 오버라이드가 있으면 그 값을, 없으면 env 기본값을 반환."""
+    if rdb is None:
+        return default
+    try:
+        raw = await rdb.get(f"flags:{name}")
+    except Exception:
+        return default
+    if raw is None:
+        return default
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+    return text.strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def write_heartbeat(rdb, grp_status: dict):
     try:
         now_ts = str(time.time())
@@ -262,6 +297,10 @@ async def write_heartbeat(rdb, grp_status: dict):
         ])
         # ws:heartbeat: 모니터링 시스템이 참조하는 표준 키 (단순 타임스탬프 문자열)
         await rdb.set("ws:heartbeat", now_ts, ex=90)
+        # Event-mode is a producer capability, not evidence that a trade happened
+        # recently. Keep the marker alive with the producer heartbeat so quiet
+        # after-market periods are not reported as an unknown DB writer mode.
+        await mark_event_mode(rdb)
     except Exception as e:
         logger.debug("[Redis] heartbeat update failed: %s", e)
 
@@ -448,14 +487,41 @@ async def write_vi(rdb, values: dict, stk_cd: str, pg_pool=None):
             await mark_event_mode(rdb)
 
         if vi_stat == "2":
+            stk_nm = values.get("302", "")
+            if _is_etf_or_etn_name(stk_nm):
+                logger.info(
+                    "[VI] ETF/ETN release watch suppressed [%s] name=%s",
+                    real_stk_cd,
+                    stk_nm,
+                )
+                return
+            if not _is_s2_window_open():
+                logger.info(
+                    "[VI] release watch suppressed outside S2 window [%s]",
+                    real_stk_cd,
+                )
+                return
             try:
                 vi_price_f = float(str(vi_price).replace(",", "").replace("+", "").replace("-", "") or "0")
             except ValueError:
                 vi_price_f = 0.0
+            release_dedup_key = f"vi:release:queue_dedup:{real_stk_cd}:{vi_price_f}"
+            if not await rdb.set(
+                release_dedup_key,
+                now_ms,
+                nx=True,
+                ex=_VI_RELEASE_QUEUE_DEDUP_SEC,
+            ):
+                logger.debug(
+                    "[VI] duplicate release watch suppressed [%s] price=%s",
+                    real_stk_cd,
+                    vi_price_f,
+                )
+                return
             is_dynamic = "동적" in str(vi_type)
             watch_item = json.dumps({
                 "stk_cd": real_stk_cd,
-                "stk_nm": values.get("302", ""),
+                "stk_nm": stk_nm,
                 "vi_price": vi_price_f,
                 "watch_until": int(time.time() * 1000) + 600_000,
                 "is_dynamic": is_dynamic,

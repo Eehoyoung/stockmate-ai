@@ -67,6 +67,15 @@ def test_weekend_is_closed(weekday):
         assert ws_client._is_market_hours() is False
 
 
+def test_default_holiday_is_closed():
+    import ws_client
+
+    holiday = datetime(2026, 7, 17, 10, 0, tzinfo=KST)
+    with patch("ws_client._now_kst", return_value=holiday):
+        assert ws_client._get_market_session() == "closed"
+        assert ws_client._is_market_hours() is False
+
+
 @pytest.mark.asyncio
 async def test_after_market_subscribes_0b_0d_0w_1h_without_0h():
     import ws_client
@@ -109,7 +118,57 @@ async def test_pre_market_subscribes_0b_0h_0d_0w_1h():
             refresh_values.append(payload["refresh"])
 
     assert sent_types == ["0B", "0H", "0D", "0w", "1h"]
-    assert refresh_values == ["0", "0", "0", "0", "0"]
+    # diff 기반 구독 갱신: 신규 종목은 항상 refresh="1"(추가)로 전송하고,
+    # 이미 구독 중인 종목은 재전송하지 않아 Kiwoom 측 중복 누적을 막는다.
+    assert refresh_values == ["1", "1", "1", "1", "1"]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_by_phase_diffs_instead_of_resending():
+    """이미 구독 중인 종목은 REG를 재전송하지 않고, 더 이상 필요 없는 종목만 REMOVE 한다.
+
+    07-23~24 로그에서 관측된 "허용 개수(200) 초과" 반복 거부는 주기적 전체
+    재전송(refresh 무관 REG 누적)이 원인으로 추정되어, diff 기반 갱신으로
+    동일 종목이 중복 등록되지 않는지 검증한다.
+    """
+    import ws_client
+
+    ws = AsyncMock()
+    rdb = AsyncMock()
+    # 0B: 이미 "005930"(유지), "999999"(더 이상 미욕구 → REMOVE 대상) 구독 중
+    # 0H/0D/0w/1h: 아무것도 구독하지 않은 상태
+    rdb.smembers.side_effect = [
+        {"005930", "999999"},  # 0B
+        set(),                  # 0H
+        set(),                  # 0D
+        set(),                  # 0w
+        set(),                  # 1h
+    ]
+    with patch("ws_client._get_ranked_candidates", new_callable=AsyncMock) as ranked, \
+         patch("ws_client.asyncio.sleep", new_callable=AsyncMock):
+        ranked.return_value = (["005930", "000660", "035420"], ["005930", "000660"])
+        await ws_client._subscribe_by_phase(ws, rdb, "pre_market")
+
+    reg_items_0b = []
+    remove_items_0b = []
+    for call in ws.send.call_args_list:
+        payload = json.loads(call.args[0])
+        if payload["grp_no"] != "1":
+            continue
+        entry = payload["data"][0]
+        if "0B" not in entry["type"]:
+            continue
+        if payload["trnm"] == "REG":
+            reg_items_0b.extend(entry["item"])
+        elif payload["trnm"] == "REMOVE":
+            remove_items_0b.extend(entry["item"])
+
+    # 이미 구독 중인 "005930"은 다시 REG로 보내지 않는다.
+    assert "005930" not in reg_items_0b
+    # 신규 종목만 REG로 전송한다.
+    assert set(reg_items_0b) == {"000660", "035420"}
+    # 더 이상 후보가 아닌 "999999"는 REMOVE 한다.
+    assert remove_items_0b == ["999999"]
 
 
 @pytest.mark.asyncio
@@ -146,12 +205,127 @@ async def test_reset_local_subscription_sets_clears_connection_scoped_state():
 
     keys = [call.args[0] for call in rdb.delete.call_args_list]
     assert keys == [
-        "ws:subscribed:0B",
-        "ws:subscribed:0H",
-        "ws:subscribed:0D",
-        "ws:subscribed:0w",
-        "ws:subscribed:1h",
+        key
+        for ttype in ("0B", "0H", "0D", "0w", "1h")
+        for key in (f"ws:subscribed:{ttype}", f"ws:desired:{ttype}")
     ]
+
+
+@pytest.mark.asyncio
+async def test_subscription_state_commits_only_after_success_ack():
+    import ws_client
+
+    ws_client._pending_ws_controls.clear()
+    ws = AsyncMock()
+    rdb = AsyncMock()
+    payload = {
+        "trnm": "REG",
+        "grp_no": "1",
+        "refresh": "0",
+        "data": [{"item": ["005930", "000660"], "type": ["0B"]}],
+    }
+
+    await ws_client._send_ws_control(ws, payload, full_snapshot=True)
+    assert rdb.sadd.await_count == 0
+
+    # Real Kiwoom ACK payloads always echo grp_no="" regardless of the grp_no that was
+    # requested; matching must still succeed using this real-world (empty) grp_no.
+    await ws_client._apply_ws_control_ack(rdb, "REG", "", "0")
+    rdb.delete.assert_awaited_with("ws:subscribed:0B")
+    rdb.sadd.assert_awaited_with("ws:subscribed:0B", "005930", "000660")
+    rdb.expire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_subscription_ack_does_not_commit_state():
+    import ws_client
+
+    ws_client._pending_ws_controls.clear()
+    ws = AsyncMock()
+    rdb = AsyncMock()
+    payload = {
+        "trnm": "REG",
+        "grp_no": "1",
+        "refresh": "0",
+        "data": [{"item": ["005930"], "type": ["0B"]}],
+    }
+
+    await ws_client._send_ws_control(ws, payload, full_snapshot=True)
+    await ws_client._apply_ws_control_ack(rdb, "REG", "", "105115")
+
+    rdb.delete.assert_not_awaited()
+    rdb.sadd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ack_timeout_rejects_operation_without_changing_acked_state():
+    import ws_client
+
+    ws_client._pending_ws_controls.clear()
+    ws = AsyncMock()
+    rdb = AsyncMock()
+    payload = {
+        "trnm": "REG",
+        "grp_no": "1",
+        "data": [{"item": ["005930"], "type": ["0B"]}],
+    }
+    await ws_client._send_ws_control(ws, payload, full_snapshot=True)
+    operation = ws_client._pending_ws_controls["REG"][0]
+    operation["sent_at_ms"] = 0
+
+    expired = await ws_client._expire_pending_ws_controls(rdb)
+
+    assert len(expired) == 1
+    assert expired[0]["item_hash"]
+    assert "REG" not in ws_client._pending_ws_controls
+    rdb.sadd.assert_not_awaited()
+    rdb.hset.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_multi_group_ack_with_blank_grp_no_all_commit_without_timeout():
+    """Regression test for the 2026-07-27 production incident.
+
+    Kiwoom's REG/REMOVE ACK responses always echo grp_no="" (verified against
+    production logs), never the grp_no that was actually requested. Before the fix,
+    the pending-operation queue was keyed by (trnm, grp_no), so a real, immediate,
+    successful ACK from Kiwoom (grp_no="") could never match the operations queued
+    under keys like ("REG", "1"), ("REG", "3"), ("REG", "4"), ("REG", "5"). Every
+    REG/REMOVE across every group therefore fell through to the 10s ACK-timeout path
+    100% of the time despite Kiwoom having answered instantly.
+    """
+    import ws_client
+
+    ws_client._pending_ws_controls.clear()
+    ws = AsyncMock()
+    rdb = AsyncMock()
+
+    groups = [
+        ("1", "0B", ["005930"]),
+        ("4", "0D", ["005930"]),
+        ("5", "0w", ["005930"]),
+        ("3", "1h", [""]),
+    ]
+    for grp_no, ttype, items in groups:
+        payload = {
+            "trnm": "REG",
+            "grp_no": grp_no,
+            "refresh": "1",
+            "data": [{"item": items, "type": [ttype]}],
+        }
+        await ws_client._send_ws_control(ws, payload, full_snapshot=False)
+
+    # Kiwoom answers every request immediately and successfully, but always with an
+    # empty grp_no, in the exact order the requests were sent (FIFO over the single
+    # serialized connection).
+    for _ in groups:
+        await ws_client._apply_ws_control_ack(rdb, "REG", "", "0")
+
+    # No operation should be left pending, so the 10s watcher has nothing left to
+    # expire -- i.e. no ACK_TIMEOUT should ever fire for these operations.
+    assert "REG" not in ws_client._pending_ws_controls
+    expired = await ws_client._expire_pending_ws_controls(rdb)
+    assert expired == []
 
 
 def test_expected_silent_close_after_2000_sessions():
@@ -198,3 +372,22 @@ async def test_subscription_ack_is_exposed_in_health():
 
     assert body["websocket"]["subscription_ack"]["1"]["trnm"] == "REG"
     assert body["websocket"]["subscription_ack"]["1"]["return_code"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_closed_session_is_healthy_but_trading_not_applicable():
+    import health_server
+
+    health_server._rdb = AsyncMock()
+    health_server._rdb.ping.return_value = True
+    health_server._rdb.llen.return_value = 0
+    health_server.set_ws_connected(False, "session_closed")
+    health_server.set_ws_session("closed")
+
+    health = await health_server._health_handler(None)
+    ready = await health_server._ready_handler(None)
+    body = json.loads(health.text)
+
+    assert body["status"] == "UP"
+    assert body["trading_readiness"]["status"] == "NOT_APPLICABLE"
+    assert ready.status == 200
