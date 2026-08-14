@@ -17,6 +17,18 @@ async def evaluate_ai_decision(
     """Run the AI decision step and normalize success/limit/failure outcomes."""
     can_call = await check_daily_limit_fn(rdb)
     if not can_call:
+        if signal.get("hold_monitor_recheck"):
+            return {
+                "action": "HOLD",
+                "confidence": "LOW",
+                "reason": "HOLD recheck AI budget reached; monitoring retained",
+                "cancel_reason": None,
+                "cancel_type": None,
+                "ai_score": rule_score_value,
+                "ai_result": {},
+                "hold_promoted_to_enter": False,
+                "metrics": ["hold_recheck_ai_limit"],
+            }
         return {
             "action": "CANCEL",
             "confidence": "LOW",
@@ -69,4 +81,3 @@ async def evaluate_ai_decision(
             "metrics": ["cancel_ai_unavailable"],
             "error": exc,
         }
-

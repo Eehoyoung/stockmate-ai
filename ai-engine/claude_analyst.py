@@ -21,8 +21,9 @@ from indicator_atr import get_atr_daily, get_atr_minute
 from indicator_bollinger import get_bollinger_daily, get_bollinger_minute
 from indicator_macd import get_macd_daily, get_macd_minute
 from indicator_rsi import fetch_minute_candles, get_rsi_daily, get_rsi_minute
-from indicator_stochastic import get_stochastic_minute
+from indicator_stochastic import get_stochastic_daily, get_stochastic_minute
 from ma_utils import _safe_price, _safe_vol, fetch_daily_candles
+from redis_reader import get_hoga_with_status, get_tick_with_status
 from utils import normalize_stock_code, safe_float as _sf
 
 logger = logging.getLogger(__name__)
@@ -177,8 +178,16 @@ async def _check_candidate_pools(rdb, stk_cd: str) -> list[str]:
 
 
 async def _build_market_snapshot(rdb, token: str, stk_cd: str) -> dict[str, Any]:
-    tick = await rdb.hgetall(f"ws:tick:{stk_cd}") if rdb else {}
-    hoga_raw = await rdb.hgetall(f"ws:hoga:{stk_cd}") if rdb else {}
+    if rdb:
+        tick_result, hoga_result = await asyncio.gather(
+            get_tick_with_status(rdb, stk_cd),
+            get_hoga_with_status(rdb, stk_cd),
+        )
+    else:
+        tick_result = {"data": {}, "status": {"state": "missing", "age_ms": None}, "source": "missing"}
+        hoga_result = {"data": {}, "status": {"state": "missing", "age_ms": None}, "source": "missing"}
+    tick = tick_result["data"]
+    hoga_raw = hoga_result["data"]
 
     cur_prc = _sf(tick.get("cur_prc", 0))
     flu_rt = _safe_round(tick.get("flu_rt", 0), 2) or 0.0
@@ -217,6 +226,10 @@ async def _build_market_snapshot(rdb, token: str, stk_cd: str) -> dict[str, Any]
             "best_bid": best_bid,
             "best_ask": best_ask,
         },
+        "freshness": {
+            "tick": {**tick_result["status"], "source": tick_result["source"]},
+            "hoga": {**hoga_result["status"], "source": hoga_result["source"]},
+        },
     }
 
 
@@ -228,10 +241,11 @@ async def _build_daily_indicators(token: str, stk_cd: str, fallback_price: float
     volumes = [_safe_vol(row.get("trde_qty")) for row in candles[:20]]
     latest_price = fallback_price or (closes[0] if closes else 0.0)
 
-    rsi_daily, macd_daily, bb_daily, atr_daily = await asyncio.gather(
+    rsi_daily, macd_daily, bb_daily, stoch_daily, atr_daily = await asyncio.gather(
         get_rsi_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
         get_macd_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
         get_bollinger_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
+        get_stochastic_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
         get_atr_daily(token, stk_cd) if token else asyncio.sleep(0, result=None),
     )
 
@@ -248,6 +262,8 @@ async def _build_daily_indicators(token: str, stk_cd: str, fallback_price: float
         "bb_mid": getattr(bb_daily, "middle", None),
         "bb_lower": getattr(bb_daily, "lower", None),
         "bb_pct_b": getattr(bb_daily, "pct_b", None),
+        "stoch_k": getattr(stoch_daily, "k", None),
+        "stoch_d": getattr(stoch_daily, "d", None),
         "atr": getattr(atr_daily, "atr", None),
         "atr_pct": getattr(atr_daily, "atr_pct", None),
         "vol_ma20": round(sum(volumes) / len(volumes), 2) if volumes else None,

@@ -14,6 +14,14 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+def test_claude_timeout_uses_operational_configuration():
+    import analyzer
+
+    assert analyzer.CLAUDE_TIMEOUT == float(
+        os.getenv("CLAUDE_ANALYST_TIMEOUT_SEC", "30")
+    )
+
+
 # ──────────────────────────────────────────────────────────────────
 # 헬퍼
 # ──────────────────────────────────────────────────────────────────
@@ -100,6 +108,42 @@ class TestFallback:
 # ──────────────────────────────────────────────────────────────────
 
 class TestBuildUserMessage:
+    def test_acc_trade_amount_uses_kiwoom_million_krw_unit(self):
+        from analyzer import _build_user_message
+
+        signal = _signal("S15_MOMENTUM_ALIGN")
+        msg = _build_user_message(
+            signal,
+            {
+                "tick": {"flu_rt": "1.2", "acc_trde_prica": "153"},
+                "hoga": {},
+                "strength": 110,
+                "kospi_flu_rt": 0.2,
+            },
+            70.0,
+        )
+
+        assert "당일거래대금: 1.5억원" in msg
+        assert "당일거래대금: 0억원" not in msg
+
+    def test_missing_acc_trade_amount_is_not_rendered_as_zero(self):
+        from analyzer import _build_user_message
+
+        signal = _signal("S15_MOMENTUM_ALIGN")
+        msg = _build_user_message(
+            signal,
+            {
+                "tick": {"flu_rt": "1.2"},
+                "hoga": {},
+                "strength": 110,
+                "kospi_flu_rt": 0.2,
+            },
+            70.0,
+        )
+
+        assert "당일거래대금: 확인불가(0억원 아님)" in msg
+        assert "당일거래대금: 0억원" not in msg
+
     def test_uses_signal_bid_ratio_when_hoga_missing(self):
         from analyzer import _build_user_message
         signal = _signal(

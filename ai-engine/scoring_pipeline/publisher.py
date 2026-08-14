@@ -22,8 +22,19 @@ async def route_execution_payload(
     if decision == "WATCH":
         await push_hold_monitor_queue_fn(rdb, payload)
         await incr_pipeline_fn(rdb, strategy, "hold_monitor")
+        is_recheck = bool(payload.get("hold_monitor_recheck"))
+        if not is_recheck:
+            notice = {**payload, "type": "HOLD_WATCH", "hold_reason": display_reason}
+            await push_score_only_queue_fn(rdb, notice)
         if logger:
-            logger.info("[Worker] WATCH routed to monitor queue [%s %s]", stk_cd, strategy)
+            if is_recheck:
+                logger.info(
+                    "[Worker] WATCH recheck retained without duplicate notice [%s %s]",
+                    stk_cd,
+                    strategy,
+                )
+            else:
+                logger.info("[Worker] WATCH routed to monitor queue [%s %s]", stk_cd, strategy)
         return "WATCH"
 
     if decision == "ENTER":

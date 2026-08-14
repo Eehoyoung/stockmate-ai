@@ -15,13 +15,15 @@ from typing import Optional
 
 import anthropic
 from strategy_meta import get_persona
+from strategy_meta import SWING_STRATEGIES as _TOSS_SWING_STRATEGIES
+from toss_client import fetch_stock_risk_context as _toss_fetch_stock_risk_context
 
 logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
 
 CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS      = 512   # TP/SL 절대가 출력을 위한 공간 확보
-CLAUDE_TIMEOUT  = 10    # seconds
+CLAUDE_TIMEOUT  = float(os.getenv("CLAUDE_ANALYST_TIMEOUT_SEC", "30"))
 ENABLE_STRATEGY_PERSONA_INJECTION = (
     os.getenv("ENABLE_STRATEGY_PERSONA_INJECTION", "true").lower() in {"1", "true", "yes", "on"}
 )
@@ -414,6 +416,92 @@ _STRATEGY_TEMPLATES: dict[str, tuple[callable, str]] = {
 
 
 # 전략별 압축 프롬프트 생성기
+def _fmt_eok(amount) -> str | None:
+    """원화 정수 문자열 → 억원 단위 부호 포함 문자열. 파싱 실패 시 None."""
+    try:
+        val = float(amount)
+    except (TypeError, ValueError):
+        return None
+    eok = val / 1_0000_0000.0
+    return f"{eok:+,.0f}억"
+
+
+def _fmt_investor_flow_line(flow: dict | None) -> str:
+    """시장 전체(코스피/코스닥) 투자자 순매수 — 토스 market-indicators 전용,
+    Kiwoom에는 없던 데이터. 참고정보일 뿐 어떤 게이트에도 쓰이지 않는다."""
+    if not flow:
+        return ""
+    parts = []
+    for market, label in (("kospi", "코스피"), ("kosdaq", "코스닥")):
+        data = flow.get(market)
+        if not isinstance(data, dict):
+            continue
+        foreign = _fmt_eok(data.get("foreigner_net"))
+        inst = _fmt_eok(data.get("institution_net"))
+        if foreign is not None or inst is not None:
+            parts.append(f"{label}(외인{foreign or 'N/A'}/기관{inst or 'N/A'})")
+    if not parts:
+        return ""
+    return "시장수급: " + " ".join(parts) + "\n"
+
+
+def _fmt_investor_flow_trend_line(trend: dict | None) -> str:
+    """최근 30분간 시장 전체 수급 추세(가속/둔화) — 지수 분단위 시계열(토스
+    TossMarketScheduler가 1분마다 기록) 기반. 스윙 전략에서만 채워지며 toss_risk와
+    같은 게이트를 공유한다. 참고정보일 뿐 어떤 게이트에도 쓰이지 않는다."""
+    if not trend:
+        return ""
+    parts = []
+    for market, label in (("kospi", "코스피"), ("kosdaq", "코스닥")):
+        data = trend.get(market)
+        if not isinstance(data, dict):
+            continue
+        f_delta = _fmt_eok(data.get("foreigner_net_delta"))
+        i_delta = _fmt_eok(data.get("institution_net_delta"))
+        if f_delta is not None or i_delta is not None:
+            parts.append(f"{label}(외인{f_delta or 'N/A'}/기관{i_delta or 'N/A'}, 최근30분 변화)")
+    if not parts:
+        return ""
+    return "시장수급추세: " + " ".join(parts) + "\n"
+
+
+def _fmt_toss_risk_line(risk: dict | None) -> str:
+    """종목별 공매도/신용거래/대차거래 — 토스 전용, Kiwoom에는 없던 데이터.
+    세 데이터 모두 확정치 반영이 느려(당일 저녁~T+1) 장중에는 보통 전일자다.
+    참고정보일 뿐 어떤 게이트에도 쓰이지 않는다."""
+    if not risk:
+        return ""
+    parts = []
+    ss = risk.get("short_selling")
+    if isinstance(ss, dict):
+        rate = ss.get("shortSellingAmountRate")
+        try:
+            if rate is not None:
+                parts.append(f"공매도비중{float(rate) * 100:.1f}%({ss.get('date', '')})")
+        except (TypeError, ValueError):
+            pass
+    credit = risk.get("credit_trades")
+    if isinstance(credit, dict):
+        margin = (credit.get("marginLoan") or {})
+        rate = margin.get("balanceRate")
+        try:
+            if rate is not None:
+                parts.append(f"신용융자잔고비율{float(rate) * 100:.2f}%({credit.get('date', '')})")
+        except (TypeError, ValueError):
+            pass
+    lending = risk.get("securities_lending")
+    if isinstance(lending, dict) and lending.get("balanceQuantity"):
+        parts.append(f"대차잔고{lending.get('balanceQuantity')}주({lending.get('date', '')})")
+    warnings = risk.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        types = ",".join(sorted({w.get("warningType", "") for w in warnings if isinstance(w, dict)}))
+        if types:
+            parts.append(f"매수유의사항[{types}]")
+    if not parts:
+        return ""
+    return "종목리스크(토스): " + ", ".join(parts) + "\n"
+
+
 def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> str:
     strategy = signal.get("strategy", "")
     tick     = market_ctx.get("tick", {})
@@ -464,11 +552,14 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
     _kospi = market_ctx.get("kospi_flu_rt")
     _kosdaq = market_ctx.get("kosdaq_flu_rt")
     _mktcap = market_ctx.get("market_cap_eok")
+    # Kiwoom realtime FID 14 is expressed in KRW millions.
+    # Missing data must not be rendered as a real zero-liquidity observation.
     _acc_prica_raw = tick.get("acc_trde_prica", "")
     try:
-        _acc_eok = int(float(str(_acc_prica_raw).replace(",", "").replace("+", "") or "0")) // 100_000_000
+        _acc_million = float(str(_acc_prica_raw).replace(",", "").replace("+", ""))
+        _acc_eok = _acc_million / 100.0 if _acc_million > 0 else None
     except (TypeError, ValueError):
-        _acc_eok = 0
+        _acc_eok = None
     _idx_str = ""
     if _kospi is not None or _kosdaq is not None:
         _idx_str += "지수: "
@@ -477,12 +568,29 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
         if _kosdaq is not None:
             _idx_str += f"KOSDAQ{_kosdaq:+.2f}%"
         _idx_str = _idx_str.strip() + ", "
+    _acc_text = (
+        f"당일거래대금: {_acc_eok:,.1f}억원"
+        if _acc_eok is not None
+        else "당일거래대금: 확인불가(0억원 아님)"
+    )
     _market_ctx_line = (
         f"{_idx_str}"
-        f"당일거래대금: {_acc_eok}억원"
+        f"{_acc_text}"
         + (f", 시총: {_mktcap}억" if _mktcap else "")
         + "\n"
-    ) if (_idx_str or _acc_eok or _mktcap) else ""
+    ) if (_idx_str or _acc_eok is not None or _mktcap) else ""
+
+    _market_ctx_line += _fmt_investor_flow_line(market_ctx.get("investor_flow"))
+
+    # 스윙 전략 전용 종합 블록 — 시장수급 추세(지수 분단위 시계열) + 종목별
+    # 공매도/신용/대차/매수유의사항을 하나로 묶어 Claude가 함께 판단하게 한다.
+    # 둘 다 같은 스윙 게이트를 공유하므로 데이트레이딩 전략에서는 항상 빈 문자열.
+    _swing_block = (
+        _fmt_investor_flow_trend_line(market_ctx.get("investor_flow_trend"))
+        + _fmt_toss_risk_line(market_ctx.get("toss_risk"))
+    )
+    if _swing_block:
+        _market_ctx_line += "[스윙 참고 — 시장수급 추세 및 종목 리스크(토스)]\n" + _swing_block
 
     tpl = _STRATEGY_TEMPLATES.get(strategy)
     if tpl:
@@ -528,12 +636,22 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
                          rdb=None) -> dict:
     """
     Claude API 호출로 신호 최종 분석.
-    타임아웃(10s) 또는 오류 시 규칙 스코어 폴백.
+    설정된 타임아웃 또는 오류 시 규칙 스코어 폴백.
     rdb: Redis 클라이언트 (토큰 사용량 추적용, 선택)
     반환: {"action": ..., "ai_score": ..., "confidence": ..., "reason": ...,
            "cancel_reason": ..., "adjusted_target_pct": ..., "adjusted_stop_pct": ...}
     """
-    client       = _get_claude_client()
+    client = _get_claude_client()
+    # 스윙 전략(strategy_meta.SWING_STRATEGIES)만 조회 — queue_worker._build_market_ctx의
+    # _TOSS_RISK_STRATEGIES와 동일 범위를 유지해야 한다. 데이트레이딩 전략까지 여기서
+    # 무조건 재조회하면 범위가 암묵적으로 넓어져(2026-08-11 점검에서 발견) 설계 의도와
+    # 어긋나고 Toss STOCK 레이트리밋(5/s) 예산을 불필요하게 쓴다.
+    if "toss_risk" not in market_ctx and signal.get("strategy") in _TOSS_SWING_STRATEGIES:
+        # queue_worker._build_market_ctx가 이미 채워둔 경우 재조회하지 않는다
+        # (rule scoring과 Claude 프롬프트가 같은 Redis 캐시 결과를 공유).
+        toss_risk = await _toss_fetch_stock_risk_context(rdb, str(signal.get("stk_cd", "")))
+        if toss_risk:
+            market_ctx = {**market_ctx, "toss_risk": toss_risk}
     user_message = _build_user_message(signal, market_ctx, rule_score)
     system_prompt = _build_system_prompt(signal)
 
@@ -576,6 +694,8 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
                 "action": result.get("action"),
                 "ai_score": result.get("ai_score"),
                 "cancel_reason": result.get("cancel_reason"),
+                "vol_ratio": signal.get("vol_ratio"),
+                "volume_ratio_source": signal.get("volume_ratio_source"),
             })
         )
         return result

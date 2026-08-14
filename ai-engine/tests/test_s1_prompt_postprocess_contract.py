@@ -24,7 +24,8 @@ def test_s1_prompt_contains_runtime_inputs_and_tpsl_contract():
         "strategy_sample_count": 12,
     }
     market_ctx = {
-        "tick": {"flu_rt": "5.46", "acc_trde_prica": "12000000000"},
+        # Kiwoom FID 14 is KRW millions: 12,000 -> 120억원.
+        "tick": {"flu_rt": "5.46", "acc_trde_prica": "12000"},
         "hoga": {},
         "strength": 0,
         "kospi_flu_rt": 0.34,
@@ -46,6 +47,7 @@ def test_s1_prompt_contains_runtime_inputs_and_tpsl_contract():
         "82,000",
         "72.5",
         "strong",
+        "120.0억원",
         "TP1/TP2/SL",
         "JSON",
     ]:

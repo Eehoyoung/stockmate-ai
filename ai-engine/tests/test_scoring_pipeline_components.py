@@ -213,6 +213,31 @@ def test_ai_decision_daily_limit_returns_cancel_without_analyze():
     assert result["metrics"] == ["cancel_ai_limit"]
 
 
+def test_ai_decision_hold_recheck_limit_retains_monitor_without_analyze():
+    from scoring_pipeline.ai_decision import evaluate_ai_decision
+
+    async def check_limit(_rdb):
+        return False
+
+    async def analyze(_signal, _ctx, _rule_score, rdb=None):
+        raise AssertionError("analyze should not be called")
+
+    result = asyncio.run(evaluate_ai_decision(
+        signal={"strategy": "S11_FRGN_CONT", "hold_monitor_recheck": True},
+        ctx={},
+        rule_score_value=80.0,
+        rdb=object(),
+        check_daily_limit_fn=check_limit,
+        analyze_signal_fn=analyze,
+        normalize_score_fn=float,
+        hold_policy_fn=lambda **kwargs: ("ENTER", "HIGH", "", None),
+    ))
+
+    assert result["action"] == "HOLD"
+    assert result["cancel_type"] is None
+    assert result["metrics"] == ["hold_recheck_ai_limit"]
+
+
 def test_ai_decision_failure_returns_unavailable_cancel():
     from scoring_pipeline.ai_decision import evaluate_ai_decision
 
@@ -247,8 +272,8 @@ def test_publisher_routes_watch_to_hold_monitor_queue():
     async def push_hold(rdb, payload):
         calls.append(("hold", rdb, payload))
 
-    async def push_score(_rdb, _payload):
-        raise AssertionError("score queue should not be used")
+    async def push_score(rdb, payload):
+        calls.append(("score", rdb, payload))
 
     async def incr(rdb, strategy, field):
         calls.append(("metric", rdb, strategy, field))
@@ -269,6 +294,41 @@ def test_publisher_routes_watch_to_hold_monitor_queue():
     assert calls == [
         ("hold", "redis", {"execution_decision": "WATCH"}),
         ("metric", "redis", "S9_PULLBACK_SWING", "hold_monitor"),
+        ("score", "redis", {"execution_decision": "WATCH", "type": "HOLD_WATCH", "hold_reason": "wait"}),
+    ]
+
+
+def test_publisher_requeues_watch_recheck_without_duplicate_notice():
+    from scoring_pipeline.publisher import route_execution_payload
+
+    calls = []
+    payload = {"execution_decision": "WATCH", "hold_monitor_recheck": True}
+
+    async def push_hold(rdb, queued_payload):
+        calls.append(("hold", rdb, queued_payload))
+
+    async def push_score(rdb, queued_payload):
+        calls.append(("score", rdb, queued_payload))
+
+    async def incr(rdb, strategy, metric):
+        calls.append(("metric", rdb, strategy, metric))
+
+    result = asyncio.run(route_execution_payload(
+        rdb="redis",
+        payload=payload,
+        execution_decision="WATCH",
+        strategy="S11_FRGN_CONT",
+        stk_cd="101670",
+        display_reason="wait",
+        push_hold_monitor_queue_fn=push_hold,
+        push_score_only_queue_fn=push_score,
+        incr_pipeline_fn=incr,
+    ))
+
+    assert result == "WATCH"
+    assert calls == [
+        ("hold", "redis", payload),
+        ("metric", "redis", "S11_FRGN_CONT", "hold_monitor"),
     ]
 
 
@@ -387,6 +447,88 @@ def test_status_metrics_are_best_effort():
     ))
 
     assert result is None
+
+
+def test_market_data_observability_normalizes_source_age_cache_and_budget():
+    from scoring_pipeline.status_metrics import build_market_data_observability
+
+    snapshot = build_market_data_observability({
+        "freshness": {
+            "tick": {"state": "fresh", "age_ms": 120},
+            "hoga": {"state": "caution", "age_ms": 45.5, "source": "rest"},
+            "strength": {"state": "cancel", "age_ms": 12000},
+            "vi": {"state": "missing", "age_ms": None},
+        },
+        "refresh_meta": {
+            "market_data_sources": {"hoga": "rest"},
+            "data_refresh_attempted": {"hoga": "cancel", "strength": "cancel"},
+            "retry_failures": ["strength:rest_no_data", "hold_monitor_rest_budget_exhausted"],
+        },
+    })
+
+    assert snapshot["schema_version"] == 1
+    assert snapshot["fields"]["tick"] == {"state": "fresh", "source": "redis", "age_ms": 120}
+    assert snapshot["fields"]["hoga"] == {"state": "caution", "source": "rest", "age_ms": 45.5}
+    assert snapshot["fields"]["vi"]["source"] == "missing"
+    assert snapshot["cache_fields"] == ["tick", "strength"]
+    assert snapshot["rest"]["fallback_used"] is True
+    assert snapshot["rest"]["fallback_fields"] == ["hoga"]
+    assert snapshot["rest"]["attempted_fields"] == ["hoga", "strength"]
+    assert snapshot["rest"]["failure_classes"] == ["budget_exhausted", "rest_no_data"]
+    assert snapshot["rest"]["budget_state"] == "exhausted"
+
+
+def test_market_data_observability_records_low_cardinality_daily_counters():
+    from datetime import datetime, timezone
+
+    from scoring_pipeline.status_metrics import record_market_data_observability_metric
+
+    class FakeRedis:
+        def __init__(self):
+            self.calls = []
+
+        async def hincrby(self, key, field, amount):
+            self.calls.append(("hincrby", key, field, amount))
+
+        async def expire(self, key, ttl):
+            self.calls.append(("expire", key, ttl))
+
+    snapshot = {
+        "fields": {
+            "tick": {"state": "fresh", "source": "redis"},
+            "hoga": {"state": "caution", "source": "rest"},
+        },
+        "cache_fields": ["tick"],
+        "rest": {
+            "fallback_used": True,
+            "budget_state": "exhausted",
+            "failure_classes": ["budget_exhausted", "rest_no_data"],
+        },
+    }
+    rdb = FakeRedis()
+
+    key = asyncio.run(record_market_data_observability_metric(
+        rdb,
+        strategy="S1_GAP_OPEN",
+        snapshot=snapshot,
+        ttl_sec=172800,
+        now_fn=lambda: datetime(2026, 7, 19, tzinfo=timezone.utc),
+    ))
+
+    assert key == "status:market_data_observability:2026-07-19:S1_GAP_OPEN"
+    fields = [call[2] for call in rdb.calls if call[0] == "hincrby"]
+    assert fields == [
+        "tick.state.fresh",
+        "tick.source.redis",
+        "hoga.state.caution",
+        "hoga.source.rest",
+        "rest.fallback_used.true",
+        "rest.budget.exhausted",
+        "cache.used.true",
+        "rest.failure.budget_exhausted",
+        "rest.failure.rest_no_data",
+    ]
+    assert rdb.calls[-1] == ("expire", key, 172800)
 
 
 def test_failure_handler_builds_and_publishes_processing_error():

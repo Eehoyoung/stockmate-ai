@@ -33,3 +33,7 @@ async def insert_rule_cancel_signal(*args, **kwargs):
 
 async def insert_ai_cancel_signal(*args, **kwargs):
     return await _db_writer().insert_ai_cancel_signal(*args, **kwargs)
+
+
+async def insert_signal_freshness_log(*args, **kwargs):
+    return await _db_writer().insert_signal_freshness_log(*args, **kwargs)

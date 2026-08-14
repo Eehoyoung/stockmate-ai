@@ -23,6 +23,7 @@ from redis_reader import push_hold_monitor_queue, push_score_only_queue
 from scorer import check_daily_limit, rule_score
 from score_utils import normalize_score_0_100
 from strategy_meta import (
+    detect_market_regime as _detect_market_regime,
     get_regime_rr_multiplier,
     get_strategy_base_rr_gate,
     get_strategy_rr_group,
@@ -32,61 +33,11 @@ from utils import safe_float as _fv
 
 logger = logging.getLogger(__name__)
 RR_HARD_CANCEL_THRESHOLD = float(os.getenv("RR_HARD_CANCEL_THRESHOLD", "0.8"))
+# Not currently read by _maybe_promote_hold_to_enter() below — it keeps every
+# Claude HOLD as HOLD regardless of ai_score. Kept for potential future gating.
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 CLAUDE_HARD_RULE_CANCEL_TYPE = "CLAUDE_HARD_RULE"
 _CLAUDE_PRICE_FIELDS = ("claude_tp1", "claude_tp2", "claude_sl")
-
-
-def _normalize_market_type(value) -> str:
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="ignore")
-    text = str(value or "").strip().upper()
-    if text in {"001", "0", "KOSPI", "P00101"}:
-        return "001"
-    if text in {"101", "10", "KOSDAQ", "P10102"}:
-        return "101"
-    return ""
-
-
-def _regime_from_flu_rt(value) -> str:
-    if value is None:
-        return "neutral"
-    try:
-        flu_rt = float(value)
-    except (TypeError, ValueError):
-        return "neutral"
-    if flu_rt >= 0.5:
-        return "bull"
-    if flu_rt <= -0.5:
-        return "bear"
-    return "sideways"
-
-
-def _detect_market_regime(ctx: dict, strategy: str = "") -> str:
-    if strategy == "S1_GAP_OPEN":
-        kospi = ctx.get("kospi_exp_flu_rt") or ctx.get("kospi_flu_rt")
-        kosdaq = ctx.get("kosdaq_exp_flu_rt") or ctx.get("kosdaq_flu_rt")
-    else:
-        kospi = ctx.get("kospi_flu_rt")
-        kosdaq = ctx.get("kosdaq_flu_rt")
-
-    market_type = _normalize_market_type(ctx.get("market_type"))
-    if market_type == "001":
-        return _regime_from_flu_rt(kospi)
-    if market_type == "101":
-        return _regime_from_flu_rt(kosdaq)
-
-    vals = []
-    for value in (kospi, kosdaq):
-        try:
-            if value is not None:
-                vals.append(float(value))
-        except (TypeError, ValueError):
-            pass
-    if not vals:
-        return "neutral"
-    avg = sum(vals) / len(vals)
-    return _regime_from_flu_rt(avg)
 
 
 def _resolve_regime_rr_policy(ctx: dict | None, strategy: str = "") -> tuple[str, float]:
@@ -382,6 +333,7 @@ async def process_confirmed(rdb, pg_pool=None) -> bool:
         enriched.pop("market_ctx", None)
         if action == "HOLD":
             await push_hold_monitor_queue(rdb, enriched)
+            await push_score_only_queue(rdb, {**enriched, "type": "HOLD_WATCH", "hold_reason": display_reason})
             logger.info("[ConfirmWorker] HOLD routed to monitor queue [%s %s]", stk_cd, strategy)
         elif action == "ENTER":
             await push_score_only_queue(rdb, enriched)

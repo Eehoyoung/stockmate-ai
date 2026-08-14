@@ -9,6 +9,7 @@ optional AI analysis, then publishes results to `ai_scored_queue`.
 
 import asyncio
 import logging
+import math
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,10 +24,14 @@ from http_utils import (
 from position_sizing import ENABLE_MODEL_RELATIVE_POSITION_SIZE, calculate_entry_size
 from price_utils import normalize_signal_prices
 from strategy_meta import (
+    detect_market_regime as _detect_market_regime,
     get_persona,
     get_regime_rr_multiplier,
     get_strategy_base_rr_gate,
     get_strategy_rr_group,
+    normalize_market_type as _normalize_market_type,
+    regime_from_flu_rt as _regime_from_flu_rt,
+    SWING_STRATEGIES as _SWING_STRATEGIES,
 )
 from redis_reader import (
     get_avg_cntr_strength,
@@ -34,15 +39,20 @@ from redis_reader import (
     get_market_freshness,
     get_market_index_exp_flu_rt,
     get_market_index_flu_rt,
+    get_market_investor_flow,
+    get_market_investor_flow_series,
+    get_runtime_flag,
     get_sector_overheat_count,
     get_stock_market_cap,
     get_tick_data,
     get_vi_status,
+    summarize_market_flow_trend,
     pop_telegram_queue,
     push_hold_monitor_queue,
     push_score_only_queue,
 )
 from repositories import shadow_trade_repository, signal_repository
+from toss_client import fetch_stock_risk_context
 from scorer import check_daily_limit, get_claude_threshold, rule_score, should_skip_ai
 from score_utils import normalize_score_0_100
 from scoring_pipeline.execution_decision import (
@@ -68,15 +78,17 @@ from scoring_pipeline.status_decision import select_pre_ai_decision
 from scoring_pipeline.ai_decision import evaluate_ai_decision
 from scoring_pipeline.publisher import route_execution_payload
 from scoring_pipeline.status_metrics import (
+    build_market_data_observability,
     record_execution_decision_metric,
     record_freshness_decision_metric,
+    record_market_data_observability_metric,
 )
 from scoring_pipeline.failure_handler import (
     build_failure_payload,
     handle_processing_failure,
 )
 from scoring_pipeline.persistence_handler import persist_processed_signal
-from shadow_features import compute_all_shadow_features
+from shadow_features import compute_all_shadow_features, compute_live_feature_adjustment
 from tp_sl_engine import compute_rr
 from utils import normalize_stock_code, safe_float as _fv
 
@@ -98,6 +110,7 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL_SEC", "2.0"))
 STATUS_DECISION_TTL_SEC = int(os.getenv("STATUS_DECISION_TTL_SEC", "600"))
 STOCK_ARBITRATION_TTL_SEC = int(os.getenv("STOCK_ARBITRATION_TTL_SEC", "1800"))
+QUEUE_SIGNAL_MAX_AGE_SEC = float(os.getenv("QUEUE_SIGNAL_MAX_AGE_SEC", "30"))
 REDIS_TOKEN_KEY = "kiwoom:token"
 FAILURE_ACTION = "FAILED"
 FAILURE_TYPE = "PROCESSING_ERROR"
@@ -163,11 +176,16 @@ S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_HARD_CANC
 S8_MIN_ZONE_RR = float(os.getenv("S8_MIN_ZONE_RR", "1.5"))
 S1_FALLBACK_MIN_STRENGTH = float(os.getenv("S1_FALLBACK_MIN_STRENGTH", "130.0"))
 S1_FALLBACK_MIN_BID_RATIO = float(os.getenv("S1_FALLBACK_MIN_BID_RATIO", "0.8"))
+# Not currently read by the HOLD decision path — keep_hold_as_watch() always keeps
+# Claude HOLD as HOLD/WATCH regardless of ai_score. Kept for potential future gating.
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").lower() == "true"
 ENABLE_SCORING_DATA_RETRY = os.getenv("ENABLE_SCORING_DATA_RETRY", "true").lower() == "true"
 ENABLE_TICK_REST_FALLBACK = os.getenv("ENABLE_TICK_REST_FALLBACK", "false").lower() == "true"
 STRICT_REST_ENTER_GUARD = os.getenv("STRICT_REST_ENTER_GUARD", "false").lower() == "true"
+# REST 단독 데이터로 ENTER를 허용할 최대 나이(ms). tick의 cancel 컷오프(5000ms)보다
+# 보수적으로 잡아 tick caution 컷오프(3000ms)에 맞춘다.
+REST_ENTER_MAX_AGE_MS = int(os.getenv("REST_ENTER_MAX_AGE_MS", "3000"))
 ENABLE_CHART_RETRY = os.getenv("ENABLE_CHART_RETRY", "false").lower() == "true"
 CLAUDE_HARD_RULE_CANCEL_TYPE = "CLAUDE_HARD_RULE"
 _CLAUDE_PRICE_FIELDS = ("claude_tp1", "claude_tp2", "claude_sl")
@@ -240,6 +258,10 @@ async def insert_ai_cancel_signal(*args, **kwargs):
     return await signal_repository.insert_ai_cancel_signal(*args, **kwargs)
 
 
+async def insert_signal_freshness_log(*args, **kwargs):
+    return await signal_repository.insert_signal_freshness_log(*args, **kwargs)
+
+
 async def cancel_open_position_by_signal(*args, **kwargs):
     return await signal_repository.cancel_open_position_by_signal(*args, **kwargs)
 
@@ -300,11 +322,64 @@ def _is_session_enter_guard_exempt(payload: dict) -> bool:
     return _ed_is_session_enter_guard_exempt(payload, _SESSION_ENTER_EXEMPT_TYPES)
 
 
-def _apply_session_enter_guard(payload: dict, ctx: dict | None = None) -> dict:
+#: STRICT_REST_ENTER_GUARD가 나이를 검사하는 실시간 데이터 종류.
+#: chart_daily/chart_minute은 freshness 사전에 없고 봉 단위 의미라 제외한다.
+_REST_GUARD_REALTIME_KINDS = ("tick", "hoga", "strength")
+
+
+def _is_rest_only_sources(sources: dict | None) -> bool:
+    """모든 시장 데이터 출처가 REST인지 여부."""
+    if not sources:
+        return False
+    return all(v == "rest" for v in sources.values())
+
+
+def _rest_only_enter_stale_reason(payload: dict, ctx: dict | None) -> str | None:
+    """REST 단독 ENTER를 차단해야 하면 사유 문자열, 허용 가능하면 None.
+
+    기존 가드는 출처가 REST라는 이유만으로 무조건 CANCEL했다. 그런데 REST는
+    요청 시점에 즉시 받아오므로 실측 age가 0.1초 수준으로, 3초 컷오프에 걸린
+    WS 데이터보다 오히려 신선한 경우가 많다(2026-08-10 실측: REST 평균 0.1s,
+    WS 평균 0.9s). 그 결과 정상적인 진입 신호가 출처만으로 차단됐다
+    (7월 이후 이 사유로 80건 취소).
+
+    이제 출처가 아니라 **나이**로 판단한다. REST 단독이어도 모든 실시간 항목이
+    REST_ENTER_MAX_AGE_MS 이내면 통과시키고, 나이를 확인할 수 없거나 기준을
+    넘으면 종전대로 차단한다. signal_fallback(큐 페이로드 재사용)은 애초에
+    'rest'가 아니므로 이 완화 경로를 타지 않는다.
+    """
+    sources = payload.get("market_data_sources")
+    if not _is_rest_only_sources(sources):
+        return None
+
+    freshness = (ctx or {}).get("freshness") or {}
+    stale: list[str] = []
+    verified = 0
+
+    for kind in _REST_GUARD_REALTIME_KINDS:
+        if kind not in sources:
+            continue
+        age_ms = (freshness.get(kind) or {}).get("age_ms")
+        if age_ms is None:
+            stale.append(f"{kind}:age_unknown")
+            continue
+        verified += 1
+        if float(age_ms) > REST_ENTER_MAX_AGE_MS:
+            stale.append(f"{kind}:{int(float(age_ms))}ms>{REST_ENTER_MAX_AGE_MS}ms")
+
+    if stale:
+        return ", ".join(stale)
+    if verified == 0:
+        # REST 단독인데 나이를 하나도 검증하지 못했다 → 보수적으로 차단 유지.
+        return "no_verifiable_realtime_age"
+    return None
+
+
+def _apply_session_enter_guard(payload: dict, ctx: dict | None = None, *, enabled: bool | None = None) -> dict:
     return _ed_apply_session_enter_guard(
         payload,
         ctx,
-        enabled=SESSION_ENTER_GUARD_ENABLED,
+        enabled=SESSION_ENTER_GUARD_ENABLED if enabled is None else enabled,
         enter_sessions=_STRATEGY_ENTER_SESSIONS,
         blocklist=_SESSION_ENTER_BLOCKLIST,
         exempt_types=_SESSION_ENTER_EXEMPT_TYPES,
@@ -343,44 +418,152 @@ def _build_failure_payload(item: dict, strategy: str, stk_cd: str, error: Except
     )
 
 
-def _resolve_execution_strength(signal: dict, ctx: dict) -> float:
-    signal_strength = signal.get("cntr_strength")
-    if signal_strength is None:
-        signal_strength = signal.get("cntr_str")
+_SIGNAL_TIME_FIELDS = (
+    "enqueued_at",
+    "queue_enqueued_at",
+    "hold_monitor_enqueued_at",
+    "signal_time",
+    "created_at",
+    "timestamp",
+    "ts",
+)
+
+
+def _parse_signal_timestamp(value) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 100_000_000_000:
+            timestamp /= 1000.0
+        return timestamp if math.isfinite(timestamp) and timestamp > 0 else None
+    text = str(value).strip()
     try:
-        if signal_strength is not None and float(signal_strength) > 0:
-            return float(signal_strength)
+        timestamp = float(text)
+        if timestamp > 100_000_000_000:
+            timestamp /= 1000.0
+        return timestamp if math.isfinite(timestamp) and timestamp > 0 else None
     except (TypeError, ValueError):
-        pass
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=_KST)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _signal_age_info(signal: dict, *, now_ts: float | None = None,
+                     max_age_sec: float | None = None) -> dict:
+    now = time.time() if now_ts is None else float(now_ts)
+    max_age = QUEUE_SIGNAL_MAX_AGE_SEC if max_age_sec is None else max(0.0, float(max_age_sec))
+    for field in _SIGNAL_TIME_FIELDS:
+        timestamp = _parse_signal_timestamp(signal.get(field))
+        if timestamp is None:
+            continue
+        age_sec = max(0.0, now - timestamp)
+        return {
+            "source": field,
+            "timestamp": timestamp,
+            "age_sec": age_sec,
+            "max_age_sec": max_age,
+            "fallback_allowed": age_sec <= max_age,
+        }
+    return {
+        "source": None,
+        "timestamp": None,
+        "age_sec": None,
+        "max_age_sec": max_age,
+        "fallback_allowed": False,
+    }
+
+
+def _ensure_signal_age_ctx(ctx: dict, signal: dict) -> dict:
+    info = ctx.get("signal_age")
+    if not isinstance(info, dict):
+        info = _signal_age_info(signal)
+        ctx["signal_age"] = info
+    ctx["signal_fallback_allowed"] = bool(info.get("fallback_allowed"))
+    return info
+
+
+def _sanitize_unusable_scoring_inputs(ctx: dict, signal: dict) -> None:
+    """Keep cancelled market data and expired queue fields out of direct scorers."""
+    freshness = ctx.get("freshness") or {}
+    fallback_allowed = bool(ctx.get("signal_fallback_allowed"))
+    unusable = {"cancel", "missing"}
+
+    if ((freshness.get("tick") or {}).get("state")) in unusable:
+        ctx["tick"] = {}
+        if not fallback_allowed:
+            signal.pop("cur_prc", None)
+            signal.pop("flu_rt", None)
+    if ((freshness.get("hoga") or {}).get("state")) in unusable:
+        ctx["hoga"] = {}
+        if not fallback_allowed:
+            for field in ("bid_ratio", "buy_req", "sel_req"):
+                signal.pop(field, None)
+    if ((freshness.get("strength") or {}).get("state")) in unusable:
+        ctx["strength"] = 0.0
+        if not fallback_allowed:
+            signal.pop("cntr_strength", None)
+            signal.pop("cntr_str", None)
+
+
+def _freshness_usable(ctx: dict, kind: str) -> bool:
+    state = ((ctx.get("freshness") or {}).get(kind) or {}).get("state", "fresh")
+    return state in ("fresh", "caution")
+
+
+def _resolve_execution_strength(signal: dict, ctx: dict) -> float:
+    # Fresh Redis or a successful REST refresh always outranks queue payload fields.
+    if _freshness_usable(ctx, "strength"):
+        try:
+            strength = float(ctx.get("strength", 0) or 0)
+            if strength > 0:
+                return strength
+        except (TypeError, ValueError):
+            pass
 
     tick = ctx.get("tick", {}) or {}
-    tick_strength = tick.get("cntr_str")
-    try:
-        if tick_strength is not None and float(str(tick_strength).replace(",", "").replace("+", "")) > 0:
-            return float(str(tick_strength).replace(",", "").replace("+", ""))
-    except (TypeError, ValueError):
-        pass
+    if _freshness_usable(ctx, "tick"):
+        tick_strength = tick.get("cntr_str")
+        try:
+            if tick_strength is not None and float(str(tick_strength).replace(",", "").replace("+", "")) > 0:
+                return float(str(tick_strength).replace(",", "").replace("+", ""))
+        except (TypeError, ValueError):
+            pass
 
-    try:
-        return float(ctx.get("strength", 0) or 0)
-    except (TypeError, ValueError):
-        return 0.0
+    if ctx.get("signal_fallback_allowed"):
+        signal_strength = signal.get("cntr_strength")
+        if signal_strength is None:
+            signal_strength = signal.get("cntr_str")
+        try:
+            if signal_strength is not None and float(signal_strength) > 0:
+                return float(signal_strength)
+        except (TypeError, ValueError):
+            pass
+    return 0.0
 
 
 def _resolve_bid_ratio(signal: dict, ctx: dict) -> float | None:
+    hoga = ctx.get("hoga", {}) or {}
+    if _freshness_usable(ctx, "hoga"):
+        try:
+            buy = float(str(hoga.get("total_buy_bid_req", "")).replace(",", "") or 0)
+            sell = float(str(hoga.get("total_sel_bid_req", "")).replace(",", "") or 0)
+            if sell > 0:
+                return round(buy / sell, 3)
+        except (TypeError, ValueError):
+            pass
+
+    if not ctx.get("signal_fallback_allowed"):
+        return None
+
     value = signal.get("bid_ratio")
     try:
         if value is not None:
             return float(str(value).replace(",", "").replace("+", ""))
-    except (TypeError, ValueError):
-        pass
-
-    hoga = ctx.get("hoga", {}) or {}
-    try:
-        buy = float(str(hoga.get("total_buy_bid_req", "")).replace(",", "") or 0)
-        sell = float(str(hoga.get("total_sel_bid_req", "")).replace(",", "") or 0)
-        if sell > 0:
-            return round(buy / sell, 3)
     except (TypeError, ValueError):
         pass
 
@@ -392,17 +575,6 @@ def _resolve_bid_ratio(signal: dict, ctx: dict) -> float | None:
     except (TypeError, ValueError):
         pass
     return None
-
-
-def _normalize_market_type(value) -> str:
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="ignore")
-    text = str(value or "").strip().upper()
-    if text in {"001", "0", "KOSPI", "P00101"}:
-        return "001"
-    if text in {"101", "10", "KOSDAQ", "P10102"}:
-        return "101"
-    return ""
 
 
 def _candidate_pool_suffix(strategy: str) -> str:
@@ -439,57 +611,6 @@ async def _resolve_signal_market_type(rdb, stk_cd: str, strategy: str, signal: d
         except Exception:
             pass
     return ""
-
-
-def _regime_from_flu_rt(value) -> str:
-    if value is None:
-        return "neutral"
-    try:
-        flu_rt = float(value)
-    except (TypeError, ValueError):
-        return "neutral"
-    if flu_rt >= 0.5:
-        return "bull"
-    if flu_rt <= -0.5:
-        return "bear"
-    return "sideways"
-
-
-def _detect_market_regime(ctx: dict, strategy: str = "") -> str:
-    """시장별 지수 등락률로 장세 판단.
-    KOSPI 종목은 KOSPI200 proxy, KOSDAQ 종목은 KOSDAQ150 proxy를 우선 사용한다.
-    시장 구분이 없을 때만 KOSPI/KOSDAQ 평균으로 폴백한다.
-    bull: ≥+0.5%, bear: ≤-0.5%, sideways: 그 외, neutral: 데이터 없음.
-
-    S1_GAP_OPEN: 08:30~09:00 동시호가 예상 등락률이 있으면 그것을 우선 사용.
-    09:05 이후에는 exp 키 TTL(5분) 만료 → 실제 flu_rt로 자동 전환.
-    """
-    if strategy == "S1_GAP_OPEN":
-        kospi  = ctx.get("kospi_exp_flu_rt")  or ctx.get("kospi_flu_rt")
-        kosdaq = ctx.get("kosdaq_exp_flu_rt") or ctx.get("kosdaq_flu_rt")
-    else:
-        kospi  = ctx.get("kospi_flu_rt")
-        kosdaq = ctx.get("kosdaq_flu_rt")
-    market_type = _normalize_market_type(ctx.get("market_type"))
-    if market_type == "001":
-        return _regime_from_flu_rt(kospi)
-    if market_type == "101":
-        return _regime_from_flu_rt(kosdaq)
-    vals = []
-    for value in (kospi, kosdaq):
-        try:
-            if value is not None:
-                vals.append(float(value))
-        except (TypeError, ValueError):
-            pass
-    if not vals:
-        return "neutral"
-    avg = sum(vals) / len(vals)
-    if avg >= 0.5:
-        return "bull"
-    if avg <= -0.5:
-        return "bear"
-    return "sideways"
 
 
 def _hard_gate_failure(signal: dict, ctx: dict) -> str | None:
@@ -790,13 +911,16 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
     tick/hoga/strength 중 stale/missing 항목을 갱신한다.
 
     우선순위:
-      tick     → signal 보유 cur_prc/flu_rt 우선, 없으면 REST (ENABLE_TICK_REST_FALLBACK=true 시)
+      tick     → REST 우선(활성화 시), 최근 queue signal fallback
       strength → REST direct (stale ws:strength Redis list 재사용 금지)
-      hoga     → signal bid_ratio 우선, REST direct fallback (stale ws:hoga 재사용 금지)
+      hoga     → REST 우선, 최근 queue signal fallback (stale ws:hoga 재사용 금지)
 
     stale/missing → REST direct 함수 사용. Redis 캐시(ws:hoga, hoga:rest, ws:strength) 재사용 없음.
     ctx["freshness"]와 ctx["refresh_meta"]를 갱신한다.
     """
+    signal_age = _ensure_signal_age_ctx(ctx, signal)
+    signal_fallback_allowed = bool(signal_age.get("fallback_allowed"))
+
     if not ENABLE_SCORING_DATA_RETRY:
         return
 
@@ -809,33 +933,19 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
     tick_state = (freshness.get("tick") or {}).get("state", "fresh")
     if tick_state in ("cancel", "missing"):
         _refresh_attempted["tick"] = tick_state
-        _cur = float(signal.get("cur_prc") or 0)
-        _flu = float(signal.get("flu_rt") or signal.get("gap_pct") or 0)
-        if _cur > 0:
-            ctx["tick"] = {"cur_prc": _cur, "flu_rt": _flu}
-            freshness["tick"] = {
-                "state": "caution", "kind": "tick",
-                "age_ms": None, "source": "signal_fallback",
-            }
-            _refresh_sources["tick"] = "signal_fallback"
-            logger.debug("[Worker] tick_ctx refreshed from signal [%s]: prc=%.0f flu=%.2f",
-                         stk_cd, _cur, _flu)
 
-    # tick_state 재확인 (signal fallback 후 갱신 여부 반영)
+    # tick_state 재확인
     tick_state_now = (freshness.get("tick") or {}).get("state", tick_state)
 
     str_state  = (freshness.get("strength") or {}).get("state", "fresh")
     hoga_state = (freshness.get("hoga") or {}).get("state", "fresh")
 
     # tick REST fallback 대상 여부
-    _tick_needs_rest = (
-        ENABLE_TICK_REST_FALLBACK
-        and tick_state_now in ("cancel", "missing")
-    )
+    _tick_needs_refresh = tick_state_now in ("cancel", "missing")
 
     if (str_state not in ("cancel", "missing")
             and hoga_state not in ("cancel", "missing")
-            and not _tick_needs_rest):
+            and not _tick_needs_refresh):
         ctx["freshness"] = freshness
         _early_meta = {
             "market_data_sources": _refresh_sources,
@@ -857,17 +967,19 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
     except Exception:
         token = None
 
-    # ── tick REST fallback (ENABLE_TICK_REST_FALLBACK=true, signal 값도 없을 때) ──
-    if _tick_needs_rest and token:
+    # ── tick REST refresh (ENABLE_TICK_REST_FALLBACK=true) ──
+    if _tick_needs_refresh and ENABLE_TICK_REST_FALLBACK and token:
         try:
             tick_data, tick_meta = await asyncio.wait_for(
                 _fetch_tick_snapshot(token, stk_cd), timeout=3.0
             )
             if tick_data.get("cur_prc"):
-                ctx["tick"] = {
+                refreshed_tick = dict(ctx.get("tick") or {})
+                refreshed_tick.update({
                     "cur_prc": float(tick_data["cur_prc"]),
                     "flu_rt": float(tick_data.get("flu_rt") or 0),
-                }
+                })
+                ctx["tick"] = refreshed_tick
                 freshness["tick"] = {
                     "state": "caution", "kind": "tick",
                     "age_ms": tick_meta.get("latency_ms", 0), "source": "rest",
@@ -881,6 +993,32 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
         except Exception as e:
             _retry_failures.append(f"tick:{e}")
             logger.debug("[Worker] tick REST direct failed [%s]: %s", stk_cd, e)
+
+    # A queue payload is only a bounded-age fallback. Reusing an old payload
+    # with a fresh caution marker launders stale data and can pass strict gates.
+    tick_state_now = (freshness.get("tick") or {}).get("state", tick_state)
+    if tick_state_now in ("cancel", "missing"):
+        _cur = float(signal.get("cur_prc") or 0)
+        _flu = float(signal.get("flu_rt") or signal.get("gap_pct") or 0)
+        if _cur > 0 and signal_fallback_allowed:
+            # Preserve cumulative volume/amount from the last websocket tick.
+            refreshed_tick = dict(ctx.get("tick") or {})
+            refreshed_tick.update({"cur_prc": _cur, "flu_rt": _flu})
+            if signal.get("acc_trde_prica") not in (None, ""):
+                refreshed_tick["acc_trde_prica"] = signal.get("acc_trde_prica")
+            if signal.get("acc_trde_qty") not in (None, ""):
+                refreshed_tick["acc_trde_qty"] = signal.get("acc_trde_qty")
+            ctx["tick"] = refreshed_tick
+            freshness["tick"] = {
+                "state": "caution", "kind": "tick",
+                "age_ms": signal_age["age_sec"] * 1000.0,
+                "source": "signal_fallback",
+            }
+            _refresh_sources["tick"] = "signal_fallback"
+            logger.debug("[Worker] tick_ctx refreshed from recent signal [%s]: prc=%.0f flu=%.2f age=%.3fs",
+                         stk_cd, _cur, _flu, signal_age["age_sec"])
+        elif _cur > 0:
+            _retry_failures.append("tick:signal_stale_or_undated")
 
     # ── strength: REST direct — stale ws:strength Redis list 재사용 금지 ──
     if str_state in ("cancel", "missing") and token:
@@ -904,20 +1042,10 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
             _retry_failures.append(f"strength:{e}")
             logger.debug("[Worker] strength REST direct failed [%s]: %s", stk_cd, e)
 
-    # ── hoga: signal bid_ratio 우선, 없으면 REST direct — stale ws:hoga 재사용 금지 ──
+    # ── hoga: REST direct 우선 — stale ws:hoga 재사용 금지 ──
     if hoga_state in ("cancel", "missing"):
         _refresh_attempted["hoga"] = hoga_state
-        sig_bid = signal.get("bid_ratio")
-        if sig_bid is not None:
-            _b = float(sig_bid)
-            ctx["hoga"] = {"total_buy_bid_req": _b, "total_sel_bid_req": 1.0}
-            freshness["hoga"] = {
-                "state": "caution", "kind": "hoga",
-                "age_ms": None, "source": "signal_fallback",
-            }
-            _refresh_sources["hoga"] = "signal_fallback"
-            logger.debug("[Worker] hoga_ctx refreshed from signal [%s]: bid=%.2f", stk_cd, _b)
-        elif token:
+        if token:
             try:
                 new_bid, hoga_meta = await asyncio.wait_for(
                     _fetch_hoga_rest(token, stk_cd), timeout=3.0
@@ -938,6 +1066,23 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
                 logger.debug("[Worker] hoga REST direct failed [%s]: %s", stk_cd, e)
         else:
             _retry_failures.append("hoga:no_token")
+
+        hoga_state_now = (freshness.get("hoga") or {}).get("state", hoga_state)
+        sig_bid = signal.get("bid_ratio")
+        if hoga_state_now in ("cancel", "missing") and sig_bid is not None:
+            if signal_fallback_allowed:
+                _b = float(sig_bid)
+                ctx["hoga"] = {"total_buy_bid_req": _b, "total_sel_bid_req": 1.0}
+                freshness["hoga"] = {
+                    "state": "caution", "kind": "hoga",
+                    "age_ms": signal_age["age_sec"] * 1000.0,
+                    "source": "signal_fallback",
+                }
+                _refresh_sources["hoga"] = "signal_fallback"
+                logger.debug("[Worker] hoga_ctx refreshed from recent signal [%s]: bid=%.2f age=%.3fs",
+                             stk_cd, _b, signal_age["age_sec"])
+            else:
+                _retry_failures.append("hoga:signal_stale_or_undated")
 
     ctx["freshness"] = freshness
     _final_meta = {
@@ -1215,6 +1360,8 @@ def _maybe_promote_hold_to_enter(
     cancel_reason: str | None,
     ai_score: float | None,
 ) -> tuple[str, str, str, str | None]:
+    """Despite the name, this never promotes: delegates to keep_hold_as_watch(),
+    which always keeps a Claude HOLD as HOLD/WATCH regardless of ai_score."""
     return _risk_keep_hold_as_watch(
         action=action,
         confidence=confidence,
@@ -1575,7 +1722,15 @@ def _apply_claude_rr_override(payload: dict, ctx: dict | None = None) -> dict:
     return payload
 
 
+#: 종목별 토스 리스크(공매도/신용/대차/매수유의사항) 조회 대상 — 스윙 전략 전체
+#: (2026-08-11, 사용자 지시: "스윙 포지션에는 꼭 붙여"). 데이트레이딩 전략(S1/S2/S4/S6)은
+#: 당일 청산이라 T+1 반영되는 신용/대차 데이터와의 관련성이 낮아 제외한다.
+#: strategy_meta.SWING_STRATEGIES를 그대로 참조해 스윙 전략 목록의 단일 소스를 유지한다.
+_TOSS_RISK_STRATEGIES = _SWING_STRATEGIES
+
+
 async def _build_market_ctx(rdb, stk_cd: str, *, sector: str = "", signal: dict | None = None) -> dict:
+    strategy = str((signal or {}).get("strategy") or "")
     tasks = [
         get_tick_data(rdb, stk_cd),
         get_hoga_data(rdb, stk_cd),
@@ -1586,15 +1741,33 @@ async def _build_market_ctx(rdb, stk_cd: str, *, sector: str = "", signal: dict 
         get_market_index_flu_rt(rdb),
         get_stock_market_cap(rdb, stk_cd),
         get_market_index_exp_flu_rt(rdb),
+        get_market_investor_flow(rdb),
     ]
-    tick, hoga, strength, vi, freshness, sector_count, index_flu, market_cap, exp_flu = await asyncio.gather(*tasks)
-    market_type = await _resolve_signal_market_type(
-        rdb,
-        stk_cd,
-        str((signal or {}).get("strategy") or ""),
-        signal,
-    )
-    return {
+    is_swing = strategy in _TOSS_RISK_STRATEGIES
+    if is_swing:
+        tasks.append(fetch_stock_risk_context(rdb, stk_cd))
+    results = await asyncio.gather(*tasks)
+    tick, hoga, strength, vi, freshness, sector_count, index_flu, market_cap, exp_flu, investor_flow = results[:10]
+    toss_risk = results[10] if len(results) > 10 else {}
+
+    investor_flow_trend: dict = {}
+    if is_swing:
+        # 스윙 포지션은 하루 이상 보유하므로 종목 개별 리스크(toss_risk)뿐 아니라
+        # 시장 전체 수급이 최근 30분간 가속/둔화하는지도 함께 본다 — 지수 분단위
+        # 시계열(TossMarketScheduler가 1분마다 ZADD)에서 계산하는 순수 함수라
+        # 추가 외부 API 호출 없이 Redis 조회만 발생한다.
+        kospi_series, kosdaq_series = await asyncio.gather(
+            get_market_investor_flow_series(rdb, "kospi", minutes=30),
+            get_market_investor_flow_series(rdb, "kosdaq", minutes=30),
+        )
+        trend = {
+            "kospi": summarize_market_flow_trend(kospi_series),
+            "kosdaq": summarize_market_flow_trend(kosdaq_series),
+        }
+        investor_flow_trend = {k: v for k, v in trend.items() if v}
+
+    market_type = await _resolve_signal_market_type(rdb, stk_cd, strategy, signal)
+    ctx = {
         "tick": tick,
         "hoga": hoga,
         "strength": strength,
@@ -1607,7 +1780,13 @@ async def _build_market_ctx(rdb, stk_cd: str, *, sector: str = "", signal: dict 
         "kosdaq_exp_flu_rt": exp_flu.get("kosdaq_exp_flu_rt"),
         "market_cap_eok": market_cap,
         "market_type": market_type,
+        "investor_flow": investor_flow,
     }
+    if toss_risk:
+        ctx["toss_risk"] = toss_risk
+    if investor_flow_trend:
+        ctx["investor_flow_trend"] = investor_flow_trend
+    return ctx
 
 
 async def process_one(rdb, pg_pool=None) -> bool:
@@ -1625,6 +1804,13 @@ async def process_one(rdb, pg_pool=None) -> bool:
     stk_cd = normalize_stock_code(item.get("stk_cd", ""))
     strategy = item.get("strategy") or ""
     item["stk_cd"] = stk_cd
+    if (
+        str(os.getenv("LIVE_ONLY_MODE", "true")).strip().lower() == "true"
+        and str(item.get("signal_mode", "")).upper() == "SHADOW"
+    ):
+        await _incr_pipeline(rdb, strategy, "non_live_rejected")
+        logger.warning("[Worker] live-only policy rejected non-live candidate [%s %s]", strategy, stk_cd)
+        return True
 
     # bypass 타입(FORCE_CLOSE, DAILY_REPORT 등)은 strategy 없이 발행되므로
     # _incr_pipeline 보다 먼저 체크해 파이프라인 카운터가 오염되지 않도록 한다.
@@ -1662,10 +1848,12 @@ async def process_one(rdb, pg_pool=None) -> bool:
 
         sector = signal.get("sector", "") or ""
         ctx = await _build_market_ctx(rdb, stk_cd, sector=sector, signal=signal)
+        _ensure_signal_age_ctx(ctx, signal)
         if ctx.get("market_type") and not signal.get("market_type"):
             signal["market_type"] = ctx["market_type"]
         # stale/missing 항목을 signal 값 또는 REST로 갱신 (cancel보다 재조회 우선)
         await _refresh_stale_ctx(ctx, stk_cd, rdb, signal, strategy)
+        _sanitize_unusable_scoring_inputs(ctx, signal)
         exact_strength = _resolve_execution_strength(signal, ctx)
         ctx["strength"] = exact_strength
         signal["cntr_strength"] = round(exact_strength, 2) if exact_strength > 0 else signal.get("cntr_strength")
@@ -1676,7 +1864,26 @@ async def process_one(rdb, pg_pool=None) -> bool:
             signal["vol_ratio"] = signal.get("volume_ratio")
         ctx["ws_online"] = ws_online
 
+        try:
+            _computed_shadow = compute_all_shadow_features(signal, ctx)
+            _existing_shadow = signal.get("shadow_features")
+            _shadow = {
+                **(_existing_shadow if isinstance(_existing_shadow, dict) else {}),
+                **_computed_shadow,
+            }
+            _shadow_live = compute_live_feature_adjustment(_shadow)
+        except Exception as _sf_err:
+            logger.debug("[Worker] live feature calculation failed [%s %s]: %s", stk_cd, strategy, _sf_err)
+            _shadow = signal.get("shadow_features") if isinstance(signal.get("shadow_features"), dict) else {}
+            _shadow_live = {"score_adjustment": 0.0, "reasons": [], "hard_reject": False, "mode": "LIVE"}
+        signal["shadow_features"] = _shadow
+        signal["shadow_feature_live"] = _shadow_live
+
         r_score, components = _coerce_rule_score_result(rule_score(signal, ctx))
+        if str(os.getenv("LIVE_FEATURE_ADJUSTMENTS_ENABLED", "true")).strip().lower() == "true":
+            r_score = max(0.0, min(100.0, r_score + _shadow_live["score_adjustment"]))
+            if isinstance(components, dict):
+                components["shadow_feature_live"] = _shadow_live
         signal["rule_score"] = r_score
         logger.info("[Worker] rule score [%s %s]: %.1f", stk_cd, strategy, r_score)
         _hoga_state = (ctx.get("freshness") or {}).get("hoga", {}).get("state", "fresh")
@@ -1709,6 +1916,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
             s1_fallback_quality_reason = _s1_fallback_quality_failure(dict(signal), ctx)
             s1_execution_policy = _s1_execution_policy_gate(dict(signal))
             hard_gate_reason = _hard_gate_failure(dict(signal), ctx)
+            if not hard_gate_reason and _shadow_live.get("hard_reject"):
+                hard_gate_reason = "shadow_feature_live_reject"
             program_flow_reason = _program_flow_gate_failure(dict(signal))
             stale_reason = _freshness_cancel_reason(ctx, strategy)
         else:
@@ -1717,6 +1926,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
             s1_fallback_quality_reason = _s1_fallback_quality_failure(signal, ctx)
             s1_execution_policy = _s1_execution_policy_gate(signal)
             hard_gate_reason = _hard_gate_failure(signal, ctx)
+            if not hard_gate_reason and _shadow_live.get("hard_reject"):
+                hard_gate_reason = "shadow_feature_live_reject"
             program_flow_reason = _program_flow_gate_failure(signal)
             stale_reason = _freshness_cancel_reason(ctx, strategy)
         failed_gates = _build_failed_gate_diagnostics(
@@ -1761,12 +1972,16 @@ async def process_one(rdb, pg_pool=None) -> bool:
             cancel_reason = pre_ai_decision.get("cancel_reason")
             cancel_type = pre_ai_decision.get("cancel_type")
         else:
+            async def _check_signal_ai_budget(db):
+                scope = "hold_recheck" if signal.get("hold_monitor_recheck") else "primary"
+                return await check_daily_limit(db, scope=scope)
+
             ai_decision = await evaluate_ai_decision(
                 signal=signal,
                 ctx=ctx,
                 rule_score_value=r_score,
                 rdb=rdb,
-                check_daily_limit_fn=check_daily_limit,
+                check_daily_limit_fn=_check_signal_ai_budget,
                 analyze_signal_fn=analyze_signal,
                 normalize_score_fn=normalize_score_0_100,
                 hold_policy_fn=_maybe_promote_hold_to_enter,
@@ -1804,16 +2019,20 @@ async def process_one(rdb, pg_pool=None) -> bool:
         _missing_flags = _collect_missing_feature_flags(signal, ctx)
         _dq = _compute_data_quality(_missing_flags, _freshness_dec, signal)
         _freshness_diag = _freshness_age_diagnostics(ctx)
-
-        # ── Shadow features (Phase 3 관측 — gate 판단에 미사용) ─────────────────
-        try:
-            _shadow = compute_all_shadow_features(signal, ctx)
-        except Exception as _sf_err:
-            logger.debug("[Worker] shadow_features failed [%s %s]: %s", stk_cd, strategy, _sf_err)
-            _shadow = {}
+        _market_data_observability = build_market_data_observability(ctx)
+        await record_market_data_observability_metric(
+            rdb,
+            strategy=strategy,
+            snapshot=_market_data_observability,
+            ttl_sec=_PIPELINE_TTL_SEC,
+            logger=logger,
+        )
 
         enriched = {
             **item,
+            "signal_age_sec": (ctx.get("signal_age") or {}).get("age_sec"),
+            "signal_time_source": (ctx.get("signal_age") or {}).get("source"),
+            "signal_fallback_allowed": bool(ctx.get("signal_fallback_allowed")),
             "rule_score": r_score,
             "ai_score": ai_score_val,
             "action": action,
@@ -1853,11 +2072,19 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "market_data_sources": (ctx.get("refresh_meta") or {}).get("market_data_sources", {}),
             "data_refresh_attempted": (ctx.get("refresh_meta") or {}).get("data_refresh_attempted", {}),
             "retry_failures": (ctx.get("refresh_meta") or {}).get("retry_failures", []),
+            "market_data_observability": _market_data_observability,
             "freshness_status": _freshness_status_from_decision(_freshness_dec),
             **_freshness_diag,
             **_dq,
-            # Shadow features (관측·EV 검증용 — gate 판단에 미사용)
+            # Historical shadow feature payload, now promoted into live scoring/gating.
             "shadow_features": _shadow,
+            "shadow_feature_live": _shadow_live,
+            # 스윙 전략 공매도/신용/대차/매수유의사항 (토스) — 텔레그램 ENTER 메시지에
+            # 참고정보로 노출. 데이트레이딩 전략은 ctx에 애초에 존재하지 않아 None.
+            "toss_risk": ctx.get("toss_risk"),
+            # 지수 분단위 시계열 기반 최근 30분 시장 수급 추세 (토스) — toss_risk와
+            # 같은 스윙 전용 게이트를 공유한다.
+            "investor_flow_trend": ctx.get("investor_flow_trend"),
         }
         if ENABLE_MODEL_RELATIVE_POSITION_SIZE:
             try:
@@ -1894,18 +2121,26 @@ async def process_one(rdb, pg_pool=None) -> bool:
         if ctx.get("chart_fallback_used") and enriched.get("confidence") == "HIGH":
             enriched["confidence"] = "MEDIUM"
         normalize_signal_prices(enriched)
-        # REST fallback만으로 aggressive ENTER 금지 (STRICT_REST_ENTER_GUARD=true 시)
-        if (STRICT_REST_ENTER_GUARD
-                and enriched.get("action") == "ENTER"
-                and enriched.get("market_data_sources")
-                and all(v == "rest" for v in enriched["market_data_sources"].values())):
-            enriched["confidence"] = "LOW"
-            enriched["cancel_reason"] = "REST fallback data only — aggressive entry blocked"
-            enriched["cancel_type"] = "STRICT_REST_ENTER_GUARD"
-            enriched["action"] = "CANCEL"
+        # REST fallback ENTER 판정 (STRICT_REST_ENTER_GUARD=true 시)
+        if STRICT_REST_ENTER_GUARD and enriched.get("action") == "ENTER":
+            _stale_reason = _rest_only_enter_stale_reason(enriched, ctx)
+            if _stale_reason is not None:
+                enriched["confidence"] = "LOW"
+                enriched["cancel_reason"] = (
+                    f"REST fallback data stale — aggressive entry blocked ({_stale_reason})"
+                )
+                enriched["cancel_type"] = "STRICT_REST_ENTER_GUARD"
+                enriched["action"] = "CANCEL"
+            elif _is_rest_only_sources(enriched.get("market_data_sources")):
+                # REST 단독이지만 나이가 충분히 신선하다 → 진입은 허용하되
+                # 실시간 스트림이 없다는 사실은 confidence로 남긴다.
+                if enriched.get("confidence") == "HIGH":
+                    enriched["confidence"] = "MEDIUM"
+                enriched["rest_only_entry"] = True
         enriched = _apply_claude_postprocess_hard_rules(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)
-        enriched = _apply_session_enter_guard(enriched, ctx)
+        session_guard_enabled = await get_runtime_flag(rdb, "session_enter_guard", SESSION_ENTER_GUARD_ENABLED)
+        enriched = _apply_session_enter_guard(enriched, ctx, enabled=session_guard_enabled)
         enriched = _canonicalize_execution_payload(enriched)
         enriched = await _apply_cross_strategy_arbitration(rdb, enriched)
         enriched = _canonicalize_execution_payload(enriched)
@@ -1967,8 +2202,12 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 insert_score_components_fn=insert_score_components,
                 confirm_open_position_fn=confirm_open_position,
                 create_shadow_trade_fn=create_shadow_trade,
+                shadow_persistence_enabled=(
+                    str(os.getenv("LIVE_ONLY_MODE", "true")).strip().lower() != "true"
+                ),
                 insert_rule_cancel_signal_fn=insert_rule_cancel_signal,
                 insert_ai_cancel_signal_fn=insert_ai_cancel_signal,
+                insert_signal_freshness_log_fn=insert_signal_freshness_log,
                 cancel_open_position_by_signal_fn=cancel_open_position_by_signal,
                 normalize_market_type_fn=_normalize_market_type,
                 fv_fn=_fv,

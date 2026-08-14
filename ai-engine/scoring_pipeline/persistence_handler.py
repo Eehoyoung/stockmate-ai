@@ -34,13 +34,25 @@ async def persist_processed_signal(
     insert_score_components_fn: Callable[..., Any],
     confirm_open_position_fn: Callable[..., Any],
     create_shadow_trade_fn: Callable[..., Any],
+    shadow_persistence_enabled: bool,
     insert_rule_cancel_signal_fn: Callable[..., Any],
     insert_ai_cancel_signal_fn: Callable[..., Any],
+    insert_signal_freshness_log_fn: Callable[..., Any] | None = None,
     cancel_open_position_by_signal_fn: Callable[..., Any],
     normalize_market_type_fn: Callable[[str], str],
     fv_fn: Callable[..., Any],
     logger: Any,
 ) -> bool:
+    if enriched.get("hold_monitor_recheck") and not signal_id and action != "ENTER":
+        if logger:
+            logger.info(
+                "[Queue] hold-monitor recheck not persisted as a new signal [%s %s action=%s]",
+                stk_cd,
+                strategy,
+                action,
+            )
+        return False
+
     if rule_only_payload is not None and not signal_id:
         if cancel_type is None:
             await insert_ai_cancel_signal_fn(
@@ -83,6 +95,17 @@ async def persist_processed_signal(
     if not db_id:
         return False
 
+    if insert_signal_freshness_log_fn is not None:
+        await insert_signal_freshness_log_fn(
+            pg_pool,
+            signal_id=db_id,
+            stk_cd=stk_cd,
+            strategy=strategy,
+            action=action,
+            freshness_status=enriched.get("freshness_status"),
+            snapshot=enriched.get("market_data_observability"),
+        )
+
     market_flu_rt = resolve_market_flu_rt(
         signal,
         ctx,
@@ -123,6 +146,7 @@ async def persist_processed_signal(
         allow_reentry=enriched.get("allow_reentry"),
         time_stop_deadline_at=None,
         stk_nm=enriched.get("stk_nm") or signal.get("stk_nm"),
+        shadow_features=enriched.get("shadow_features"),
     )
     await insert_score_components_fn(
         pg_pool,
@@ -162,7 +186,7 @@ async def persist_processed_signal(
             allow_overnight=enriched.get("allow_overnight"),
             allow_reentry=enriched.get("allow_reentry"),
         )
-        if position_confirmed:
+        if position_confirmed and shadow_persistence_enabled:
             await create_shadow_trade_fn(
                 pg_pool,
                 signal_id=db_id,
@@ -173,7 +197,7 @@ async def persist_processed_signal(
                 sl_price=shadow_prices["sl_price"],
                 data_quality="OK",
             )
-        else:
+        elif not position_confirmed:
             logger.warning("[Queue] shadow trade skipped because position confirm failed signal_id=%s", db_id)
         return False
 
@@ -201,23 +225,24 @@ async def persist_processed_signal(
             raw_payload=enriched,
         )
 
-    shadow_prices = resolve_shadow_prices(enriched, fv_fn=fv_fn)
-    await create_shadow_trade_fn(
-        pg_pool,
-        signal_id=db_id,
-        payload=enriched,
-        entry_price=shadow_prices["entry_price"],
-        tp1_price=shadow_prices["tp1_price"],
-        tp2_price=shadow_prices["tp2_price"],
-        sl_price=shadow_prices["sl_price"],
-        data_quality="CANCEL_SHADOW",
-        initial_status="CANCELLED",
-        data_quality_detail=build_cancel_shadow_detail(
-            enriched,
-            cancel_type=cancel_type,
-            cancel_reason=cancel_reason,
-            fv_fn=fv_fn,
-        ),
-    )
+    if shadow_persistence_enabled:
+        shadow_prices = resolve_shadow_prices(enriched, fv_fn=fv_fn)
+        await create_shadow_trade_fn(
+            pg_pool,
+            signal_id=db_id,
+            payload=enriched,
+            entry_price=shadow_prices["entry_price"],
+            tp1_price=shadow_prices["tp1_price"],
+            tp2_price=shadow_prices["tp2_price"],
+            sl_price=shadow_prices["sl_price"],
+            data_quality="CANCEL_SHADOW",
+            initial_status="CANCELLED",
+            data_quality_detail=build_cancel_shadow_detail(
+                enriched,
+                cancel_type=cancel_type,
+                cancel_reason=cancel_reason,
+                fv_fn=fv_fn,
+            ),
+        )
     await cancel_open_position_by_signal_fn(pg_pool, db_id)
     return False

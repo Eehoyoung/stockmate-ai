@@ -16,12 +16,26 @@ from utils import safe_float as _safe_float
 from score_utils import normalize_score_0_100
 from strategy_meta import CLAUDE_THRESHOLDS as _META_CLAUDE_THRESHOLDS
 from strategy_meta import get_threshold as _meta_get_threshold
+from strategy_meta import detect_market_regime as _detect_market_regime
+from strategy_meta import SWING_STRATEGIES as _TOSS_SWING_STRATEGIES
+from toss_client import WARNING_SEVERE_TYPES as _TOSS_WARNING_SEVERE_TYPES
+from toss_client import WARNING_CAUTION_TYPES as _TOSS_WARNING_CAUTION_TYPES
 
 logger    = logging.getLogger(__name__)
 KST       = timezone(timedelta(hours=9))
 MIN_SCORE = float(os.getenv("AI_SCORE_THRESHOLD", "62.0"))  # Telegram MIN_AI_SCORE 기본값(62)과 동기화
 
 MAX_CLAUDE_CALLS_PER_DAY = int(os.getenv("MAX_CLAUDE_CALLS_PER_DAY", "100"))
+# HOLD 재평가 전용 예산. HOLD_MONITOR_AI_COOLDOWN_SEC(60s)와 HOLD_MONITOR_MAX_AGE_SEC(1800s)를
+# 감안하면 관심종목 1건이 관찰 창(30분) 동안 재확인을 반복할 수 있는 이론상 최대 횟수는
+# 1800/60=30회. 변동성이 큰 장에서는 여러 전략에 걸쳐 동시에 여러 종목이 WATCH 상태로
+# 모니터링되므로(2026-08-05 실측: 하루 재평가 수요 136건, 그중 30건만 처리되어 나머지가
+# HOLD_RELEASED로 강제 해제됨), 단일 종목 기준 30을 그대로 일일 상한으로 쓰면 구조적으로
+# 부족하다. 동시 관찰 종목 수를 5개 안팎으로 가정하면 5 * 30 = 150 정도가 실측 수요(136건)에
+# 여유를 둔 합리적 상한이다. 별도 Redis 키로 완전히 분리된 예산 구조는 유지한다.
+MAX_CLAUDE_HOLD_RECHECK_CALLS_PER_DAY = int(
+    os.getenv("MAX_CLAUDE_HOLD_RECHECK_CALLS_PER_DAY", "150")
+)
 
 # scorer.py 가 외부에 노출하는 Claude threshold 계약은 테스트/워크플로우 기준으로 고정한다.
 # strategy_meta 의 기본값과 다를 수 있지만, 이 모듈의 계약을 안정화하는 것이 우선이다.
@@ -191,6 +205,79 @@ def _time_bonus(strategy: str) -> float:
             return 5.0
 
     return 0.0
+
+
+#: 공매도 비중이 높을수록 숏커버링이 상승을 가속할 수 있어 소폭 가점, 신용융자
+#: 잔고비율이 높으면 반대매매發 되돌림 위험이 있어 소폭 감점 — 스윙 포지션은
+#: 하루 이상 보유하므로 두 데이터 모두 관련성이 있다(2026-08-11, 사용자 지시:
+#: "스윙 포지션에는 꼭 붙여"). 데이트레이딩 전략(S1/S2/S4/S6)은 당일 청산이라
+#: T+1 반영되는 신용/대차 데이터와 관련이 낮아 제외 — strategy_meta.SWING_STRATEGIES
+#: 단일 소스로 판단한다.
+#: 값은 과거 분포 검증 없이 보수적으로 잡은 초기 임계값이며, 다른 rule_score
+#: 보너스(±5~35)에 비해 작게(최대 ±8, 유의사항 페널티는 최대 -25) 잡아 단일
+#: 신규 데이터가 점수를 좌우하지 않도록 한다. 데이터 없음(토스 비활성/조회
+#: 실패)은 항상 0 — 결측을 리스크로 해석하지 않는다.
+
+#: 정리매매/투자경고/투자위험 — 상장폐지 절차 또는 거래소 지정 고위험 상태.
+#: 하드 CANCEL 게이트는 아니지만(RR_HARD_CANCEL_THRESHOLD 등 기존 하드 게이트는
+#: 건드리지 않는다) AI_SCORE_THRESHOLD를 사실상 넘기 어려울 만큼 강하게 감점한다.
+_TOSS_WARNING_SEVERE_PENALTY = -25.0
+#: 단기과열/VI 발동 — S2의 실시간 VI 감시를 대체하지 않는 완만한 주의 신호.
+_TOSS_WARNING_CAUTION_PENALTY = -6.0
+
+
+def _toss_risk_bonus(strategy: str, market_ctx: dict) -> tuple[float, dict]:
+    """스윙 전략(strategy_meta.SWING_STRATEGIES) 전용 — 데이트레이딩 전략은
+    항상 (0.0, {})."""
+    if strategy not in _TOSS_SWING_STRATEGIES:
+        return 0.0, {}
+    risk = (market_ctx or {}).get("toss_risk") or {}
+    if not risk:
+        return 0.0, {}
+
+    info: dict = {}
+    bonus = 0.0
+
+    short_selling = risk.get("short_selling") or {}
+    try:
+        ss_rate = float(short_selling.get("shortSellingAmountRate"))
+    except (TypeError, ValueError):
+        ss_rate = None
+    if ss_rate is not None:
+        ss_bonus = 8.0 if ss_rate >= 0.10 else (4.0 if ss_rate >= 0.05 else 0.0)
+        bonus += ss_bonus
+        info["short_selling_amount_rate"] = ss_rate
+        info["short_selling_bonus"] = ss_bonus
+
+    credit = risk.get("credit_trades") or {}
+    margin = credit.get("marginLoan") or {}
+    try:
+        balance_rate = float(margin.get("balanceRate"))
+    except (TypeError, ValueError):
+        balance_rate = None
+    if balance_rate is not None:
+        credit_penalty = -5.0 if balance_rate >= 0.05 else 0.0
+        bonus += credit_penalty
+        info["margin_loan_balance_rate"] = balance_rate
+        info["credit_overhang_penalty"] = credit_penalty
+
+    warnings = risk.get("warnings") or []
+    if warnings:
+        types = {w.get("warningType") for w in warnings if isinstance(w, dict)}
+        severe = types & _TOSS_WARNING_SEVERE_TYPES
+        caution = types & _TOSS_WARNING_CAUTION_TYPES
+        warning_penalty = 0.0
+        if severe:
+            warning_penalty += _TOSS_WARNING_SEVERE_PENALTY
+            info["toss_warning_severe_types"] = sorted(severe)
+        if caution:
+            warning_penalty += _TOSS_WARNING_CAUTION_PENALTY
+            info["toss_warning_caution_types"] = sorted(caution)
+        if warning_penalty:
+            bonus += warning_penalty
+            info["toss_warning_penalty"] = warning_penalty
+
+    return bonus, info
 
 
 def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
@@ -662,15 +749,10 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
 
     # ── 장세 감지 ────────────────────────────────────────────────────────────
     # bull(+0.5%↑) / sideways / bear(-0.5%↓) / neutral(데이터 없음)
-    _kospi_flu  = market_ctx.get("kospi_flu_rt")
-    _kosdaq_flu = market_ctx.get("kosdaq_flu_rt")
-    _idx_vals   = [v for v in (_kospi_flu, _kosdaq_flu) if v is not None]
-    if _idx_vals:
-        _idx_avg = sum(_idx_vals) / len(_idx_vals)
-        _regime  = "bull" if _idx_avg >= 0.5 else ("bear" if _idx_avg <= -0.5 else "sideways")
-    else:
-        _regime  = "neutral"
-        _idx_avg = 0.0
+    # queue_worker.py의 RR 게이트와 동일한 판단(종목의 실제 시장 구분에 맞는
+    # 지수 우선 사용, market_type 없을 때만 KOSPI/KOSDAQ 평균 폴백)을 쓰도록
+    # strategy_meta.detect_market_regime()으로 통일한다 (2026-08-07).
+    _regime = _detect_market_regime(market_ctx, strategy)
 
     # ── 장세-전략 정합 보너스 (+5pt) ─────────────────────────────────────────
     # 상승장 ↔ 모멘텀 전략, 하락장 ↔ 반등 전략, 횡보장 ↔ 기술적 돌파 전략
@@ -690,6 +772,17 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
         _regime_bonus = 3.0
     score += _regime_bonus
     _momentum_score += _regime_bonus
+
+    # ── 토스 리스크(공매도/신용/매수유의사항) — 스윙 전략 공통 적용 ─────────────
+    # 전략별 case 블록이 아니라 여기서 한 번만 적용해 스윙 전략 11개 전체를
+    # 동일 로직으로 커버한다(중복 적용 방지). _toss_risk_bonus 내부에서
+    # SWING_STRATEGIES 소속 여부를 재확인하므로 데이트레이딩 전략은 항상 0.
+    _toss_bonus, _toss_info = _toss_risk_bonus(strategy, market_ctx)
+    if _toss_bonus:
+        score += _toss_bonus
+        _momentum_score += _toss_bonus
+    if _toss_info:
+        _strategy_data["toss_risk"] = _toss_info
 
     # ── 공통 패널티 (장세 적응형) ─────────────────────────────────────────────
     flu_rt_for_penalty = flu_rt if flu_rt != 0 else _safe_float(signal.get("flu_rt", 0))
@@ -713,10 +806,11 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
     # 절대 거래대금 패널티: 당일 누적 10억 미만은 유동성 부족 (장세 무관)
     _acc_prica_raw = tick.get("acc_trde_prica", "")
     try:
-        _acc_prica = float(str(_acc_prica_raw).replace(",", "").replace("+", "") or "0")
+        _acc_prica_million = float(str(_acc_prica_raw).replace(",", "").replace("+", "") or "0")
     except (TypeError, ValueError):
-        _acc_prica = 0.0
-    if 0 < _acc_prica < 1_000_000_000:
+        _acc_prica_million = 0.0
+    # Kiwoom realtime FID 14 is KRW millions. 10억원 equals 1,000백만원.
+    if 0 < _acc_prica_million < 1_000:
         _risk_penalty -= 10.0
 
     # 섹터 과열 패널티: 상승장 테마 모멘텀은 4건까지 허용, 그 외 3건
@@ -747,7 +841,11 @@ def rule_score(signal: dict, market_ctx: dict) -> tuple[float, dict]:
         "regime_bonus":    round(_regime_bonus, 2),
         "risk_penalty":    round(_risk_penalty, 2),
         "regime":          _regime,
-        "acc_trde_prica":  round(_acc_prica, 0),
+        "acc_trde_prica":  round(_acc_prica_million, 0),
+        "acc_trde_prica_eok": (
+            round(_acc_prica_million / 100.0, 2)
+            if _acc_prica_million > 0 else None
+        ),
         "sector_count":    _sector_count,
         "market_cap_eok":  _mktcap,
         "strategy_specific": _strategy_data,
@@ -772,20 +870,31 @@ def should_skip_ai(score: float, strategy: str = "") -> bool:
     return score < threshold
 
 
-async def check_daily_limit(rdb) -> bool:
+async def check_daily_limit(rdb, *, scope: str = "primary") -> bool:
     """
     일별 Claude 호출 상한 확인.
     반환: True = 한도 내 (호출 가능), False = 한도 초과 (건너뜀)
     """
     today_str = datetime.now(KST).strftime("%Y%m%d")
-    key = f"claude:daily_calls:{today_str}"
+    is_hold_recheck = scope == "hold_recheck"
+    key_prefix = "claude:daily_hold_recheck_calls" if is_hold_recheck else "claude:daily_calls"
+    limit = MAX_CLAUDE_HOLD_RECHECK_CALLS_PER_DAY if is_hold_recheck else MAX_CLAUDE_CALLS_PER_DAY
+    key = f"{key_prefix}:{today_str}"
     try:
-        count = await rdb.incr(key)
-        if count == 1:
-            await rdb.expire(key, 86400)
-        if count > MAX_CLAUDE_CALLS_PER_DAY:
+        allowed, count = await rdb.eval(
+            "local current=tonumber(redis.call('GET',KEYS[1]) or '0'); "
+            "local limit=tonumber(ARGV[1]); "
+            "if current >= limit then return {0,current}; end; "
+            "local updated=redis.call('INCR',KEYS[1]); "
+            "if updated == 1 then redis.call('EXPIRE',KEYS[1],86400); end; "
+            "return {1,updated}",
+            1,
+            key,
+            limit,
+        )
+        if not allowed:
             logger.warning("[Scorer] 일별 Claude 호출 상한 초과 (%d/%d) – 건너뜀",
-                           count, MAX_CLAUDE_CALLS_PER_DAY)
+                           count, limit)
             return False
         return True
     except Exception as e:
