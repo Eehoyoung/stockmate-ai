@@ -8,8 +8,10 @@ from datetime import datetime, time, timedelta, timezone
 from price_utils import normalize_signal_prices
 from redis_reader import (
     clear_hold_monitor_queue,
+    get_all_hold_monitor_items,
     remove_hold_monitor_item,
     pop_due_hold_monitor_items,
+    push_score_only_queue,
     push_telegram_queue,
     requeue_hold_monitor_item,
 )
@@ -26,12 +28,21 @@ KST = timezone(timedelta(hours=9))
 HOLD_MONITOR_INTERVAL_SEC = float(os.getenv("HOLD_MONITOR_INTERVAL_SEC", "5.0"))
 HOLD_MONITOR_RECHECK_SEC = float(os.getenv("HOLD_MONITOR_RECHECK_SEC", "10.0"))
 HOLD_MONITOR_AI_COOLDOWN_SEC = float(os.getenv("HOLD_MONITOR_AI_COOLDOWN_SEC", "60.0"))
+# 룰 게이트는 통과했지만 직전 Claude 호출 대비 rule_score가 이만큼도 움직이지 않았다면
+# 같은 판단을 반복해서 물어보는 셈이므로 Claude 재호출을 건너뛴다. 2026-08-12 관측:
+# 종목 278470(S15)이 30분간 rule_score 90~100 유지 상태에서 60초 쿨다운마다 계속
+# Claude를 호출했지만 ai_score가 72~76 사이 노이즈만 오갔음(방향성 없음, 30회 이상 낭비 호출).
+HOLD_MONITOR_MIN_SCORE_DELTA = float(os.getenv("HOLD_MONITOR_MIN_SCORE_DELTA", "5.0"))
 HOLD_MONITOR_BATCH_LIMIT = int(os.getenv("HOLD_MONITOR_BATCH_LIMIT", "20"))
 HOLD_MONITOR_CLOSE_HHMM = os.getenv("HOLD_MONITOR_CLOSE_HHMM", "15:30")
 HOLD_MONITOR_USE_REST_FALLBACK = os.getenv("HOLD_MONITOR_USE_REST_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
 HOLD_MONITOR_MAX_REST_CALLS_PER_MIN = int(os.getenv("HOLD_MONITOR_MAX_REST_CALLS_PER_MIN", "30"))
 HOLD_MONITOR_MAX_AGE_SEC = int(os.getenv("HOLD_MONITOR_MAX_AGE_SEC", "1800"))
-HOLD_MONITOR_MAX_ATTEMPTS = int(os.getenv("HOLD_MONITOR_MAX_ATTEMPTS", "6"))
+# Must stay >= HOLD_MONITOR_MAX_AGE_SEC / HOLD_MONITOR_RECHECK_SEC (currently 1800/10=180),
+# otherwise this cuts the observation window short long before the age limit ever applies.
+# Found 2026-07-27: default of 6 gave a ~60s window instead of the intended ~30min, causing
+# WATCH items to hit HOLD_RELEASED almost immediately after the HOLD_WATCH notice.
+HOLD_MONITOR_MAX_ATTEMPTS = int(os.getenv("HOLD_MONITOR_MAX_ATTEMPTS", "180"))
 _REST_CALL_FIELDS = ("tick", "strength", "hoga")
 
 
@@ -90,6 +101,15 @@ def _recent_ai_call(payload: dict) -> bool:
     if last is None:
         return False
     return (_now_kst().timestamp() - last) < HOLD_MONITOR_AI_COOLDOWN_SEC
+
+
+def _score_stalled(payload: dict, r_score: float) -> bool:
+    """직전 Claude 호출 시점의 rule_score와 비교해 유의미한 변화가 없으면 True.
+    첫 호출(비교 대상 없음)은 항상 False — 최초 재평가 기회는 막지 않는다."""
+    last = _fv(payload.get("hold_monitor_last_ai_rule_score"), None)
+    if last is None:
+        return False
+    return abs(r_score - last) < HOLD_MONITOR_MIN_SCORE_DELTA
 
 
 def _rest_budget_key(now: datetime | None = None) -> str:
@@ -155,6 +175,21 @@ def _terminal_reason(payload: dict) -> str | None:
     if attempts >= HOLD_MONITOR_MAX_ATTEMPTS:
         return f"hold monitor max attempts exceeded {HOLD_MONITOR_MAX_ATTEMPTS}"
     return None
+
+
+async def _notify_release(rdb, payload: dict, reason: str) -> None:
+    """Notify Telegram that a WATCH item left the hold monitor without being promoted to ENTER."""
+    notice = {**payload, "type": "HOLD_RELEASED", "release_reason": reason}
+    try:
+        await push_score_only_queue(rdb, notice)
+        logger.info(
+            "[HoldMonitor] released [%s %s] key=%s reason=%s",
+            payload.get("stk_cd"), payload.get("strategy"), payload.get("hold_monitor_key"), reason,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[HoldMonitor] release notice failed key=%s: %s", payload.get("hold_monitor_key"), exc
+        )
 
 
 async def _requeue(rdb, payload: dict, reason: str) -> bool:
@@ -231,6 +266,29 @@ async def evaluate_hold_item(rdb, payload: dict) -> dict:
         payload["hold_monitor_last_gate"] = rr_reason or s8_zone_reason or s1_reason or hard_reason or stale_reason
         return {}
 
+    # Rule-side gates alone can look "improved" every cycle even when Claude keeps
+    # returning HOLD on the same fundamentals (observed 2026-07-29: stock 051900 looped
+    # through this branch every ~10s for 15 minutes, firing a real Claude call each time).
+    # Enforce HOLD_MONITOR_AI_COOLDOWN_SEC so a full re-analysis isn't triggered more often
+    # than that, regardless of how often rule gates re-clear.
+    if _recent_ai_call(payload):
+        payload["hold_monitor_last_gate"] = "ai cooldown active"
+        return {}
+
+    # 쿨다운을 넘겨도 rule_score가 직전 Claude 호출 시점과 사실상 그대로라면 같은
+    # 질문을 반복하는 것과 다름없다 — Claude 예산만 소모하고 방향성 있는 정보는
+    # 얻지 못한다(2026-08-12 관측: 종목 278470이 30분간 90~100점을 유지하며 60초
+    # 쿨다운마다 재호출됐지만 ai_score는 72~76 사이 노이즈만 오갔음). 점수가 실제로
+    # 움직였을 때만 재호출한다.
+    if _score_stalled(payload, r_score):
+        payload["hold_monitor_last_gate"] = (
+            f"score stalled (Δ<{HOLD_MONITOR_MIN_SCORE_DELTA:.1f} since last AI call)"
+        )
+        return {}
+
+    payload["hold_monitor_last_ai_at"] = _now_kst().timestamp()
+    payload["hold_monitor_last_ai_rule_score"] = r_score
+
     enriched = {
         **payload,
         "type": "HOLD_MONITOR_RECHECK",
@@ -271,23 +329,34 @@ async def process_due_items(rdb) -> int:
                     key,
                 )
             elif not _is_after_close():
-                requeued = await _requeue(
-                    rdb,
-                    item,
+                drop_reason = (
                     item.get("hold_monitor_terminal_reason")
                     or item.get("hold_monitor_last_gate")
                     or item.get("hold_monitor_last_reason")
-                    or "still WATCH",
+                    or "still WATCH"
                 )
+                requeued = await _requeue(rdb, item, drop_reason)
                 if not requeued and key:
                     await remove_hold_monitor_item(rdb, key)
+                    await _notify_release(rdb, item, drop_reason)
         except Exception as exc:
             logger.warning("[HoldMonitor] evaluation failed key=%s: %s", key, exc)
             if not _is_after_close():
-                requeued = await _requeue(rdb, item, f"error:{type(exc).__name__}")
+                drop_reason = f"error:{type(exc).__name__}"
+                requeued = await _requeue(rdb, item, drop_reason)
                 if not requeued and key:
                     await remove_hold_monitor_item(rdb, key)
+                    await _notify_release(rdb, item, drop_reason)
     return promoted
+
+
+async def _release_all_for_close(rdb) -> int:
+    """Notify Telegram for every still-open WATCH item, then clear the hold monitor queue for the day."""
+    stale_items = await get_all_hold_monitor_items(rdb)
+    for stale in stale_items:
+        await _notify_release(rdb, stale, f"장 마감({HOLD_MONITOR_CLOSE_HHMM}) — 관심종목 관찰 종료")
+    await clear_hold_monitor_queue(rdb)
+    return len(stale_items)
 
 
 async def run_hold_monitor_worker(rdb):
@@ -298,9 +367,12 @@ async def run_hold_monitor_worker(rdb):
         today = now.strftime("%Y-%m-%d")
         if _is_after_close(now):
             if cleared_for_date != today:
-                await clear_hold_monitor_queue(rdb)
+                released_count = await _release_all_for_close(rdb)
                 cleared_for_date = today
-                logger.info("[HoldMonitor] queue cleared for close %s", HOLD_MONITOR_CLOSE_HHMM)
+                logger.info(
+                    "[HoldMonitor] queue cleared for close %s (%d items released)",
+                    HOLD_MONITOR_CLOSE_HHMM, released_count,
+                )
             await asyncio.sleep(max(HOLD_MONITOR_INTERVAL_SEC, 30.0))
             continue
         cleared_for_date = None
