@@ -66,3 +66,5 @@ npm-debug.log*
 ### 로컬 작업 산출물 (커밋 대상 아님) ###
 backups/
 tmp/
+# 키움 REST API 원본 PDF(23MB) — 변환 결과는 docs/kiwoom-rest-api/에 있다
+*.pdf
