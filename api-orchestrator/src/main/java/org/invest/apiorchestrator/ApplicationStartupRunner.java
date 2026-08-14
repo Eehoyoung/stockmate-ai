@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.domain.PortfolioConfig;
 import org.invest.apiorchestrator.repository.PortfolioConfigRepository;
+import org.invest.apiorchestrator.service.KiwoomStockService;
 import org.invest.apiorchestrator.service.StrategyParamSnapshotService;
 import org.invest.apiorchestrator.service.TokenService;
 import org.springframework.boot.ApplicationArguments;
@@ -18,6 +19,7 @@ public class ApplicationStartupRunner implements ApplicationRunner {
     private final TokenService tokenService;
     private final PortfolioConfigRepository portfolioConfigRepository;
     private final StrategyParamSnapshotService strategyParamSnapshotService;
+    private final KiwoomStockService kiwoomStockService;
 
     @Override
     public void run(ApplicationArguments args) {
@@ -49,6 +51,13 @@ public class ApplicationStartupRunner implements ApplicationRunner {
         } catch (Exception e) {
             log.error("[Startup] initial token refresh failed - scheduler retry will handle it: {}", e.getMessage());
             return;
+        }
+
+        try {
+            kiwoomStockService.syncAllStockCodes();
+            log.info("[Startup] stock:code_map bootstrap complete");
+        } catch (Exception e) {
+            log.warn("[Startup] stock:code_map bootstrap failed - weekly scheduler retry will handle it: {}", e.getMessage());
         }
 
         log.info("[Startup] WebSocket listener is managed by python websocket-listener");

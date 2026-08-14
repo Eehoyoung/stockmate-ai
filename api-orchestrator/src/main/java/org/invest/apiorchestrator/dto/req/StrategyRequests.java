@@ -42,14 +42,17 @@ public class StrategyRequests {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class ViActivationRequest extends KiwoomApiRequest {
         @Builder.Default @JsonProperty("mrkt_tp") private String mrktTp = "000";
-        @Builder.Default @JsonProperty("bf_mkrt_tp") private String bfMkrtTp = "1";
+        @Builder.Default @JsonProperty("bf_mkrt_tp") private String bfMkrtTp = "0";
         @JsonProperty("stk_cd") private String stkCd;
         @Builder.Default @JsonProperty("motn_tp") private String motnTp = "0";
         @Builder.Default @JsonProperty("skip_stk") private String skipStk = "000000000";
         @Builder.Default @JsonProperty("trde_qty_tp") private String trdeQtyTp = "0";
-        @JsonProperty("min_trde_qty") private String minTrdeQty;
-        @JsonProperty("max_trde_qty") private String maxTrdeQty;
+        @Builder.Default @JsonProperty("min_trde_qty") private String minTrdeQty = "0";
+        @Builder.Default @JsonProperty("max_trde_qty") private String maxTrdeQty = "0";
         @Builder.Default @JsonProperty("trde_prica_tp") private String trdePricaTp = "0";
+        @Builder.Default @JsonProperty("min_trde_prica") private String minTrdePrica = "0";
+        @Builder.Default @JsonProperty("max_trde_prica") private String maxTrdePrica = "0";
+        @Builder.Default @JsonProperty("motn_drc") private String motnDrc = "0";
     }
 
     /** ka10055 당일전일체결량 */
@@ -70,6 +73,16 @@ public class StrategyRequests {
         @Builder.Default @JsonProperty("frgn_all") private String frgnAll = "1";
         @Builder.Default @JsonProperty("smtm_netprps_tp") private String smtmNetprpsTp = "1";
 
+    }
+
+    /** ka10064 intraday trading chart by investor. */
+    @Getter @SuperBuilder @NoArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class IntradayInvestorChartRequest extends KiwoomApiRequest {
+        @JsonProperty("mrkt_tp") private String mrktTp;
+        @Builder.Default @JsonProperty("amt_qty_tp") private String amtQtyTp = "1";
+        @Builder.Default @JsonProperty("trde_tp") private String trdeTp = "0";
+        @JsonProperty("stk_cd") private String stkCd;
     }
 
     /** ka10065 장중투자자별매매상위 */
@@ -158,7 +171,7 @@ public class StrategyRequests {
         @Builder.Default @JsonProperty("mrkt_tp")       private String mrktTp    = "000";
         @Builder.Default @JsonProperty("sort_tp")       private String sortTp    = "1";    // 1:상승률
         @Builder.Default @JsonProperty("trde_qty_cnd")  private String trdeQtyCnd = "10"; // 만주 이상
-        @Builder.Default @JsonProperty("stk_cnd")       private String stkCnd    = "1";   // 관리종목 제외
+        @Builder.Default @JsonProperty("stk_cnd")       private String stkCnd    = "16";  // ETF+ETN 제외
         @Builder.Default @JsonProperty("crd_cnd")       private String crdCnd    = "0";   // 전체
         @Builder.Default @JsonProperty("pric_cnd")      private String pricCnd   = "8";   // 1천원 이상
         // stexTp 는 KiwoomApiRequest 부모에서 @Builder.Default "1"(KRX) 로 관리
@@ -187,7 +200,7 @@ public class StrategyRequests {
         @Builder.Default @JsonProperty("tm_tp")       private String tmTp      = "1";
         @Builder.Default @JsonProperty("trde_qty_tp") private String trdeQtyTp = "10";
         @JsonProperty("tm") private String tm;                // 분 (optional)
-        @Builder.Default @JsonProperty("stk_cnd")    private String stkCnd    = "1";
+        @Builder.Default @JsonProperty("stk_cnd")    private String stkCnd    = "20"; // ETF+ETN+스팩 제외
         @Builder.Default @JsonProperty("pric_tp")    private String pricTp    = "8";
     }
 
@@ -231,7 +244,7 @@ public class StrategyRequests {
         @Builder.Default @JsonProperty("mrkt_tp")        private String mrktTp       = "000";
         @Builder.Default @JsonProperty("sort_tp")        private String sortTp       = "1";    // 1:상승률
         @Builder.Default @JsonProperty("trde_qty_cnd")   private String trdeQtyCnd   = "0010"; // 만주 이상
-        @Builder.Default @JsonProperty("stk_cnd")        private String stkCnd       = "1";    // 관리종목 제외
+        @Builder.Default @JsonProperty("stk_cnd")        private String stkCnd       = "16";   // ETF+ETN 제외
         @Builder.Default @JsonProperty("crd_cnd")        private String crdCnd       = "0";
         @Builder.Default @JsonProperty("updown_incls")   private String updownIncls  = "0";    // 상하한 미포함
         @Builder.Default @JsonProperty("pric_cnd")       private String pricCnd      = "8";    // 1천원 이상

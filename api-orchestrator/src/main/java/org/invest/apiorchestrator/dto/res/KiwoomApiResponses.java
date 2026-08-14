@@ -1,6 +1,7 @@
 package org.invest.apiorchestrator.dto.res;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import lombok.Getter;
@@ -38,8 +39,15 @@ public class KiwoomApiResponses {
             @JsonProperty("cntr_tm")   private String cntrTm;
             @JsonProperty("cur_prc")   private String curPrc;
             @JsonProperty("pred_pre")  private String predPre;
+            @JsonProperty("flu_rt")    private String fluRt;
             @JsonProperty("cntr_str")  private String cntrStr;
             @JsonProperty("trde_qty")  private String trdeQty;
+            @JsonProperty("acc_trde_prica") private String accTrdePrica;
+            @JsonProperty("acc_trde_qty") private String accTrdeQty;
+            @JsonProperty("cntr_str_5min") private String cntrStr5min;
+            @JsonProperty("cntr_str_20min") private String cntrStr20min;
+            @JsonProperty("cntr_str_60min") private String cntrStr60min;
+            @JsonProperty("stex_tp") private String stexTp;
         }
     }
 
@@ -70,7 +78,7 @@ public class KiwoomApiResponses {
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class DailyCandleItem {
-            @JsonProperty("date")      private String date;
+            @JsonProperty("dt") @JsonAlias("date") private String date;
             @JsonProperty("cur_prc")   private String curPrc;
             @JsonProperty("open_pric") private String openPric;
             @JsonProperty("high_pric") private String highPric;
@@ -109,9 +117,54 @@ public class KiwoomApiResponses {
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("cur_prc")     private String curPrc;
             @JsonProperty("flu_rt")      private String fluRt;
-            @JsonProperty("net_buy_qty") private String netBuyQty;
-            @JsonProperty("net_buy_amt") private String netBuyAmt;
-            @JsonProperty("trde_qty")    private String trdeQty;
+            @JsonProperty("netprps_qty") @JsonAlias("net_buy_qty") private String netBuyQty;
+            @JsonProperty("netprps_amt") @JsonAlias("net_buy_amt") private String netBuyAmt;
+            @JsonProperty("acc_trde_qty") @JsonAlias("trde_qty") private String trdeQty;
+            @JsonProperty("prev_netprps_amt") private String prevNetBuyAmt;
+            @JsonProperty("netprps_amt_irds") private String netBuyAmtChange;
+        }
+    }
+
+    /** ka10054 volatility-interruption activation history. */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ViActivationResponse extends BaseResponse {
+        @JsonProperty("motn_stk") private List<ViActivationItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class ViActivationItem {
+            @JsonProperty("stk_cd") @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
+            @JsonProperty("stk_nm") private String stkNm;
+            @JsonProperty("acc_trde_qty") private String accumulatedVolume;
+            @JsonProperty("motn_pric") private String activationPrice;
+            @JsonProperty("dynm_dispty_rt") private String dynamicDeviationRate;
+            @JsonProperty("trde_cntr_proc_time") private String activationTime;
+            @JsonProperty("virelis_time") private String releaseTime;
+            @JsonProperty("viaplc_tp") private String applicationType;
+            @JsonProperty("dynm_stdpc") private String dynamicReferencePrice;
+            @JsonProperty("static_stdpc") private String staticReferencePrice;
+            @JsonProperty("static_dispty_rt") private String staticDeviationRate;
+            @JsonProperty("open_pric_pre_flu_rt") private String openPriceChangeRate;
+            @JsonProperty("vimotn_cnt") private String activationCount;
+            @JsonProperty("stex_tp") private String exchangeType;
+        }
+    }
+
+    /** ka10064 intraday trading chart by investor. */
+    @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class IntradayInvestorChartResponse extends BaseResponse {
+        @JsonProperty("opmr_invsr_trde_chart") private List<InvestorChartItem> items;
+
+        @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class InvestorChartItem {
+            @JsonProperty("tm") private String time;
+            @JsonProperty("frgnr_invsr") private String foreignInvestor;
+            @JsonProperty("orgn") private String institution;
+            @JsonProperty("invtrt") private String investmentTrust;
+            @JsonProperty("insrnc") private String insurance;
+            @JsonProperty("bank") private String bank;
+            @JsonProperty("penfnd_etc") private String pensionFundEtc;
+            @JsonProperty("etc_corp") private String otherCorporation;
+            @JsonProperty("natn") private String nation;
         }
     }
 
@@ -132,15 +185,21 @@ public class KiwoomApiResponses {
     /* ───────────── 기관외국인연속매매 ───────────── */
     @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
     public static class InstFrgnContinuousResponse extends BaseResponse {
-        @JsonProperty("orgn_for_cont_trde") private List<ContTrdeItem> items;
+        @JsonProperty("orgn_frgnr_cont_trde_prst")
+        @JsonAlias("orgn_for_cont_trde")
+        private List<ContTrdeItem> items;
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class ContTrdeItem {
             @JsonProperty("stk_cd")       @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
             @JsonProperty("stk_nm")       private String stkNm;
-            @JsonProperty("cont_dt_cnt")  private String contDtCnt;
-            @JsonProperty("net_buy_amt")  private String netBuyAmt;
-            @JsonProperty("net_buy_qty")  private String netBuyQty;
+            @JsonProperty("tot_cont_netprps_dys") @JsonAlias("cont_dt_cnt") private String contDtCnt;
+            @JsonProperty("tot_cont_netprps_amt") @JsonAlias("net_buy_amt") private String netBuyAmt;
+            @JsonProperty("tot_cont_nettrde_qty") @JsonAlias("net_buy_qty") private String netBuyQty;
+            @JsonProperty("orgn_cont_netprps_dys") private String orgnContNetBuyDays;
+            @JsonProperty("orgn_cont_netprps_amt") private String orgnContNetBuyAmt;
+            @JsonProperty("frgnr_cont_netprps_dys") private String foreignContNetBuyDays;
+            @JsonProperty("frgnr_cont_netprps_amt") private String foreignContNetBuyAmt;
         }
     }
 
@@ -155,23 +214,39 @@ public class KiwoomApiResponses {
             @JsonProperty("stk_nm")      private String stkNm;
             @JsonProperty("cur_prc")     private String curPrc;
             @JsonProperty("flu_rt")      private String fluRt;
-            @JsonProperty("net_buy_amt") private String netBuyAmt;
-            @JsonProperty("net_buy_qty") private String netBuyQty;
+            @JsonProperty("prm_netprps_amt") @JsonAlias("net_buy_amt") private String netBuyAmt;
+            @JsonProperty("prm_netprps_qty") @JsonAlias("net_buy_qty") private String netBuyQty;
+            @JsonProperty("acc_trde_qty") private String accTrdeQty;
+            @JsonProperty("prm_sell_amt") private String programSellAmt;
+            @JsonProperty("prm_buy_amt") private String programBuyAmt;
         }
     }
 
     /* ───────────── 외국인기관매매상위 ───────────── */
     @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
     public static class FrgnInstUpperResponse extends BaseResponse {
-        @JsonProperty("for_inst_trde_upper") private List<FrgnInstItem> items;
+        @JsonProperty("frgnr_orgn_trde_upper")
+        @JsonAlias("for_inst_trde_upper")
+        private List<FrgnInstItem> items;
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class FrgnInstItem {
-            @JsonProperty("stk_cd")      @JsonDeserialize(using = StockCodeDeserializer.class) private String stkCd;
-            @JsonProperty("stk_nm")      private String stkNm;
-            @JsonProperty("for_buy_amt") private String forBuyAmt;
-            @JsonProperty("org_buy_amt") private String orgBuyAmt;
-            @JsonProperty("cur_prc")     private String curPrc;
+            @JsonProperty("for_netprps_stk_cd") @JsonAlias("stk_cd")
+            @JsonDeserialize(using = StockCodeDeserializer.class)
+            private String forNetprpsStkCd;
+            @JsonProperty("for_netprps_stk_nm") @JsonAlias("stk_nm") private String forNetprpsStkNm;
+            @JsonProperty("for_netprps_amt") @JsonAlias("for_buy_amt") private String forBuyAmt;
+            @JsonProperty("for_netprps_qty") private String forNetprpsQty;
+            @JsonProperty("orgn_netprps_stk_cd")
+            @JsonDeserialize(using = StockCodeDeserializer.class)
+            private String orgnNetprpsStkCd;
+            @JsonProperty("orgn_netprps_stk_nm") private String orgnNetprpsStkNm;
+            @JsonProperty("orgn_netprps_amt") @JsonAlias("org_buy_amt") private String orgBuyAmt;
+            @JsonProperty("orgn_netprps_qty") private String orgnNetprpsQty;
+
+            /** Compatibility view used by legacy callers that treated a row as one stock. */
+            public String getStkCd() { return forNetprpsStkCd; }
+            public String getStkNm() { return forNetprpsStkNm; }
         }
     }
 

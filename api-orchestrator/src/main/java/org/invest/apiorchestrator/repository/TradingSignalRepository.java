@@ -72,7 +72,9 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
     @Query("""
         SELECT s.strategy, COUNT(s), AVG(s.aiScore)
         FROM TradingSignal s
-        WHERE s.action = 'ENTER'
+        WHERE s.executedAt IS NOT NULL
+          AND s.entryQty IS NOT NULL
+          AND s.entryQty > 0
           AND s.signalStatus IN ('SENT','EXPIRED','WIN','LOSS')
           AND s.createdAt >= :startAt
           AND s.createdAt < :endAt

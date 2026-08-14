@@ -1,23 +1,70 @@
 package org.invest.apiorchestrator.service;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.util.KstClock;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.LongSupplier;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class RedisMarketDataService {
 
     private final StringRedisTemplate redis;
+    private final LongSupplier nowMs;
+
+    public static final FreshnessPolicy ENTRY_TICK_POLICY =
+            new FreshnessPolicy(Duration.ofSeconds(3), Duration.ofSeconds(5), true);
+    public static final FreshnessPolicy ENTRY_HOGA_POLICY =
+            new FreshnessPolicy(Duration.ofSeconds(1), Duration.ofSeconds(2), true);
+    public static final FreshnessPolicy ENTRY_EXPECTED_POLICY =
+            new FreshnessPolicy(Duration.ofSeconds(10), Duration.ofSeconds(15), true);
+    public static final FreshnessPolicy ENTRY_STRENGTH_POLICY =
+            new FreshnessPolicy(Duration.ofSeconds(5), Duration.ofSeconds(10), true);
+
+    @Autowired
+    public RedisMarketDataService(StringRedisTemplate redis) {
+        this(redis, System::currentTimeMillis);
+    }
+
+    RedisMarketDataService(StringRedisTemplate redis, LongSupplier nowMs) {
+        this.redis = redis;
+        this.nowMs = nowMs;
+    }
+
+    public enum FreshnessState {
+        FRESH,
+        CAUTION,
+        STALE,
+        MISSING
+    }
+
+    public record FreshnessPolicy(Duration cautionAfter, Duration rejectAfter, boolean requireTimestamp) {
+        public FreshnessPolicy {
+            if (cautionAfter == null || rejectAfter == null) {
+                throw new IllegalArgumentException("freshness durations must not be null");
+            }
+            if (cautionAfter.isNegative() || rejectAfter.isNegative()
+                    || cautionAfter.compareTo(rejectAfter) > 0) {
+                throw new IllegalArgumentException("freshness durations must satisfy 0 <= caution <= reject");
+            }
+        }
+    }
+
+    public record FreshData<T>(T value, Instant updatedAt, Duration age,
+                               FreshnessState state, String source) {
+        public boolean usable() {
+            return state == FreshnessState.FRESH || state == FreshnessState.CAUTION;
+        }
+    }
 
     // Redis 키 접두사 (Python websocket-listener 가 쓰는 키, Java 는 읽기 전용)
     private static final String KEY_TICK      = "ws:tick:";
@@ -46,6 +93,92 @@ public class RedisMarketDataService {
     public Optional<Map<Object, Object>> getViData(String stkCd) {
         Map<Object, Object> data = redis.opsForHash().entries(KEY_VI + stkCd);
         return data.isEmpty() ? Optional.empty() : Optional.of(data);
+    }
+
+    /**
+     * Timestamp-aware reads for entry decisions. Existing raw getters intentionally remain unchanged
+     * because monitoring and overnight callers have different age policies.
+     */
+    public FreshData<Map<Object, Object>> getFreshTick(String stkCd, FreshnessPolicy policy) {
+        return classifyHash(redis.opsForHash().entries(KEY_TICK + stkCd), policy);
+    }
+
+    public FreshData<Map<Object, Object>> getFreshHoga(String stkCd, FreshnessPolicy policy) {
+        return classifyHash(redis.opsForHash().entries(KEY_HOGA + stkCd), policy);
+    }
+
+    public FreshData<Map<Object, Object>> getFreshExpected(String stkCd, FreshnessPolicy policy) {
+        return classifyHash(redis.opsForHash().entries(KEY_EXPECTED + stkCd), policy);
+    }
+
+    public FreshData<Double> getFreshStrength(String stkCd, int count, FreshnessPolicy policy) {
+        if (count <= 0) {
+            return missing(null, "redis");
+        }
+        List<String> values = redis.opsForList().range(KEY_STRENGTH + stkCd, 0, Math.max(0, count - 1L));
+        if (values == null || values.isEmpty()) {
+            return missing(null, "redis");
+        }
+
+        List<Double> parsed = values.stream().map(RedisMarketDataService::parseNumber).flatMap(Optional::stream).toList();
+        if (parsed.isEmpty()) {
+            return missing(null, "redis");
+        }
+
+        Map<Object, Object> meta = redis.opsForHash().entries("ws:strength_meta:" + stkCd);
+        Double average = parsed.stream().mapToDouble(Double::doubleValue).average().orElseThrow();
+        return classifyValue(average, meta != null ? meta.get("updated_at_ms") : null, policy, "redis");
+    }
+
+    private FreshData<Map<Object, Object>> classifyHash(Map<Object, Object> data, FreshnessPolicy policy) {
+        if (data == null || data.isEmpty()) {
+            return missing(Map.of(), "redis");
+        }
+        return classifyValue(data, data.get("updated_at_ms"), policy, "redis");
+    }
+
+    private <T> FreshData<T> classifyValue(T value, Object rawUpdatedAt,
+                                           FreshnessPolicy policy, String source) {
+        Long updatedAtMs = parseEpochMillis(rawUpdatedAt);
+        if (updatedAtMs == null) {
+            FreshnessState state = policy.requireTimestamp() ? FreshnessState.MISSING : FreshnessState.CAUTION;
+            return new FreshData<>(value, null, null, state, source);
+        }
+
+        long ageMs = Math.max(0L, nowMs.getAsLong() - updatedAtMs);
+        Duration age = Duration.ofMillis(ageMs);
+        FreshnessState state;
+        if (age.compareTo(policy.rejectAfter()) > 0) {
+            state = FreshnessState.STALE;
+        } else if (age.compareTo(policy.cautionAfter()) > 0) {
+            state = FreshnessState.CAUTION;
+        } else {
+            state = FreshnessState.FRESH;
+        }
+        return new FreshData<>(value, Instant.ofEpochMilli(updatedAtMs), age, state, source);
+    }
+
+    private static <T> FreshData<T> missing(T value, String source) {
+        return new FreshData<>(value, null, null, FreshnessState.MISSING, source);
+    }
+
+    private static Long parseEpochMillis(Object value) {
+        if (value == null) return null;
+        try {
+            double parsed = Double.parseDouble(value.toString().trim());
+            if (!Double.isFinite(parsed) || parsed <= 0) return null;
+            return (long) parsed;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Optional<Double> parseNumber(String value) {
+        try {
+            return Optional.of(Double.parseDouble(value.replace(",", "").replace("+", "").trim()));
+        } catch (Exception e) {
+            return Optional.empty();
+        }
     }
 
     /**

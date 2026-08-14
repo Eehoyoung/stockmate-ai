@@ -14,6 +14,7 @@ class MarketTimeUtilTests {
 
     private static final LocalDate MONDAY = LocalDate.of(2026, 5, 4);
     private static final LocalDate SATURDAY = LocalDate.of(2026, 5, 2);
+    private static final LocalDate CONSTITUTION_DAY_2026 = LocalDate.of(2026, 7, 17);
 
     @Test
     void sessionBoundariesAreInclusiveAtStartAndExclusiveAtEnd() {
@@ -55,11 +56,22 @@ class MarketTimeUtilTests {
     @Test
     void weekendNeverEntersTradingSessions() {
         assertFalse(MarketTimeUtil.isWeekday(SATURDAY));
+        assertFalse(MarketTimeUtil.isMarketOpenDay(SATURDAY));
         assertFalse(MarketTimeUtil.isPreMarket(at(SATURDAY, 8, 30)));
         assertFalse(MarketTimeUtil.isAuctionTime(at(SATURDAY, 8, 30)));
         assertFalse(MarketTimeUtil.isMarketHours(at(SATURDAY, 9, 0)));
         assertFalse(MarketTimeUtil.isTradingActive(at(SATURDAY, 9, 0)));
         assertFalse(MarketTimeUtil.shouldForceClose(at(SATURDAY, 14, 50)));
+    }
+
+    @Test
+    void configuredDefaultHolidayNeverEntersTradingSessions() {
+        assertTrue(MarketTimeUtil.isWeekday(CONSTITUTION_DAY_2026));
+        assertTrue(MarketTimeUtil.isMarketHoliday(CONSTITUTION_DAY_2026));
+        assertFalse(MarketTimeUtil.isMarketOpenDay(CONSTITUTION_DAY_2026));
+        assertEquals(MarketTimeUtil.MarketSession.CLOSED, MarketTimeUtil.currentSession(at(CONSTITUTION_DAY_2026, 9, 0)));
+        assertFalse(MarketTimeUtil.isTradingActive(at(CONSTITUTION_DAY_2026, 9, 0)));
+        assertFalse(MarketTimeUtil.shouldForceClose(at(CONSTITUTION_DAY_2026, 14, 50)));
     }
 
     private static LocalDateTime at(LocalDate date, int hour, int minute) {

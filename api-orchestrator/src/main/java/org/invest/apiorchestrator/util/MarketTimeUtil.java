@@ -3,7 +3,11 @@ package org.invest.apiorchestrator.util;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.MonthDay;
 import java.time.LocalTime;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class MarketTimeUtil {
 
@@ -27,6 +31,7 @@ public class MarketTimeUtil {
     private static final LocalTime POST_QUIET_START = LocalTime.of(20, 0);
     private static final LocalTime CLOSED_START = LocalTime.of(20, 10);
     private static final LocalTime FORCE_CLOSE_TIME = LocalTime.of(14, 50);
+    private static final Set<LocalDate> CONFIGURED_HOLIDAYS = parseConfiguredHolidays();
 
     public static boolean isWeekday() {
         return isWeekday(KstClock.today());
@@ -35,6 +40,14 @@ public class MarketTimeUtil {
     public static boolean isWeekday(LocalDate date) {
         DayOfWeek dow = date.getDayOfWeek();
         return dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY;
+    }
+
+    public static boolean isMarketOpenDay(LocalDate date) {
+        return isWeekday(date) && !isMarketHoliday(date);
+    }
+
+    public static boolean isMarketHoliday(LocalDate date) {
+        return CONFIGURED_HOLIDAYS.contains(date) || isDefaultMarketHoliday(date);
     }
 
     public static boolean isPreMarket() {
@@ -68,7 +81,7 @@ public class MarketTimeUtil {
 
     public static boolean isForceCloseTime(LocalDateTime dateTime) {
         LocalTime now = dateTime.toLocalTime();
-        return isWeekday(dateTime.toLocalDate()) && !now.isBefore(FORCE_CLOSE_TIME) && now.isBefore(MARKET_CLOSE);
+        return isMarketOpenDay(dateTime.toLocalDate()) && !now.isBefore(FORCE_CLOSE_TIME) && now.isBefore(MARKET_CLOSE);
     }
 
     public static boolean isTradingActive() {
@@ -95,7 +108,7 @@ public class MarketTimeUtil {
     }
 
     public static MarketSession currentSession(LocalDateTime dateTime) {
-        if (!isWeekday(dateTime.toLocalDate())) {
+        if (!isMarketOpenDay(dateTime.toLocalDate())) {
             return MarketSession.CLOSED;
         }
         LocalTime now = dateTime.toLocalTime();
@@ -121,5 +134,21 @@ public class MarketTimeUtil {
             return MarketSession.POST_QUIET;
         }
         return MarketSession.CLOSED;
+    }
+
+    private static Set<LocalDate> parseConfiguredHolidays() {
+        String raw = System.getenv().getOrDefault("KRX_HOLIDAYS", "");
+        if (raw.isBlank()) {
+            return Set.of();
+        }
+        return Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .map(LocalDate::parse)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static boolean isDefaultMarketHoliday(LocalDate date) {
+        return date.getYear() >= 2026 && MonthDay.from(date).equals(MonthDay.of(7, 17));
     }
 }

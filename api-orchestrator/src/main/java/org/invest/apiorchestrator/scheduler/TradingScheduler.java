@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.domain.MarketDailyContext;
 import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
+import org.invest.apiorchestrator.dto.res.KiwoomSupplementalResponses;
 import org.invest.apiorchestrator.repository.MarketDailyContextRepository;
 import org.invest.apiorchestrator.service.CandidateService;
 import org.invest.apiorchestrator.service.DailyAggregationService;
@@ -13,7 +14,6 @@ import org.invest.apiorchestrator.service.EconomicCalendarService;
 import org.invest.apiorchestrator.service.KiwoomApiService;
 import org.invest.apiorchestrator.service.RedisMarketDataService;
 import org.invest.apiorchestrator.service.SignalService;
-import org.invest.apiorchestrator.service.TokenService;
 import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -42,7 +42,6 @@ public class TradingScheduler {
 
     private final SignalService signalService;
     private final CandidateService candidateService;
-    private final TokenService tokenService;
     private final KiwoomApiService kiwoomApiService;
     private final RedisMarketDataService redisMarketDataService;
     private final EconomicCalendarService calendarService;
@@ -53,33 +52,23 @@ public class TradingScheduler {
 
     private static final ExecutorService PRELOAD_POOL = Executors.newFixedThreadPool(5);
 
-    @Scheduled(cron = "0 50 6 * * MON-FRI", zone = "Asia/Seoul")
-    public void dailyPrepare() {
-        log.info("=== daily prepare (06:50) ===");
-        try {
-            tokenService.refreshToken();
-        } catch (Exception e) {
-            log.error("pre-market token refresh failed: {}", e.getMessage());
-        }
-    }
-
-    @Scheduled(cron = "0 25 7 * * MON-FRI", zone = "Asia/Seoul")
-    public void prepareSystem() {
-        log.info("=== system prepare (07:25) ===");
-        try {
-            tokenService.refreshToken();
-        } catch (Exception e) {
-            log.error("token refresh failed: {}", e.getMessage());
-        }
-    }
-
     @Scheduled(cron = "0 30 7 * * MON-FRI", zone = "Asia/Seoul")
     public void startPreMarketSubscription() {
         log.info("=== pre-market start (07:30) / python websocket-listener owned ===");
     }
 
+    /**
+     * 07:50 최초 시도. ka10029(stkCnd=16, 예상체결등락률)는 이 시각에는 구조적으로
+     * 데이터가 비어 있는 경우가 대부분이라(2026-07-20~24 5거래일 전수 실패 확인),
+     * 결과 없음을 장애로 취급하지 않고 INFO 로 남긴다. 실제 재적재는 08:26부터
+     * 시작되는 {@link #recoverS1PoolUntil0930()} 의 2분 간격 재시도가 담당한다.
+     */
     @Scheduled(cron = "0 50 7 * * MON-FRI", zone = "Asia/Seoul")
     public void preloadAuctionCandidates() {
+        if (!candidateService.javaOwnsCandidatePools()) {
+            log.debug("[Pool] Python owns candidate pools; Java preload skipped");
+            return;
+        }
         log.info("=== preload S1 candidate pools (07:50) ===");
         int totalLoaded = 0;
         for (String market : new String[]{"001", "101"}) {
@@ -88,11 +77,11 @@ public class TradingScheduler {
                 log.info("[Pool] S1 preload OK [market={}] count={}", market, count);
                 totalLoaded += count;
             } else if (count == 0) {
-                log.warn("[Pool] S1 preload 결과 없음 [market={}] — 08:20/08:25 재시도 예정", market);
+                log.info("[Pool] S1 preload 결과 없음(예상됨, ka10029 데이터 미가용 시간대) [market={}] — 08:26부터 재시도", market);
             }
         }
         if (totalLoaded == 0) {
-            log.error("[Pool] S1 preload 전체 실패 — 양 시장 모두 0건, 08:20/08:25 재시도 예정");
+            log.info("[Pool] S1 preload 07:50 시점 전체 0건(예상됨) — 08:26부터 2분 간격 재시도");
         } else {
             log.info("[Pool] S1 preload complete total={}", totalLoaded);
         }
@@ -101,6 +90,7 @@ public class TradingScheduler {
     /** S1 풀 비었을 때 08:20 재시도 */
     @Scheduled(cron = "0 20 8 * * MON-FRI", zone = "Asia/Seoul")
     public void retryS1PoolIfEmpty() {
+        if (!candidateService.javaOwnsCandidatePools()) return;
         for (String market : new String[]{"001", "101"}) {
             Long llen = redis.opsForList().size("candidates:s1:" + market);
             if (llen == null || llen == 0) {
@@ -118,6 +108,7 @@ public class TradingScheduler {
     /** S1 풀 비었을 때 08:25 최종 재시도 (08:30 스캔 직전 마지막 기회) */
     @Scheduled(cron = "0 25 8 * * MON-FRI", zone = "Asia/Seoul")
     public void finalRetryS1PoolBeforeScan() {
+        if (!candidateService.javaOwnsCandidatePools()) return;
         for (String market : new String[]{"001", "101"}) {
             Long llen = redis.opsForList().size("candidates:s1:" + market);
             if (llen == null || llen == 0) {
@@ -133,15 +124,22 @@ public class TradingScheduler {
     }
 
     /**
-     * S1 candidate ownership stays in Java. Kiwoom ka10029 can remain empty
-     * before the auction data is fully available, so keep retrying empty pools
-     * through 09:30. The Python scanner still controls the actual S1 entry
-     * window and should not treat this as permission to enter until 09:30.
+     * Python owns S1 candidate writes. Java keeps this recovery hook only for
+     * the explicit CANDIDATE_POOL_OWNER=JAVA rollback configuration; under the
+     * production default it exits before making a Kiwoom request.
+     *
+     * <p>2026-07-20~24 로그 분석 결과 07:50/08:20/08:25 세 차례 시도가 5거래일
+     * 모두 0건이었고, 08:30 S1 스캔 시작 이후에도 08:45 {@link #preparePreOpenData()}가
+     * 우연히 {@code getS1Candidates()} 를 호출해서야(일부 거래일) 풀이 채워졌다.
+     * 08:25~08:50 사이 25분간 명시적 재시도가 없던 공백을 없애기 위해 시작 시각을
+     * 08:26 으로 앞당긴다(cron 자체는 08:00부터 2분 간격으로 이미 fire 하고 있었고,
+     * 이 가드만 완화하면 됨).
      */
     @Scheduled(cron = "0 */2 8-9 * * MON-FRI", zone = "Asia/Seoul")
     public void recoverS1PoolUntil0930() {
+        if (!candidateService.javaOwnsCandidatePools()) return;
         LocalTime now = KstClock.nowTime();
-        if (now.isBefore(LocalTime.of(8, 50)) || now.isAfter(LocalTime.of(9, 30))) {
+        if (now.isBefore(LocalTime.of(8, 26)) || now.isAfter(LocalTime.of(9, 30))) {
             return;
         }
 
@@ -214,14 +212,8 @@ public class TradingScheduler {
             LocalDate today = KstClock.today();
             MarketDailyContext ctx = marketDailyContextRepository.findByDate(today).orElse(null);
             if (ctx == null) return;
-            if (ctx.getKospiOpen() != null && ctx.getKospiOpen().compareTo(BigDecimal.ZERO) != 0) return;
-            MarketProxySnapshot kospi  = loadMarketProxy(KOSPI_PROXY_CODE);
-            MarketProxySnapshot kosdaq = loadMarketProxy(KOSDAQ_PROXY_CODE);
-            if (kospi.open() == null || kospi.open().compareTo(BigDecimal.ZERO) == 0) return;
             BreadthSnapshot breadth = loadBreadthSnapshot();
             MarketDailyContext updated = copyContext(ctx)
-                    .kospiOpen(kospi.open())
-                    .kosdaqOpen(kosdaq.open())
                     .advancingStocks(breadth.advancing())
                     .decliningStocks(breadth.declining())
                     .unchangedStocks(breadth.unchanged())
@@ -229,7 +221,7 @@ public class TradingScheduler {
                     .vixEquivalent(breadth.vixEquivalent())
                     .build();
             marketDailyContextRepository.save(updated);
-            log.info("[MarketCtx] open snapshot updated kospiOpen={} advancing={}", kospi.open(), breadth.advancing());
+            log.info("[MarketCtx] open breadth snapshot updated advancing={}", breadth.advancing());
         } catch (Exception e) {
             log.warn("[MarketCtx] open snapshot update failed: {}", e.getMessage());
         }
@@ -241,18 +233,12 @@ public class TradingScheduler {
             LocalDate today = KstClock.today();
             MarketDailyContext ctx = marketDailyContextRepository.findByDate(today).orElse(null);
             if (ctx == null) return;
-            MarketProxySnapshot kospi   = loadMarketProxy(KOSPI_PROXY_CODE);
-            MarketProxySnapshot kosdaq  = loadMarketProxy(KOSDAQ_PROXY_CODE);
+            String officialSnapshot     = loadOfficialMarketSnapshot();
+            boolean officialComplete    = isOfficialSnapshotComplete(officialSnapshot);
             BreadthSnapshot breadth     = loadBreadthSnapshot();
             NetBuySnapshot kospiNetBuy  = loadNetBuySnapshot("001");
             NetBuySnapshot kosdaqNetBuy = loadNetBuySnapshot("101");
             MarketDailyContext updated = copyContext(ctx)
-                    .kospiClose(kospi.close())
-                    .kospiChangePct(kospi.changePct())
-                    .kospiVolume(kospi.volume())
-                    .kosdaqClose(kosdaq.close())
-                    .kosdaqChangePct(kosdaq.changePct())
-                    .kosdaqVolume(kosdaq.volume())
                     .advancingStocks(breadth.advancing())
                     .decliningStocks(breadth.declining())
                     .unchangedStocks(breadth.unchanged())
@@ -262,9 +248,12 @@ public class TradingScheduler {
                     .instNetBuyKospi(kospiNetBuy.instNetBuy())
                     .frgnNetBuyKosdaq(kosdaqNetBuy.foreignNetBuy())
                     .instNetBuyKosdaq(kosdaqNetBuy.instNetBuy())
+                    .primarySource(officialSource(officialComplete))
+                    .officialSnapshot(officialSnapshot)
+                    .sourceComplete(officialComplete)
                     .build();
             marketDailyContextRepository.save(updated);
-            log.info("[MarketCtx] close snapshot updated kospiClose={} advancing={}", kospi.close(), breadth.advancing());
+            log.info("[MarketCtx] close official snapshot updated complete={} advancing={}", officialComplete, breadth.advancing());
         } catch (Exception e) {
             log.warn("[MarketCtx] close snapshot update failed: {}", e.getMessage());
         }
@@ -335,6 +324,13 @@ public class TradingScheduler {
         }
     }
 
+    /**
+     * KOSPI200/코스닥150 ETF 프록시(069500/229200) 기반 등락률 — 실제 지수가 아닌
+     * 추적오차가 섞인 대용값이다. TossMarketScheduler.pollTossRegimeCrossCheck()가
+     * 이 스케줄러 20초 뒤에 실행되어 진짜 KOSPI/KOSDAQ 지수 값으로 같은 canonical
+     * 키를 덮어쓰므로, 이 Kiwoom 값은 토스 호출 실패 시의 안전망 역할이다
+     * (2026-08-11, 토스 실지수 연동).
+     */
     @Scheduled(cron = "0 */5 9-15 * * MON-FRI", zone = "Asia/Seoul")
     public void pollMarketIndexFluRt() {
         if (KstClock.nowTime().isAfter(LocalTime.of(15, 10))) {
@@ -350,6 +346,7 @@ public class TradingScheduler {
                     Double val = dbl(res.getFluRt());
                     if (val != null) {
                         redis.opsForValue().set(pair[1], String.valueOf(val), Duration.ofMinutes(7));
+                        redis.opsForValue().set(pair[1] + "_source", "kiwoom_proxy", Duration.ofMinutes(7));
                     }
                 }
             } catch (Exception e) {
@@ -377,20 +374,23 @@ public class TradingScheduler {
         try {
             signalService.expireOldSignals();
             signalService.getTodayStats().forEach(row ->
-                    log.info("strategy stat strategy={} count={} avgPnl={}", row[0], row[1], row[2]));
+                    log.info("strategy stat strategy={} executedCount={} avgAiScore={}", row[0], row[1], row[2]));
         } catch (Exception e) {
             log.error("end-of-day processing failed: {}", e.getMessage());
         }
     }
 
-    @Scheduled(cron = "0 35 15 * * MON-FRI", zone = "Asia/Seoul")
+    @Scheduled(cron = "0 38 15 * * MON-FRI", zone = "Asia/Seoul")
     public void compileDailySummary() {
-        log.info("=== compile daily summary (15:35) ===");
+        log.info("=== compile daily summary (15:38) ===");
         try {
             LocalDate summaryDate = KstClock.today();
             DailyAggregationService.DailyAggregation aggregation = dailyAggregationService.aggregate(summaryDate);
 
             long totalSignals = aggregation.totalSignals();
+            long enterCount = aggregation.enterCount();
+            long cancelCount = aggregation.cancelCount();
+            long closedCount = aggregation.closedCount();
             double totalScore = 0;
             int scoreCount = 0;
             Map<String, Long> byStrategy = new java.util.LinkedHashMap<>();
@@ -412,6 +412,9 @@ public class TradingScheduler {
             String summaryKey = "daily_summary:" + today;
 
             redis.opsForHash().put(summaryKey, "total_signals", String.valueOf(totalSignals));
+            redis.opsForHash().put(summaryKey, "enter_count", String.valueOf(enterCount));
+            redis.opsForHash().put(summaryKey, "cancel_count", String.valueOf(cancelCount));
+            redis.opsForHash().put(summaryKey, "closed_count", String.valueOf(closedCount));
             redis.opsForHash().put(summaryKey, "avg_score", String.format("%.1f", avgScore));
             try {
                 redis.opsForHash().put(summaryKey, "by_strategy", objectMapper.writeValueAsString(byStrategy));
@@ -429,6 +432,9 @@ public class TradingScheduler {
                 report.put("type", "DAILY_REPORT");
                 report.put("date", today);
                 report.put("total_signals", totalSignals);
+                report.put("enter_count", enterCount);
+                report.put("cancel_count", cancelCount);
+                report.put("closed_count", closedCount);
                 report.put("avg_score", avgScore);
                 report.put("by_strategy", byStrategy);
                 report.put("total_wins", totalWins);
@@ -444,8 +450,11 @@ public class TradingScheduler {
 
             updateMarketDailyContextPerf(totalSignals, totalWins, totalLosses, avgPnl);
             log.info(
-                    "[DailySummary] done totalSignals={} avgScore={} wins={} losses={} avgPnl={}",
+                    "[DailySummary] done totalSignals={} enterCount={} cancelCount={} closedCount={} avgScore={} wins={} losses={} avgPnl={}",
                     totalSignals,
+                    enterCount,
+                    cancelCount,
+                    closedCount,
                     String.format("%.1f", avgScore),
                     totalWins,
                     totalLosses,
@@ -463,8 +472,10 @@ public class TradingScheduler {
                 return;
             }
 
-            MarketProxySnapshot kospi = loadMarketProxy(KOSPI_PROXY_CODE);
-            MarketProxySnapshot kosdaq = loadMarketProxy(KOSDAQ_PROXY_CODE);
+            String officialSnapshot = loadOfficialMarketSnapshot();
+            MarketProxySnapshot kospiProxy = loadMarketProxy(KOSPI_PROXY_CODE);
+            MarketProxySnapshot kosdaqProxy = loadMarketProxy(KOSDAQ_PROXY_CODE);
+            String proxySnapshot = objectMapper.writeValueAsString(Map.of("kospi", kospiProxy, "kosdaq", kosdaqProxy));
             BreadthSnapshot breadth = loadBreadthSnapshot();
             NetBuySnapshot kospiNetBuy = loadNetBuySnapshot("001");
             NetBuySnapshot kosdaqNetBuy = loadNetBuySnapshot("101");
@@ -482,14 +493,15 @@ public class TradingScheduler {
 
             MarketDailyContext context = MarketDailyContext.builder()
                     .date(today)
-                    .kospiOpen(kospi.open())
-                    .kospiClose(kospi.close())
-                    .kospiChangePct(kospi.changePct())
-                    .kospiVolume(kospi.volume())
-                    .kosdaqOpen(kosdaq.open())
-                    .kosdaqClose(kosdaq.close())
-                    .kosdaqChangePct(kosdaq.changePct())
-                    .kosdaqVolume(kosdaq.volume())
+                    // ETF prices are retained only in proxy_snapshot. They are not index levels.
+                    .kospiOpen(null)
+                    .kospiClose(null)
+                    .kospiChangePct(null)
+                    .kospiVolume(null)
+                    .kosdaqOpen(null)
+                    .kosdaqClose(null)
+                    .kosdaqChangePct(null)
+                    .kosdaqVolume(null)
                     .advancingStocks(breadth.advancing())
                     .decliningStocks(breadth.declining())
                     .unchangedStocks(breadth.unchanged())
@@ -503,6 +515,11 @@ public class TradingScheduler {
                     .vixEquivalent(breadth.vixEquivalent())
                     .economicEventToday(hasEconEvent)
                     .economicEventNm(econEventName)
+                    .contextVersion(2)
+                    .primarySource(officialSource(isOfficialSnapshotComplete(officialSnapshot)))
+                    .officialSnapshot(officialSnapshot)
+                    .proxySnapshot(proxySnapshot)
+                    .sourceComplete(isOfficialSnapshotComplete(officialSnapshot))
                     .build();
             marketDailyContextRepository.save(context);
             log.info("[MarketCtx] morning snapshot saved sentiment={} control={}", sentiment, control);
@@ -563,7 +580,48 @@ public class TradingScheduler {
                 .totalSignalsToday(ctx.getTotalSignalsToday())
                 .signalWinRateToday(ctx.getSignalWinRateToday())
                 .avgPnlPctToday(ctx.getAvgPnlPctToday())
+                .contextVersion(ctx.getContextVersion())
+                .primarySource(ctx.getPrimarySource())
+                .officialSnapshot(ctx.getOfficialSnapshot())
+                .proxySnapshot(ctx.getProxySnapshot())
+                .sourceComplete(ctx.getSourceComplete())
                 .recordedAt(ctx.getRecordedAt());
+    }
+
+    private String loadOfficialMarketSnapshot() {
+        try {
+            var indices = new java.util.ArrayList<Map<String, String>>();
+            for (String code : List.of("001", "101")) {
+                var response = kiwoomApiService.fetchKa20003(
+                        StrategyRequests.AllSectorIndexRequest.builder().indsCd(code).build());
+                if (response == null || !response.isSuccess() || response.getItems() == null) continue;
+                response.getItems().stream()
+                        .filter(item -> code.equals(item.getStkCd()))
+                        .findFirst()
+                        .ifPresent(item -> indices.add(Map.of(
+                                "code", item.getStkCd(),
+                                "name", item.getStkNm() == null ? "" : item.getStkNm(),
+                                "price", item.getCurPrc() == null ? "" : item.getCurPrc(),
+                                "change_pct", item.getFluRt() == null ? "" : item.getFluRt(),
+                                "volume", item.getTrdeQty() == null ? "" : item.getTrdeQty())));
+            }
+            return objectMapper.writeValueAsString(Map.of("api_id", "ka20003", "indices", indices));
+        } catch (Exception e) {
+            log.debug("[MarketCtx] official index load failed: {}", e.getMessage());
+            return "{}";
+        }
+    }
+
+    private boolean isOfficialSnapshotComplete(String snapshot) {
+        return snapshot != null
+                && snapshot.contains("\"code\":\"001\"")
+                && snapshot.contains("\"code\":\"101\"");
+    }
+
+    private String officialSource(boolean complete) {
+        return complete
+                ? "KIWOOM_KA20003_OFFICIAL"
+                : "KIWOOM_KA20003_INCOMPLETE";
     }
 
     private MarketProxySnapshot loadMarketProxy(String stkCd) {
@@ -573,8 +631,8 @@ public class TradingScheduler {
                 return MarketProxySnapshot.empty();
             }
             return new MarketProxySnapshot(
-                    dec(response.getOpenPric(), 2),
-                    dec(response.getCurPrc(), 2),
+                    absDec(response.getOpenPric(), 2),
+                    absDec(response.getCurPrc(), 2),
                     dec(response.getFluRt(), 3),
                     lng(response.getTrdeQty())
             );
@@ -679,6 +737,11 @@ public class TradingScheduler {
             return null;
         }
         return BigDecimal.valueOf(parsed).setScale(scale, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal absDec(Object value, int scale) {
+        BigDecimal parsed = dec(value, scale);
+        return parsed == null ? null : parsed.abs();
     }
 
     private Double dbl(Object value) {

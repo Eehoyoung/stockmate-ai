@@ -192,7 +192,7 @@ public class DailyAggregationService {
             return new DailyAggregation(
                     date,
                     signals.size(),
-                    (int) signals.stream().filter(signal -> "ENTER".equals(signal.getAction())).count(),
+                    (int) signals.stream().filter(DailyAggregationService::isExecutedSignal).count(),
                     (int) signals.stream().filter(signal -> "CANCEL".equals(signal.getAction())).count(),
                     outcomes.size(),
                     (int) outcomes.stream().filter(OutcomeFact::isTpHit).count(),
@@ -221,7 +221,7 @@ public class DailyAggregationService {
         }
 
         int enterCount() {
-            return (int) signals.stream().filter(signal -> "ENTER".equals(signal.getAction())).count();
+            return (int) signals.stream().filter(DailyAggregationService::isExecutedSignal).count();
         }
 
         int cancelCount() {
@@ -345,6 +345,12 @@ public class DailyAggregationService {
         return closed > 0
                 ? BigDecimal.valueOf((double) wins / closed * 100).setScale(2, RoundingMode.HALF_UP)
                 : null;
+    }
+
+    private static boolean isExecutedSignal(TradingSignal signal) {
+        return signal.getExecutedAt() != null
+                && signal.getEntryQty() != null
+                && signal.getEntryQty() > 0;
     }
 
     private static BigDecimal avgOutcomePnlPct(Collection<OutcomeFact> outcomes) {

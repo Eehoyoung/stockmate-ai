@@ -1,5 +1,6 @@
 package org.invest.apiorchestrator.scheduler;
 
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.util.KstClock;
@@ -24,14 +25,17 @@ public class DataCleanupScheduler {
 
     private final JdbcTemplate jdbcTemplate;
 
-    @Value("${cleanup.ws-tick-data.legacy-truncate-enabled:true}")
+    @Value("${cleanup.ws-tick-data.legacy-truncate-enabled:false}")
     private boolean legacyTickTruncateEnabled;
 
-    @Value("${cleanup.ws-tick-data.partition-retention-enabled:true}")
+    @Value("${cleanup.ws-tick-data.partition-retention-enabled:false}")
     private boolean partitionRetentionEnabled;
 
-    @Value("${cleanup.ws-tick-data.partition-retention-dry-run:false}")
+    @Value("${cleanup.ws-tick-data.partition-retention-dry-run:true}")
     private boolean partitionRetentionDryRun;
+
+    @Value("${cleanup.ws-tick-data.hard-drop-old-partitions-enabled:false}")
+    private boolean hardDropOldTickPartitionsEnabled;
 
     @Value("${cleanup.ws-tick-data.retain-days:3}")
     private int tickRetainDays;
@@ -51,6 +55,9 @@ public class DataCleanupScheduler {
     @Value("${cleanup.rule-cancel-signal.retain-days:30}")
     private int ruleCancelSignalRetainDays;
 
+    @Value("${cleanup.signal-data-freshness-log.retain-days:3}")
+    private int signalDataFreshnessLogRetainDays;
+
     @Value("${cleanup.overnight-evaluations.retain-days:90}")
     private int overnightEvaluationRetainDays;
 
@@ -66,7 +73,52 @@ public class DataCleanupScheduler {
     @Value("${cleanup.log-files.retain-days:2}")
     private int logRetainDays;
 
-    @Scheduled(cron = "${cleanup.cron:0 30 20 * * *}", zone = "Asia/Seoul")
+    @Value("${cleanup.ws-tick-data.summary-enabled:true}")
+    private boolean tickSummaryEnabled;
+
+    @Value("${cleanup.ws-tick-data.retention-owner:api-orchestrator}")
+    private String tickRetentionOwner;
+
+    @Value("${cleanup.ws-tick-data.external-retention-enabled:false}")
+    private boolean externalTickRetentionEnabled;
+
+    @PostConstruct
+    void validateRetentionOwnership() {
+        if (legacyTickTruncateEnabled && partitionRetentionEnabled) {
+            throw new IllegalStateException("legacy truncate and partition retention cannot both be enabled");
+        }
+        if (hardDropOldTickPartitionsEnabled && !partitionRetentionEnabled) {
+            throw new IllegalStateException("hard-drop requires partition retention to be enabled");
+        }
+        if (partitionRetentionEnabled && externalTickRetentionEnabled) {
+            throw new IllegalStateException("multiple ws tick retention owners are enabled");
+        }
+        if (partitionRetentionEnabled && !"api-orchestrator".equalsIgnoreCase(tickRetentionOwner)) {
+            throw new IllegalStateException("api-orchestrator retention enabled with a different owner");
+        }
+        if (partitionRetentionEnabled && !partitionRetentionDryRun && !tickSummaryEnabled) {
+            throw new IllegalStateException("destructive retention requires the summary producer");
+        }
+        log.info("[DataCleanup] retention config owner={} partitionEnabled={} externalEnabled={} dryRun={} summaryEnabled={}",
+                tickRetentionOwner, partitionRetentionEnabled, externalTickRetentionEnabled,
+                partitionRetentionDryRun, tickSummaryEnabled);
+    }
+
+    @Scheduled(cron = "${cleanup.ws-tick-data.summary-cron:20 */5 * * * *}", zone = "Asia/Seoul")
+    public void refreshTickSummary() {
+        if (!tickSummaryEnabled) return;
+        OffsetDateTime end = KstClock.nowOffset().withSecond(0).withNano(0);
+        OffsetDateTime start = end.minusMinutes(15);
+        try {
+            Long affected = jdbcTemplate.queryForObject(
+                    "SELECT refresh_ws_tick_summary_1m(?, ?)", Long.class, start, end);
+            log.info("[TickSummary] refreshed from={} to={} rows={}", start, end, affected);
+        } catch (Exception e) {
+            log.error("[TickSummary] refresh failed from={} to={}: {}", start, end, e.getMessage(), e);
+        }
+    }
+
+    @Scheduled(cron = "${cleanup.cron:0 0 21 * * *}", zone = "Asia/Seoul")
     public void cleanupOldData() {
         log.info("[DataCleanup] started");
         cleanupLegacyTickData();
@@ -76,6 +128,7 @@ public class DataCleanupScheduler {
         cleanupDailyIndicators();
         cleanupAiCancelSignal();
         cleanupRuleCancelSignal();
+        cleanupSignalDataFreshnessLog();
         cleanupOvernightEvaluations();
         cleanupInactiveKiwoomTokens();
         cleanupLogFiles();
@@ -101,13 +154,16 @@ public class DataCleanupScheduler {
             return;
         }
         try {
+            String retentionFunction = hardDropOldTickPartitionsEnabled
+                    ? "ws_tick_data_hard_retention_policy"
+                    : "ws_tick_data_retention_policy";
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                    "SELECT * FROM ws_tick_data_retention_policy(?, ?)",
+                    "SELECT * FROM " + retentionFunction + "(?, ?)",
                     Math.max(tickRetainDays, 0),
                     partitionRetentionDryRun
             );
-            log.info("[DataCleanup] partitioned ws tick retention dryRun={} rows={}",
-                    partitionRetentionDryRun, rows);
+            log.info("[DataCleanup] partitioned ws tick retention hardDrop={} dryRun={} rows={}",
+                    hardDropOldTickPartitionsEnabled, partitionRetentionDryRun, rows);
         } catch (Exception e) {
             log.error("[DataCleanup] partitioned ws tick retention failed: {}", e.getMessage(), e);
         }
@@ -131,6 +187,11 @@ public class DataCleanupScheduler {
 
     private void cleanupRuleCancelSignal() {
         deleteByInterval("rule_cancel_signal", "created_at", ruleCancelSignalRetainDays);
+    }
+
+    /** 스코어링 시점 데이터 신선도 감사 로그 – 기본 3일 보관 후 삭제(운영 감사용, 장기 보관 불필요). */
+    private void cleanupSignalDataFreshnessLog() {
+        deleteByInterval("signal_data_freshness_log", "created_at", signalDataFreshnessLogRetainDays);
     }
 
     private void cleanupOvernightEvaluations() {

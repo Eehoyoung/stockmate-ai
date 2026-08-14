@@ -23,7 +23,8 @@ public class VolSurgeService {
 
     /**
      * 거래량 급증 종목 코드 집합 반환 (sdnin_rt >= 50%).
-     * sort_tp=2 (급증률순), tm_tp=1, tm=5 (5분), trde_qty_tp=10, stk_cnd=1.
+     * sort_tp=2 (급증률순), tm_tp=1, tm=5 (5분), trde_qty_tp=10,
+     * stk_cnd=20 (ETF+ETN+스팩 제외).
      */
     public Set<String> fetchSurgeCandidates() {
         try {
@@ -35,7 +36,7 @@ public class VolSurgeService {
                                     .tmTp("1")
                                     .tm("5")
                                     .trdeQtyTp("10")
-                                    .stkCnd("1")
+                                    .stkCnd("20")
                                     .pricTp("8")
                                     .stexTp("3")
                                     .build());

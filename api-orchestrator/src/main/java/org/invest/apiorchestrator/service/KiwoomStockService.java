@@ -11,8 +11,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -25,6 +27,9 @@ public class KiwoomStockService {
     private final StringRedisTemplate redisTemplate;
 
     private static final String STOCK_CODE_MAP_KEY = "stock:code_map";
+    private static final String STOCK_CODE_MAP_SYNC_KEY = "stock:code_map:sync";
+    private static final int NETWORK_MAX_ATTEMPTS = 3;
+    private static final long NETWORK_RETRY_BASE_DELAY_MS = 500L;
 
     public KiwoomStockService(KiwoomProperties properties, TokenService tokenService, RestTemplate restTemplate, StringRedisTemplate redisTemplate) {
         this.properties = properties;
@@ -34,24 +39,36 @@ public class KiwoomStockService {
     }
 
     public void syncAllStockCodes() {
-        // 코스피(0)와 코스닥(10) 종목을 순차적으로 수집
-        fetchAndStoreStocks("0");
-        fetchAndStoreStocks("10");
+        Map<String, String> completeMap = new LinkedHashMap<>();
+        completeMap.putAll(fetchStocks("0"));
+        completeMap.putAll(fetchStocks("10"));
+        if (completeMap.isEmpty()) {
+            throw new IllegalStateException("ka10099 returned no stocks");
+        }
+
+        // Preserve the live map until both markets have been collected. Redis
+        // RENAME swaps the complete temporary hash into place atomically.
+        redisTemplate.delete(STOCK_CODE_MAP_SYNC_KEY);
+        redisTemplate.opsForHash().putAll(STOCK_CODE_MAP_SYNC_KEY, completeMap);
+        redisTemplate.rename(STOCK_CODE_MAP_SYNC_KEY, STOCK_CODE_MAP_KEY);
+        log.info("stock:code_map atomically replaced count={}", completeMap.size());
     }
 
-    private void fetchAndStoreStocks(String marketType) {
+    private Map<String, String> fetchStocks(String marketType) {
         String url = properties.getApi().getBaseUrl() + "/api/dostk/stkinfo";
-        String token = tokenService.getBearerToken();
+        // getBearerToken() already returns the "Bearer " prefix — do not prepend it again here.
+        String bearerToken = tokenService.getBearerToken();
 
         String contYn = "N";
         String nextKey = "";
+        Map<String, String> marketMap = new LinkedHashMap<>();
 
         do {
             // 1. 헤더 설정
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.set("api-id", "ka10099");
-            headers.set("authorization", "Bearer " + token);
+            headers.set("authorization", bearerToken);
             headers.set("cont-yn", contYn);
             headers.set("next-key", nextKey);
 
@@ -60,7 +77,8 @@ public class KiwoomStockService {
             HttpEntity<KiwoomStockRequest> entity = new HttpEntity<>(body, headers);
 
             // 3. API 호출
-            ResponseEntity<KiwoomStockResponse> responseEntity = restTemplate.postForEntity(url, entity, KiwoomStockResponse.class);
+            ResponseEntity<KiwoomStockResponse> responseEntity = postWithNetworkRetry(
+                    url, entity, marketType);
             KiwoomStockResponse response = responseEntity.getBody();
 
             if (response != null && "0".equals(response.getReturn_code())) {
@@ -68,19 +86,50 @@ public class KiwoomStockService {
                 Map<String, String> stockMap = response.getList().stream()
                         .collect(Collectors.toMap(KiwoomStockItem::getCode, KiwoomStockItem::getName, (a, b) -> a));
 
-                redisTemplate.opsForHash().putAll(STOCK_CODE_MAP_KEY, stockMap);
+                marketMap.putAll(stockMap);
 
                 // 5. 연속 조회 여부 파악 (헤더에서 추출)
                 HttpHeaders responseHeaders = responseEntity.getHeaders();
                 contYn = responseHeaders.getFirst("cont-yn");
                 nextKey = responseHeaders.getFirst("next-key");
 
-                log.info("Market[{}] 수집 중... 현재 {}개 저장 완료", marketType, stockMap.size());
+                log.info("Market[{}] 수집 중... 현재 {}개 수집 완료", marketType, marketMap.size());
             } else {
-                log.error("종목 정보 수집 실패: {}", response != null ? response.getReturn_msg() : "응답 없음");
-                break;
+                String reason = response != null ? response.getReturn_msg() : "empty response";
+                throw new IllegalStateException(
+                        "ka10099 failed market=" + marketType + " reason=" + reason);
             }
 
         } while ("Y".equals(contYn)); // 다음 데이터가 있을 때까지 반복
+        return marketMap;
+    }
+
+    private ResponseEntity<KiwoomStockResponse> postWithNetworkRetry(
+            String url,
+            HttpEntity<KiwoomStockRequest> entity,
+            String marketType
+    ) {
+        ResourceAccessException lastError = null;
+        for (int attempt = 1; attempt <= NETWORK_MAX_ATTEMPTS; attempt++) {
+            try {
+                return restTemplate.postForEntity(url, entity, KiwoomStockResponse.class);
+            } catch (ResourceAccessException e) {
+                lastError = e;
+                if (attempt == NETWORK_MAX_ATTEMPTS) {
+                    break;
+                }
+                long delayMs = NETWORK_RETRY_BASE_DELAY_MS * attempt;
+                log.warn(
+                        "ka10099 network error market={} attempt={}/{} retryInMs={} reason={}",
+                        marketType, attempt, NETWORK_MAX_ATTEMPTS, delayMs, e.getMessage());
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("ka10099 retry interrupted market=" + marketType, interrupted);
+                }
+            }
+        }
+        throw lastError;
     }
 }

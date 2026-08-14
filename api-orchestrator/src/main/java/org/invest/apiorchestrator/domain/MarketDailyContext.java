@@ -7,6 +7,8 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import org.invest.apiorchestrator.util.KstClock;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /**
  * market_daily_context — 시장 전체 컨텍스트.
@@ -63,6 +65,14 @@ public class MarketDailyContext {
     @Column(name = "total_signals_today")                           private Integer totalSignalsToday;
     @Column(name = "signal_win_rate_today", precision = 5, scale = 2) private BigDecimal signalWinRateToday;
     @Column(name = "avg_pnl_pct_today",     precision = 7, scale = 4) private BigDecimal avgPnlPctToday;
+
+    @Column(name = "context_version", nullable = false) @Builder.Default private Integer contextVersion = 1;
+    @Column(name = "primary_source", nullable = false, length = 32) @Builder.Default private String primarySource = "ETF_PROXY";
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "official_snapshot", columnDefinition = "jsonb", nullable = false)
+    @Builder.Default private String officialSnapshot = "{}";
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "proxy_snapshot", columnDefinition = "jsonb", nullable = false)
+    @Builder.Default private String proxySnapshot = "{}";
+    @Column(name = "source_complete", nullable = false) @Builder.Default private Boolean sourceComplete = false;
 
     @Column(name = "recorded_at")
     @Builder.Default

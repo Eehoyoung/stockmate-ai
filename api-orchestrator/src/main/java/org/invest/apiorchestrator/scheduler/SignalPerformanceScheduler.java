@@ -63,7 +63,7 @@ public class SignalPerformanceScheduler {
         }
     }
 
-    @Scheduled(cron = "0 35 15 * * MON-FRI", zone = "Asia/Seoul")
+    @Scheduled(cron = "0 36 15 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void expireSentSignals() {
         LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);

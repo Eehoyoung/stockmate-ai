@@ -12,16 +12,21 @@ import org.invest.apiorchestrator.service.*;
 import org.invest.apiorchestrator.service.OvernightScoringService;
 import org.invest.apiorchestrator.util.KstClock;
 import org.invest.apiorchestrator.util.TradingDayWindow;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @RestController
@@ -42,6 +47,16 @@ public class TradingController {
     private final StrategyParamHistoryRepository strategyParamHistoryRepository;
     private final JdbcTemplate jdbcTemplate;
     private final OperationsHealthService operationsHealthService;
+    private final StrategyExecutionOwnership strategyExecutionOwnership;
+    private final WebClient internalWebClient;
+
+    @Value("${services.ai-engine.url}")
+    private String aiEngineUrl;
+
+    // S1~S7/S10/S12는 이 컨트롤러 자체에 /run 엔드포인트가 있다. 그 외 나머지는 Python
+    // ai-engine에만 구현되어 있어 서버사이드로 프록시한다 (runPythonOwnedStrategy 참고).
+    private static final Set<String> PYTHON_ONLY_STRATEGY_CODES =
+            Set.of("s8", "s9", "s11", "s13", "s14", "s15", "s16");
 
     /** 토큰 수동 갱신 */
     @PostMapping("/token/refresh")
@@ -71,6 +86,8 @@ public class TradingController {
     @PostMapping("/strategy/s1/run")
     public ResponseEntity<Map<String, Object>> runS1(
             @RequestParam(defaultValue = "000") String market) {
+        var blocked = requireJavaStrategyOwner("S1_GAP_OPEN");
+        if (blocked != null) return blocked;
         List<String> candidates = java.util.stream.Stream.concat(
                         candidateService.getS1Candidates("001").stream(),
                         candidateService.getS1Candidates("101").stream())
@@ -94,6 +111,8 @@ public class TradingController {
     @PostMapping("/strategy/s3/run")
     public ResponseEntity<Map<String, Object>> runS3(
             @RequestParam(defaultValue = "001") String market) {
+        var blocked = requireJavaStrategyOwner("S3_INST_FRGN");
+        if (blocked != null) return blocked;
         List<TradingSignalDto> signals = strategyService.scanInstFrgn(market);
         int cnt = signalService.processSignals(signals);
         return ResponseEntity.ok(Map.of("strategy", "S3_INST_FRGN",
@@ -104,6 +123,8 @@ public class TradingController {
     @PostMapping("/strategy/s4/run")
     public ResponseEntity<Map<String, Object>> runS4(
             @RequestParam(defaultValue = "000") String market) {
+        var blocked = requireJavaStrategyOwner("S4_BIG_CANDLE");
+        if (blocked != null) return blocked;
         List<String> candidates = java.util.stream.Stream.concat(
                         candidateService.getS12Candidates("001").stream(),
                         candidateService.getS12Candidates("101").stream())
@@ -123,6 +144,8 @@ public class TradingController {
     @PostMapping("/strategy/s5/run")
     public ResponseEntity<Map<String, Object>> runS5(
             @RequestParam(defaultValue = "001") String market) {
+        var blocked = requireJavaStrategyOwner("S5_PROG_FRGN");
+        if (blocked != null) return blocked;
         List<TradingSignalDto> signals = strategyService.scanProgramFrgn(market);
         int cnt = signalService.processSignals(signals);
         return ResponseEntity.ok(Map.of("strategy", "S5_PROG_FRGN",
@@ -132,6 +155,8 @@ public class TradingController {
     /** 전술 6 수동 실행 (테마 후발주) */
     @PostMapping("/strategy/s6/run")
     public ResponseEntity<Map<String, Object>> runS6() {
+        var blocked = requireJavaStrategyOwner("S6_THEME_LAGGARD");
+        if (blocked != null) return blocked;
         List<TradingSignalDto> signals = strategyService.scanThemeLaggard();
         int cnt = signalService.processSignals(signals);
         return ResponseEntity.ok(Map.of("strategy", "S6_THEME_LAGGARD",
@@ -152,6 +177,8 @@ public class TradingController {
     /** 전술 10 수동 실행 (52주 신고가 돌파) */
     @PostMapping("/strategy/s10/run")
     public ResponseEntity<Map<String, Object>> runS10() {
+        var blocked = requireJavaStrategyOwner("S10_NEW_HIGH");
+        if (blocked != null) return blocked;
         List<String> s10pool = java.util.stream.Stream.concat(
                         candidateService.getS10Candidates("001").stream(),
                         candidateService.getS10Candidates("101").stream())
@@ -175,6 +202,8 @@ public class TradingController {
     /** 전술 12 수동 실행 (종가 강도 매수) */
     @PostMapping("/strategy/s12/run")
     public ResponseEntity<Map<String, Object>> runS12() {
+        var blocked = requireJavaStrategyOwner("S12_CLOSING");
+        if (blocked != null) return blocked;
         List<String> candidates = java.util.stream.Stream.concat(
                         candidateService.getS12Candidates("001").stream(),
                         candidateService.getS12Candidates("101").stream())
@@ -188,6 +217,46 @@ public class TradingController {
             }
         }
         return ResponseEntity.ok(Map.of("strategy", "S12_CLOSING", "published", cnt));
+    }
+
+    /**
+     * S8/S9/S11/S13~S16 수동 실행 — 이 전략들은 Java에 자체 구현이 없고 Python
+     * ai-engine(strategy_runner.py)에만 존재하므로, 대시보드 버튼 요청을 그대로 프록시한다.
+     * S1~S7/S10/S12는 위의 전용 엔드포인트가 우선 매칭되므로 이 핸들러까지 오지 않는다.
+     */
+    @PostMapping("/strategy/{code}/run")
+    public ResponseEntity<Map<String, Object>> runPythonOwnedStrategy(@PathVariable String code) {
+        String lower = code.trim().toLowerCase();
+        if (!PYTHON_ONLY_STRATEGY_CODES.contains(lower)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error", "msg", "지원하지 않는 전략 코드: " + code));
+        }
+        try {
+            Map<String, Object> body = internalWebClient.post()
+                    .uri(aiEngineUrl + "/strategy/" + lower + "/run")
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(30))
+                    .block();
+            return ResponseEntity.ok(body != null ? body : Map.of());
+        } catch (Exception e) {
+            log.warn("[Strategy] {} 수동 실행 프록시 실패: {}", lower, e.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "msg", "ai-engine 호출 실패: " + e.getMessage()));
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> requireJavaStrategyOwner(String strategy) {
+        if (strategyExecutionOwnership.javaOwnsEvaluation()) {
+            return null;
+        }
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "status", "blocked",
+                "strategy", strategy,
+                "owner", strategyExecutionOwnership.owner().name(),
+                "published", 0,
+                "msg", "Strategy evaluation/publish is owned by Python; Java endpoint is candidate/API only"
+        ));
     }
 
     /** WebSocket 상태 조회 (Python websocket-listener 단독 운영) */
@@ -477,7 +546,11 @@ public class TradingController {
         Map<String, Object> result = new java.util.LinkedHashMap<>();
         for (String table : tables) {
             Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + table, Long.class);
-            result.put(table, count != null ? count : 0L);
+            Long bytes = jdbcTemplate.queryForObject("SELECT pg_total_relation_size(?::regclass)", Long.class, table);
+            Map<String, Object> entry = new java.util.LinkedHashMap<>();
+            entry.put("rows", count != null ? count : 0L);
+            entry.put("bytes", bytes != null ? bytes : 0L);
+            result.put(table, entry);
         }
         return ResponseEntity.ok(result);
     }

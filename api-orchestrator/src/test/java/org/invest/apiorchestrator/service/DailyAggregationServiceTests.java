@@ -44,6 +44,8 @@ class DailyAggregationServiceTests {
                 .id(1L)
                 .strategy(TradingSignal.StrategyType.S8_GOLDEN_CROSS)
                 .action("ENTER")
+                .executedAt(LocalDateTime.of(date, LocalTime.of(9, 30)))
+                .entryQty(10)
                 .ruleScore(BigDecimal.valueOf(80))
                 .exitPnlPct(BigDecimal.valueOf(1.2500))
                 .build();
@@ -74,6 +76,32 @@ class DailyAggregationServiceTests {
         assertEquals(BigDecimal.valueOf(1.2500).setScale(4), aggregation.avgPnlPct());
         assertEquals(BigDecimal.valueOf(12500).setScale(0), aggregation.totalPnlAbs());
         assertEquals(1, aggregation.byStrategy().get("S8_GOLDEN_CROSS").signals().size());
+    }
+
+    @Test
+    void aggregateDoesNotCountEnterRecommendationWithoutExecutionEvidence() {
+        LocalDate date = LocalDate.of(2026, 8, 3);
+        TradingSignal unexecuted = TradingSignal.builder()
+                .id(1L)
+                .strategy(TradingSignal.StrategyType.S11_FRGN_CONT)
+                .action("ENTER")
+                .signalStatus(TradingSignal.SignalStatus.EXPIRED)
+                .build();
+
+        when(signalRepository.findSignalsCreatedBetween(
+                LocalDateTime.of(date, LocalTime.MIDNIGHT),
+                LocalDateTime.of(date.plusDays(1), LocalTime.MIDNIGHT)))
+                .thenReturn(List.of(unexecuted));
+        when(tradeOutcomeRepository.findByExitTsGreaterThanEqualAndExitTsLessThanOrderByExitTsAsc(
+                LocalDateTime.of(date, LocalTime.MIDNIGHT).atZone(KstClock.ZONE_ID).toOffsetDateTime(),
+                LocalDateTime.of(date.plusDays(1), LocalTime.MIDNIGHT).atZone(KstClock.ZONE_ID).toOffsetDateTime()))
+                .thenReturn(List.of());
+
+        DailyAggregationService.DailyAggregation aggregation = service().aggregate(date);
+
+        assertEquals(1, aggregation.totalSignals());
+        assertEquals(0, aggregation.enterCount());
+        assertEquals(0, aggregation.byStrategy().get("S11_FRGN_CONT").enterCount());
     }
 
     @Test

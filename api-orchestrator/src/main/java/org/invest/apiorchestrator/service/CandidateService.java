@@ -6,6 +6,7 @@ import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.util.MarketTimeUtil;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -25,6 +26,9 @@ public class CandidateService {
 
     private final KiwoomApiService apiService;
     private final StringRedisTemplate redis;
+
+    @Value("${CANDIDATE_POOL_OWNER:PYTHON}")
+    private String candidatePoolOwner;
 
     private static final String CANDIDATE_KEY   = "candidates:";
     private static final String WATCHLIST_KEY   = "candidates:watchlist";
@@ -48,6 +52,11 @@ public class CandidateService {
         List<String> cached = redis.opsForList().range(cacheKey, 0, -1);
         if (cached != null && !cached.isEmpty()) {
             return cached;
+        }
+
+        if (!javaOwnsCandidatePools()) {
+            log.debug("[Candidate] Python owns candidate pools; Java fallback fetch skipped [market={}]", market);
+            return Collections.emptyList();
         }
 
         if (!MarketTimeUtil.isTradingActive()) {
@@ -124,6 +133,10 @@ public class CandidateService {
      * S1 스캐너는 08:30 시작이므로 시장 개시 전에 미리 풀을 채운다.
      */
     public int preloadS1Candidates(String market) {
+        if (!javaOwnsCandidatePools()) {
+            log.debug("[Candidate] Python owns S1 pool; Java preload skipped [market={}]", market);
+            return 0;
+        }
         String cacheKey = "candidates:s1:" + market;
         try {
             List<String> codes = fetchS1Ka10029Codes(market);
@@ -213,6 +226,12 @@ public class CandidateService {
         List<String> cached = redis.opsForList().range(cacheKey, 0, -1);
         if (cached != null && !cached.isEmpty()) return cached;
 
+        if (!javaOwnsCandidatePools()) {
+            log.debug("[Candidate] Python owns {} pool; Java fallback fetch skipped [market={}]",
+                    strategyKey.toUpperCase(), market);
+            return Collections.emptyList();
+        }
+
         if (!MarketTimeUtil.isTradingActive()) {
             log.debug("[Candidate] 거래 시간 외 – {} 풀 호출 생략 [market={}]",
                     strategyKey.toUpperCase(), market);
@@ -256,7 +275,7 @@ public class CandidateService {
 
     /** ka10029 예상체결등락률 상위 → flu_rt 범위 필터. */
     private List<String> fetchKa10029Codes(String market, double fluMin, double fluMax, int limit) {
-        return fetchKa10029Codes(market, fluMin, fluMax, limit, "1");
+        return fetchKa10029Codes(market, fluMin, fluMax, limit, "16");
     }
 
     private List<String> fetchS1Ka10029Codes(String market) {
@@ -288,6 +307,7 @@ public class CandidateService {
         if (resp == null || resp.getItems() == null) return Collections.emptyList();
         return resp.getItems().stream()
                 .filter(item -> inRange(item.getFluRt(), fluMin, fluMax))
+                .filter(item -> !isEtfOrEtn(item.getStkNm()))
                 .map(KiwoomApiResponses.ExpCntrFluRtUpperResponse.ExpCntrFluRtItem::getStkCd)
                 .filter(cd -> cd != null && !cd.isBlank())
                 .limit(limit)
@@ -301,12 +321,13 @@ public class CandidateService {
                 apiService.fetchKa10023(
                         StrategyRequests.TrdeQtySdninRequest.builder()
                                 .mrktTp(market).sortTp("2").tmTp("1").tm("5")
-                                .trdeQtyTp("10").stkCnd("1").pricTp("8")
+                                .trdeQtyTp("10").stkCnd("20").pricTp("8")
                                 .build());
         if (resp == null || resp.getItems() == null) return Collections.emptyList();
         return resp.getItems().stream()
                 .filter(item -> parseFluRt(item.getSdninRt()) >= sdninMin
                         && inRange(item.getFluRt(), fluMin, fluMax))
+                .filter(item -> !isEtfOrEtn(item.getStkNm()))
                 .map(KiwoomApiResponses.TrdeQtySdninResponse.TrdeQtySdninItem::getStkCd)
                 .filter(cd -> cd != null && !cd.isBlank())
                 .limit(limit)
@@ -321,7 +342,7 @@ public class CandidateService {
                 apiService.fetchKa10027(
                         StrategyRequests.FluRtUpperRequest.builder()
                                 .mrktTp(market).sortTp(sortTp).trdeQtyCnd("0010")
-                                .stkCnd("1").crdCnd("0").updownIncls("0")
+                                .stkCnd("16").crdCnd("0").updownIncls("0")
                                 .pricCnd("8").trdePricaCnd("0").build());
         if (resp == null || resp.getItems() == null) return Collections.emptyList();
         return resp.getItems().stream()
@@ -330,6 +351,7 @@ public class CandidateService {
                     double v = abs ? Math.abs(f) : f;
                     return v >= fluMin && v <= fluMax;
                 })
+                .filter(item -> !isEtfOrEtn(item.getStkNm()))
                 .map(KiwoomApiResponses.FluRtUpperResponse.FluRtUpperItem::getStkCd)
                 .filter(cd -> cd != null && !cd.isBlank())
                 .limit(limit)
@@ -343,6 +365,7 @@ public class CandidateService {
                         StrategyRequests.NtlPricRequest.builder().mrktTp(market).build());
         if (resp == null || resp.getItems() == null) return Collections.emptyList();
         return resp.getItems().stream()
+                .filter(item -> !isEtfOrEtn(item.getStkNm()))
                 .map(KiwoomApiResponses.NtlPricResponse.NtlPricItem::getStkCd)
                 .filter(cd -> cd != null && !cd.isBlank())
                 .limit(limit)
@@ -361,6 +384,7 @@ public class CandidateService {
                         && parseSignedInt(item.getDm2()) > 0
                         && parseSignedInt(item.getDm3()) > 0
                         && parseSignedInt(item.getTot()) > 0)
+                .filter(item -> !isEtfOrEtn(item.getStkNm()))
                 .map(KiwoomApiResponses.FrgnContNettrdUpperResponse.FrgnContNettrdItem::getStkCd)
                 .filter(cd -> cd != null && !cd.isBlank())
                 .limit(limit)
@@ -376,6 +400,7 @@ public class CandidateService {
         if (resp == null || resp.getItems() == null) return Collections.emptyList();
         return resp.getItems().stream()
                 .filter(item -> inRange(item.getFluRt(), fluMin, fluMax))
+                .filter(item -> !isEtfOrEtn(item.getStkNm()))
                 .map(KiwoomApiResponses.TrdePricaUpperResponse.TrdePricaUpperItem::getStkCd)
                 .filter(cd -> cd != null && !cd.isBlank())
                 .limit(limit)
@@ -406,5 +431,14 @@ public class CandidateService {
         if (val == null) return 0;
         try { return Integer.parseInt(val.replace("+", "").replace(",", "").trim()); }
         catch (NumberFormatException e) { return 0; }
+    }
+
+    private static boolean isEtfOrEtn(String stkNm) {
+        String normalized = stkNm == null ? "" : stkNm.toUpperCase(java.util.Locale.ROOT);
+        return normalized.contains("ETF") || normalized.contains("ETN");
+    }
+
+    public boolean javaOwnsCandidatePools() {
+        return "JAVA".equalsIgnoreCase(candidatePoolOwner == null ? "" : candidatePoolOwner.trim());
     }
 }

@@ -1,6 +1,7 @@
 package org.invest.apiorchestrator.dto.res;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import lombok.Getter;
@@ -93,33 +94,51 @@ public class KiwoomSupplementalResponses {
 
     @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
     public static class StockProgramTrendResponse extends BaseResponse {
-        @JsonProperty("stk_tm_prm_trde_trn") private List<StockProgramTrendItem> items;
+        @JsonProperty("stk_tm_prm_trde_trnsn")
+        @JsonAlias("stk_tm_prm_trde_trn")
+        private List<StockProgramTrendItem> items;
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class StockProgramTrendItem {
-            @JsonProperty("cntr_tm") private String cntrTm;
-            @JsonProperty("dfrt_trde_sel") private String dfrtTrdeSel;
-            @JsonProperty("dfrt_trde_buy") private String dfrtTrdeBuy;
-            @JsonProperty("dfrt_trde_netprps") private String dfrtTrdeNetprps;
-            @JsonProperty("dfrt_trde_sell_qty") private String dfrtTrdeSellQty;
-            @JsonProperty("dfrt_trde_buy_qty") private String dfrtTrdeBuyQty;
-            @JsonProperty("dfrt_trde_netprps_qty") private String dfrtTrdeNetprpsQty;
+            @JsonProperty("tm") @JsonAlias("cntr_tm") private String cntrTm;
+            @JsonProperty("cur_prc") private String curPrc;
+            @JsonProperty("flu_rt") private String fluRt;
+            @JsonProperty("prm_sell_amt") private String programSellAmt;
+            @JsonProperty("prm_buy_amt") private String programBuyAmt;
+            @JsonProperty("prm_netprps_amt") @JsonAlias("dfrt_trde_netprps") private String programNetBuyAmt;
+            @JsonProperty("prm_netprps_amt_irds") private String programNetBuyAmtChange;
+            @JsonProperty("prm_sell_qty") private String programSellQty;
+            @JsonProperty("prm_buy_qty") private String programBuyQty;
+            @JsonProperty("prm_netprps_qty") @JsonAlias("dfrt_trde_netprps_qty") private String programNetBuyQty;
+            @JsonProperty("prm_netprps_qty_irds") private String programNetBuyQtyChange;
+
+            public String getDfrtTrdeNetprps() { return programNetBuyAmt; }
+            public String getDfrtTrdeNetprpsQty() { return programNetBuyQty; }
         }
     }
 
     @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
     public static class StockDailyProgramTrendResponse extends BaseResponse {
-        @JsonProperty("stk_daly_prm_trde_tr") private List<StockDailyProgramTrendItem> items;
+        @JsonProperty("stk_daly_prm_trde_trnsn")
+        @JsonAlias("stk_daly_prm_trde_tr")
+        private List<StockDailyProgramTrendItem> items;
 
         @Getter @NoArgsConstructor @JsonIgnoreProperties(ignoreUnknown = true)
         public static class StockDailyProgramTrendItem {
             @JsonProperty("dt") private String dt;
-            @JsonProperty("dfrt_trde_sel") private String dfrtTrdeSel;
-            @JsonProperty("dfrt_trde_buy") private String dfrtTrdeBuy;
-            @JsonProperty("dfrt_trde_netprps") private String dfrtTrdeNetprps;
-            @JsonProperty("dfrt_trde_sell_qty") private String dfrtTrdeSellQty;
-            @JsonProperty("dfrt_trde_buy_qty") private String dfrtTrdeBuyQty;
-            @JsonProperty("dfrt_trde_netprps_qty") private String dfrtTrdeNetprpsQty;
+            @JsonProperty("cur_prc") private String curPrc;
+            @JsonProperty("flu_rt") private String fluRt;
+            @JsonProperty("prm_sell_amt") private String programSellAmt;
+            @JsonProperty("prm_buy_amt") private String programBuyAmt;
+            @JsonProperty("prm_netprps_amt") @JsonAlias("dfrt_trde_netprps") private String programNetBuyAmt;
+            @JsonProperty("prm_netprps_amt_irds") private String programNetBuyAmtChange;
+            @JsonProperty("prm_sell_qty") private String programSellQty;
+            @JsonProperty("prm_buy_qty") private String programBuyQty;
+            @JsonProperty("prm_netprps_qty") @JsonAlias("dfrt_trde_netprps_qty") private String programNetBuyQty;
+            @JsonProperty("prm_netprps_qty_irds") private String programNetBuyQtyChange;
+
+            public String getDfrtTrdeNetprps() { return programNetBuyAmt; }
+            public String getDfrtTrdeNetprpsQty() { return programNetBuyQty; }
         }
     }
 

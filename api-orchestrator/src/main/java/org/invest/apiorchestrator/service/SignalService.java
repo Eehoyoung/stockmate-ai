@@ -224,9 +224,11 @@ public class SignalService {
                 .themeName(dto.getThemeName())
                 .sector(resolveSector(dto.getThemeName()))
                 .signalStatus(TradingSignal.SignalStatus.SENT)
-                .positionStatus(entryPrice != null && entryPrice.compareTo(BigDecimal.ZERO) > 0 ? "ACTIVE" : null)
-                .entryAt(entryPrice != null && entryPrice.compareTo(BigDecimal.ZERO) > 0 ? KstClock.nowOffset() : null)
-                .monitorEnabled(true)
+                // Signal publication is not execution evidence. Position fields are
+                // populated only by the post-analysis confirmation/fill path.
+                .positionStatus(null)
+                .entryAt(null)
+                .monitorEnabled(false)
                 .isOvernight(false)
                 .trailingPct(dto.getTrailingPct() != null
                         ? BigDecimal.valueOf(dto.getTrailingPct()).setScale(2, RoundingMode.HALF_UP)
@@ -239,8 +241,7 @@ public class SignalService {
                 .timeStopType(dto.getTimeStopType())
                 .timeStopMinutes(dto.getTimeStopMinutes())
                 .timeStopSession(dto.getTimeStopSession())
-                // TODO: 계좌 API 연동 후 실제 주문 수량 계산으로 교체 (계좌잔고 / 진입가 × 비중)
-                .entryQty(10)
+                .entryQty(null)
                 .ruleScore(dto.getSignalScore() != null
                         ? BigDecimal.valueOf(dto.getSignalScore()).setScale(2, RoundingMode.HALF_UP)
                         : null)

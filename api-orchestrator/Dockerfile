@@ -24,7 +24,7 @@ COPY --from=builder /build/build/libs/*.jar app.jar
 
 RUN mkdir -p logs
 
-EXPOSE 8080
+EXPOSE 5050
 
 ENTRYPOINT ["java", "-Duser.timezone=Asia/Seoul", "--enable-native-access=ALL-UNNAMED", "-jar", "app.jar"]
 

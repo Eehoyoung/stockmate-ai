@@ -30,7 +30,8 @@ public class KiwoomApiService {
     private static final int MAX_RETRIES = 3;
     /**
      * 기본 재시도 지연 – 1700 Rate Limit 발생 시에도 이 딜레이 적용.
-     * Rate Limiter 토큰 보충 주기(333ms)보다 충분히 길게 설정.
+     * Rate Limiter 토큰 보충 주기(light 800ms/heavy 1000ms, 2026-08-05 재설계)보다
+     * 충분히 길게 설정.
      */
     private static final Duration RETRY_DELAY = Duration.ofMillis(1200);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
@@ -153,7 +154,7 @@ public class KiwoomApiService {
     // 공통 POST 스펙 생성 (인증/공통 헤더 포함, Rate Limiter 적용)
     // Mono.defer 내부에서 호출되므로 재시도마다 acquire() 가 실행됨
     private WebClient.RequestBodySpec createPostSpec(String apiId, String endpoint) {
-        rateLimiter.acquire(); // 초당 3회 제한 (KiwoomRateLimiter 설정값)
+        rateLimiter.acquire(apiId); // cross-process reservation + per-API observability
         String bearerToken = tokenService.getBearerToken();
         return kiwoomWebClient.post()
                 .uri(endpoint)
@@ -248,6 +249,51 @@ public class KiwoomApiService {
     }
 
     /** ka10081 주식일봉차트 (52주 신고가 확인용) */
+    /** ka10046 체결강도추이시간별. */
+    public KiwoomApiResponses.CntrStrengthTimeResponse fetchKa10046(String stkCd) {
+        stkCd = StockCodeNormalizer.normalize(stkCd);
+        return post("ka10046", MRKCOND_PATH,
+                StrategyRequests.CntrStrengthTimeRequest.builder().stkCd(stkCd).build(),
+                KiwoomApiResponses.CntrStrengthTimeResponse.class);
+    }
+
+    /** ka10064 intraday trading chart by investor. */
+    public KiwoomApiResponses.IntradayInvestorChartResponse fetchKa10064(
+            String market, String stkCd) {
+        stkCd = StockCodeNormalizer.normalize(stkCd);
+        return post("ka10064", "/api/dostk/chart",
+                StrategyRequests.IntradayInvestorChartRequest.builder()
+                        .mrktTp(market)
+                        .stkCd(stkCd)
+                        .build(),
+                KiwoomApiResponses.IntradayInvestorChartResponse.class);
+    }
+
+    /** ka10054 volatility-interruption activation history. */
+    public KiwoomApiResponses.ViActivationResponse fetchKa10054(String market, String stkCd) {
+        stkCd = StockCodeNormalizer.normalize(stkCd);
+        return post("ka10054", STKINFO_PATH,
+                StrategyRequests.ViActivationRequest.builder()
+                        .mrktTp(market)
+                        .stkCd(stkCd)
+                        .build(),
+                KiwoomApiResponses.ViActivationResponse.class);
+    }
+
+    /** ka10080 주식분봉차트. */
+    public KiwoomApiResponses.MinuteCandleResponse fetchKa10080(
+            String stkCd, String ticScope, LocalDate baseDate) {
+        stkCd = StockCodeNormalizer.normalize(stkCd);
+        LocalDate effectiveDate = baseDate != null ? baseDate : KstClock.today();
+        return post("ka10080", "/api/dostk/chart",
+                StrategyRequests.MinuteCandleRequest.builder()
+                        .stkCd(stkCd)
+                        .ticScope(ticScope)
+                        .baseDt(effectiveDate.format(DateTimeFormatter.BASIC_ISO_DATE))
+                        .build(),
+                KiwoomApiResponses.MinuteCandleResponse.class);
+    }
+
     public KiwoomApiResponses.DailyCandleResponse fetchKa10081(String stkCd) {
         stkCd = StockCodeNormalizer.normalize(stkCd);
         return post("ka10081", "/api/dostk/chart",

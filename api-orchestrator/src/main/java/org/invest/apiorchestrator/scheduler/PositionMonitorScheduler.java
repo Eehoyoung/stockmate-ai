@@ -8,6 +8,7 @@ import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.service.KiwoomApiService;
 import org.invest.apiorchestrator.service.RedisMarketDataService;
 import org.invest.apiorchestrator.util.MarketTimeUtil;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,11 +24,9 @@ import java.util.Map;
 
 @Slf4j
 @Component
+@ConditionalOnProperty(name = "java.position.monitor.enabled", havingValue = "true")
 @RequiredArgsConstructor
 public class PositionMonitorScheduler {
-
-    private static final boolean JAVA_POSITION_MONITOR_ENABLED =
-            Boolean.parseBoolean(System.getenv().getOrDefault("JAVA_POSITION_MONITOR_ENABLED", "false"));
 
     private final TradingSignalRepository tradingSignalRepository;
     private final RedisMarketDataService redisService;
@@ -37,7 +36,7 @@ public class PositionMonitorScheduler {
     @Scheduled(fixedDelay = 30_000, initialDelay = 30_000)
     @Transactional
     public void checkPositions() {
-        if (!JAVA_POSITION_MONITOR_ENABLED || !MarketTimeUtil.isMarketHours()) {
+        if (!MarketTimeUtil.isMarketHours()) {
             return;
         }
 

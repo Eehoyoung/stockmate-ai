@@ -1,6 +1,7 @@
 package org.invest.apiorchestrator.service;
 
 import lombok.RequiredArgsConstructor;
+import org.invest.apiorchestrator.domain.TradingSignal;
 import org.invest.apiorchestrator.repository.TradingSignalRepository;
 import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.data.redis.core.RedisCallback;
@@ -22,6 +23,7 @@ public class OperationsHealthService {
     private final JdbcTemplate jdbcTemplate;
     private final TradingSignalRepository tradingSignalRepository;
     private final NewsControlService newsControlService;
+    private final StrategyExecutionOwnership strategyExecutionOwnership;
 
     public Map<String, Object> buildHealthSnapshot() {
         OffsetDateTime checkedAt = KstClock.nowOffset();
@@ -77,11 +79,11 @@ public class OperationsHealthService {
                 "trading_control", tradingControl,
                 "calendar_pre_event", calendarPreEvent,
                 "ws_db_writer_event_mode", wsEventMode,
-                "bypass_market_hours", envFlag("BYPASS_MARKET_HOURS", false),
-                "strategy_session_filter", envFlag("ENABLE_STRATEGY_SESSION_FILTER", false),
-                "strategy_session_dry_run", envFlag("STRATEGY_SESSION_DRY_RUN", false),
-                "strategy_session_fail_open", envFlag("STRATEGY_SESSION_FAIL_OPEN", true),
-                "session_enter_guard", envFlag("SESSION_ENTER_GUARD_ENABLED", false)
+                "bypass_market_hours", runtimeFlag("bypass_market_hours", "BYPASS_MARKET_HOURS", false),
+                "strategy_session_filter", runtimeFlag("strategy_session_filter", "ENABLE_STRATEGY_SESSION_FILTER", false),
+                "strategy_session_dry_run", runtimeFlag("strategy_session_dry_run", "STRATEGY_SESSION_DRY_RUN", false),
+                "strategy_session_fail_open", runtimeFlag("strategy_session_fail_open", "STRATEGY_SESSION_FAIL_OPEN", false),
+                "session_enter_guard", runtimeFlag("session_enter_guard", "SESSION_ENTER_GUARD_ENABLED", false)
         ));
         response.put("queues", linkedMap(
                 "telegram_queue", telegramQueue,
@@ -90,7 +92,68 @@ public class OperationsHealthService {
                 "vi_watch_queue", viWatchQueue
         ));
         response.put("schedulers", buildSchedulerSnapshot());
+        response.put("market_data_observability", buildMarketDataObservabilitySnapshot());
+        response.put("strategy_execution", strategyExecutionOwnership.snapshot());
         return response;
+    }
+
+    private Map<String, Object> buildMarketDataObservabilitySnapshot() {
+        String businessDate = KstClock.today().toString();
+        Map<String, Map<Object, Object>> metrics = new LinkedHashMap<>();
+        for (TradingSignal.StrategyType strategy : TradingSignal.StrategyType.values()) {
+            Map<Object, Object> entries = getHashEntries(
+                    "status:market_data_observability:" + businessDate + ":" + strategy.name());
+            if (!entries.isEmpty()) {
+                metrics.put(strategy.name(), entries);
+            }
+        }
+        return summarizeMarketDataObservability(businessDate, metrics);
+    }
+
+    static Map<String, Object> summarizeMarketDataObservability(
+            String businessDate, Map<String, Map<Object, Object>> metrics) {
+        Map<String, Object> strategies = new LinkedHashMap<>();
+        long restFallbackUsed = 0L;
+        long budgetExhausted = 0L;
+        long cacheUsed = 0L;
+        long staleOrMissing = 0L;
+
+        for (var strategyEntry : metrics.entrySet()) {
+            Map<String, Long> counters = new LinkedHashMap<>();
+            for (var counter : strategyEntry.getValue().entrySet()) {
+                String name = String.valueOf(counter.getKey());
+                long value = toLong(counter.getValue());
+                counters.put(name, value);
+                if ("rest.fallback_used.true".equals(name)) restFallbackUsed += value;
+                if ("rest.budget.exhausted".equals(name)) budgetExhausted += value;
+                if ("cache.used.true".equals(name)) cacheUsed += value;
+                if (name.endsWith(".state.cancel") || name.endsWith(".state.missing")) {
+                    staleOrMissing += value;
+                }
+            }
+            strategies.put(strategyEntry.getKey(), counters);
+        }
+
+        Map<String, Object> totals = new LinkedHashMap<>();
+        totals.put("rest_fallback_used", restFallbackUsed);
+        totals.put("rest_budget_exhausted", budgetExhausted);
+        totals.put("cache_used", cacheUsed);
+        totals.put("stale_or_missing", staleOrMissing);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", strategies.isEmpty() ? "NO_DATA" : "OBSERVED");
+        result.put("business_date", businessDate);
+        result.put("totals", totals);
+        result.put("strategies", strategies);
+        return result;
+    }
+
+    private static long toLong(Object value) {
+        try {
+            return value == null ? 0L : Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
     }
 
     private Map<String, Object> buildSchedulerSnapshot() {
@@ -117,6 +180,22 @@ public class OperationsHealthService {
             result.put(String.valueOf(values[i]), values[i + 1]);
         }
         return result;
+    }
+
+    /**
+     * flags:{redisKey} 에 대시보드에서 저장한 런타임 오버라이드가 있으면 그 값을,
+     * 없으면 기존 env/System property 기반 envFlag() 값을 사용한다.
+     */
+    private boolean runtimeFlag(String redisKey, String envKey, boolean defaultValue) {
+        try {
+            String override = redis.opsForValue().get("flags:" + redisKey);
+            if (override != null && !override.isBlank()) {
+                return "true".equalsIgnoreCase(override.trim());
+            }
+        } catch (Exception e) {
+            // Redis 조회 실패 시 env 기본값으로 폴백
+        }
+        return envFlag(envKey, defaultValue);
     }
 
     static boolean envFlag(String key, boolean defaultValue) {
