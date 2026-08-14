@@ -791,7 +791,8 @@ async def insert_python_signal(
                         buy_zone_low, buy_zone_high, buy_zone_anchors, buy_zone_strength,
                         sell_zone1_low, sell_zone1_high, zone_rr,
                         shadow_features, stk_nm,
-                        entry_qty
+                        entry_qty,
+                        execution_decision, decision_stage
                     ) VALUES (
                         $1,$2,$3,$4,$5,
                         $6,$7,$8,$9,$10,
@@ -808,7 +809,8 @@ async def insert_python_signal(
                         $49,$50,$51,$52,
                         $53,$54,$55,
                         $56::jsonb, $57,
-                        $58
+                        $58,
+                        $59, $60
                     ) RETURNING id
                     """,
                     signal.get("stk_cd", ""),
@@ -867,6 +869,12 @@ async def insert_python_signal(
                     _clip_str(signal.get("stk_nm"), 40),
                     # 수량은 실제 주문/사용자 체결 증거가 전달된 경우에만 기록한다.
                     _opt_int(signal.get("entry_qty")),  # entry_qty ($58)
+                    # 판정 추적 ($59, $60) — action만 보면 "처음부터 CANCEL"과
+                    # "WATCH였다가 장 마감에 관심 해제되며 CANCEL로 UPDATE된 신호"를
+                    # 구분할 수 없다(2026-08-14: 텔레그램 HOLD_WATCH 44건인데
+                    # action='HOLD' 0건). 어느 게이트에서 갈렸는지 남긴다.
+                    _clip_str(signal.get("execution_decision"), 10),
+                    _clip_str(signal.get("decision_stage"), 30),
                 )
                 if row:
                     signal_id = row["id"]
