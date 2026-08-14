@@ -128,6 +128,20 @@ WS_SILENCE_TIMEOUT_SEC = 90  # 이 초 이상 메시지 없으면 dead connectio
 
 WS_CONTROL_MIN_INTERVAL_MS = int(os.getenv("WS_CONTROL_MIN_INTERVAL_MS", "500"))
 WS_CONTROL_BACKOFF_SEC = float(os.getenv("WS_CONTROL_BACKOFF_SEC", "30"))
+# 그룹당 100종목이 상한이다(키움 프로토콜 제약이라 env로도 못 넘긴다).
+#
+# 2026-08-14 측정: main_market 세션에서 "후보 200개 중 100개만 구독, 100개 실시간
+# 누락" 경고가 92회, "139개 중 100개" 12회 찍혔다. 후보의 정확히 절반이 실시간
+# 시세를 못 받는다. 그 여파로 S10은 후보 28개 중 19~23개가 no_realtime_tick으로
+# 탈락해 하루 866종목 평가에 신호 0건이었다.
+#
+# 늘리려면 같은 타입(0B)을 두 그룹에 나눠 걸어야 한다. main_market에서 GRP 2가
+# 비어 있어 자리는 있다(_groups_for_session 참고). 다만 지금은 구독 상태 키가
+# ws:desired:{ttype} / _get_subscription_codes(ttype)처럼 **타입 단위**라, 두 그룹이
+# 같은 0B를 쓰면 desired/current 집합이 충돌해 매 사이클 REG/REMOVE가 반복된다.
+# 먼저 이 키들을 (grp_no, ttype) 단위로 바꿔야 하며, 키움 WS가 동일 타입의 다중
+# 그룹 등록을 받아주는지도 장중에 확인이 필요하다. 검증 없이 건드리면 실시간
+# 수신이 통째로 끊길 수 있어 보류한다.
 WS_GROUP_MAX_ITEMS = max(1, min(100, int(os.getenv("WS_GROUP_MAX_ITEMS", "100"))))
 WS_DYNAMIC_REG_ENABLED = os.getenv("WS_DYNAMIC_REG_ENABLED", "false").lower() in ("1", "true", "yes")
 WS_CONTROL_ACK_TIMEOUT_SEC = max(1.0, float(os.getenv("WS_CONTROL_ACK_TIMEOUT_SEC", "10")))
