@@ -41,17 +41,19 @@ public class S1GapOpeningScanner implements StrategyScanner {
             try {
                 double prevClose;
                 double expPrice;
-                var expOpt = redisService.getExpectedData(stkCd);
-                if (expOpt.isPresent()) {
-                    Map<Object, Object> exp = expOpt.get();
+                var expectedData = redisService.getFreshExpected(
+                        stkCd, RedisMarketDataService.ENTRY_EXPECTED_POLICY);
+                if (expectedData != null && expectedData.usable()) {
+                    Map<Object, Object> exp = expectedData.value();
                     prevClose = parseDouble(exp, "pred_pre_pric");
                     expPrice = parseDouble(exp, "exp_cntr_pric");
                 } else {
-                    var tickFb = redisService.getTickData(stkCd);
-                    if (tickFb.isEmpty()) {
+                    var tickData = redisService.getFreshTick(
+                            stkCd, RedisMarketDataService.ENTRY_TICK_POLICY);
+                    if (tickData == null || !tickData.usable()) {
                         continue;
                     }
-                    Map<Object, Object> tick = tickFb.get();
+                    Map<Object, Object> tick = tickData.value();
                     prevClose = parseDouble(tick, "pred_pre");
                     expPrice = parseDouble(tick, "cur_prc");
                 }
@@ -64,18 +66,28 @@ public class S1GapOpeningScanner implements StrategyScanner {
                     continue;
                 }
 
-                double strength = redisService.getAvgCntrStrength(stkCd, 5);
-                if (redisService.hasStrengthData(stkCd) && strength < 130.0) {
+                var strengthData = redisService.getFreshStrength(
+                        stkCd, 5, RedisMarketDataService.ENTRY_STRENGTH_POLICY);
+                double strength = 100.0;
+                if (strengthData != null && strengthData.state() == RedisMarketDataService.FreshnessState.STALE) {
                     continue;
                 }
-
-                double bidRatio = 0;
-                var hogaOpt = redisService.getHogaData(stkCd);
-                if (hogaOpt.isPresent()) {
-                    double bid = parseDouble(hogaOpt.get(), "total_buy_bid_req");
-                    double ask = parseDouble(hogaOpt.get(), "total_sel_bid_req");
-                    bidRatio = ask > 0 ? bid / ask : 0;
+                // S1 keeps the legacy neutral fallback when no strength samples exist.
+                if (strengthData != null && strengthData.usable() && strengthData.value() != null) {
+                    strength = strengthData.value();
+                    if (strength < 130.0) {
+                        continue;
+                    }
                 }
+
+                var hogaData = redisService.getFreshHoga(
+                        stkCd, RedisMarketDataService.ENTRY_HOGA_POLICY);
+                if (hogaData == null || !hogaData.usable()) {
+                    continue;
+                }
+                double bid = parseDouble(hogaData.value(), "total_buy_bid_req");
+                double ask = parseDouble(hogaData.value(), "total_sel_bid_req");
+                double bidRatio = ask > 0 ? bid / ask : 0;
                 if (bidRatio < 1.3) {
                     continue;
                 }

@@ -10,7 +10,9 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -93,7 +95,8 @@ public class S14OversoldBounceScanner extends DailyStrategySupport implements St
 
                 double volMa20 = maAvg(vols, 1, 20);
                 double volRatio = volMa20 > 0 ? vols[0] / volMa20 : 1.0;
-                double strength = redisService.getAvgCntrStrength(stkCd, 5);
+                var strengthData = entryStrength(stkCd, 5);
+                double strength = neutralStrength(strengthData);
                 double score = (38 - rsiNow) * 0.5
                         + condCount * 10
                         + (rsiPrev > 0 && rsiNow > rsiPrev ? 10 : 0)
@@ -106,6 +109,8 @@ public class S14OversoldBounceScanner extends DailyStrategySupport implements St
                 double tp1 = round(closes[0] + atrNow * 5.0);
                 double ma20 = series.size() >= 20 ? maAvg(closes, 0, 20) : 0;
                 double tp2 = ma20 > tp1 ? round(ma20) : round(closes[0] + atrNow * 7.0);
+                Map<String, Object> extra = new LinkedHashMap<>();
+                addFreshnessExtra(extra, "strength", strengthData);
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
@@ -127,6 +132,7 @@ public class S14OversoldBounceScanner extends DailyStrategySupport implements St
                         .tp1Price(tp1)
                         .tp2Price(tp2)
                         .slPrice(sl)
+                        .extra(extra)
                         .build());
             } catch (Exception e) {
                 log.debug("[S14] {} processing failed: {}", stkCd, e.getMessage());

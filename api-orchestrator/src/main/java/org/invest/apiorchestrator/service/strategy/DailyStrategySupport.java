@@ -84,6 +84,22 @@ abstract class DailyStrategySupport {
         return "";
     }
 
+    protected RedisMarketDataService.FreshData<Double> entryStrength(String stkCd, int count) {
+        return redisService.getFreshStrength(
+                stkCd, count, RedisMarketDataService.ENTRY_STRENGTH_POLICY);
+    }
+
+    protected double neutralStrength(RedisMarketDataService.FreshData<Double> data) {
+        return data.usable() && data.value() != null ? data.value() : 100.0;
+    }
+
+    protected void addFreshnessExtra(Map<String, Object> extra, String kind,
+                                     RedisMarketDataService.FreshData<?> data) {
+        extra.put(kind + "_freshness_state", data.state().name());
+        extra.put(kind + "_freshness_source", data.source());
+        extra.put(kind + "_freshness_age_ms", data.age() != null ? data.age().toMillis() : null);
+    }
+
     protected SectorFlow fetchSectorFlow(String stkCd) {
         try {
             Optional<StockMaster> masterOpt = stockMasterRepository.findByStkCd(stkCd);

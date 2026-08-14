@@ -7,12 +7,14 @@ import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.service.KiwoomApiService;
+import org.invest.apiorchestrator.service.KiwoomRestFallbackService;
 import org.invest.apiorchestrator.service.RedisMarketDataService;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -24,6 +26,7 @@ public class S3InstFrgnScanner implements StrategyScanner {
 
     private final KiwoomApiService apiService;
     private final RedisMarketDataService redisService;
+    private final KiwoomRestFallbackService restFallbackService;
 
     @Override
     public TradingSignal.StrategyType type() {
@@ -68,7 +71,12 @@ public class S3InstFrgnScanner implements StrategyScanner {
                     continue;
                 }
 
-                double volRatio = calcVolRatio(stkCd);
+                var freshTick = redisService.getFreshTick(
+                        stkCd, RedisMarketDataService.ENTRY_TICK_POLICY);
+                if (!freshTick.usable() || freshTick.value() == null) {
+                    continue;
+                }
+                double volRatio = calcVolRatio(freshTick.value());
                 if (volRatio < 1.5) {
                     continue;
                 }
@@ -76,8 +84,14 @@ public class S3InstFrgnScanner implements StrategyScanner {
                 long netBuyAmt = parseLong(item.getNetBuyAmt());
                 double score = netBuyAmt / 1_000_000.0 + volRatio * 5;
 
-                var tick = redisService.getTickData(stkCd);
-                double curPrice = tick.isPresent() ? parseDouble(tick.get(), "cur_prc") : 0.0;
+                double curPrice = parseDouble(freshTick.value(), "cur_prc");
+                if (curPrice <= 0) {
+                    continue;
+                }
+                Map<String, Object> extra = new LinkedHashMap<>();
+                extra.put("tick_freshness_state", freshTick.state().name());
+                extra.put("tick_freshness_source", freshTick.source());
+                extra.put("tick_freshness_age_ms", freshTick.age() != null ? freshTick.age().toMillis() : null);
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
@@ -95,25 +109,43 @@ public class S3InstFrgnScanner implements StrategyScanner {
                         .tp1Price(curPrice > 0 ? round(curPrice * 1.06) : null)
                         .tp2Price(curPrice > 0 ? round(curPrice * 1.10) : null)
                         .slPrice(curPrice > 0 ? round(curPrice * 0.97) : null)
+                        .extra(extra)
                         .build());
             }
 
-            return results.stream()
+            List<TradingSignalDto> topCandidates = results.stream()
                     .sorted(Comparator.comparingDouble(TradingSignalDto::getSignalScore).reversed())
                     .limit(5)
                     .collect(Collectors.toList());
+            for (TradingSignalDto signal : topCandidates) {
+                var lookup = restFallbackService.fetchInvestorFlowDetailed(market, signal.getStkCd());
+                Map<String, Object> extra = signal.getExtra();
+                extra.put("strategy_evaluation_owner", "python");
+                extra.put("java_enrichment_mode", "live_feature_transport");
+                extra.put("s3_investor_flow_source", lookup.status().name());
+                lookup.value().ifPresent(flow -> {
+                    extra.put("s3_flow_observed_at", flow.observedAt());
+                    extra.put("s3_foreign_amount", flow.foreignAmount());
+                    extra.put("s3_institution_amount", flow.institutionAmount());
+                    extra.put("s3_latest_combined_amount", flow.latestCombinedAmount());
+                    extra.put("s3_flow_sample_count", flow.sampleCount());
+                    extra.put("s3_flow_combined_slope", flow.combinedSlope());
+                    extra.put("s3_flow_foreign_slope", flow.foreignSlope());
+                    extra.put("s3_flow_institution_slope", flow.institutionSlope());
+                    extra.put("s3_flow_latest_delta", flow.latestDelta());
+                    extra.put("s3_flow_recent_reversal", flow.recentReversal());
+                    extra.put("s3_flow_recent_reversal_direction", flow.recentReversalDirection());
+                });
+            }
+            return topCandidates;
         } catch (Exception e) {
             log.error("[S3] scanner failed: {}", e.getMessage());
             return Collections.emptyList();
         }
     }
 
-    private double calcVolRatio(String stkCd) {
-        var tickOpt = redisService.getTickData(stkCd);
-        if (tickOpt.isEmpty()) {
-            return 1.5;
-        }
-        double cached = parseDouble(tickOpt.get(), "vol_ratio");
+    private double calcVolRatio(Map<Object, Object> tick) {
+        double cached = parseDouble(tick, "vol_ratio");
         return cached > 0 ? cached : 1.5;
     }
 

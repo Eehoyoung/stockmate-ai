@@ -82,19 +82,35 @@ public class S6ThemeLaggardScanner implements StrategyScanner {
                         continue;
                     }
 
-                    double strength = redisService.getAvgCntrStrength(stock.getStkCd(), 3);
-                    if (redisService.hasStrengthData(stock.getStkCd()) && strength < 120.0) {
+                    var strengthData = redisService.getFreshStrength(
+                            stock.getStkCd(), 3, RedisMarketDataService.ENTRY_STRENGTH_POLICY);
+                    double strength = strengthData.usable() && strengthData.value() != null
+                            ? strengthData.value() : 100.0;
+                    if (strengthData.usable() && strengthData.value() != null && strength < 120.0) {
                         continue;
                     }
 
                     double score = strength * 0.3 + (themeFluRt - stockFluRt) * 2 + marketBreadth.scoreBonus();
                     double target = Math.min(themeFluRt * 0.6, 5.0);
 
-                    var tick = redisService.getTickData(stock.getStkCd());
-                    double curPrice = tick.isPresent() ? parseDouble(tick.get(), "cur_prc") : 0.0;
+                    var tickData = redisService.getFreshTick(
+                            stock.getStkCd(), RedisMarketDataService.ENTRY_TICK_POLICY);
+                    if (!tickData.usable() || tickData.value() == null) {
+                        continue;
+                    }
+                    double curPrice = parseDouble(tickData.value(), "cur_prc");
+                    if (curPrice <= 0) {
+                        continue;
+                    }
                     double t1Pct = Math.max(Math.min(themeFluRt * 0.5, 8.0), 6.0);
                     double t2Pct = Math.max(Math.min(themeFluRt * 0.7, 11.0), 9.0);
                     Map<String, Object> extra = new LinkedHashMap<>();
+                    extra.put("tick_freshness_state", tickData.state().name());
+                    extra.put("tick_freshness_source", tickData.source());
+                    extra.put("tick_freshness_age_ms", tickData.age() != null ? tickData.age().toMillis() : null);
+                    extra.put("strength_freshness_state", strengthData.state().name());
+                    extra.put("strength_freshness_source", strengthData.source());
+                    extra.put("strength_freshness_age_ms", strengthData.age() != null ? strengthData.age().toMillis() : null);
                     if (marketBreadth.present()) {
                         extra.put("market_breadth_code", marketBreadth.marketCode());
                         extra.put("market_breadth_name", marketBreadth.marketName());

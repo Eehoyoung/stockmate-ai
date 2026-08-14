@@ -23,6 +23,11 @@ public class S16AccumulationShadowScanner extends DailyStrategySupport implement
 
     private static final double MIN_MARKET_CAP_EOK = 1_500.0;
     private static final double MAX_MARKET_CAP_EOK = 10_000.0;
+    private static final double MIN_AVG_TRADING_VALUE_EOK = 20.0;
+    private static final double MIN_TRIGGER_SCORE = 14.0;
+    private static final double MIN_RR = 1.6;
+    private static final double MIN_TOTAL_SCORE = 80.0;
+    private static final double MIN_RISK_SCORE = 5.0;
 
     public S16AccumulationShadowScanner(
             KiwoomApiService apiService,
@@ -47,7 +52,7 @@ public class S16AccumulationShadowScanner extends DailyStrategySupport implement
                     continue;
                 }
                 double marketCapEok = marketCapEok(stkCd);
-                if (marketCapEok > 0 && (marketCapEok < MIN_MARKET_CAP_EOK || marketCapEok > MAX_MARKET_CAP_EOK)) {
+                if (marketCapEok < MIN_MARKET_CAP_EOK || marketCapEok > MAX_MARKET_CAP_EOK) {
                     continue;
                 }
                 double[] highs = series.highs();
@@ -77,12 +82,15 @@ public class S16AccumulationShadowScanner extends DailyStrategySupport implement
                 double volRatio = volMa20 > 0 ? vols[0] / volMa20 : 0;
                 double upDownVolRatio = upDownVolRatio(series);
                 double avgTradingValueEok = avgTradingValueEok(series);
-                if (avgTradingValueEok > 0 && avgTradingValueEok < 20.0) {
+                if (avgTradingValueEok < MIN_AVG_TRADING_VALUE_EOK) {
                     continue;
                 }
 
-                double strength = redisService.getAvgCntrStrength(stkCd, 5);
-                double bidRatio = bidRatio(stkCd);
+                var strengthData = entryStrength(stkCd, 5);
+                double strength = neutralStrength(strengthData);
+                var hogaData = redisService.getFreshHoga(
+                        stkCd, RedisMarketDataService.ENTRY_HOGA_POLICY);
+                double bidRatio = bidRatio(hogaData);
                 SectorFlow sectorFlow = fetchSectorFlow(stkCd);
                 MarketBreadth marketBreadth = fetchMarketBreadthForStock(stkCd);
 
@@ -100,21 +108,42 @@ public class S16AccumulationShadowScanner extends DailyStrategySupport implement
                 double boxProximityPct = (curPrice - boxHigh) / boxHigh * 100.0;
                 triggerScore += -4.0 <= boxProximityPct && boxProximityPct <= 3.0 ? 3.0 : 0.0;
 
-                double totalScore = accumulationScore
-                        + Math.max(0.0, sectorFlow.scoreBonus())
-                        + Math.max(0.0, marketBreadth.scoreBonus())
-                        + triggerScore
-                        + 10.0;
-                if (totalScore < 55.0) {
-                    continue;
+                double supplyScore = Math.min(25.0,
+                        Math.max(0.0, sectorFlow.scoreBonus())
+                                + Math.max(0.0, marketBreadth.scoreBonus())
+                                + (upDownVolRatio >= 1.4 ? 4.0 : upDownVolRatio >= 1.15 ? 2.0 : 0.0)
+                                + (strength >= 130.0 ? 3.0 : strength >= 120.0 ? 2.0 : 0.0)
+                                + (bidRatio >= 1.5 ? 2.0 : 0.0));
+
+                double riskScore = 10.0;
+                if (rise5 > 25.0 || rise20 > 35.0) {
+                    riskScore -= 6.0;
                 }
+                if (avgTradingValueEok < MIN_AVG_TRADING_VALUE_EOK) {
+                    riskScore -= 4.0;
+                }
+                riskScore = Math.max(0.0, Math.min(10.0, riskScore));
 
                 double sl = round(Math.max(boxLow, curPrice * 0.94));
                 double boxRange = boxHigh - boxLow;
                 double tp1 = round(Math.max(boxHigh + boxRange * 0.5, curPrice * 1.05));
                 double tp2 = round(Math.max(boxHigh + boxRange, curPrice * 1.10));
+                double rr = rr(curPrice, tp1, sl);
+
+                double totalScore = accumulationScore
+                        + supplyScore
+                        + triggerScore
+                        + riskScore;
+                if (totalScore < MIN_TOTAL_SCORE
+                        || triggerScore < MIN_TRIGGER_SCORE
+                        || rr < MIN_RR
+                        || riskScore < MIN_RISK_SCORE) {
+                    continue;
+                }
 
                 Map<String, Object> extra = new LinkedHashMap<>();
+                addFreshnessExtra(extra, "strength", strengthData);
+                addFreshnessExtra(extra, "hoga", hogaData);
                 extra.put("s16_box_low", round(boxLow));
                 extra.put("s16_box_high", round(boxHigh));
                 extra.put("s16_box_width_pct", round(boxWidthPct));
@@ -124,6 +153,10 @@ public class S16AccumulationShadowScanner extends DailyStrategySupport implement
                 extra.put("s16_low_rising", lowRising);
                 extra.put("s16_sector_score_bonus", round(sectorFlow.scoreBonus()));
                 extra.put("s16_market_breadth_score_bonus", round(marketBreadth.scoreBonus()));
+                extra.put("s16_supply_score", round(supplyScore));
+                extra.put("s16_trigger_score", round(triggerScore));
+                extra.put("s16_risk_score", round(riskScore));
+                extra.put("s16_rr", round(rr));
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)
@@ -157,20 +190,20 @@ public class S16AccumulationShadowScanner extends DailyStrategySupport implement
     private double marketCapEok(String stkCd) {
         try {
             Optional<StockMaster> master = stockMasterRepository.findByStkCd(stkCd);
-            return master.map(StockMaster::getMarketCap).map(v -> v / 100_000_000.0).orElse(0.0);
+            double raw = master.map(StockMaster::getMarketCap).map(Long::doubleValue).orElse(0.0);
+            return raw > 10_000_000.0 ? raw / 100_000_000.0 : raw;
         } catch (Exception ignored) {
             return 0.0;
         }
     }
 
-    private double bidRatio(String stkCd) {
+    private double bidRatio(RedisMarketDataService.FreshData<Map<Object, Object>> hoga) {
         try {
-            var hoga = redisService.getHogaData(stkCd);
-            if (hoga.isEmpty()) {
+            if (!hoga.usable() || hoga.value() == null) {
                 return 0.0;
             }
-            double bid = parseDouble(hoga.get(), "total_buy_bid_req");
-            double ask = parseDouble(hoga.get(), "total_sel_bid_req");
+            double bid = parseDouble(hoga.value(), "total_buy_bid_req");
+            double ask = parseDouble(hoga.value(), "total_sel_bid_req");
             return ask > 0 ? bid / ask : 0.0;
         } catch (Exception ignored) {
             return 0.0;
@@ -234,5 +267,10 @@ public class S16AccumulationShadowScanner extends DailyStrategySupport implement
 
     private double pct(double current, double previous) {
         return previous > 0 ? (current - previous) / previous * 100.0 : 0.0;
+    }
+
+    private double rr(double entry, double tp1, double sl) {
+        double risk = entry - sl;
+        return risk > 0 && tp1 > entry ? (tp1 - entry) / risk : 0.0;
     }
 }

@@ -71,7 +71,8 @@ public class S8GoldenCrossScanner extends DailyStrategySupport implements Strate
 
                 double[][] macd = calcMacd(closes, 12, 26, 9);
                 boolean macdAccel = macd[2].length > 1 && macd[2][0] > 0 && macd[2][0] > macd[2][1];
-                double strength = redisService.getAvgCntrStrength(stkCd, 5);
+                var strengthData = entryStrength(stkCd, 5);
+                double strength = neutralStrength(strengthData);
                 MarketBreadth marketBreadth = fetchMarketBreadthForStock(stkCd);
                 double score = fluRt * 1.5 + volRatio * 5
                         + (rsiNow >= 45 && rsiNow <= 65 ? 12 : 0)
@@ -88,6 +89,7 @@ public class S8GoldenCrossScanner extends DailyStrategySupport implements Strate
                 double tp1 = round(Math.max(recentHigh10, closes[0] * 1.08));
                 double tp2 = round(tp1 * 1.05);
                 Map<String, Object> extra = marketBreadthExtra(marketBreadth);
+                addFreshnessExtra(extra, "strength", strengthData);
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)

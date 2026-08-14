@@ -10,6 +10,8 @@ import org.invest.apiorchestrator.service.RedisMarketDataService;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 @Slf4j
 @Component
@@ -74,7 +76,10 @@ public class S10NewHighEvaluator {
                 }
             }
 
-            double strength = redisService.getAvgCntrStrength(stkCd, 5);
+            var strengthData = redisService.getFreshStrength(
+                    stkCd, 5, RedisMarketDataService.ENTRY_STRENGTH_POLICY);
+            double strength = strengthData.usable() && strengthData.value() != null
+                    ? strengthData.value() : 100.0;
             double volSurgePct = Math.max(0.0, (volRatio - 1.0) * 100.0);
             double score = fluRt * 2 + volRatio * 3
                     + (strength > 100 ? (strength - 100) * 0.2 : 0)
@@ -83,6 +88,10 @@ public class S10NewHighEvaluator {
             double sl = round(yearHigh * 0.99);
             double tp1 = round(todayClose * 1.08);
             double tp2 = round(todayClose * 1.15);
+            Map<String, Object> extra = new LinkedHashMap<>();
+            extra.put("strength_freshness_state", strengthData.state().name());
+            extra.put("strength_freshness_source", strengthData.source());
+            extra.put("strength_freshness_age_ms", strengthData.age() != null ? strengthData.age().toMillis() : null);
 
             return Optional.of(TradingSignalDto.builder()
                     .stkCd(stkCd)
@@ -102,6 +111,7 @@ public class S10NewHighEvaluator {
                     .tp1Price(tp1)
                     .tp2Price(tp2)
                     .slPrice(sl)
+                    .extra(extra)
                     .build());
         } catch (Exception e) {
             log.warn("[S10] {} processing failed: {}", stkCd, e.getMessage());

@@ -82,7 +82,8 @@ public class S9PullbackSwingScanner extends DailyStrategySupport implements Stra
 
                 double volMa20 = maAvg(vols, 1, 20);
                 double volRatio = volMa20 > 0 ? vols[0] / volMa20 : 1.0;
-                double strength = redisService.getAvgCntrStrength(stkCd, 5);
+                var strengthData = entryStrength(stkCd, 5);
+                double strength = neutralStrength(strengthData);
                 MarketBreadth marketBreadth = fetchMarketBreadthForStock(stkCd);
                 double score = fluRt * 2 + volRatio * 4
                         + (stochGc ? 12 : 0)
@@ -103,6 +104,7 @@ public class S9PullbackSwingScanner extends DailyStrategySupport implements Stra
                 }
                 double tp2 = round(Math.max(recentHigh20, tp1 * 1.03));
                 Map<String, Object> extra = marketBreadthExtra(marketBreadth);
+                addFreshnessExtra(extra, "strength", strengthData);
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)

@@ -23,12 +23,13 @@ public class S2ViPullbackEvaluator {
 
     public Optional<TradingSignalDto> evaluate(String stkCd, double viPrice, boolean isDynamic) {
         try {
-            var tickOpt = redisService.getTickData(stkCd);
-            if (tickOpt.isEmpty()) {
+            var tickData = redisService.getFreshTick(
+                    stkCd, RedisMarketDataService.ENTRY_TICK_POLICY);
+            if (tickData == null || !tickData.usable()) {
                 return Optional.empty();
             }
 
-            double curPrice = parseDouble(tickOpt.get(), "cur_prc");
+            double curPrice = parseDouble(tickData.value(), "cur_prc");
             if (curPrice <= 0 || viPrice <= 0) {
                 return Optional.empty();
             }
@@ -38,17 +39,21 @@ public class S2ViPullbackEvaluator {
                 return Optional.empty();
             }
 
-            double strength = redisService.getAvgCntrStrength(stkCd, 3);
-            if (strength < 110.0) {
+            var strengthData = redisService.getFreshStrength(
+                    stkCd, 3, RedisMarketDataService.ENTRY_STRENGTH_POLICY);
+            if (strengthData == null || !strengthData.usable() || strengthData.value() == null) {
                 return Optional.empty();
             }
+            double strength = strengthData.value();
+            if (strength < 110.0) return Optional.empty();
 
-            var hogaOpt = redisService.getHogaData(stkCd);
-            if (hogaOpt.isEmpty()) {
+            var hogaData = redisService.getFreshHoga(
+                    stkCd, RedisMarketDataService.ENTRY_HOGA_POLICY);
+            if (hogaData == null || !hogaData.usable()) {
                 return Optional.empty();
             }
-            double bid = parseDouble(hogaOpt.get(), "total_buy_bid_req");
-            double ask = parseDouble(hogaOpt.get(), "total_sel_bid_req");
+            double bid = parseDouble(hogaData.value(), "total_buy_bid_req");
+            double ask = parseDouble(hogaData.value(), "total_sel_bid_req");
             double bidRatio = ask > 0 ? bid / ask : 0;
             if (bidRatio < 1.3) {
                 return Optional.empty();
@@ -120,4 +125,3 @@ public class S2ViPullbackEvaluator {
         return Math.round(value * 100.0) / 100.0;
     }
 }
-

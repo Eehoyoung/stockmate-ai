@@ -11,9 +11,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -57,9 +58,14 @@ class S6ThemeLaggardScannerTests {
                 any(),
                 eq(KiwoomApiResponses.ThemeStockResponse.class)
         )).thenReturn(stocks);
-        when(redisService.getAvgCntrStrength("005930", 3)).thenReturn(130.0);
-        when(redisService.hasStrengthData("005930")).thenReturn(true);
-        when(redisService.getTickData("005930")).thenReturn(Optional.of(Map.of("cur_prc", "10000")));
+        when(redisService.getFreshStrength(eq("005930"), eq(3), any()))
+                .thenReturn(new RedisMarketDataService.FreshData<>(
+                        130.0, Instant.now(), Duration.ZERO,
+                        RedisMarketDataService.FreshnessState.FRESH, "redis"));
+        when(redisService.getFreshTick(eq("005930"), any()))
+                .thenReturn(new RedisMarketDataService.FreshData<>(
+                        Map.of("cur_prc", "10000"), Instant.now(), Duration.ZERO,
+                        RedisMarketDataService.FreshnessState.FRESH, "redis"));
 
         S6ThemeLaggardScanner scanner = new S6ThemeLaggardScanner(apiService, redisService);
         List<TradingSignalDto> results = scanner.scan(StrategyScanContext.market(""));

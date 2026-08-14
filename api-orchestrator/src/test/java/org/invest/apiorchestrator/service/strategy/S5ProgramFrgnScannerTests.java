@@ -1,12 +1,14 @@
 package org.invest.apiorchestrator.service.strategy;
 
 import org.invest.apiorchestrator.domain.TradingSignal;
+import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.service.KiwoomApiService;
 import org.invest.apiorchestrator.service.RedisMarketDataService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -14,6 +16,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.time.Duration;
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -44,7 +48,8 @@ class S5ProgramFrgnScannerTests {
 
         KiwoomApiResponses.FrgnInstUpperResponse frgn = new KiwoomApiResponses.FrgnInstUpperResponse();
         KiwoomApiResponses.FrgnInstUpperResponse.FrgnInstItem frgnItem = new KiwoomApiResponses.FrgnInstUpperResponse.FrgnInstItem();
-        ReflectionTestUtils.setField(frgnItem, "stkCd", "005930");
+        ReflectionTestUtils.setField(frgnItem, "forNetprpsStkCd", "035420");
+        ReflectionTestUtils.setField(frgnItem, "orgnNetprpsStkCd", "005930");
         ReflectionTestUtils.setField(frgn, "items", List.of(frgnItem));
 
         when(apiService.post(
@@ -59,10 +64,21 @@ class S5ProgramFrgnScannerTests {
                 any(),
                 eq(KiwoomApiResponses.FrgnInstUpperResponse.class)
         )).thenReturn(frgn);
-        when(redisService.getTickData("005930")).thenReturn(Optional.of(Map.of("cur_prc", "10000")));
+        when(redisService.getFreshTick(eq("005930"), any())).thenReturn(new RedisMarketDataService.FreshData<>(
+                Map.of("cur_prc", "10000"), Instant.now(), Duration.ZERO,
+                RedisMarketDataService.FreshnessState.FRESH, "redis"));
 
         S5ProgramFrgnScanner scanner = new S5ProgramFrgnScanner(apiService, redisService);
         List<TradingSignalDto> results = scanner.scan(StrategyScanContext.market("101"));
+
+        ArgumentCaptor<Object> programRequest = ArgumentCaptor.forClass(Object.class);
+        org.mockito.Mockito.verify(apiService).post(
+                eq("ka90003"),
+                eq("/api/dostk/stkinfo"),
+                programRequest.capture(),
+                eq(KiwoomApiResponses.ProgramNetBuyResponse.class)
+        );
+        assertEquals("P10102", ((StrategyRequests.ProgramNetBuyRequest) programRequest.getValue()).getMrktTp());
 
         assertEquals(1, results.size());
         TradingSignalDto signal = results.get(0);

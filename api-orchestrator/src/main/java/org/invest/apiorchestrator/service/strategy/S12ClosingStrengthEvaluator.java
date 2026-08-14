@@ -24,11 +24,12 @@ public class S12ClosingStrengthEvaluator {
 
     public Optional<TradingSignalDto> evaluate(String stkCd) {
         try {
-            var tickOpt = redisService.getTickData(stkCd);
-            if (tickOpt.isEmpty()) {
+            var tickData = redisService.getFreshTick(
+                    stkCd, RedisMarketDataService.ENTRY_TICK_POLICY);
+            if (tickData == null || !tickData.usable()) {
                 return Optional.empty();
             }
-            Map<Object, Object> tick = tickOpt.get();
+            Map<Object, Object> tick = tickData.value();
 
             double fluRt = parseDouble(tick, "flu_rt");
             double curPrc = parseDouble(tick, "cur_prc");
@@ -36,17 +37,21 @@ public class S12ClosingStrengthEvaluator {
                 return Optional.empty();
             }
 
-            double strength = redisService.getAvgCntrStrength(stkCd, 5);
-            if (strength < 110.0) {
+            var strengthData = redisService.getFreshStrength(
+                    stkCd, 5, RedisMarketDataService.ENTRY_STRENGTH_POLICY);
+            if (strengthData == null || !strengthData.usable() || strengthData.value() == null) {
                 return Optional.empty();
             }
+            double strength = strengthData.value();
+            if (strength < 110.0) return Optional.empty();
 
-            var hogaOpt = redisService.getHogaData(stkCd);
-            if (hogaOpt.isEmpty()) {
+            var hogaData = redisService.getFreshHoga(
+                    stkCd, RedisMarketDataService.ENTRY_HOGA_POLICY);
+            if (hogaData == null || !hogaData.usable()) {
                 return Optional.empty();
             }
-            double bid = parseDouble(hogaOpt.get(), "total_buy_bid_req");
-            double ask = parseDouble(hogaOpt.get(), "total_sel_bid_req");
+            double bid = parseDouble(hogaData.value(), "total_buy_bid_req");
+            double ask = parseDouble(hogaData.value(), "total_sel_bid_req");
             double bidRatio = ask > 0 ? bid / ask : 0;
             if (bidRatio < 1.5) {
                 return Optional.empty();

@@ -85,7 +85,8 @@ public class S15MomentumAlignScanner extends DailyStrategySupport implements Str
                 double atrNow = atr.length > 0 ? atr[0] : 0;
                 double atrPct = atrNow > 0 ? atrNow / closes[0] * 100 : 0;
                 boolean atrOk = atrPct >= 1.0 && atrPct <= 3.0;
-                double strength = redisService.getAvgCntrStrength(stkCd, 5);
+                var strengthData = entryStrength(stkCd, 5);
+                double strength = neutralStrength(strengthData);
                 MarketBreadth marketBreadth = fetchMarketBreadthForStock(stkCd);
                 double score = fluRt * 0.6
                         + Math.max(strength - 100, 0) * 0.2
@@ -101,6 +102,7 @@ public class S15MomentumAlignScanner extends DailyStrategySupport implements Str
                 double tp1 = bbu > closes[0] ? round(Math.max(bbu, closes[0] * 1.06)) : round(closes[0] * 1.08);
                 double tp2 = atrNow > 0 ? round(tp1 + atrNow * 0.5) : round(closes[0] * 1.15);
                 Map<String, Object> extra = marketBreadthExtra(marketBreadth);
+                addFreshnessExtra(extra, "strength", strengthData);
 
                 results.add(TradingSignalDto.builder()
                         .stkCd(stkCd)

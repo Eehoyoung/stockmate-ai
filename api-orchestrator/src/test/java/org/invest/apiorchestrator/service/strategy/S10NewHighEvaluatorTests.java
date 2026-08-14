@@ -12,6 +12,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -44,7 +46,11 @@ class S10NewHighEvaluatorTests {
         ReflectionTestUtils.setField(response, "candles", candles);
 
         when(apiService.fetchKa10081("005930")).thenReturn(response);
-        when(redisService.getAvgCntrStrength("005930", 5)).thenReturn(130.0);
+        when(redisService.getFreshStrength(
+                "005930", 5, RedisMarketDataService.ENTRY_STRENGTH_POLICY))
+                .thenReturn(new RedisMarketDataService.FreshData<>(
+                        130.0, Instant.now(), Duration.ZERO,
+                        RedisMarketDataService.FreshnessState.FRESH, "redis"));
 
         S10NewHighEvaluator evaluator = new S10NewHighEvaluator(
                 apiService,

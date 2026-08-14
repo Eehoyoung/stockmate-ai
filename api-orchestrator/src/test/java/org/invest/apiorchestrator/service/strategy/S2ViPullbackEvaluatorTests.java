@@ -10,6 +10,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 
@@ -31,12 +33,13 @@ class S2ViPullbackEvaluatorTests {
 
     @Test
     void evaluatesViPullbackCandidate() {
-        when(redisService.getTickData("005930")).thenReturn(Optional.of(Map.of(
+        when(redisService.getFreshTick("005930", RedisMarketDataService.ENTRY_TICK_POLICY)).thenReturn(fresh(Map.of(
                 "cur_prc", "9800",
                 "stk_nm", "Samsung"
         )));
-        when(redisService.getAvgCntrStrength("005930", 3)).thenReturn(120.0);
-        when(redisService.getHogaData("005930")).thenReturn(Optional.of(Map.of(
+        when(redisService.getFreshStrength("005930", 3, RedisMarketDataService.ENTRY_STRENGTH_POLICY))
+                .thenReturn(fresh(120.0));
+        when(redisService.getFreshHoga("005930", RedisMarketDataService.ENTRY_HOGA_POLICY)).thenReturn(fresh(Map.of(
                 "total_buy_bid_req", "180",
                 "total_sel_bid_req", "100"
         )));
@@ -59,10 +62,33 @@ class S2ViPullbackEvaluatorTests {
 
     @Test
     void rejectsWhenPullbackIsTooShallow() {
-        when(redisService.getTickData("005930")).thenReturn(Optional.of(Map.of("cur_prc", "9950")));
+        when(redisService.getFreshTick("005930", RedisMarketDataService.ENTRY_TICK_POLICY))
+                .thenReturn(fresh(Map.of("cur_prc", "9950")));
 
         S2ViPullbackEvaluator evaluator = new S2ViPullbackEvaluator(redisService, stockMasterRepository, kiwoomApiService);
 
         assertTrue(evaluator.evaluate("005930", 10000, false).isEmpty());
+    }
+
+    @Test
+    void rejectsStaleStrengthEvenWhenValueIsStrong() {
+        when(redisService.getFreshTick("005930", RedisMarketDataService.ENTRY_TICK_POLICY))
+                .thenReturn(fresh(Map.of("cur_prc", "9800")));
+        when(redisService.getFreshStrength("005930", 3, RedisMarketDataService.ENTRY_STRENGTH_POLICY))
+                .thenReturn(stale(180.0));
+
+        S2ViPullbackEvaluator evaluator = new S2ViPullbackEvaluator(redisService, stockMasterRepository, kiwoomApiService);
+
+        assertTrue(evaluator.evaluate("005930", 10000, true).isEmpty());
+    }
+
+    private static <T> RedisMarketDataService.FreshData<T> fresh(T value) {
+        return new RedisMarketDataService.FreshData<>(value, Instant.EPOCH, Duration.ZERO,
+                RedisMarketDataService.FreshnessState.FRESH, "redis");
+    }
+
+    private static <T> RedisMarketDataService.FreshData<T> stale(T value) {
+        return new RedisMarketDataService.FreshData<>(value, Instant.EPOCH, Duration.ofMinutes(1),
+                RedisMarketDataService.FreshnessState.STALE, "redis");
     }
 }

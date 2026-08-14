@@ -3,16 +3,14 @@ package org.invest.apiorchestrator.service.strategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.domain.TradingSignal;
-import org.invest.apiorchestrator.dto.req.StrategyRequests;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
-import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.repository.StockMasterRepository;
 import org.invest.apiorchestrator.service.KiwoomApiService;
+import org.invest.apiorchestrator.service.KiwoomRestFallbackService;
 import org.invest.apiorchestrator.service.RedisMarketDataService;
 import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.stereotype.Component;
 
-import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -26,17 +24,11 @@ public class S4BigCandleEvaluator {
     private final RedisMarketDataService redisService;
     private final StockMasterRepository stockMasterRepository;
     private final KiwoomApiService kiwoomApiService;
+    private final KiwoomRestFallbackService restFallbackService;
 
     public Optional<TradingSignalDto> evaluate(String stkCd) {
         try {
-            var resp = apiService.post(
-                    "ka10080", "/api/dostk/chart",
-                    StrategyRequests.MinuteCandleRequest.builder()
-                            .stkCd(stkCd)
-                            .ticScope("5")
-                            .baseDt(KstClock.today().format(DateTimeFormatter.ofPattern("yyyyMMdd")))
-                            .build(),
-                    KiwoomApiResponses.MinuteCandleResponse.class);
+            var resp = apiService.fetchKa10080(stkCd, "5", KstClock.today());
 
             if (resp.getCandles() == null || resp.getCandles().size() < 10) {
                 return Optional.empty();
@@ -72,8 +64,18 @@ public class S4BigCandleEvaluator {
                 return Optional.empty();
             }
 
-            double strength = redisService.getAvgCntrStrength(stkCd, 3);
-            if (redisService.hasStrengthData(stkCd) && strength < 120.0) {
+            var freshStrength = redisService.getFreshStrength(
+                    stkCd, 3, RedisMarketDataService.ENTRY_STRENGTH_POLICY);
+            Double strength = freshStrength.usable() ? freshStrength.value() : null;
+            String strengthSource = strength != null ? "REDIS_FRESH" : null;
+            if (strength == null) {
+                var fallback = restFallbackService.fetchStrengthDetailed(stkCd);
+                strengthSource = fallback.status().name();
+                strength = fallback.value()
+                        .map(KiwoomRestFallbackService.StrengthSnapshot::effectiveStrength)
+                        .orElse(null);
+            }
+            if (strength == null || strength < 120.0) {
                 return Optional.empty();
             }
 
@@ -94,6 +96,7 @@ public class S4BigCandleEvaluator {
             }
 
             Map<String, Object> extra = new LinkedHashMap<>();
+            extra.put("s4_strength_source", strengthSource);
             if (exitFlow.hasData()) {
                 extra.put("s4_exit_sell_qty", exitFlow.sellExitQty);
                 extra.put("s4_exit_buy_qty", exitFlow.buyExitQty);

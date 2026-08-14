@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -41,7 +42,7 @@ public class S5ProgramFrgnScanner implements StrategyScanner {
         try {
             var progResp = apiService.post(
                     "ka90003", "/api/dostk/stkinfo",
-                    StrategyRequests.ProgramNetBuyRequest.builder().mrktTp(market).build(),
+                    StrategyRequests.ProgramNetBuyRequest.builder().mrktTp(toProgramMarket(market)).build(),
                     KiwoomApiResponses.ProgramNetBuyResponse.class);
 
             var frgnResp = apiService.post(
@@ -54,7 +55,8 @@ public class S5ProgramFrgnScanner implements StrategyScanner {
             }
 
             Set<String> frgnSet = frgnResp.getItems().stream()
-                    .map(KiwoomApiResponses.FrgnInstUpperResponse.FrgnInstItem::getStkCd)
+                    .flatMap(item -> Stream.of(item.getForNetprpsStkCd(), item.getOrgnNetprpsStkCd()))
+                    .filter(code -> code != null && !code.isBlank())
                     .collect(Collectors.toSet());
 
             ProgramMarketFlow marketFlow = fetchMarketProgramFlow(market);
@@ -74,9 +76,19 @@ public class S5ProgramFrgnScanner implements StrategyScanner {
                 score += marketFlow.scoreBonus();
                 score += stockFlow.scoreBonus();
 
-                var tick = redisService.getTickData(stkCd);
-                double curPrice = tick.isPresent() ? parseDouble(tick.get(), "cur_prc") : 0.0;
+                var freshTick = redisService.getFreshTick(
+                        stkCd, RedisMarketDataService.ENTRY_TICK_POLICY);
+                if (!freshTick.usable() || freshTick.value() == null) {
+                    continue;
+                }
+                double curPrice = parseDouble(freshTick.value(), "cur_prc");
+                if (curPrice <= 0) {
+                    continue;
+                }
                 Map<String, Object> extra = new LinkedHashMap<>();
+                extra.put("tick_freshness_state", freshTick.state().name());
+                extra.put("tick_freshness_source", freshTick.source());
+                extra.put("tick_freshness_age_ms", freshTick.age() != null ? freshTick.age().toMillis() : null);
                 if (marketFlow.hasData()) {
                     extra.put("program_market_net_amount", marketFlow.netAmount);
                     extra.put("program_market_net_qty", marketFlow.netQty);

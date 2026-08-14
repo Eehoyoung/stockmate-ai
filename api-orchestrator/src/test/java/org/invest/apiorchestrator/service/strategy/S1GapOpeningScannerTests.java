@@ -10,6 +10,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -34,13 +36,13 @@ class S1GapOpeningScannerTests {
 
     @Test
     void scansGapOpeningCandidateWithExpectedDataStrengthAndBidRatio() {
-        when(redisService.getExpectedData("005930")).thenReturn(Optional.of(Map.of(
+        when(redisService.getFreshExpected("005930", RedisMarketDataService.ENTRY_EXPECTED_POLICY)).thenReturn(fresh(Map.of(
                 "pred_pre_pric", "10000",
                 "exp_cntr_pric", "10400"
         )));
-        when(redisService.getAvgCntrStrength("005930", 5)).thenReturn(140.0);
-        when(redisService.hasStrengthData("005930")).thenReturn(true);
-        when(redisService.getHogaData("005930")).thenReturn(Optional.of(Map.of(
+        when(redisService.getFreshStrength("005930", 5, RedisMarketDataService.ENTRY_STRENGTH_POLICY))
+                .thenReturn(fresh(140.0));
+        when(redisService.getFreshHoga("005930", RedisMarketDataService.ENTRY_HOGA_POLICY)).thenReturn(fresh(Map.of(
                 "total_buy_bid_req", "200",
                 "total_sel_bid_req", "100"
         )));
@@ -66,7 +68,7 @@ class S1GapOpeningScannerTests {
 
     @Test
     void rejectsWhenGapIsOutsidePolicyRange() {
-        when(redisService.getExpectedData("005930")).thenReturn(Optional.of(Map.of(
+        when(redisService.getFreshExpected("005930", RedisMarketDataService.ENTRY_EXPECTED_POLICY)).thenReturn(fresh(Map.of(
                 "pred_pre_pric", "10000",
                 "exp_cntr_pric", "10200"
         )));
@@ -75,5 +77,56 @@ class S1GapOpeningScannerTests {
         List<TradingSignalDto> results = scanner.scan(StrategyScanContext.candidates(List.of("005930")));
 
         assertFalse(results.iterator().hasNext());
+    }
+
+    @Test
+    void keepsLegacyNeutralStrengthWhenSamplesAreMissing() {
+        when(redisService.getFreshExpected("005930", RedisMarketDataService.ENTRY_EXPECTED_POLICY)).thenReturn(fresh(Map.of(
+                "pred_pre_pric", "10000",
+                "exp_cntr_pric", "10400"
+        )));
+        when(redisService.getFreshStrength("005930", 5, RedisMarketDataService.ENTRY_STRENGTH_POLICY))
+                .thenReturn(missing());
+        when(redisService.getFreshHoga("005930", RedisMarketDataService.ENTRY_HOGA_POLICY)).thenReturn(fresh(Map.of(
+                "total_buy_bid_req", "200",
+                "total_sel_bid_req", "100"
+        )));
+
+        S1GapOpeningScanner scanner = new S1GapOpeningScanner(redisService, stockMasterRepository, kiwoomApiService);
+        List<TradingSignalDto> results = scanner.scan(StrategyScanContext.candidates(List.of("005930")));
+
+        assertEquals(1, results.size());
+        assertEquals(100.0, results.get(0).getCntrStrength());
+    }
+
+    @Test
+    void staleExpectedStrongValueCannotPassWithoutFreshTickFallback() {
+        when(redisService.getFreshExpected("005930", RedisMarketDataService.ENTRY_EXPECTED_POLICY)).thenReturn(stale(Map.of(
+                "pred_pre_pric", "10000",
+                "exp_cntr_pric", "10400"
+        )));
+        when(redisService.getFreshTick("005930", RedisMarketDataService.ENTRY_TICK_POLICY))
+                .thenReturn(missing());
+
+        S1GapOpeningScanner scanner = new S1GapOpeningScanner(redisService, stockMasterRepository, kiwoomApiService);
+
+        assertFalse(scanner.scan(StrategyScanContext.candidates(List.of("005930"))).iterator().hasNext());
+        verify(redisService, never()).getFreshStrength(
+                "005930", 5, RedisMarketDataService.ENTRY_STRENGTH_POLICY);
+    }
+
+    private static <T> RedisMarketDataService.FreshData<T> fresh(T value) {
+        return new RedisMarketDataService.FreshData<>(value, Instant.EPOCH, Duration.ZERO,
+                RedisMarketDataService.FreshnessState.FRESH, "redis");
+    }
+
+    private static <T> RedisMarketDataService.FreshData<T> stale(T value) {
+        return new RedisMarketDataService.FreshData<>(value, Instant.EPOCH, Duration.ofMinutes(1),
+                RedisMarketDataService.FreshnessState.STALE, "redis");
+    }
+
+    private static <T> RedisMarketDataService.FreshData<T> missing() {
+        return new RedisMarketDataService.FreshData<>(null, null, null,
+                RedisMarketDataService.FreshnessState.MISSING, "redis");
     }
 }

@@ -69,7 +69,8 @@ public class S13BoxBreakoutScanner extends DailyStrategySupport implements Strat
                 boolean squeeze = bandwidth > 0 && bandwidth < 6.0;
                 double mfi = calcMfiLatest(highs, lows, closes, vols, 14);
                 boolean mfiConfirmed = mfi > 55;
-                double strength = redisService.getAvgCntrStrength(stkCd, 5);
+                var strengthData = entryStrength(stkCd, 5);
+                double strength = neutralStrength(strengthData);
                 SectorFlow sectorFlow = fetchSectorFlow(stkCd);
                 MarketBreadth marketBreadth = fetchMarketBreadthForStock(stkCd);
 
@@ -91,6 +92,7 @@ public class S13BoxBreakoutScanner extends DailyStrategySupport implements Strat
                 double stopPct = round((sl - closes[0]) / closes[0] * 100);
 
                 Map<String, Object> extra = new LinkedHashMap<>();
+                addFreshnessExtra(extra, "strength", strengthData);
                 if (sectorFlow.present()) {
                     extra.put("sector_code", sectorFlow.sectorCode());
                     extra.put("sector_name", sectorFlow.sectorName());
