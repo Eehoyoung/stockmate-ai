@@ -7,8 +7,8 @@
 ## 현재 배포
 
 - 배포 브랜치: `codex/strategy-family-consolidation`
-- 배포 코드 checkpoint: `e951a5c`
-- DB: Flyway V55
+- 배포 코드 checkpoint: `915b9c4`
+- DB: Flyway V56 (V55 family 계보 + V56 version/source 계보)
 - live 환경: `ENABLE_STRATEGY_FAMILY_LINEAGE=true`, `ENABLE_STRATEGY_FAMILY_SHADOW_SCORING=true`, `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=true`
 - 비교점수는 관측값이고 주문/신호 라우팅은 live다.
 - API, AI, Telegram, WebSocket, PostgreSQL, Redis health: 모두 healthy
@@ -19,7 +19,7 @@
 |---|---|---|---|
 | WP-00 | 완료 | Git 기준점, 배포 전 DB/Redis/env/image 백업, 20일 DB 스냅샷 | 없음 |
 | WP-01 | 완료 | Python/Java 중앙 catalog, 16/16 단일 family 매핑, canonical RR 테스트 | 없음 |
-| WP-02 | 완료 | V55 additive schema, legacy `strategy` 유지, lineage 4,064건 backfill | 없음 |
+| WP-02 | 완료 | V55/V56 additive schema, legacy `strategy` 유지, lineage 4,064건 backfill | 없음 |
 | WP-03 | 완료 | Kiwoom realtime/execution 우선, Toss 보조 계약, freshness/fallback 회귀 | 실제 거래일 rate budget 관찰 계속 |
 | WP-04 | 완료 | 기존 setup scanner 유지, additive family lineage/router | family는 setup 규칙을 혼합하지 않음 |
 | WP-05 | 완료 | 35/20/15/10/20 정규화 scorer, 상관 할인, dual score | 5거래일 분포 비교 대기 |
@@ -45,6 +45,8 @@
 - `GET /api/trading/signals/performance/summary/family`: 당일 family 성과 집계
 - 기존 S별 성과 API는 변경하지 않는다.
 - Telegram `/filter g06 s4`처럼 G alias와 S alias를 함께 입력할 수 있으며 setup 목록으로 중복 없이 저장한다.
+- V56은 `setup_version`, `rule_score_version`, `prompt_version`, confirming family, source/timestamp/age/fallback 계보를 정규 컬럼으로 보존한다.
+- `.\scripts\report_strategy_family_canary.ps1`은 family/setup별 net expectancy, 95% CI, PF, MFE/MAE, realized RR drawdown, 시장·장세, overlap과 안전 위반을 동일 산식으로 생성한다.
 
 ## 20일 기준선
 
@@ -83,4 +85,3 @@
 - 과거 20일에 6개 setup 신호와 전체 trade outcome이 없어 전략별 기대값 비교가 불가능하다.
 - AI strict schema 도입 직후이므로 첫 거래일 `AI_SCHEMA_INVALID` 비율을 별도 확인해야 한다.
 - 키움·Telegram 인증정보는 앞선 진단 출력에 노출됐으므로 운영자가 회전해야 한다. 회전 전까지 해당 자격증명의 보안 위험은 남아 있다.
-

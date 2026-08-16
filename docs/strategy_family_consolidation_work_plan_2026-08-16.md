@@ -8,7 +8,7 @@
 ### 배포 기록
 
 - 배포 시각: 2026-08-16 23:37~23:38 KST
-- 적용 DB: Flyway V55, 기존 `strategy` 보존 및 G family 계보 additive backfill 4,064건 확인
+- 적용 DB: Flyway V56, 기존 `strategy` 보존 및 G family·version·source 계보 additive backfill 4,064건 확인
 - 활성 플래그: lineage=true, shadow-scoring=true, live-routing=true. 여기서 shadow-scoring은 비교 관측값일 뿐 주문 모드는 live다.
 - 전체 회귀: AI engine 1,108 passed, WebSocket 99 passed, Java 전체 test 성공, Telegram formatter 36 + limiter 22 passed
 - 복구점: `backups/strategy-family-live-canary-20260816-2340/`의 PostgreSQL custom archive, Redis RDB, 배포 전 `.env`, Git HEAD, 이미지 목록
