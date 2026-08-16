@@ -17,7 +17,7 @@
     "documentation_only": false
   },
   "future_implementation_preconditions": [
-    "사용자의 별도 코드 구현 승인",
+    "사용자의 코드 구현 및 5거래일 실전 canary 승인이 기록되어 있을 것",
     "git status와 기존 변경사항 보존 확인",
     "현재 테스트 및 가용 과거 데이터 기준선 확보",
     "정책 레지스트리 수치 재승인",
