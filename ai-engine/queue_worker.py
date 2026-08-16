@@ -34,7 +34,12 @@ from strategy_meta import (
     regime_from_flu_rt as _regime_from_flu_rt,
     SWING_STRATEGIES as _SWING_STRATEGIES,
 )
-from strategy_catalog import ALL_SETUP_IDS, family_lineage, family_lineage_enabled
+from strategy_catalog import (
+    ALL_SETUP_IDS,
+    family_lineage,
+    family_lineage_enabled,
+    family_live_routing_enabled,
+)
 from redis_reader import (
     get_avg_cntr_strength,
     get_hoga_data,
@@ -1602,6 +1607,14 @@ async def _apply_cross_strategy_arbitration(rdb, payload: dict) -> dict:
             blocked["ai_reason"] = reason
             return blocked
     except Exception as arb_err:
+        if not family_live_routing_enabled():
+            logger.debug(
+                "[Worker] legacy arbitration unavailable; compatibility pass [%s %s]: %s",
+                stk_cd,
+                strategy,
+                arb_err,
+            )
+            return payload
         blocked = dict(payload)
         blocked["action"] = "CANCEL"
         blocked["execution_decision"] = "BLOCK"

@@ -1274,7 +1274,8 @@ class TestCrossStrategyArbitration:
             "execution_decision": "ENTER",
         }
 
-        result = _run(_apply_cross_strategy_arbitration(rdb, payload))
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
+            result = _run(_apply_cross_strategy_arbitration(rdb, payload))
 
         assert result["action"] == "CANCEL"
         assert result["execution_decision"] == "BLOCK"
