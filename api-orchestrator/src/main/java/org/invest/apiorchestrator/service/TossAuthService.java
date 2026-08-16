@@ -41,6 +41,17 @@ public class TossAuthService {
 
     private final ReentrantLock tokenLock = new ReentrantLock();
 
+    /** Redis에 남아 있는 토큰만 조회한다. 휴장일 사전 확인에서 새 토큰 발급을 피할 때 사용한다. */
+    public String getCachedToken() {
+        try {
+            String cached = stringRedisTemplate.opsForValue().get(REDIS_TOKEN_KEY);
+            return cached == null || cached.isBlank() ? null : cached;
+        } catch (Exception e) {
+            log.warn("[Toss] cached token lookup failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
     public String getValidToken() {
         try {
             String cached = stringRedisTemplate.opsForValue().get(REDIS_TOKEN_KEY);

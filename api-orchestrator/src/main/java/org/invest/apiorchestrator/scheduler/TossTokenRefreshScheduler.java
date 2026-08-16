@@ -4,6 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.config.TossInvestProperties;
 import org.invest.apiorchestrator.service.TossAuthService;
+import org.invest.apiorchestrator.service.TossMarketCalendarService;
+import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -19,6 +21,7 @@ public class TossTokenRefreshScheduler {
 
     private final TossAuthService tossAuthService;
     private final TossInvestProperties tossProperties;
+    private final TossMarketCalendarService marketCalendarService;
 
     @Scheduled(cron = "0 0 7 * * MON-FRI", zone = "Asia/Seoul")
     public void refreshMorning() {
@@ -26,7 +29,13 @@ public class TossTokenRefreshScheduler {
             return;
         }
         try {
-            tossAuthService.refreshToken();
+            var tradingDay = marketCalendarService.ensureTradingDay(KstClock.today(), true);
+            if (tradingDay.isEmpty() || !tradingDay.get()) {
+                log.info("[Toss] 07:00 token refresh skipped - market status={}",
+                        tradingDay.isPresent() ? "CLOSED" : "UNKNOWN");
+                return;
+            }
+            tossAuthService.getValidToken();
             log.info("[Toss] 07:00 토큰 갱신 완료");
         } catch (Exception e) {
             log.warn("[Toss] 07:00 토큰 갱신 실패 (지연 발급으로 폴백): {}", e.getMessage());

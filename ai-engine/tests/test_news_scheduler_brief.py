@@ -13,6 +13,49 @@ class FakeRedis:
     async def get(self, key):
         return self.values.get(key)
 
+    async def set(self, key, value, **_kwargs):
+        self.values[key] = value
+
+
+def test_scheduled_brief_skips_closed_day_before_news_or_ai(monkeypatch):
+    import news_scheduler
+
+    rdb = FakeRedis()
+
+    async def closed(_rdb):
+        return "CLOSED"
+
+    async def fail(*_args, **_kwargs):
+        raise AssertionError("holiday must not collect news or call AI")
+
+    monkeypatch.setattr(news_scheduler, "scheduled_market_status", closed)
+    monkeypatch.setattr(news_scheduler, "collect_news", fail)
+    monkeypatch.setattr(news_scheduler, "analyze_news", fail)
+
+    asyncio.run(news_scheduler.run_once(rdb, {"name": "MORNING", "time": (7, 50)}))
+
+    assert rdb.values["ops:scheduler:news_scheduler:last_status"] == "SKIPPED_MARKET_CLOSED"
+
+
+def test_scheduled_brief_skips_unknown_calendar_to_protect_tokens(monkeypatch):
+    import news_scheduler
+
+    rdb = FakeRedis()
+
+    async def unknown(_rdb):
+        return "UNKNOWN"
+
+    async def fail(*_args, **_kwargs):
+        raise AssertionError("unknown calendar must fail closed")
+
+    monkeypatch.setattr(news_scheduler, "scheduled_market_status", unknown)
+    monkeypatch.setattr(news_scheduler, "collect_news", fail)
+    monkeypatch.setattr(news_scheduler, "analyze_news", fail)
+
+    asyncio.run(news_scheduler.run_once(rdb, {"name": "MIDDAY", "time": (12, 30)}))
+
+    assert rdb.values["ops:scheduler:news_scheduler:last_status"] == "SKIPPED_MARKET_UNKNOWN"
+
 
 def test_next_run_slot_morning():
     info = _next_run_slot(datetime(2026, 4, 20, 7, 0, 0, tzinfo=KST))

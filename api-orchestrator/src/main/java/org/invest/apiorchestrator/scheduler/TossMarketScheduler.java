@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.invest.apiorchestrator.config.TossInvestProperties;
 import org.invest.apiorchestrator.dto.res.TossResponses;
 import org.invest.apiorchestrator.service.TossMarketIndicatorService;
+import org.invest.apiorchestrator.service.TossMarketCalendarService;
 import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -61,13 +62,15 @@ public class TossMarketScheduler {
     private final TossMarketIndicatorService tossMarketIndicatorService;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    private final TossMarketCalendarService marketCalendarService;
 
     /** Kiwoom(TradingScheduler)의 "0 * 9-15" 폴링보다 20초 늦게 실행 — 성공하면
      * 이 값이 canonical 키를 덮어써 사실상 우선순위를 갖고, 실패하면 아무것도
      * 쓰지 않아 Kiwoom 값이 TTL(7분) 동안 그대로 안전망으로 남는다. */
     @Scheduled(cron = "20 * 9-15 * * MON-FRI", zone = "Asia/Seoul")
     public void pollTossRegimeCrossCheck() {
-        if (!tossProperties.isEnabled() || KstClock.nowTime().isAfter(LocalTime.of(15, 10))) {
+        if (!tossProperties.isEnabled() || KstClock.nowTime().isAfter(LocalTime.of(15, 10))
+                || !marketCalendarService.cachedTradingDay(KstClock.today()).orElse(false)) {
             return;
         }
         try {
@@ -110,7 +113,8 @@ public class TossMarketScheduler {
 
     @Scheduled(cron = "0 * 9-15 * * MON-FRI", zone = "Asia/Seoul")
     public void pollTossInvestorFlow() {
-        if (!tossProperties.isEnabled() || KstClock.nowTime().isAfter(LocalTime.of(15, 10))) {
+        if (!tossProperties.isEnabled() || KstClock.nowTime().isAfter(LocalTime.of(15, 10))
+                || !marketCalendarService.cachedTradingDay(KstClock.today()).orElse(false)) {
             return;
         }
         for (Map.Entry<String, String> e : INDEX_SYMBOLS.entrySet()) {

@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from news_analyzer import analyze_news
 from news_collector import collect_news
+from trading_day_gate import scheduled_market_status
 
 logger = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -533,6 +534,12 @@ async def run_once(rdb, slot: dict[str, object] | None = None) -> None:
     logger.info("[NewsScheduler] collecting news slot=%s", slot_name)
 
     try:
+        market_status = await scheduled_market_status(rdb)
+        if market_status != "OPEN":
+            status = f"SKIPPED_MARKET_{market_status}"
+            logger.info("[NewsScheduler] skipped slot=%s market_status=%s", slot_name, market_status)
+            await rdb.set("ops:scheduler:news_scheduler:last_status", status, ex=_TTL_ANALYSIS)
+            return
         news_list = await collect_news(rdb)
         if not news_list:
             logger.info("[NewsScheduler] no fresh news, using cached analysis for scheduled brief")
