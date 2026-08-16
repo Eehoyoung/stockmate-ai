@@ -20,48 +20,77 @@
     <div class="version">2026-08-17 · family v1</div>
     <nav>
       <a href="#summary">요약</a><a href="#message">메시지 폼</a><a href="#catalog">G01~G07</a>
-      <a href="#risk">RR · TP · SL</a><a href="#score">규칙 점수</a><a href="#ai">AI 프롬프트</a>
+      <a href="#risk">손익비 · 목표가 · 손절가</a><a href="#score">규칙 점수</a><a href="#ai">AI 심사기준</a>
       <a href="#flowdata">수급·공매도</a><a href="#sources">Kiwoom/Toss</a><a href="#gate">ENTER gate</a><a href="#limits">현재 한계</a>
     </nav>
   </aside>
   <main>
     <header class="hero" id="summary">
       <h1>16개 setup을 보존한<br><span class="info">G01~G07 통합 신호 파이프라인</span></h1>
-      <p class="lead">후보는 더 넓게 발견하고, 실제 ENTER는 더 엄격하게 검증한다. G 전략군은 운용·중복·위험 계층이며 S1~S16은 진입 논리, TP/SL, AI persona와 성과 귀속의 영구 식별자다.</p>
-      <div class="chips"><span class="chip">Live canary</span><span class="chip">Kiwoom execution authority</span><span class="chip">Toss read-only context</span><span class="chip">Cost-adjusted RR</span><span class="chip">Fail closed AI</span><span class="chip">S lineage preserved</span></div>
+      <p class="lead">후보는 더 넓게 발견하고, 실제 진입은 더 엄격하게 검증한다. G 전략군은 운용·중복·위험 계층이며 S1~S16은 진입 논리, 목표가·손절가, AI 심사기준과 성과 귀속의 영구 식별자다.</p>
+      <div class="chips"><span class="chip">실전 데이터 관찰</span><span class="chip">Kiwoom 실행 기준</span><span class="chip">Toss 조회 보조</span><span class="chip">비용 반영 손익비</span><span class="chip">오류 시 진입 차단</span><span class="chip">세부전략 계보 보존</span></div>
     </header>
 
     <h2>의사결정 흐름</h2>
-    <div class="flow"><span class="node">후보 union</span><span class="arrow">→</span><span class="node">S hard gate</span><span class="arrow">→</span><span class="node">G rule score</span><span class="arrow">→</span><span class="node">TP/SL + net RR</span><span class="arrow">→</span><span class="node">Portfolio arbitration</span><span class="arrow">→</span><span class="node">AI review</span><span class="arrow">→</span><span class="node">ENTER · HOLD · BLOCK</span></div>
-    <div class="grid" style="margin-top:18px"><div class="card"><div class="metric">16/16</div><b>setup 보존</b><p class="muted">기존 strategy 값과 성과 계보를 유지한다.</p></div><div class="card"><div class="metric">7</div><b>운용 family</b><p class="muted">후보·중복·위험을 조정하는 상위 계층이다.</p></div><div class="card"><div class="metric">0</div><b>허용 hard-gate 우회</b><p class="muted">AI 점수로 stale·RR·포지션 제한을 넘지 못한다.</p></div></div>
+    <div class="flow"><span class="node">후보 통합</span><span class="arrow">→</span><span class="node">세부전략 필수조건</span><span class="arrow">→</span><span class="node">통합전략 규칙점수</span><span class="arrow">→</span><span class="node">목표가·손절가 + 비용 반영 손익비</span><span class="arrow">→</span><span class="node">중복·노출 조정</span><span class="arrow">→</span><span class="node">AI 심사</span><span class="arrow">→</span><span class="node">진입 · 관망 · 차단</span></div>
+    <div class="grid" style="margin-top:18px"><div class="card"><div class="metric">16/16</div><b>세부전략 보존</b><p class="muted">기존 전략 값과 성과 계보를 유지한다.</p></div><div class="card"><div class="metric">7</div><b>통합 운용전략</b><p class="muted">후보·중복·위험을 조정하는 상위 계층이다.</p></div><div class="card"><div class="metric">0</div><b>필수조건 우회 허용</b><p class="muted">AI 점수로 오래된 데이터·손익비·포지션 제한을 넘지 못한다.</p></div></div>
 
     <section id="message"><h2>HOLD와 ENTER 메시지 폼</h2>
-      <div class="callout"><b>현재 구현:</b> 일반 ENTER/HOLD 메시지에는 family, 대표 setup, 복수 확증 setup이 추가됐다. 별도 HOLD_WATCH 관심종목 폼은 아직 family·TP2·source age·수급 추이 표시가 제한적이다.</div>
+      <div class="callout"><b>적용 방향:</b> 일반 진입·관망 메시지와 별도 관심종목 메시지에 통합전략, 대표 세부전략, 함께 확인된 세부전략, 1·2차 목표가, 손절가, 출처와 관측 경과시간을 함께 표시한다.</div>
       <div class="table-wrap"><table><thead><tr><th>표시</th><th>내부 의미</th><th>주문</th><th>다음 단계</th></tr></thead><tbody>
-        <tr><td class="ok">ENTER</td><td>hard gate·freshness·net RR·portfolio·AI 전부 통과</td><td>가능</td><td>Kiwoom 실행 경로</td></tr>
+        <tr><td class="ok">진입</td><td>필수조건·데이터 최신성·비용 반영 손익비·중복/노출·AI 전부 통과</td><td>가능</td><td>Kiwoom 실행 경로</td></tr>
         <tr><td class="warn">HOLD/WATCH</td><td>조건 개선을 기다리는 관심종목</td><td>불가</td><td>새 snapshot으로 전체 재심사</td></tr>
         <tr><td>ENTER_CANDIDATE</td><td>빠른 후보 검토 단계</td><td>불가</td><td>사람/후속 scorer 확인</td></tr>
-        <tr><td class="danger">CANCEL/BLOCK</td><td>데이터·구조·RR·충돌·AI schema 실패</td><td>불가</td><td>사유와 계보 저장</td></tr>
+        <tr><td class="danger">취소/차단</td><td>데이터·가격구조·손익비·충돌·AI 응답형식 실패</td><td>불가</td><td>사유와 계보 저장</td></tr>
       </tbody></table></div>
       <div class="grid">
         <pre class="card msg"><b>권장 ENTER 확장 폼</b>
 ✅ G05 구조돌파 / S13_BOX_BREAKOUT
-종목 · 시장 · 스윙/단기 · 확증 setup
-규칙/AI/표시점수 · hard gate · data quality
-entry(source, age) · TP1(method) · TP2(method) · SL(method)
-raw RR · effective RR · setup 하한
-체결강도 · 호가비 · spread · 추격위험
+종목 · 시장 · 보유 유형 · 함께 확인된 세부전략
+규칙점수 · AI점수 · 종합점수 · 필수조건 · 데이터 상태
+진입가(출처·경과시간) · 1차 목표가(산출 근거) · 2차 목표가(산출 근거) · 손절가(산출 근거)
+기본 손익비 · 비용 반영 손익비 · 세부전략 최소 기준
+체결강도 · 호가비율 · 매수·매도 가격차 · 추격 위험
 외국인/기관/프로그램 추이
 공매도/신용/대차(T+1, 관측일)
 포지션·테마 노출 · 무효화 조건</pre>
         <pre class="card msg hold"><b>권장 HOLD 확장 폼</b>
 ⏸️ G02 수급추세 / S5_PROG_FRGN
-현재가 · 관찰 만료 · 규칙/AI 점수
-정확한 HOLD 사유와 부족한 gate
-조건부 TP1/TP2/SL · 현재 net RR/하한
+현재가 · 관찰 만료 · 규칙점수/AI점수
+정확한 관망 사유와 충족하지 못한 필수조건
+조건부 1차 목표가/2차 목표가/손절가 · 현재 비용 반영 손익비/최소 기준
 ENTER가 되기 위해 개선돼야 할 값
 Kiwoom freshness · Toss degraded 여부
 “HOLD는 주문이 아님” 명시</pre>
+      </div>
+      <h3>사용자 Telegram 출력 예시</h3>
+      <div class="grid">
+        <pre class="card msg"><b>📦 [진입] G05 구조돌파</b>
+종목: 예시종목 (123456) · 스윙형
+대표 세부전략: S13_BOX_BREAKOUT
+함께 확인: S10_NEW_HIGH
+점수: 규칙 82.0 · AI 78.0 · 종합 80.8
+판정: 필수조건 통과 · 데이터 정상 · 중복/노출 통과
+진입가: 10,000원 · 키움 실시간 · 430밀리초 전
+1차 목표가: 10,600원 · 최근 매물대
+2차 목표가: 11,200원 · 박스 높이 1배 확장
+손절가: 9,650원 · 박스 상단 재이탈
+손익 계획: 기본 1.71 · 비용 반영 1.55 · 최소 1.55
+체결강도 128% · 호가비율 1.73
+1차 목표가에서 일부 매도, 잔여분은 2차 목표가 추적</pre>
+        <pre class="card msg hold"><b>🔎 [관심종목] G02 수급추세</b>
+종목: 예시종목 (123456) · 스윙형
+대표 세부전략: S5_PROG_FRGN
+함께 확인: S11_FRGN_CONT
+진입 관찰가: 10,000원 · 키움 실시간 · 620밀리초 전
+점수: 규칙 76.0 · AI 81.0 · 종합 77.5
+판정: 필수조건 통과 · 보조정보 부족
+1차 목표가: 10,500원 · 최근 매물대
+2차 목표가: 11,000원 · 다음 구조저항
+손절가: 9,650원 · 수급 유입 구조선
+손익 계획: 기본 1.43 · 비용 반영 1.37 · 최소 1.50
+관망 사유: 비용 반영 손익비가 최소 기준 미달
+※ 관심종목은 주문 신호가 아닙니다.</pre>
       </div>
     </section>
 
@@ -75,9 +104,9 @@ Kiwoom freshness · Toss degraded 여부
       <tr><td>G07</td><td>역추세반등</td><td>S14</td><td>스윙</td><td>75</td><td>독립 역추세 논리</td></tr>
     </tbody></table></div></section>
 
-    <section id="risk"><h2>setup별 RR · TP1/TP2 · SL</h2>
-      <div class="callout warn"><b>중요:</b> G family 공통 RR이나 평균 TP/SL은 없다. live 하한과 가격 구조는 대표 S setup별로 선택한다.</div>
-      <div class="table-wrap"><table><thead><tr><th>G/setup</th><th>유형</th><th>net RR</th><th>SL</th><th>TP1 → TP2</th><th>관리</th></tr></thead><tbody>
+    <section id="risk"><h2>세부전략별 손익비 · 목표가 · 손절가</h2>
+      <div class="callout warn"><b>중요:</b> 통합전략 공통 손익비나 평균 목표가·손절가는 없다. 최소 기준과 가격 구조는 대표 세부전략별로 선택한다.</div>
+      <div class="table-wrap"><table><thead><tr><th>통합/세부전략</th><th>유형</th><th>비용 반영 손익비</th><th>손절가 근거</th><th>1차 → 2차 목표가 근거</th><th>관리</th></tr></thead><tbody>
         <tr><td>G01 / S1 갭</td><td>단기</td><td>1.50</td><td>첫 3분 저가·VWAP·5분 ATR</td><td>첫 장중 저항 → 다음 매물대</td><td>30분/당일</td></tr>
         <tr><td>G01 / S2 VI</td><td>단기 이벤트</td><td>1.80</td><td>VI 눌림 저점·해제가</td><td>VI 발동가/직전고점 → 확장저항</td><td>15분/당일</td></tr>
         <tr><td>G01 / S12 종가</td><td>익일 스윙</td><td>1.50</td><td>당일 구조저점·ATR·MA</td><td>익일 첫 저항 → 스윙저항</td><td>익일 오전</td></tr>
@@ -95,35 +124,35 @@ Kiwoom freshness · Toss degraded 여부
         <tr><td>G06 / S6</td><td>단기</td><td>1.60</td><td>테마붕괴·개별 구조저점</td><td>테마내 저항 → 리더 연동저항</td><td>overnight 금지</td></tr>
         <tr><td>G07 / S14</td><td>스윙</td><td>1.50</td><td>패닉저점·매수존·ATR</td><td>MA20/BB중심 → BB상단/swing</td><td>+1.2R trailing</td></tr>
       </tbody></table></div>
-      <pre>raw_RR       = (TP1 - entry) / (entry - SL)
-effective_RR = ((TP1-entry)/entry - round_trip_cost)
-             / ((entry-SL)/entry + round_trip_cost)
+      <pre>기본 손익비 = (1차 목표가 - 진입가) / (진입가 - 손절가)
+비용 반영 손익비 = (예상 수익률 - 왕복 거래비용)
+                 / (예상 손실률 + 왕복 거래비용)
 
-필수 가격관계: TP2 ≥ TP1 > entry > SL
-TP2 존재: TP1에서 50% 부분청산 → PARTIAL_TP → 잔여 TP2/SL/trailing
-TP2 없음: TP1 single target 전량 종료</pre>
+필수 가격관계: 2차 목표가 ≥ 1차 목표가 > 진입가 > 손절가
+2차 목표가 존재: 1차 목표가에서 50% 부분청산 → 잔여분은 2차 목표가/손절가/추적 기준으로 관리
+2차 목표가 없음: 1차 목표가에서 전량 종료</pre>
     </section>
 
     <section id="score"><h2>규칙기반 100점</h2><div class="grid">
       <div class="card"><div class="metric">35</div><b>Setup edge</b><p class="muted">S 고유 이벤트·가격·수급·구조</p></div>
-      <div class="card"><div class="metric">20</div><b>Execution quality</b><p class="muted">체결강도·호가·spread·VWAP·추격</p></div>
+      <div class="card"><div class="metric">20</div><b>체결 품질</b><p class="muted">체결강도·호가·매수매도 가격차·거래량가중평균가·추격 위험</p></div>
       <div class="card"><div class="metric">15</div><b>Regime & timing</b><p class="muted">시장·세션·시간대 정합성</p></div>
       <div class="card"><div class="metric">10</div><b>Liquidity & data</b><p class="muted">거래대금·봉 완전성·freshness</p></div>
-      <div class="card"><div class="metric">20</div><b>Risk & structure</b><p class="muted">SL·저항 여유·변동성·경고</p></div>
+      <div class="card"><div class="metric">20</div><b>위험과 가격 구조</b><p class="muted">손절가·저항 여유·변동성·경고</p></div>
     </div><p>복수 setup 확증은 최대 +8이며 같은 데이터 계보는 +4, +2로 상관 할인한다. 필수 결측은 BLOCK, 선택 결측은 DEGRADED_NO_BONUS다. 표시점수는 <code>0.70 × rule + 0.30 × AI</code>지만 ENTER는 점수 합계가 아니라 모든 gate의 논리곱이다.</p></section>
 
     <section id="ai"><h2>AI 스코어링 프롬프트</h2>
-      <div class="callout"><b>2계층 구조:</b> S1~S16 setup persona가 전문 진입 논리를 평가하고, G family guard가 identity·freshness·RR·포지션·JSON schema를 강제한다. 7개 family가 setup 논리를 평균내지 않는다.</div>
+      <div class="callout"><b>2계층 구조:</b> S1~S16 세부전략별 AI 역할이 전문 진입 논리를 평가하고, G 통합전략 보호규칙이 전략 일치·데이터 최신성·손익비·포지션·응답형식을 강제한다. 7개 통합전략이 세부전략 논리를 평균내지 않는다.</div>
       <pre>한국 주식 실전 진입 리스크 심사역으로서 입력 JSON의 사실만 사용한다.
 family/setup을 그대로 반환하고 hard gate, freshness, effective RR, 포지션 한도를
 우회하지 않는다. Toss T+1 위험자료를 실시간 호가처럼 사용하지 않는다.
 HOLD는 WATCH이며 자동 승격이 아니다. 지정 JSON 한 개만 반환한다.</pre>
       <details open><summary>G01 · 세션·이벤트</summary><div>S1 첫 1~3분 안착·VWAP·갭 추격, S2 실제 VI·눌림·재탈환·2차 VI, S12 종가 수급·overnight 위험을 독립 평가한다. 시간·청산 정책을 교차 적용하지 않는다.</div></details>
       <details><summary>G02 · 수급추세</summary><div>기관·외국인·프로그램의 지속성, 가격 동행, source horizon을 본다. 당일 Kiwoom과 Toss 일별 데이터를 합산하지 않고 독립 계보만 확증한다.</div></details>
-      <details><summary>G03 · 축적확인</summary><div>최소 관찰일과 ACCUMULATING→ARMED→TRIGGERED를 확인한다. ARMED를 ENTER로 추정하지 않으며 TRIGGERED도 RR 1.80과 구조 SL이 필요하다.</div></details>
+      <details><summary>G03 · 축적확인</summary><div>최소 관찰일과 축적중→진입준비→조건충족 상태를 확인한다. 진입준비 상태를 실제 진입으로 추정하지 않으며 조건충족 상태도 손익비 1.80과 구조적 손절가가 필요하다.</div></details>
       <details><summary>G04 · 추세단계</summary><div>S8 형성, S9 눌림, S15 재가속을 판정한다. 같은 MA/RSI 계보의 중복 점수를 제거하고 대표 setup 구조만 TP/SL에 쓴다.</div></details>
-      <details><summary>G05 · 구조돌파</summary><div>실제 Kiwoom 돌파·거래량·유지력·상단 여유를 본다. 윗꼬리·재이탈·매도벽·spread·과확장은 BLOCK 위험이다.</div></details>
-      <details><summary>G06 · 장중급등·테마</summary><div>S4 기준봉과 S6 테마후발 논리를 섞지 않는다. 동시 충족은 확증 태그이지 비중 확대나 TP/SL 혼합 사유가 아니며 overnight는 금지한다.</div></details>
+      <details><summary>G05 · 구조돌파</summary><div>실제 Kiwoom 돌파·거래량·유지력·상단 여유를 본다. 윗꼬리·재이탈·매도벽·넓은 매수매도 가격차·과도한 상승은 진입 차단 위험이다.</div></details>
+      <details><summary>G06 · 장중급등·테마</summary><div>S4 기준봉과 S6 테마후발 논리를 섞지 않는다. 동시 충족은 추가 확인 표시이지 비중 확대나 목표가·손절가 혼합 사유가 아니며 다음 날 보유는 금지한다.</div></details>
       <details><summary>G07 · 역추세반등</summary><div>RSI 하나가 아닌 오실레이터 탈출·장기추세 생존·체결/호가 회복을 요구한다. 상승 family 충돌, 신용 군집, 대차·공매도 증가를 강한 위험으로 본다.</div></details>
     </section>
 
@@ -159,15 +188,15 @@ HOLD는 WATCH이며 자동 승격이 아니다. 지정 JSON 한 개만 반환한
       AND no ACTIVE/PARTIAL_TP/OVERNIGHT
       AND exposure limits pass
       AND AI.action == ENTER
-      AND AI schema + TP2≥TP1&gt;entry&gt;SL valid</pre>
-      <div class="grid"><div class="card"><h3 class="danger">즉시 BLOCK</h3><p>필수 Kiwoom stale, RR 미달, 가격관계 오류, 기존 포지션, reservation 충돌, AI schema 오류</p></div><div class="card"><h3 class="warn">DEGRADED</h3><p>Toss token/429/optional risk 누락. 호재·악재로 추정하지 않고 무가점 처리</p></div><div class="card"><h3 class="ok">계보 저장</h3><p>family/setup, versions, source, timestamp, age, fallback, correlation, arbitration</p></div></div>
+      AND AI 응답형식 + 2차 목표가≥1차 목표가&gt;진입가&gt;손절가 유효</pre>
+      <div class="grid"><div class="card"><h3 class="danger">즉시 차단</h3><p>필수 Kiwoom 데이터 노후, 손익비 미달, 가격관계 오류, 기존 포지션, 중복 예약 충돌, AI 응답형식 오류</p></div><div class="card"><h3 class="warn">정보 부족</h3><p>Toss 인증·호출제한·선택 위험자료 누락. 호재·악재로 추정하지 않고 무가점 처리</p></div><div class="card"><h3 class="ok">계보 저장</h3><p>통합전략·세부전략, 버전, 출처, 관측시각, 경과시간, 대체 사유, 연계 식별자, 중복조정 결과</p></div></div>
     </section>
 
     <section id="limits"><h2>현재 한계와 후속 개선</h2><ul>
-      <li>HOLD_WATCH 전용 formatter는 일반 ENTER보다 family·TP2·source age·추이 정보가 적다.</li>
+      <li>관심종목 전용 메시지에도 통합전략·2차 목표가·출처 경과시간·추이 정보를 추가한다.</li>
       <li>단일 risk snapshot만 있는 payload는 진짜 추이를 표시할 수 없다.</li>
       <li>G별 AI는 7개 독립 모델이 아니라 setup persona + family guard의 2계층이다.</li>
-      <li>5거래일 live canary 전에는 새 RR·점수의 성과 우월성을 주장할 수 없다.</li>
+      <li>5거래일 실전 데이터 관찰 전에는 새 손익비·점수의 성과 우월성을 주장할 수 없다.</li>
       <li>권장 메시지 확장은 formatter 계약 테스트 후 canary와 별도 변경으로 배포해야 한다.</li>
     </ul></section>
 

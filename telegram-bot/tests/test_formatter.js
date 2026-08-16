@@ -156,7 +156,7 @@ test('formatSignal shows display TP2 while execution TP2 is absent', () => {
     assert.ok(msg.includes('92,000'));
 });
 
-test('formatSignal renders RR with market regime policy wording', () => {
+test('formatSignal renders 손익비 with market regime policy wording', () => {
     const msg = formatSignal(makeSignal({
         tp1_price: 88000,
         sl_price: 82000,
@@ -164,9 +164,9 @@ test('formatSignal renders RR with market regime policy wording', () => {
         rr_regime: 'bull',
         rr_regime_threshold: 0.65,
     }));
-    assert.ok(msg.includes('현재 장세 기준 RR/bull'));
+    assert.ok(msg.includes('현재 장세 손익비/bull'));
     assert.ok(msg.includes('통과'));
-    assert.ok(!msg.includes('손익비(R:R)'));
+    assert.ok(!msg.includes('R:R'));
 });
 
 test('formatSignal escapes RR regime label', () => {
@@ -178,7 +178,7 @@ test('formatSignal escapes RR regime label', () => {
         rr_regime_threshold: 0.65,
     }));
     assert.ok(msg.includes('&lt;bull&amp;bear&gt;'));
-    assert.ok(!msg.includes('RR/<bull&bear>'));
+    assert.ok(!msg.includes('손익비/<bull&bear>'));
 });
 
 test('formatSignal renders toss risk line for swing ENTER signals', () => {
@@ -297,12 +297,12 @@ test('formatSignal sanitizes S1 upstream buy wording', () => {
     assert.ok(!msg.includes('추격 매수'));
 });
 
-test('formatSignal keeps non-S1 ENTER wording unchanged', () => {
+test('formatSignal renders non-S1 ENTER as passed entry conditions', () => {
     const msg = formatSignal(makeSignal({
         strategy: 'S2_VI_PULLBACK',
         signal_stage: 'ENTRY',
     }));
-    assert.ok(msg.includes('진입 판단: <b>조건부 매수 검토</b>'));
+    assert.ok(msg.includes('진입 판단: <b>진입 조건 통과</b>'));
     assert.ok(msg.includes('권장 비중'));
     assert.ok(msg.includes('매수 방식'));
     assert.ok(msg.includes('진입 체크포인트'));
@@ -334,9 +334,46 @@ test('formatSignal renders family lineage without replacing legacy setup', () =>
     }));
 
     assert.ok(msg.includes('[S4_BIG_CANDLE]'));
-    assert.ok(msg.includes('G06 INTRADAY_THEME_MOMENTUM'));
-    assert.ok(msg.includes('대표: S4_BIG_CANDLE'));
+    assert.ok(msg.includes('G06 장중급등·테마'));
+    assert.ok(msg.includes('대표 세부전략: S4_BIG_CANDLE'));
     assert.ok(msg.includes('S6_THEME_LAGGARD'));
+});
+
+test('formatSignal renders upgraded ENTER form with Korean price and execution labels', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S13_BOX_BREAKOUT',
+        strategy_family: 'G05',
+        primary_setup_id: 'S13_BOX_BREAKOUT',
+        matched_setup_ids: ['S13_BOX_BREAKOUT', 'S10_NEW_HIGH'],
+        market_type: '101',
+        final_score: 80.8,
+        tp1_price: 10600,
+        tp2_price: 11200,
+        sl_price: 9650,
+        tp_method: '최근 매물대',
+        tp2_method: '박스 높이 1배 확장',
+        sl_method: '박스 상단 재이탈',
+        raw_rr: 1.71,
+        effective_rr: 1.55,
+        min_rr_ratio: 1.55,
+        hard_gates_passed: true,
+        portfolio_arbitration_passed: true,
+        data_quality: 'OK',
+        data_source: { hoga: 'kiwoom_ws' },
+        source_age_ms: { hoga: 430 },
+        bid_ratio: 1.73,
+        spread_pct: 0.2,
+        chase_risk: 'LOW',
+    }));
+    for (const text of [
+        '시장: 코스닥', '스윙형', '함께 확인된 세부전략', '필수조건 통과',
+        '데이터 상태 정상', '진입가', '출처 키움 실시간', '1차 목표가',
+        '2차 목표가', '손절가', '기본 손익비', '비용 반영 손익비',
+        '최소 기준', '호가비율', '매수·매도 가격차', '추격 위험 낮음',
+    ]) assert.ok(msg.includes(text), `${text} 포함`);
+    for (const forbidden of ['R:R', '현재 장세 기준 RR', 'TP1:', 'TP2:', 'SL:']) {
+        assert.ok(!msg.includes(forbidden), `${forbidden} 미표시`);
+    }
 });
 
 test('formatSignal prefixes hold-promoted ENTER strategy with H tag', () => {
@@ -478,15 +515,35 @@ test('formatHoldWatch는 조건부 진입(관심종목) 라벨과 사유를 포�
         cur_prc: 10000,
         ai_score: 72.0,
         rule_score: 88.0,
+        final_score: 83.2,
         rr_ratio: 0.9,
+        raw_rr: 1.1,
+        effective_rr: 0.9,
+        min_rr_ratio: 1.5,
         tp1_price: 11000,
+        tp2_price: 11800,
         sl_price: 9700,
+        strategy_family: 'G04',
+        primary_setup_id: 'S9_PULLBACK_SWING',
+        matched_setup_ids: ['S9_PULLBACK_SWING', 'S15_MOMENTUM_ALIGN'],
+        data_quality: 'OK',
+        data_source: { hoga: 'kiwoom_ws' },
+        source_age_ms: { hoga: 420 },
         hold_reason: 'rr_ratio가 장세별(bull) 임계값 미달',
     });
     assert.ok(msg.includes('조건부 진입 (관심종목)'), '조건부 진입 라벨 포함');
     assert.ok(msg.includes('삼성전자 (005930)'), '종목명 포함');
     assert.ok(msg.includes('10,000원'), '현재가 포함');
-    assert.ok(msg.includes('rr_ratio가 장세별(bull) 임계값 미달'), 'HOLD 분류 사유 포함');
+    assert.ok(msg.includes('손익비가 장세별(bull) 임계값 미달'), 'HOLD 분류 사유 포함');
+    assert.ok(msg.includes('1차 목표가'), '1차 목표가 한국어 표시');
+    assert.ok(msg.includes('2차 목표가'), '2차 목표가 한국어 표시');
+    assert.ok(msg.includes('손절가'), '손절가 한국어 표시');
+    assert.ok(msg.includes('비용 반영 손익비'), '손익비 한국어 표시');
+    assert.ok(msg.includes('G04 추세단계'), '통합전략 한국어 표시');
+    assert.ok(msg.includes('함께 확인된 세부전략'), '확증 세부전략 한국어 표시');
+    assert.ok(msg.includes('출처 키움 실시간'), '진입가 출처 표시');
+    assert.ok(msg.includes('420밀리초'), '데이터 경과시간 표시');
+    assert.ok(!msg.includes('R:R'), '전문 약어 미표시');
 });
 
 test('formatHoldWatch는 ai_reason을 hold_reason 폴백으로 사용', () => {
