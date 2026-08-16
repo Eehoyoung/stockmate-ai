@@ -6,20 +6,20 @@
 {
   "schema_version": "1.0.0",
   "prompt_id": "stockmate-strategy-family-consolidation-2026-08-16",
-  "mode": "implementation_after_explicit_approval",
+  "mode": "implementation_and_live_canary_approved",
   "language": "ko-KR",
   "objective": "기존 S1~S16 setup의 성과 계보와 고유 진입 논리를 보존하면서 7개 G 전략군 운용 계층을 구현하고 Kiwoom과 Toss 조회 데이터를 안전하게 배합한다.",
   "authoritative_plan": "docs/strategy_family_consolidation_work_plan_2026-08-16.md",
   "current_turn_restriction": {
-    "code_changes_allowed": false,
-    "database_changes_allowed": false,
-    "runtime_changes_allowed": false,
-    "documentation_only": true
+    "code_changes_allowed": true,
+    "database_changes_allowed": true,
+    "runtime_changes_allowed_after_completion_gates": true,
+    "documentation_only": false
   },
   "future_implementation_preconditions": [
     "사용자의 별도 코드 구현 승인",
     "git status와 기존 변경사항 보존 확인",
-    "현재 테스트 및 20거래일 데이터 기준선 확보",
+    "현재 테스트 및 가용 과거 데이터 기준선 확보",
     "정책 레지스트리 수치 재승인",
     "Toss는 조회 분석 전용이고 주문 API는 범위 밖임을 확인"
   ],
@@ -65,7 +65,7 @@
       "merge_type": "state_machine_wrapper",
       "rule_threshold": 78,
       "rr_by_setup": {"S16_ACCUMULATION_SHADOW": 1.8},
-      "initial_mode": "SHADOW"
+      "initial_mode": "LIVE_CANARY_TRIGGERED_ONLY"
     },
     {
       "family_no": "G04",
@@ -216,8 +216,8 @@
     {"id": "WP-07", "name": "ai_prompt_and_post_validation", "requires": ["WP-05", "WP-06"], "deliverables": ["family_prompt", "setup_rubrics", "json_schema", "price_rr_validator", "fail_closed_tests"]},
     {"id": "WP-08", "name": "portfolio_arbitration", "requires": ["WP-04", "WP-06"], "deliverables": ["stock_level_reservation", "family_dedup", "theme_sector_limits", "concurrency_tests"]},
     {"id": "WP-09", "name": "consumer_migration", "requires": ["WP-02", "WP-07", "WP-08"], "deliverables": ["db_api_telegram_dual_read", "legacy_and_family_queries", "formatter_tests"]},
-    {"id": "WP-10", "name": "shadow_validation", "requires": ["WP-09"], "deliverables": ["20_trading_day_report", "regime_market_breakdown", "overlap_correlation", "net_expectancy", "MFE_MAE", "duplicate_and_stale_audit"]},
-    {"id": "WP-11", "name": "staged_activation_and_rollback", "requires": ["WP-10"], "deliverables": ["OFF_SHADOW_ALERT_CONFIRM_AUTO_SMALL_gates", "kill_switch", "rollback_rehearsal"]},
+    {"id": "WP-10", "name": "replay_and_live_canary_validation", "requires": ["WP-09"], "deliverables": ["predeploy_replay_report", "5_trading_day_live_report", "regime_market_breakdown", "overlap_correlation", "net_expectancy", "MFE_MAE", "duplicate_and_stale_audit"]},
+    {"id": "WP-11", "name": "live_activation_and_rollback", "requires": ["WP-10"], "deliverables": ["live_canary_gate", "kill_switch", "rollback_rehearsal", "docker_deployment_evidence"]},
     {"id": "WP-12", "name": "documentation_and_handoff", "requires": ["WP-11"], "deliverables": ["api_docs", "redis_db_docs", "runbook", "sample_telegram_output", "residual_risk_report"]}
   ],
   "mandatory_tests": [
@@ -245,14 +245,14 @@
     "duplicate_new_order_count": 0,
     "stale_required_data_enter_count": 0,
     "hard_gate_override_count": 0,
-    "minimum_shadow_days": 20,
+    "live_canary_trading_days": 5,
     "target_evaluable_signals_per_family": 200,
     "target_signals_per_setup": 30,
     "low_frequency_analysis_floor_per_family": 60,
     "low_frequency_analysis_floor_per_setup": 15,
     "performance": "report_net_expectancy_profit_factor_MFE_MAE_drawdown_with_confidence_intervals",
     "insufficient_sample_result": "INSUFFICIENT_SAMPLE",
-    "activation_ceiling_after_first_pass": "AUTO_SMALL"
+    "activation_mode": "LIVE_CANARY_NO_EXPOSURE_INCREASE"
   },
   "reporting_requirements": [
     "각 WP별 변경 파일과 테스트 증거",
@@ -276,4 +276,4 @@
 
 ## 실행 지시
 
-후속 에이전트는 JSON의 `current_turn_restriction`이 해제되는 별도 사용자 승인 전까지 구현하지 않는다. 승인 후에도 WP 순서를 건너뛰지 않으며, 각 단계에서 실패 테스트→수정→통과 증거를 남긴다. 특히 전략군 수가 7개로 줄었다는 사실을 기존 setup 성과 삭제나 주문 비중 합산으로 해석하면 안 된다.
+구현과 완료 후 Docker live canary가 승인됐다. WP 순서를 건너뛰지 않고 각 단계에서 실패 테스트→수정→통과 증거를 남긴다. 5거래일 동안 기존보다 노출을 키우지 않으며, 전략군 수가 7개로 줄었다는 사실을 기존 setup 성과 삭제나 주문 비중 합산으로 해석하면 안 된다.

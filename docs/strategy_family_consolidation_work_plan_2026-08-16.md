@@ -1,9 +1,9 @@
 # 16개 전략 → 7개 전략군 통합 작업계획서
 
 - 작성일: 2026-08-16
-- 상태: 설계 승인안, 구현 전
+- 상태: 구현 진행 중, 완료 후 5거래일 실전 canary 승인
 - 범위: `api-orchestrator`, `ai-engine`, `websocket-listener`, `telegram-bot`, PostgreSQL, Redis, Kiwoom/Toss 조회 계약
-- 금지사항: 이 문서는 코드 변경·DB 마이그레이션 실행·배포·실주문을 승인하지 않는다.
+- 배포 원칙: 구현·테스트·롤백 리허설 완료 후 Docker 실전 canary로 배포한다. 전용 shadow 배포는 하지 않되 dual-score 계측은 유지한다.
 
 ## 1. 결정 요약
 
@@ -127,7 +127,7 @@ AI는 후보 생성, 가격 보정, hard gate 우회 또는 주문 수량 확대
 - `final_score = round(0.70 × rule_score + 0.30 × ai_score, 2)`는 표시·랭킹용이다.
 - ENTER는 산술점수만으로 결정하지 않는다. `hard_gates_passed=true`, effective RR 충족, 필수 freshness 충족, AI `ENTER`, 포트폴리오 arbitration 통과가 모두 필요하다.
 - AI `HOLD`는 항상 `WATCH`, AI 오류/timeout/JSON 오류는 `CANCEL` 또는 기존 fail-closed 정책을 따른다.
-- G03은 초기에는 AI가 ENTER를 반환해도 `SHADOW/WATCH`만 허용한다.
+- G03도 최종 실전 canary 대상이지만 상태전이·최소관찰일·RR·실행품질 hard gate를 생략하지 않는다.
 
 ## 5. 전략군별 상세 설계
 
@@ -161,7 +161,7 @@ Kiwoom primary: S1 `ka10029/0H/0B/0D/ka10080`, S2 `1h/ka10054/0B/0D/ka10055`, S1
 - SL: 박스 하단과 최근 구조저점 중 위험한도를 만족하는 무효화선.
 - TP1: 박스 높이 0.5배 확장 또는 +5% 중 구조적으로 유효한 가까운 값. TP2: 박스 높이 1배 또는 다음 저항.
 - 최소 effective RR: shadow 1.60 기록, `CONFIRM_BUY` 후보는 1.80.
-- 초기 운용은 SHADOW. 충분한 서로 다른 종목·장세 표본과 상태전이 검증 전 AUTO 금지.
+- 실전 canary에서 상태전이와 최소관찰일을 통과한 TRIGGERED만 진입 가능하다. 단순 ARMED/ACCUMULATING은 계속 WATCH다.
 - Kiwoom: 일봉, 체결강도, 호가, 투자자·프로그램 수급. Toss: 일봉 완전성 폴백, 장기 수급/공매도/신용/대차/warnings.
 
 ### 5.4 G04 `TREND_PHASE`
@@ -341,12 +341,12 @@ freshness 목표 초안: 현행 경계는 hoga caution/cancel 1초/2초, tick 3�
 
 ### WP-10 shadow 검증
 
-- 최소 20거래일, 각 setup 독립 표본, bull/sideways/bear와 KOSPI/KOSDAQ 분리.
+- 배포 후 5거래일 live canary를 운영하고, 각 setup 독립 표본과 bull/sideways/bear 및 KOSPI/KOSDAQ 결과를 가능한 범위에서 분리한다.
 - 누락 0, 중복주문 0, 필수 stale ENTER 0, lineage 결측 0을 요구.
 
 ### WP-11 단계적 활성화·롤백
 
-- family별 OFF→SHADOW→ALERT→CONFIRM→AUTO_SMALL 순서.
+- 사전 리플레이·dry-run은 수행하되 배포 모드는 live canary다. 기존보다 주문 비중을 키우지 않고 kill switch를 즉시 사용할 수 있어야 한다.
 - G03/G07은 마지막에 검토. 기존 S 경로 kill switch와 1-command 논리 롤백을 보존.
 
 ### WP-12 문서·운영 인계
@@ -378,7 +378,7 @@ freshness 목표 초안: 현행 경계는 hoga caution/cancel 1초/2초, tick 3�
 - hard gate 우회 0건.
 - 기존 대비 비용 반영 기대값·PF·MAE가 열화하지 않고 신뢰구간을 보고한다.
 - 전략별 표본이 부족하면 `INSUFFICIENT_SAMPLE`이며 통합 성공으로 간주하지 않는다.
-- 최소 20거래일과 함께 family당 평가 가능 신호 200개, setup당 30개를 원칙으로 한다. 저빈도 setup은 family 60/setup 15를 임시 분석 하한으로만 허용하며 실계좌 승격 근거로 쓰지 않는다.
+- 사용자 승인에 따라 운영 판단 창은 5거래일이다. 표본 수는 성공을 과장하지 않도록 그대로 보고하며, 5일 종료 시 기대값·PF·MFE/MAE·중복 감소·체결 품질이 기준 미달이면 즉시 롤백한다.
 - 기대값 차이는 비용 반영 walk-forward와 95% bootstrap 신뢰구간으로 제시하고, AI 점수는 calibration error 또는 Brier score를 함께 본다.
 
 ## 12. 롤백·금지 규칙
@@ -405,4 +405,4 @@ family 주문 라우팅은 feature flag로 즉시 차단할 수 있어야 한다
 
 ## 14. 현재 단계 결론
 
-문서 설계만 승인된 상태다. 다음 구현 착수 전 WP-00 기준선과 정책 수치의 사용자 승인이 필요하다. 이 문서를 작성하면서 런타임 코드, 설정, DB 또는 컨테이너는 변경하지 않았다.
+구현과 최종 Docker live canary가 승인됐다. 배포 전 전체 테스트·DB 백업·rollback 리허설과 실전 설정 preflight를 완료해야 하며, 5거래일 평가 후 유지 또는 롤백한다.

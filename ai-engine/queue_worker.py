@@ -22,6 +22,7 @@ from http_utils import (
     fetch_tick_snapshot as _fetch_tick_snapshot,
 )
 from position_sizing import ENABLE_MODEL_RELATIVE_POSITION_SIZE, calculate_entry_size
+from family_scoring import compute_family_shadow_score
 from price_utils import normalize_signal_prices
 from strategy_meta import (
     detect_market_regime as _detect_market_regime,
@@ -33,6 +34,7 @@ from strategy_meta import (
     regime_from_flu_rt as _regime_from_flu_rt,
     SWING_STRATEGIES as _SWING_STRATEGIES,
 )
+from strategy_catalog import ALL_SETUP_IDS, family_lineage, family_lineage_enabled
 from redis_reader import (
     get_avg_cntr_strength,
     get_hoga_data,
@@ -183,6 +185,9 @@ SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").
 ENABLE_SCORING_DATA_RETRY = os.getenv("ENABLE_SCORING_DATA_RETRY", "true").lower() == "true"
 ENABLE_TICK_REST_FALLBACK = os.getenv("ENABLE_TICK_REST_FALLBACK", "false").lower() == "true"
 STRICT_REST_ENTER_GUARD = os.getenv("STRICT_REST_ENTER_GUARD", "false").lower() == "true"
+ENABLE_STRATEGY_FAMILY_SHADOW_SCORING = (
+    os.getenv("ENABLE_STRATEGY_FAMILY_SHADOW_SCORING", "false").lower() == "true"
+)
 # REST 단독 데이터로 ENTER를 허용할 최대 나이(ms). tick의 cancel 컷오프(5000ms)보다
 # 보수적으로 잡아 tick caution 컷오프(3000ms)에 맞춘다.
 REST_ENTER_MAX_AGE_MS = int(os.getenv("REST_ENTER_MAX_AGE_MS", "3000"))
@@ -1942,6 +1947,21 @@ async def process_one(rdb, pg_pool=None) -> bool:
             program_flow_reason=program_flow_reason,
             freshness_reason=stale_reason,
         )
+        if family_lineage_enabled() and strategy in ALL_SETUP_IDS:
+            for key, value in family_lineage(strategy).items():
+                signal.setdefault(key, value)
+        family_shadow = None
+        if ENABLE_STRATEGY_FAMILY_SHADOW_SCORING and strategy in ALL_SETUP_IDS:
+            family_shadow = compute_family_shadow_score(
+                signal,
+                ctx,
+                legacy_rule_score=r_score,
+                legacy_components=components,
+                failed_gates=failed_gates,
+            )
+            signal.update(family_shadow)
+            if isinstance(components, dict):
+                components["family_shadow"] = family_shadow
         pre_ai_decision = select_pre_ai_decision(
             skip_ai=skip_ai,
             rescue_reason=rescue_reason,
@@ -2052,6 +2072,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "threshold_used": threshold,
             "score_margin": round(r_score - threshold, 2),
             "failed_gates": failed_gates,
+            "family_shadow": family_shadow,
             "decision_stage": signal.get("decision_stage"),
             "rule_threshold_rescued": signal.get("rule_threshold_rescued"),
             "hold_promoted_to_enter": hold_promoted_to_enter,
