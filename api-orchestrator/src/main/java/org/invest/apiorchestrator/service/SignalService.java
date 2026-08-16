@@ -6,6 +6,7 @@ import org.invest.apiorchestrator.config.KiwoomProperties;
 import org.invest.apiorchestrator.domain.PortfolioConfig;
 import org.invest.apiorchestrator.domain.RiskEvent;
 import org.invest.apiorchestrator.domain.TradingSignal;
+import org.invest.apiorchestrator.domain.StrategyFamilyCatalog;
 import org.invest.apiorchestrator.dto.req.TradingSignalDto;
 import org.invest.apiorchestrator.repository.CandidatePoolHistoryRepository;
 import org.invest.apiorchestrator.repository.PortfolioConfigRepository;
@@ -196,11 +197,21 @@ public class SignalService {
         BigDecimal rrRatio = dto.getRrRatio() != null
                 ? BigDecimal.valueOf(dto.getRrRatio()).setScale(2, RoundingMode.HALF_UP)
                 : deriveRr(entryPrice, tp1Price, slPrice);
+        StrategyFamilyCatalog.Family family = StrategyFamilyCatalog.lineageEnabled()
+                ? StrategyFamilyCatalog.familyFor(dto.getStrategy())
+                : null;
 
         return TradingSignal.builder()
                 .stkCd(StockCodeNormalizer.normalize(dto.getStkCd()))
                 .stkNm(dto.getStkNm())
                 .strategy(dto.getStrategy())
+                .strategyFamily(family != null ? family.id() : null)
+                .strategyFamilyName(family != null ? family.name() : null)
+                .primarySetupId(family != null ? dto.getStrategy().name() : null)
+                .matchedSetupIds(family != null ? "[\"" + dto.getStrategy().name() + "\"]" : null)
+                .familyPolicyVersion(family != null ? StrategyFamilyCatalog.POLICY_VERSION : null)
+                .blockingReasons(family != null ? "[]" : null)
+                .degradedReasons(family != null ? "[]" : null)
                 .signalScore(dto.getSignalScore())
                 .entryPrice(dto.getEntryPrice())
                 .targetPrice(tp1Price != null ? tp1Price.doubleValue() : null)

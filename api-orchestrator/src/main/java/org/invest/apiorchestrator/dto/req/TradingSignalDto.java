@@ -3,6 +3,7 @@ package org.invest.apiorchestrator.dto.req;
 import lombok.Builder;
 import lombok.Getter;
 import org.invest.apiorchestrator.domain.TradingSignal;
+import org.invest.apiorchestrator.domain.StrategyFamilyCatalog;
 import org.invest.apiorchestrator.util.KstClock;
 import org.invest.apiorchestrator.util.StockCodeNormalizer;
 
@@ -104,6 +105,14 @@ public class TradingSignalDto {
         m.put("stk_cd",          normalizedStkCd);
         m.put("stk_nm",          stkNm);
         m.put("strategy",        strategy != null ? strategy.name() : null);
+        if (strategy != null && StrategyFamilyCatalog.lineageEnabled()) {
+            StrategyFamilyCatalog.Family family = StrategyFamilyCatalog.familyFor(strategy);
+            m.put("strategy_family", family.id());
+            m.put("strategy_family_name", family.name());
+            m.put("primary_setup_id", strategy.name());
+            m.put("matched_setup_ids", java.util.List.of(strategy.name()));
+            m.put("family_policy_version", StrategyFamilyCatalog.POLICY_VERSION);
+        }
         m.put("entry_type",      entryType);
         m.put("target_pct",      targetPct);
         m.put("target2_pct",     resolvedTarget2Pct());
