@@ -2,6 +2,7 @@ package org.invest.apiorchestrator.scheduler;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.domain.StrategyFamilyCatalog;
 import org.invest.apiorchestrator.repository.StockMasterRepository;
 import org.invest.apiorchestrator.util.KstClock;
 import org.invest.apiorchestrator.util.MarketTimeUtil;
@@ -35,25 +36,12 @@ public class CandidatePoolHistoryScheduler {
     private final StockMasterRepository stockMasterRepo;
 
     /** Redis key suffix → DB strategy 이름 (StrategyType.name() 과 일치) */
-    private static final Map<String, String> STRATEGY_MAP = new LinkedHashMap<>();
-    static {
-        STRATEGY_MAP.put("s1",  "S1_GAP_OPEN");
-        STRATEGY_MAP.put("s2",  "S2_VI_PULLBACK");
-        STRATEGY_MAP.put("s3",  "S3_INST_FRGN");
-        STRATEGY_MAP.put("s4",  "S4_BIG_CANDLE");
-        STRATEGY_MAP.put("s5",  "S5_PROG_FRGN");
-        STRATEGY_MAP.put("s6",  "S6_THEME_LAGGARD");
-        STRATEGY_MAP.put("s7",  "S7_ICHIMOKU_BREAKOUT");
-        STRATEGY_MAP.put("s8",  "S8_GOLDEN_CROSS");
-        STRATEGY_MAP.put("s9",  "S9_PULLBACK_SWING");
-        STRATEGY_MAP.put("s10", "S10_NEW_HIGH");
-        STRATEGY_MAP.put("s11", "S11_FRGN_CONT");
-        STRATEGY_MAP.put("s12", "S12_CLOSING");
-        STRATEGY_MAP.put("s13", "S13_BOX_BREAKOUT");
-        STRATEGY_MAP.put("s14", "S14_OVERSOLD_BOUNCE");
-        STRATEGY_MAP.put("s15", "S15_MOMENTUM_ALIGN");
-        STRATEGY_MAP.put("s16", "S16_ACCUMULATION_SHADOW");
-    }
+    private static final Map<String, String> STRATEGY_MAP = StrategyFamilyCatalog.setupKeys().entrySet()
+            .stream().collect(Collectors.toMap(
+                    Map.Entry::getKey,
+                    entry -> entry.getValue().name(),
+                    (left, right) -> left,
+                    LinkedHashMap::new));
 
     private static final String[] MARKETS = {"001", "101"};
 

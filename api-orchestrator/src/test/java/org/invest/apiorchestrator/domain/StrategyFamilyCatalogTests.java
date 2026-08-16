@@ -51,6 +51,15 @@ class StrategyFamilyCatalogTests {
     }
 
     @Test
+    void redisSetupKeysAreOrderedAndIncludeS16() {
+        Map<String, TradingSignal.StrategyType> keys = StrategyFamilyCatalog.setupKeys();
+
+        assertEquals(16, keys.size());
+        assertEquals("s1", keys.keySet().iterator().next());
+        assertEquals(TradingSignal.StrategyType.S16_ACCUMULATION_SHADOW, keys.get("s16"));
+    }
+
+    @Test
     void killSwitchDefaultsOffWhenEnvironmentIsAbsentOrFalse() {
         String configured = System.getenv("ENABLE_STRATEGY_FAMILY_LINEAGE");
         if (configured == null || configured.equalsIgnoreCase("false")) {

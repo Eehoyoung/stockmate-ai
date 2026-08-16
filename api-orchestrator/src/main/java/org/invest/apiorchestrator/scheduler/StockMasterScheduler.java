@@ -2,6 +2,7 @@ package org.invest.apiorchestrator.scheduler;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.invest.apiorchestrator.domain.StrategyFamilyCatalog;
 import org.invest.apiorchestrator.domain.StockMaster;
 import org.invest.apiorchestrator.dto.res.KiwoomApiResponses;
 import org.invest.apiorchestrator.repository.StockMasterRepository;
@@ -37,9 +38,7 @@ public class StockMasterScheduler {
     private final StockMasterRepository stockMasterRepository;
     private final StringRedisTemplate redis;
 
-    private static final String[] STRATEGY_KEYS = {
-            "s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","s12","s13","s14","s15","s16"
-    };
+    private static final Set<String> STRATEGY_KEYS = StrategyFamilyCatalog.setupKeys().keySet();
     private static final String[] MARKETS = {"001", "101"};
 
     /**

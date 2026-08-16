@@ -3,6 +3,7 @@ package org.invest.apiorchestrator.domain;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -72,6 +73,21 @@ public final class StrategyFamilyCatalog {
 
     public static Set<TradingSignal.StrategyType> allSetups() {
         return Collections.unmodifiableSet(new LinkedHashSet<>(BY_SETUP.keySet()));
+    }
+
+    /** Ordered legacy Redis candidate keys. Keeps all consumers on the same 16-setup catalog. */
+    public static Map<String, TradingSignal.StrategyType> setupKeys() {
+        LinkedHashMap<String, TradingSignal.StrategyType> result = new LinkedHashMap<>();
+        for (int number = 1; number <= TradingSignal.StrategyType.values().length; number++) {
+            final int setupNumber = number;
+            String prefix = "S" + number + "_";
+            TradingSignal.StrategyType match = allSetups().stream()
+                    .filter(setup -> setup.name().startsWith(prefix))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException("missing strategy setup number: " + setupNumber));
+            result.put("s" + number, match);
+        }
+        return Collections.unmodifiableMap(result);
     }
 
     /** Default-off runtime kill switch used throughout the shadow migration. */
