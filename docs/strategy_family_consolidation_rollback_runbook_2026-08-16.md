@@ -74,6 +74,12 @@ V55는 additive 컬럼과 인덱스만 추가하며 기존 `strategy` 값과 제
 - 주문 ACK/체결 매핑 누락률 0.5% 초과
 - AI JSON 실패율 1% 초과
 
+장중/장마감 점검은 다음 명령을 사용한다. 종료코드 2와 `ROLLBACK_NOW`가 나오면 신규 진입을 즉시 중단하고 1단계 롤백을 실행한다.
+
+```powershell
+.\scripts\monitor_strategy_family_canary.ps1
+```
+
 ## 현재 상태
 
 - 2026-08-16 23:37 KST DB V55 적용 완료. 배포 전 DB archive는 `backups/strategy-family-live-canary-20260816-2340/postgres.dump`이며 `pg_restore --list` 판독을 통과했다.
