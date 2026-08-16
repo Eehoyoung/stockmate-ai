@@ -27,6 +27,7 @@ from db_reader import get_active_positions
 from db_writer import (
     update_peak_price,
     close_open_position,
+    mark_tp1_hit,
     update_shadow_trade_mark,
 )
 from downtrend_detector import compute_reversal_score
@@ -343,21 +344,39 @@ async def _check_position(rdb, pg_pool, pos: dict):
                                             extra={"peak_price": peak_price, "trailing_pct": trailing_pct})
                     return
 
-    # ── 4. TP_HIT (single target, full close) ───────
-    if status == "ACTIVE" and tp1_price > 0 and cur_prc >= tp1_price:
+    # ── 4. TP2_HIT (two-target plan, full close) ───────
+    if status in {"ACTIVE", "PARTIAL_TP"} and tp2_price > 0 and cur_prc >= tp2_price:
         pnl_pct = _pnl(entry_price, cur_prc)
         ok = await close_open_position(
             pg_pool, position_id,
             signal_id=signal_id,
-            exit_type="TP1_HIT",
+            exit_type="TP2_HIT",
             exit_price=cur_prc,
             realized_pnl_pct=pnl_pct,
         )
         if ok:
-            await _publish_sell(rdb, pos, cur_prc, "TP1_HIT", pnl_pct, partial=False)
+            await _publish_sell(rdb, pos, cur_prc, "TP2_HIT", pnl_pct, partial=False)
         return
 
-    # ── 5. legacy PARTIAL_TP trailing compatibility ───────────
+    # ── 5. TP1_HIT (partial when a second target exists) ───────
+    if status == "ACTIVE" and tp1_price > 0 and cur_prc >= tp1_price:
+        pnl_pct = _pnl(entry_price, cur_prc)
+        has_second_target = tp2_price > tp1_price
+        if has_second_target:
+            ok = await mark_tp1_hit(pg_pool, position_id, cur_prc)
+        else:
+            ok = await close_open_position(
+                pg_pool, position_id,
+                signal_id=signal_id,
+                exit_type="TP1_HIT",
+                exit_price=cur_prc,
+                realized_pnl_pct=pnl_pct,
+            )
+        if ok:
+            await _publish_sell(rdb, pos, cur_prc, "TP1_HIT", pnl_pct, partial=has_second_target)
+        return
+
+    # ── 6. PARTIAL_TP trailing compatibility ───────────
     if status == "PARTIAL_TP":
         # peak_price 갱신
         if peak_price is None or cur_prc > peak_price:

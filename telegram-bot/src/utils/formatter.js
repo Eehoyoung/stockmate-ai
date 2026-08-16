@@ -396,6 +396,17 @@ function formatSignal(item) {
     const lines = [
         `${emoji} <b>${strategyTag} ${stockLabel}</b>`,
     ];
+    if (item.strategy_family) {
+        const familyName = item.strategy_family_name
+            ? `${item.strategy_family} ${item.strategy_family_name}`
+            : item.strategy_family;
+        const primarySetup = item.primary_setup_id || item.strategy;
+        lines.push(`통합전략: <b>${escapeHtml(String(familyName))}</b> / 대표: ${escapeHtml(String(primarySetup))}`);
+        const confirmations = item.confirmed_by || item.matched_setup_ids;
+        if (Array.isArray(confirmations) && confirmations.length > 1) {
+            lines.push(`확증 setup: ${escapeHtml(confirmations.join(', '))}`);
+        }
+    }
     if (stratDesc) lines.push(`<i>${stratDesc}</i>`);
     if (item.readiness_action) {
         lines.push(`Readiness: <b>${escapeHtml(String(item.readiness_action))}</b>`);

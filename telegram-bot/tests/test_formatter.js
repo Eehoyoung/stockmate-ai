@@ -324,6 +324,21 @@ test('formatSignal renders S16 accumulation strategy identity', () => {
     assert.ok(msg.includes('세력 매집'));
 });
 
+test('formatSignal renders family lineage without replacing legacy setup', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S4_BIG_CANDLE',
+        strategy_family: 'G06',
+        strategy_family_name: 'INTRADAY_THEME_MOMENTUM',
+        primary_setup_id: 'S4_BIG_CANDLE',
+        matched_setup_ids: ['S4_BIG_CANDLE', 'S6_THEME_LAGGARD'],
+    }));
+
+    assert.ok(msg.includes('[S4_BIG_CANDLE]'));
+    assert.ok(msg.includes('G06 INTRADAY_THEME_MOMENTUM'));
+    assert.ok(msg.includes('대표: S4_BIG_CANDLE'));
+    assert.ok(msg.includes('S6_THEME_LAGGARD'));
+});
+
 test('formatSignal prefixes hold-promoted ENTER strategy with H tag', () => {
     const msg = formatSignal(makeSignal({
         strategy: 'S2_VI_PULLBACK',
