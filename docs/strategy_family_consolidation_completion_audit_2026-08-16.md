@@ -7,7 +7,7 @@
 ## 현재 배포
 
 - 배포 브랜치: `codex/strategy-family-consolidation`
-- 배포 코드 checkpoint: `915b9c4`
+- 배포 코드 checkpoint: `118518b`
 - DB: Flyway V56 (V55 family 계보 + V56 version/source 계보)
 - live 환경: `ENABLE_STRATEGY_FAMILY_LINEAGE=true`, `ENABLE_STRATEGY_FAMILY_SHADOW_SCORING=true`, `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=true`
 - 비교점수는 관측값이고 주문/신호 라우팅은 live다.
