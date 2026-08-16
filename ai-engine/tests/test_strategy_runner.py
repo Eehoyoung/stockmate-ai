@@ -112,6 +112,33 @@ class TestPushSignals:
         assert payload["primary_setup_id"] == "S9_PULLBACK_SWING"
         assert payload["matched_setup_ids"] == ["S9_PULLBACK_SWING"]
         assert payload["family_policy_version"] == "family_v1_2026_08_16"
+        assert payload["setup_version"] == "s9_pullback_swing_family_v1"
+        assert payload["rule_score_version"] == "family_score_v1_2026_08_16"
+        assert payload["prompt_version"] == "family_prompt_v1_2026_08_16"
+        assert payload["confirmed_by_family_ids"] == []
+
+    @pytest.mark.parametrize("setup_id", [
+        "S1_GAP_OPEN", "S2_VI_PULLBACK", "S3_INST_FRGN", "S4_BIG_CANDLE",
+        "S5_PROG_FRGN", "S6_THEME_LAGGARD", "S7_ICHIMOKU_BREAKOUT",
+        "S8_GOLDEN_CROSS", "S9_PULLBACK_SWING", "S10_NEW_HIGH",
+        "S11_FRGN_CONT", "S12_CLOSING", "S13_BOX_BREAKOUT",
+        "S14_OVERSOLD_BOUNCE", "S15_MOMENTUM_ALIGN", "S16_ACCUMULATION_SHADOW",
+    ])
+    def test_all_16_setup_queue_payloads_keep_setup_and_complete_version_lineage(self, setup_id):
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LINEAGE": "true"}):
+            _run(_push_signals(rdb, [{"stk_cd": "005930", "strategy": setup_id}], setup_id))
+
+        payload = json.loads(rdb.lpush.call_args[0][1])
+        assert payload["strategy"] == setup_id
+        assert payload["primary_setup_id"] == setup_id
+        assert payload["matched_setup_ids"] == [setup_id]
+        assert payload["strategy_family"].startswith("G0")
+        assert payload["setup_version"]
+        assert payload["rule_score_version"]
+        assert payload["prompt_version"]
 
     def test_family_lineage_kill_switch_defaults_off(self):
         from strategy_runner import _push_signals
