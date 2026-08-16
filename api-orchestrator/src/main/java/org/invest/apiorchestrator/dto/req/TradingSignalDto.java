@@ -112,6 +112,10 @@ public class TradingSignalDto {
             m.put("primary_setup_id", strategy.name());
             m.put("matched_setup_ids", java.util.List.of(strategy.name()));
             m.put("family_policy_version", StrategyFamilyCatalog.POLICY_VERSION);
+            m.put("setup_version", strategy.name().toLowerCase() + "_family_v1");
+            m.put("rule_score_version", StrategyFamilyCatalog.RULE_SCORE_VERSION);
+            m.put("prompt_version", StrategyFamilyCatalog.PROMPT_VERSION);
+            m.put("confirmed_by_family_ids", java.util.List.of());
         }
         m.put("entry_type",      entryType);
         m.put("target_pct",      targetPct);

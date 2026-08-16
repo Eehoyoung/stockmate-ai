@@ -2120,6 +2120,23 @@ async def process_one(rdb, pg_pool=None) -> bool:
         _dq = _compute_data_quality(_missing_flags, _freshness_dec, signal)
         _freshness_diag = _freshness_age_diagnostics(ctx)
         _market_data_observability = build_market_data_observability(ctx)
+        _source_timestamp = {
+            kind: (status or {}).get("updated_at_ms")
+            for kind, status in (ctx.get("freshness") or {}).items()
+            if isinstance(status, dict) and (status or {}).get("updated_at_ms") is not None
+        }
+        _source_age_ms = {
+            kind: (status or {}).get("age_ms")
+            for kind, status in (ctx.get("freshness") or {}).items()
+            if isinstance(status, dict) and (status or {}).get("age_ms") is not None
+        }
+        _confirmed_by_family_ids = []
+        for _matched_setup in signal.get("matched_setup_ids") or [strategy]:
+            if _matched_setup not in ALL_SETUP_IDS:
+                continue
+            _matched_family = family_for_setup(_matched_setup).family_id
+            if _matched_family != signal.get("strategy_family") and _matched_family not in _confirmed_by_family_ids:
+                _confirmed_by_family_ids.append(_matched_family)
         await record_market_data_observability_metric(
             rdb,
             strategy=strategy,
@@ -2177,6 +2194,11 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "freshness_decision": _freshness_dec,
             # REST 보강 메타데이터 (관측·디버깅용)
             "market_data_sources": (ctx.get("refresh_meta") or {}).get("market_data_sources", {}),
+            "data_source": (ctx.get("refresh_meta") or {}).get("market_data_sources", {}),
+            "source_timestamp": _source_timestamp,
+            "source_age_ms": _source_age_ms,
+            "fallback_reason": (ctx.get("refresh_meta") or {}).get("retry_failures", []),
+            "confirmed_by_family_ids": _confirmed_by_family_ids,
             "data_refresh_attempted": (ctx.get("refresh_meta") or {}).get("data_refresh_attempted", {}),
             "retry_failures": (ctx.get("refresh_meta") or {}).get("retry_failures", []),
             "market_data_observability": _market_data_observability,

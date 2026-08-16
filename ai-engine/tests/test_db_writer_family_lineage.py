@@ -65,6 +65,14 @@ async def test_insert_python_signal_persists_additive_family_lineage():
             "blocking_reasons": [],
             "degraded_reasons": ["TOSS_RISK_MISSING"],
             "final_score": 77.25,
+            "confirmed_by_family_ids": ["G05"],
+            "setup_version": "s9_family_v1",
+            "rule_score_version": "family_score_v1_2026_08_16",
+            "prompt_version": "family_prompt_v1_2026_08_16",
+            "data_source": {"tick": "ws"},
+            "source_timestamp": {"tick": 1234567890},
+            "source_age_ms": {"tick": 120},
+            "fallback_reason": [],
             "cur_prc": 70000,
         },
         action="ENTER",
@@ -78,8 +86,8 @@ async def test_insert_python_signal_persists_additive_family_lineage():
     assert signal_id == 321
     sql, args = pool.conn.fetchrow_calls[0]
     assert "strategy_family" in sql
-    assert "$68" in sql
-    assert len(args) == 68
+    assert "$76" in sql
+    assert len(args) == 76
     assert args[60:68] == (
         "G04",
         "TREND_PHASE",
@@ -89,4 +97,14 @@ async def test_insert_python_signal_persists_additive_family_lineage():
         "[]",
         json.dumps(["TOSS_RISK_MISSING"], ensure_ascii=False),
         77.25,
+    )
+    assert args[68:76] == (
+        json.dumps(["G05"], ensure_ascii=False),
+        "s9_family_v1",
+        "family_score_v1_2026_08_16",
+        "family_prompt_v1_2026_08_16",
+        json.dumps({"tick": "ws"}, ensure_ascii=False),
+        json.dumps({"tick": 1234567890}, ensure_ascii=False),
+        json.dumps({"tick": 120}, ensure_ascii=False),
+        "[]",
     )

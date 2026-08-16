@@ -42,7 +42,7 @@ def test_unknown_setup_and_number_fail_closed():
 
 
 def test_family_lineage_preserves_legacy_setup():
-    from strategy_catalog import CATALOG_VERSION, family_lineage
+    from strategy_catalog import CATALOG_VERSION, PROMPT_VERSION, RULE_SCORE_VERSION, family_lineage
 
     lineage = family_lineage("S9_PULLBACK_SWING")
     assert lineage == {
@@ -51,6 +51,10 @@ def test_family_lineage_preserves_legacy_setup():
         "primary_setup_id": "S9_PULLBACK_SWING",
         "matched_setup_ids": ["S9_PULLBACK_SWING"],
         "family_policy_version": CATALOG_VERSION,
+        "setup_version": "s9_pullback_swing_family_v1",
+        "rule_score_version": RULE_SCORE_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "confirmed_by_family_ids": [],
     }
 
 

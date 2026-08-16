@@ -14,6 +14,8 @@ import java.util.Set;
 public final class StrategyFamilyCatalog {
 
     public static final String POLICY_VERSION = "family_v1_2026_08_16";
+    public static final String RULE_SCORE_VERSION = "family_score_v1_2026_08_16";
+    public static final String PROMPT_VERSION = "family_prompt_v1_2026_08_16";
 
     public record Family(String id, String name, String displayNameKo, int ruleThreshold) {}
 

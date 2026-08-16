@@ -64,7 +64,8 @@ async def test_update_signal_score_merges_shadow_features_for_existing_java_sign
     assert ok is True
     sql, *params = pool.execute.await_args.args
     assert "shadow_features" in sql
-    assert json.loads(params[-1]) == shadow
+    # $35 remains the shadow_features parameter; later lineage parameters are additive.
+    assert json.loads(params[34]) == shadow
 
 
 @pytest.mark.asyncio

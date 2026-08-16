@@ -147,6 +147,14 @@ async def persist_processed_signal(
         time_stop_deadline_at=None,
         stk_nm=enriched.get("stk_nm") or signal.get("stk_nm"),
         shadow_features=enriched.get("shadow_features"),
+        confirmed_by_family_ids=enriched.get("confirmed_by_family_ids"),
+        setup_version=enriched.get("setup_version") or enriched.get("strategy_version"),
+        rule_score_version=enriched.get("rule_score_version"),
+        prompt_version=enriched.get("prompt_version"),
+        data_source=enriched.get("data_source"),
+        source_timestamp=enriched.get("source_timestamp"),
+        source_age_ms=enriched.get("source_age_ms"),
+        fallback_reason=enriched.get("fallback_reason"),
     )
     await insert_score_components_fn(
         pg_pool,

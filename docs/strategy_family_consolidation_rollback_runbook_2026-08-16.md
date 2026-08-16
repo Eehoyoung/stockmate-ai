@@ -51,7 +51,7 @@ V55는 additive 컬럼과 인덱스만 추가하며 기존 `strategy` 값과 제
 
 ### 4. DB 물리 원복
 
-컬럼까지 제거해야 하는 경우 먼저 `trading_signals`와 `flyway_schema_history`를 백업하고, 유지보수 시간에 [rollback_strategy_family_v55.sql](../scripts/rollback_strategy_family_v55.sql)을 수동 검토 후 실행한다. 이 SQL은 다른 policy version 데이터가 있으면 중단한다. Flyway 이력을 임의 삭제하지 않으며 완전한 시점복구는 V55 이전 DB 백업을 사용한다.
+컬럼까지 제거해야 하는 경우 먼저 `trading_signals`와 `flyway_schema_history`를 백업하고 유지보수 시간에 `rollback_strategy_family_v56.sql`을 먼저, `rollback_strategy_family_v55.sql`을 다음 순서로 수동 검토 후 실행한다. SQL은 알 수 없는 version 데이터가 있으면 중단한다. Flyway 이력을 임의 삭제하지 않으며 완전한 시점복구는 V55 이전 DB 백업을 사용한다.
 
 ## 단계별 체크포인트 규칙
 

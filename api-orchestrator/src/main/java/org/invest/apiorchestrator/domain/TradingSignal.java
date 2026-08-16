@@ -346,6 +346,31 @@ public class TradingSignal {
     @Column(name = "final_score", precision = 5, scale = 2)
     private BigDecimal finalScore;
 
+    // ── Complete family/source lineage (V56) ──────────────────────────────
+    @Column(name = "confirmed_by_family_ids", columnDefinition = "jsonb")
+    private String confirmedByFamilyIds;
+
+    @Column(name = "setup_version", length = 50)
+    private String setupVersion;
+
+    @Column(name = "rule_score_version", length = 50)
+    private String ruleScoreVersion;
+
+    @Column(name = "prompt_version", length = 50)
+    private String promptVersion;
+
+    @Column(name = "data_source", columnDefinition = "jsonb")
+    private String dataSource;
+
+    @Column(name = "source_timestamp", columnDefinition = "jsonb")
+    private String sourceTimestamp;
+
+    @Column(name = "source_age_ms", columnDefinition = "jsonb")
+    private String sourceAgeMs;
+
+    @Column(name = "fallback_reason", columnDefinition = "jsonb")
+    private String fallbackReason;
+
     // ── 도메인 메서드 ────────────────────────────────────────────────────
     public void updateStatus(SignalStatus status) {
         this.signalStatus = status;

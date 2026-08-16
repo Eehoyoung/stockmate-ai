@@ -653,6 +653,14 @@ async def update_signal_score(
     time_stop_deadline_at: Optional[datetime] = None,
     stk_nm: Optional[str] = None,
     shadow_features: Optional[dict] = None,
+    confirmed_by_family_ids: Optional[list] = None,
+    setup_version: Optional[str] = None,
+    rule_score_version: Optional[str] = None,
+    prompt_version: Optional[str] = None,
+    data_source: Optional[dict] = None,
+    source_timestamp: Optional[dict] = None,
+    source_age_ms: Optional[dict] = None,
+    fallback_reason: Optional[list] = None,
 ) -> bool:
     if not signal_id:
         return False
@@ -697,7 +705,15 @@ async def update_signal_score(
                 shadow_features  = CASE
                     WHEN $35::jsonb IS NULL THEN shadow_features
                     ELSE COALESCE(shadow_features, '{}'::jsonb) || $35::jsonb
-                END
+                END,
+                confirmed_by_family_ids = COALESCE($36::jsonb, confirmed_by_family_ids),
+                setup_version = COALESCE($37, setup_version),
+                rule_score_version = COALESCE($38, rule_score_version),
+                prompt_version = COALESCE($39, prompt_version),
+                data_source = COALESCE($40::jsonb, data_source),
+                source_timestamp = COALESCE($41::jsonb, source_timestamp),
+                source_age_ms = COALESCE($42::jsonb, source_age_ms),
+                fallback_reason = COALESCE($43::jsonb, fallback_reason)
             WHERE id = $1
             """,
             signal_id,
@@ -735,6 +751,14 @@ async def update_signal_score(
             time_stop_deadline_at,
             stk_nm,
             json.dumps(shadow_features, ensure_ascii=False, default=str) if shadow_features else None,
+            json.dumps(confirmed_by_family_ids, ensure_ascii=False) if confirmed_by_family_ids is not None else None,
+            setup_version,
+            rule_score_version,
+            prompt_version,
+            json.dumps(data_source, ensure_ascii=False) if data_source is not None else None,
+            json.dumps(source_timestamp, ensure_ascii=False) if source_timestamp is not None else None,
+            json.dumps(source_age_ms, ensure_ascii=False) if source_age_ms is not None else None,
+            json.dumps(fallback_reason, ensure_ascii=False) if fallback_reason is not None else None,
         )
         return True
     except Exception as e:
@@ -795,7 +819,9 @@ async def insert_python_signal(
                         execution_decision, decision_stage,
                         strategy_family, strategy_family_name, primary_setup_id,
                         matched_setup_ids, family_policy_version,
-                        blocking_reasons, degraded_reasons, final_score
+                        blocking_reasons, degraded_reasons, final_score,
+                        confirmed_by_family_ids, setup_version, rule_score_version, prompt_version,
+                        data_source, source_timestamp, source_age_ms, fallback_reason
                     ) VALUES (
                         $1,$2,$3,$4,$5,
                         $6,$7,$8,$9,$10,
@@ -816,7 +842,9 @@ async def insert_python_signal(
                         $59, $60,
                         $61, $62, $63,
                         $64::jsonb, $65,
-                        $66::jsonb, $67::jsonb, $68
+                        $66::jsonb, $67::jsonb, $68,
+                        $69::jsonb, $70, $71, $72,
+                        $73::jsonb, $74::jsonb, $75::jsonb, $76::jsonb
                     ) RETURNING id
                     """,
                     signal.get("stk_cd", ""),
@@ -889,6 +917,14 @@ async def insert_python_signal(
                     json.dumps(signal.get("blocking_reasons") or [], ensure_ascii=False),
                     json.dumps(signal.get("degraded_reasons") or [], ensure_ascii=False),
                     _opt_num(signal.get("final_score")),
+                    json.dumps(signal.get("confirmed_by_family_ids") or [], ensure_ascii=False),
+                    _clip_str(signal.get("setup_version") or signal.get("strategy_version"), 50),
+                    _clip_str(signal.get("rule_score_version"), 50),
+                    _clip_str(signal.get("prompt_version"), 50),
+                    json.dumps(signal.get("data_source") or {}, ensure_ascii=False),
+                    json.dumps(signal.get("source_timestamp") or {}, ensure_ascii=False),
+                    json.dumps(signal.get("source_age_ms") or {}, ensure_ascii=False),
+                    json.dumps(signal.get("fallback_reason") or [], ensure_ascii=False),
                 )
                 if row:
                     signal_id = row["id"]

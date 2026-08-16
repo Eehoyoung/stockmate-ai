@@ -12,6 +12,8 @@ import os
 
 
 CATALOG_VERSION = "family_v1_2026_08_16"
+RULE_SCORE_VERSION = "family_score_v1_2026_08_16"
+PROMPT_VERSION = "family_prompt_v1_2026_08_16"
 
 
 def family_lineage_enabled() -> bool:
@@ -141,4 +143,8 @@ def family_lineage(setup_id: str) -> dict[str, object]:
         "primary_setup_id": setup_id,
         "matched_setup_ids": [setup_id],
         "family_policy_version": CATALOG_VERSION,
+        "setup_version": f"{setup_id.lower()}_family_v1",
+        "rule_score_version": RULE_SCORE_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "confirmed_by_family_ids": [],
     }

@@ -533,10 +533,12 @@ def test_vwap_uses_only_current_session_rows():
 
     today = datetime.now(KST).strftime("%Y%m%d")
     rows = [
-        {"cntr_tm": f"{today}000000", "high_pric": "110", "low_pric": "90", "cur_prc": "100", "trde_qty": "10"},
+        {"cntr_tm": f"{today}100000", "high_pric": "110", "low_pric": "90", "cur_prc": "100", "trde_qty": "10"},
         {"cntr_tm": "19990101100000", "high_pric": "1010", "low_pric": "990", "cur_prc": "1000", "trde_qty": "1000"},
     ]
-    with patch("indicator_volume.fetch_minute_candles", AsyncMock(return_value=rows)):
+    # This test targets session-date filtering; closed-bar behavior has separate tests.
+    with patch("indicator_volume.fetch_minute_candles", AsyncMock(return_value=rows)), \
+         patch("indicator_volume.filter_closed_minute_candles", return_value=rows):
         result = _run(indicator_volume.get_vwap_minute("tok", "005930", "1"))
 
     assert result.vwap == 100.0
