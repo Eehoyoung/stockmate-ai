@@ -8,6 +8,7 @@ Claude API 를 호출하여 거래 신호를 최종 분석·판단하는 모듈.
 import asyncio
 import json
 import logging
+import math
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 KST    = timezone(timedelta(hours=9))
 
 CLAUDE_MODEL    = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
-MAX_TOKENS      = 512   # TP/SL 절대가 출력을 위한 공간 확보
+MAX_TOKENS      = 768   # family validation metadata와 TP/SL 절대가 출력 공간
 CLAUDE_TIMEOUT  = float(os.getenv("CLAUDE_ANALYST_TIMEOUT_SEC", "30"))
 ENABLE_STRATEGY_PERSONA_INJECTION = (
     os.getenv("ENABLE_STRATEGY_PERSONA_INJECTION", "true").lower() in {"1", "true", "yes", "on"}
@@ -127,7 +128,12 @@ def _build_system_prompt(signal: dict) -> str:
             "Do not infer missing fields. Correlated setup confirmations may explain a "
             "decision but must not increase quantity. If any required guard is failed or "
             "unknown, return CANCEL. For ENTER, prices must satisfy "
-            "claude_tp2 >= claude_tp1 > entry_price > claude_sl; otherwise return CANCEL."
+            "claude_tp2 >= claude_tp1 > entry_price > claude_sl; otherwise return CANCEL.\n"
+            "Return strict JSON only with these required fields: action, ai_score, confidence, "
+            "reason, cancel_reason, validated_family_id, validated_setup_id, "
+            "independent_confirmations, data_quality, risk_flags, claude_tp1, claude_tp2, "
+            "claude_sl, effective_rr. Echo the family/setup identifiers exactly. "
+            "data_quality must be OK, DEGRADED, or BLOCKED."
         )
     return "\n\n".join(sections)
 
@@ -705,6 +711,7 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
         if json_start >= 0 and json_end > json_start:
             raw_text = raw_text[json_start:json_end]
         result = _normalize_signal_result(json.loads(raw_text))
+        result = _validate_family_ai_contract(result, signal)
         logger.info(
             json.dumps({
                 "ts": __import__("time").time(),
@@ -789,7 +796,60 @@ def _normalize_signal_result(result: dict) -> dict:
         "claude_tp1":          result.get("claude_tp1"),
         "claude_tp2":          result.get("claude_tp2"),
         "claude_sl":           result.get("claude_sl"),
+        "validated_family_id": result.get("validated_family_id"),
+        "validated_setup_id": result.get("validated_setup_id"),
+        "independent_confirmations": result.get("independent_confirmations"),
+        "data_quality": result.get("data_quality"),
+        "risk_flags": result.get("risk_flags"),
+        "effective_rr": result.get("effective_rr"),
     }
+
+
+def _family_schema_cancel(result: dict, reason: str) -> dict:
+    return {
+        **result,
+        "action": "CANCEL",
+        "confidence": "LOW",
+        "reason": reason,
+        "cancel_reason": reason,
+        "cancel_type": "AI_SCHEMA_INVALID",
+        "claude_tp1": None,
+        "claude_tp2": None,
+        "claude_sl": None,
+    }
+
+
+def _validate_family_ai_contract(result: dict, signal: dict) -> dict:
+    """Fail closed on malformed/mismatched AI output in live family mode."""
+    if not family_live_routing_enabled():
+        return result
+    strategy = str(signal.get("strategy") or "")
+    if strategy not in ALL_SETUP_IDS:
+        return _family_schema_cancel(result, "AI schema invalid: unknown setup id")
+    family = family_for_setup(strategy)
+    if result.get("action") not in {"ENTER", "HOLD", "CANCEL"}:
+        return _family_schema_cancel(result, "AI schema invalid: unsupported action")
+    try:
+        score = float(result.get("ai_score"))
+    except (TypeError, ValueError):
+        return _family_schema_cancel(result, "AI schema invalid: ai_score must be numeric")
+    if not math.isfinite(score) or not 0 <= score <= 100:
+        return _family_schema_cancel(result, "AI schema invalid: ai_score outside 0..100")
+    if result.get("confidence") not in {"HIGH", "MEDIUM", "LOW"}:
+        return _family_schema_cancel(result, "AI schema invalid: unsupported confidence")
+    if result.get("validated_family_id") != family.family_id:
+        return _family_schema_cancel(result, "AI schema invalid: family id mismatch")
+    if result.get("validated_setup_id") != strategy:
+        return _family_schema_cancel(result, "AI schema invalid: setup id mismatch")
+    if not isinstance(result.get("independent_confirmations"), list):
+        return _family_schema_cancel(result, "AI schema invalid: confirmations must be an array")
+    if not isinstance(result.get("risk_flags"), list):
+        return _family_schema_cancel(result, "AI schema invalid: risk_flags must be an array")
+    if result.get("data_quality") not in {"OK", "DEGRADED", "BLOCKED"}:
+        return _family_schema_cancel(result, "AI schema invalid: unsupported data_quality")
+    if result.get("data_quality") == "BLOCKED" and result.get("action") == "ENTER":
+        return _family_schema_cancel(result, "AI schema invalid: blocked data cannot ENTER")
+    return result
 
 
 # ──────────────────────────────────────────────────────────────

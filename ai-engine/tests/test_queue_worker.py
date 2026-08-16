@@ -1262,7 +1262,7 @@ class TestCrossStrategyArbitration:
         assert result["cancel_type"] == "CROSS_STRATEGY_ARBITRATION"
         assert result["representative_strategy"] == "S8_GOLDEN_CROSS"
 
-    def test_redis_failure_blocks_enter_fail_closed(self):
+    def test_family_redis_failure_blocks_enter_fail_closed(self):
         from queue_worker import _apply_cross_strategy_arbitration
 
         rdb = _make_rdb()
@@ -1278,6 +1278,58 @@ class TestCrossStrategyArbitration:
             result = _run(_apply_cross_strategy_arbitration(rdb, payload))
 
         assert result["action"] == "CANCEL"
+        assert result["execution_decision"] == "BLOCK"
+        assert result["cancel_type"] == "FAMILY_DEDUP_UNAVAILABLE"
+
+    def test_live_family_reservation_uses_family_stock_direction_key(self):
+        from queue_worker import _apply_cross_strategy_arbitration
+
+        rdb = _make_rdb()
+        rdb.set = AsyncMock(return_value=True)
+        payload = {
+            "stk_cd": "005930", "strategy": "S4_BIG_CANDLE",
+            "action": "ENTER", "execution_decision": "ENTER", "direction": "LONG",
+        }
+
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
+            result = _run(_apply_cross_strategy_arbitration(rdb, payload))
+
+        assert result["execution_decision"] == "ENTER"
+        assert rdb.set.await_args_list[0].args[0] == "signal:family:G06:005930:LONG"
+        assert rdb.set.await_args_list[1].args[0] == "arbitration:enter:005930"
+
+    def test_live_family_duplicate_is_blocked_before_stock_reservation(self):
+        from queue_worker import _apply_cross_strategy_arbitration
+
+        rdb = _make_rdb()
+        rdb.set = AsyncMock(return_value=False)
+        rdb.get = AsyncMock(return_value="S4_BIG_CANDLE")
+        payload = {
+            "stk_cd": "005930", "strategy": "S6_THEME_LAGGARD",
+            "action": "ENTER", "execution_decision": "ENTER",
+        }
+
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
+            result = _run(_apply_cross_strategy_arbitration(rdb, payload))
+
+        assert result["execution_decision"] == "BLOCK"
+        assert result["cancel_type"] == "FAMILY_DEDUP"
+        assert result["representative_strategy"] == "S4_BIG_CANDLE"
+        assert rdb.set.await_count == 1
+
+    def test_stock_reservation_failure_after_family_claim_is_fail_closed(self):
+        from queue_worker import _apply_cross_strategy_arbitration
+
+        rdb = _make_rdb()
+        rdb.set = AsyncMock(side_effect=[True, RuntimeError("redis unavailable")])
+        payload = {
+            "stk_cd": "005930", "strategy": "S6_THEME_LAGGARD",
+            "action": "ENTER", "execution_decision": "ENTER",
+        }
+
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
+            result = _run(_apply_cross_strategy_arbitration(rdb, payload))
+
         assert result["execution_decision"] == "BLOCK"
         assert result["cancel_type"] == "CROSS_STRATEGY_ARBITRATION_UNAVAILABLE"
 

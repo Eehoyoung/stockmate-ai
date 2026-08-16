@@ -36,6 +36,7 @@ from strategy_meta import (
 )
 from strategy_catalog import (
     ALL_SETUP_IDS,
+    family_for_setup,
     family_lineage,
     family_lineage_enabled,
     family_live_routing_enabled,
@@ -1581,6 +1582,58 @@ async def _apply_cross_strategy_arbitration(rdb, payload: dict) -> dict:
     strategy = str(payload.get("strategy") or "")
     if not stk_cd or not strategy or STOCK_ARBITRATION_TTL_SEC <= 0:
         return payload
+    if family_live_routing_enabled():
+        try:
+            family_id = family_for_setup(strategy).family_id
+        except ValueError:
+            reason = f"Unknown strategy family for {strategy}"
+            blocked = _apply_execution_decision(
+                {**payload, "cancel_type": "UNKNOWN_STRATEGY_FAMILY"},
+                "BLOCK",
+                reason=reason,
+            )
+            blocked["cancel_reason"] = reason
+            blocked["ai_reason"] = reason
+            return blocked
+        direction = str(payload.get("direction") or "LONG").upper()
+        if direction not in {"LONG", "SHORT"}:
+            direction = "LONG"
+        family_key = f"signal:family:{family_id}:{stk_cd}:{direction}"
+        try:
+            family_reserved = await rdb.set(
+                family_key,
+                strategy,
+                ex=STOCK_ARBITRATION_TTL_SEC,
+                nx=True,
+            )
+        except Exception as family_err:
+            blocked = _apply_execution_decision(
+                {**payload, "cancel_type": "FAMILY_DEDUP_UNAVAILABLE"},
+                "BLOCK",
+                reason=f"Family dedup unavailable: {type(family_err).__name__}",
+            )
+            blocked["skip_entry"] = True
+            blocked["cancel_reason"] = blocked["execution_reason"]
+            blocked["ai_reason"] = blocked["execution_reason"]
+            return blocked
+        if not family_reserved:
+            representative = await rdb.get(family_key)
+            if isinstance(representative, bytes):
+                representative = representative.decode("utf-8", errors="replace")
+            blocked = _apply_execution_decision(
+                {
+                    **payload,
+                    "cancel_type": "FAMILY_DEDUP",
+                    "strategy_family": family_id,
+                    "representative_strategy": str(representative or "UNKNOWN"),
+                },
+                "BLOCK",
+                reason=f"Family dedup: {family_id}/{stk_cd}/{direction} already reserved",
+            )
+            blocked["skip_entry"] = True
+            blocked["cancel_reason"] = blocked["execution_reason"]
+            blocked["ai_reason"] = blocked["execution_reason"]
+            return blocked
     key = f"arbitration:enter:{stk_cd}"
     try:
         reserved = await rdb.set(key, strategy, ex=STOCK_ARBITRATION_TTL_SEC, nx=True)
@@ -2094,6 +2147,12 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "claude_tp1": ai_result.get("claude_tp1"),
             "claude_tp2": ai_result.get("claude_tp2"),
             "claude_sl": ai_result.get("claude_sl"),
+            "validated_family_id": ai_result.get("validated_family_id"),
+            "validated_setup_id": ai_result.get("validated_setup_id"),
+            "independent_confirmations": ai_result.get("independent_confirmations"),
+            "ai_data_quality": ai_result.get("data_quality"),
+            "ai_risk_flags": ai_result.get("risk_flags"),
+            "ai_effective_rr": ai_result.get("effective_rr"),
             "tp2_price": None,
             "cancel_type": cancel_type or ai_result.get("cancel_type"),
             "threshold_used": threshold,

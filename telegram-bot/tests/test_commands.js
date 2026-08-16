@@ -261,6 +261,14 @@ function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0
         assert.deepStrictEqual(saved, ['S16_ACCUMULATION_SHADOW']);
     });
 
+    await test('/filter expands family aliases and deduplicates setup aliases', async () => {
+        const { commands, redisState } = buildCommands();
+        const ctx = createCtx('/filter g06 s4');
+        await commands.filter(ctx);
+        const saved = JSON.parse(redisState.kv.get('user_filter:100'));
+        assert.deepStrictEqual(saved, ['S4_BIG_CANDLE', 'S6_THEME_LAGGARD']);
+    });
+
     await test('/strategy accepts s16 manual run', async () => {
         const { commands } = buildCommands({
             runStrategy: { strategy: 'S16', published: 1 },

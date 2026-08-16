@@ -48,6 +48,18 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
 
     @Query("""
         SELECT s FROM TradingSignal s
+        WHERE s.strategyFamily = :familyId
+          AND s.createdAt >= :startAt
+          AND s.createdAt < :endAt
+        ORDER BY s.signalScore DESC NULLS LAST, s.createdAt DESC
+        """)
+    List<TradingSignal> findSignalsByFamilyCreatedBetween(
+            @Param("familyId") String familyId,
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Query("""
+        SELECT s FROM TradingSignal s
         WHERE s.createdAt >= :startAt
         ORDER BY s.signalScore DESC NULLS LAST, s.createdAt DESC
         """)
@@ -108,6 +120,24 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
             @Param("endAt") LocalDateTime endAt);
 
     @Query("""
+        SELECT s.strategyFamily,
+               COUNT(s),
+               SUM(CASE WHEN s.signalStatus = 'WIN'  THEN 1 ELSE 0 END),
+               SUM(CASE WHEN s.signalStatus = 'LOSS' THEN 1 ELSE 0 END),
+               AVG(CASE WHEN s.realizedPnl IS NOT NULL THEN s.realizedPnl ELSE 0 END)
+        FROM TradingSignal s
+        WHERE s.createdAt >= :startAt
+          AND s.createdAt < :endAt
+          AND s.strategyFamily IS NOT NULL
+          AND s.signalStatus IN ('WIN', 'LOSS', 'SENT', 'EXPIRED')
+        GROUP BY s.strategyFamily
+        ORDER BY s.strategyFamily
+        """)
+    List<Object[]> getFamilyPerformanceStats(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Query("""
         SELECT COUNT(s) > 0 FROM TradingSignal s
         WHERE s.stkCd = :stkCd
           AND s.positionStatus IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
@@ -119,6 +149,13 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
         WHERE s.positionStatus IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
         """)
     long countActivePositions();
+
+    @Query("""
+        SELECT COUNT(s) FROM TradingSignal s
+        WHERE s.positionStatus IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+          AND LOWER(TRIM(COALESCE(s.themeName, ''))) = LOWER(TRIM(:themeName))
+        """)
+    long countActivePositionsByTheme(@Param("themeName") String themeName);
 
     @Query("""
         SELECT s FROM TradingSignal s

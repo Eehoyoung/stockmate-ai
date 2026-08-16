@@ -25,12 +25,15 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 /** S8/S9/S11/S13~S16 대시보드 수동 실행 프록시(/api/trading/strategy/{code}/run) 검증. */
 @ExtendWith(MockitoExtension.class)
@@ -53,6 +56,32 @@ class TradingControllerPythonStrategyProxyTests {
     @Mock WebClient internalWebClient;
 
     @InjectMocks TradingController controller;
+
+    @Test
+    void familyPerformanceQueryAcceptsOnlyG01ThroughG07() {
+        var invalid = controller.getSignalPerformanceByFamily("S1");
+        assertEquals(HttpStatus.BAD_REQUEST, invalid.getStatusCode());
+
+        when(signalRepository.findSignalsByFamilyCreatedBetween(anyString(), any(), any()))
+                .thenReturn(List.of());
+        var valid = controller.getSignalPerformanceByFamily("g06");
+
+        assertEquals(HttpStatus.OK, valid.getStatusCode());
+        verify(signalRepository).findSignalsByFamilyCreatedBetween(
+                org.mockito.ArgumentMatchers.eq("G06"), any(), any());
+    }
+
+    @Test
+    void familySummaryUsesFamilyAggregationWithoutChangingLegacySummary() {
+        when(signalRepository.getFamilyPerformanceStats(any(), any())).thenReturn(List.of());
+        when(signalRepository.getStrategyPerformanceStats(any(), any())).thenReturn(List.of());
+
+        assertEquals(HttpStatus.OK, controller.getFamilyPerformanceSummary().getStatusCode());
+        assertEquals(HttpStatus.OK, controller.getPerformanceSummary().getStatusCode());
+
+        verify(signalRepository).getFamilyPerformanceStats(any(), any());
+        verify(signalRepository).getStrategyPerformanceStats(any(), any());
+    }
 
     @Test
     void unsupportedCodeIsRejectedBeforeCallingAiEngine() {

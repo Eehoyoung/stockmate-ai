@@ -66,4 +66,19 @@ class StrategyFamilyCatalogTests {
             assertFalse(StrategyFamilyCatalog.lineageEnabled());
         }
     }
+
+    @Test
+    void liveRoutingKillSwitchCanBeEnabledForVerifiedRuntime() {
+        String key = "ENABLE_STRATEGY_FAMILY_LIVE_ROUTING";
+        String previous = System.getProperty(key);
+        try {
+            System.setProperty(key, "true");
+            assertTrue(StrategyFamilyCatalog.liveRoutingEnabled());
+            System.setProperty(key, "false");
+            assertFalse(StrategyFamilyCatalog.liveRoutingEnabled());
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
 }

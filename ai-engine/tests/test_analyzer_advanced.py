@@ -334,6 +334,47 @@ class TestStrategyPrompts:
         assert "must not increase quantity" in prompt
         assert "Do not average Toss and Kiwoom values" in prompt
 
+    def test_family_ai_schema_accepts_exact_lineage(self):
+        from analyzer import _validate_family_ai_contract
+
+        result = {
+            "action": "ENTER", "ai_score": 82, "confidence": "HIGH",
+            "reason": "ok", "cancel_reason": None,
+            "validated_family_id": "G06", "validated_setup_id": "S4_BIG_CANDLE",
+            "independent_confirmations": ["S6_THEME_LAGGARD"],
+            "data_quality": "OK", "risk_flags": [],
+            "claude_tp1": 11000, "claude_tp2": 11500, "claude_sl": 9700,
+        }
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
+            validated = _validate_family_ai_contract(result, _sig("S4_BIG_CANDLE"))
+
+        assert validated["action"] == "ENTER"
+
+    @pytest.mark.parametrize("field,value", [
+        ("validated_family_id", "G05"),
+        ("validated_setup_id", "S6_THEME_LAGGARD"),
+        ("ai_score", 101),
+        ("data_quality", "UNKNOWN"),
+        ("risk_flags", "none"),
+    ])
+    def test_family_ai_schema_fails_closed_on_invalid_output(self, field, value):
+        from analyzer import _validate_family_ai_contract
+
+        result = {
+            "action": "ENTER", "ai_score": 82, "confidence": "HIGH",
+            "reason": "ok", "cancel_reason": None,
+            "validated_family_id": "G06", "validated_setup_id": "S4_BIG_CANDLE",
+            "independent_confirmations": [], "data_quality": "OK", "risk_flags": [],
+            "claude_tp1": 11000, "claude_tp2": 11500, "claude_sl": 9700,
+        }
+        result[field] = value
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
+            validated = _validate_family_ai_contract(result, _sig("S4_BIG_CANDLE"))
+
+        assert validated["action"] == "CANCEL"
+        assert validated["cancel_type"] == "AI_SCHEMA_INVALID"
+        assert validated["claude_tp1"] is None
+
     def test_s1_prompt_contains_gap(self):
         msg = self._get_prompt(_sig("S1_GAP_OPEN", gap_pct=4.0))
         assert "4.0" in msg

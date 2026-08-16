@@ -95,4 +95,11 @@ public final class StrategyFamilyCatalog {
         String value = System.getenv().getOrDefault("ENABLE_STRATEGY_FAMILY_LINEAGE", "false");
         return Set.of("1", "true", "yes", "on").contains(value.trim().toLowerCase());
     }
+
+    public static boolean liveRoutingEnabled() {
+        String value = System.getProperty(
+                "ENABLE_STRATEGY_FAMILY_LIVE_ROUTING",
+                System.getenv().getOrDefault("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", "false"));
+        return Set.of("1", "true", "yes", "on").contains(value.trim().toLowerCase());
+    }
 }

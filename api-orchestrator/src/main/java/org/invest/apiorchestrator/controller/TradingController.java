@@ -363,11 +363,32 @@ public class TradingController {
         return ResponseEntity.ok(signals);
     }
 
+    /** 오늘 신호를 신규 G family로 조회. 기존 setup 조회 계약은 그대로 유지한다. */
+    @GetMapping("/signals/performance/family/{familyId}")
+    public ResponseEntity<?> getSignalPerformanceByFamily(@PathVariable String familyId) {
+        String normalized = familyId == null ? "" : familyId.trim().toUpperCase();
+        if (!normalized.matches("G0[1-7]")) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "msg", "familyId must be G01 through G07"));
+        }
+        TradingDayWindow window = TradingDayWindow.of(KstClock.today());
+        return ResponseEntity.ok(signalRepository.findSignalsByFamilyCreatedBetween(
+                normalized, window.start(), window.end()));
+    }
+
     /** 전략별 가상 성과 요약 */
     @GetMapping("/signals/performance/summary")
     public ResponseEntity<List<Object[]>> getPerformanceSummary() {
         TradingDayWindow window = TradingDayWindow.of(KstClock.today());
         return ResponseEntity.ok(signalRepository.getStrategyPerformanceStats(window.start(), window.end()));
+    }
+
+    /** 신규 G family별 가상 성과 요약. legacy endpoint의 S별 집계는 변경하지 않는다. */
+    @GetMapping("/signals/performance/summary/family")
+    public ResponseEntity<List<Object[]>> getFamilyPerformanceSummary() {
+        TradingDayWindow window = TradingDayWindow.of(KstClock.today());
+        return ResponseEntity.ok(signalRepository.getFamilyPerformanceStats(window.start(), window.end()));
     }
 
     // ──────────────────────────────────────────────────────────────

@@ -4,8 +4,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def ensure_event_loop():
+def ensure_event_loop(monkeypatch):
     """Keep a live default event loop for legacy tests using get_event_loop()."""
+    # Unit tests must not inherit live-canary switches from the developer .env.
+    # Individual live-policy tests opt in explicitly with patch.dict/monkeypatch.
+    monkeypatch.setenv("ENABLE_STRATEGY_FAMILY_LINEAGE", "false")
+    monkeypatch.setenv("ENABLE_STRATEGY_FAMILY_SHADOW_SCORING", "false")
+    monkeypatch.setenv("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", "false")
     try:
         loop = asyncio.get_event_loop()
         if loop.is_closed():

@@ -116,6 +116,23 @@ public class SignalService {
                             activeCount, maxCount, stkCd, strategy);
                     return false;
                 }
+                String themeName = dto.getThemeName() == null ? "" : dto.getThemeName().trim();
+                if (StrategyFamilyCatalog.liveRoutingEnabled() && !themeName.isBlank()) {
+                    BigDecimal maxSectorPct = config.getMaxSectorPct();
+                    int maxThemePositions = Math.max(1, maxSectorPct
+                            .multiply(BigDecimal.valueOf(maxCount))
+                            .divide(BigDecimal.valueOf(100), 0, RoundingMode.FLOOR)
+                            .intValue());
+                    long activeThemeCount = signalRepository.countActivePositionsByTheme(themeName);
+                    if (activeThemeCount >= maxThemePositions) {
+                        logRiskEvent("THEME_EXPOSURE_EXCEEDED", stkCd, strategy, null,
+                                BigDecimal.valueOf(maxThemePositions), BigDecimal.valueOf(activeThemeCount),
+                                "동일 테마 활성 포지션 한도 초과: " + themeName, "신호 무시");
+                        log.warn("[Signal] 동일 테마 포지션 한도 초과 [{}/{} {}], 신호 무시 [{} {}]",
+                                activeThemeCount, maxThemePositions, themeName, stkCd, strategy);
+                        return false;
+                    }
+                }
             }
 
             TradingSignal signal = buildSignalEntity(dto);

@@ -135,6 +135,24 @@ const STRATEGY_MAP = {
     s16: 'S16_ACCUMULATION_SHADOW',
 };
 
+const FAMILY_FILTER_MAP = {
+    g01: ['S1_GAP_OPEN', 'S2_VI_PULLBACK', 'S12_CLOSING'],
+    g02: ['S3_INST_FRGN', 'S5_PROG_FRGN', 'S11_FRGN_CONT'],
+    g03: ['S16_ACCUMULATION_SHADOW'],
+    g04: ['S8_GOLDEN_CROSS', 'S9_PULLBACK_SWING', 'S15_MOMENTUM_ALIGN'],
+    g05: ['S7_ICHIMOKU_BREAKOUT', 'S10_NEW_HIGH', 'S13_BOX_BREAKOUT'],
+    g06: ['S4_BIG_CANDLE', 'S6_THEME_LAGGARD'],
+    g07: ['S14_OVERSOLD_BOUNCE'],
+};
+
+function expandStrategyFilterArgs(args) {
+    return dedupe(args.flatMap((arg) => {
+        const key = String(arg || '').toLowerCase();
+        if (FAMILY_FILTER_MAP[key]) return FAMILY_FILTER_MAP[key];
+        return STRATEGY_MAP[key] ? [STRATEGY_MAP[key]] : [];
+    }));
+}
+
 const CANDIDATE_MARKETS = {
     '000': { code: '000', label: '전체' },
     all: { code: '000', label: '전체' },
@@ -1363,12 +1381,10 @@ const filterEnhanced = guard(async (ctx) => {
         return ctx.reply('✅ Filter cleared - receiving all strategies');
     }
 
-    const selected = dedupe(args
-        .map((arg) => STRATEGY_MAP[arg.toLowerCase()])
-        .filter(Boolean));
+    const selected = expandStrategyFilterArgs(args);
 
     if (selected.length === 0) {
-        return ctx.reply('❌ No valid strategy. e.g. /filter s1 s4 s8 s14');
+        return ctx.reply('❌ No valid strategy. e.g. /filter g04 or /filter s1 s4');
     }
 
     await redis.set(filterKey, JSON.stringify(selected));
