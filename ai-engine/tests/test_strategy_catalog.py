@@ -46,6 +46,8 @@ def test_family_lineage_preserves_legacy_setup():
 
     lineage = family_lineage("S9_PULLBACK_SWING")
     assert lineage == {
+        "family_id": "G04",
+        "family_name": "TREND_PHASE",
         "strategy_family": "G04",
         "strategy_family_name": "TREND_PHASE",
         "primary_setup_id": "S9_PULLBACK_SWING",

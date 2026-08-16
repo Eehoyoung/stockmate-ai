@@ -138,6 +138,8 @@ def family_lineage(setup_id: str) -> dict[str, object]:
     """Additive payload fields; the caller keeps the legacy strategy value."""
     family = family_for_setup(setup_id)
     return {
+        "family_id": family.family_id,
+        "family_name": family.name,
         "strategy_family": family.family_id,
         "strategy_family_name": family.name,
         "primary_setup_id": setup_id,

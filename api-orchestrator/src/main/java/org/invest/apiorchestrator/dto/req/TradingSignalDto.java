@@ -107,6 +107,8 @@ public class TradingSignalDto {
         m.put("strategy",        strategy != null ? strategy.name() : null);
         if (strategy != null && StrategyFamilyCatalog.lineageEnabled()) {
             StrategyFamilyCatalog.Family family = StrategyFamilyCatalog.familyFor(strategy);
+            m.put("family_id", family.id());
+            m.put("family_name", family.name());
             m.put("strategy_family", family.id());
             m.put("strategy_family_name", family.name());
             m.put("primary_setup_id", strategy.name());
