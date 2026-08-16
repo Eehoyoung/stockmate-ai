@@ -1246,6 +1246,7 @@ class TestCrossStrategyArbitration:
         from queue_worker import _apply_cross_strategy_arbitration
 
         rdb = _make_rdb()
+        rdb.set = AsyncMock(return_value=False)
         rdb.get = AsyncMock(return_value="S8_GOLDEN_CROSS")
         payload = {
             "stk_cd": "005930",
@@ -1260,6 +1261,24 @@ class TestCrossStrategyArbitration:
         assert result["execution_decision"] == "BLOCK"
         assert result["cancel_type"] == "CROSS_STRATEGY_ARBITRATION"
         assert result["representative_strategy"] == "S8_GOLDEN_CROSS"
+
+    def test_redis_failure_blocks_enter_fail_closed(self):
+        from queue_worker import _apply_cross_strategy_arbitration
+
+        rdb = _make_rdb()
+        rdb.set = AsyncMock(side_effect=RuntimeError("redis unavailable"))
+        payload = {
+            "stk_cd": "005930",
+            "strategy": "S13_BOX_BREAKOUT",
+            "action": "ENTER",
+            "execution_decision": "ENTER",
+        }
+
+        result = _run(_apply_cross_strategy_arbitration(rdb, payload))
+
+        assert result["action"] == "CANCEL"
+        assert result["execution_decision"] == "BLOCK"
+        assert result["cancel_type"] == "CROSS_STRATEGY_ARBITRATION_UNAVAILABLE"
 
 
 class TestProgramFlowGate:

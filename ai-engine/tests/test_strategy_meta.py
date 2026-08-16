@@ -138,3 +138,16 @@ def test_s16_strategy_meta_is_registered(monkeypatch):
     assert strategy_meta.get_hold_to_enter_threshold(strategy) == 85.0
     assert strategy_meta.get_strategy_base_rr_gate(strategy) == 1.60
     assert strategy_meta.get_strategy_rr_group(strategy) == "flow"
+
+
+def test_family_live_routing_uses_canonical_rr_and_rolls_back(monkeypatch):
+    import strategy_meta
+
+    monkeypatch.setenv("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", "true")
+    assert strategy_meta.get_strategy_base_rr_gate("S1_GAP_OPEN") == 1.50
+    assert strategy_meta.get_strategy_base_rr_gate("S2_VI_PULLBACK") == 1.80
+    assert strategy_meta.get_strategy_base_rr_gate("S16_ACCUMULATION_SHADOW") == 1.80
+
+    monkeypatch.setenv("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", "false")
+    assert strategy_meta.get_strategy_base_rr_gate("S1_GAP_OPEN") == 1.20
+    assert strategy_meta.get_strategy_base_rr_gate("S16_ACCUMULATION_SHADOW") == 1.60

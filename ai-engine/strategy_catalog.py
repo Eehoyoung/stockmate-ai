@@ -21,6 +21,13 @@ def family_lineage_enabled() -> bool:
     }
 
 
+def family_live_routing_enabled() -> bool:
+    """Master kill switch for family policy to influence live decisions."""
+    return os.getenv("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 @dataclass(frozen=True)
 class StrategyFamily:
     family_id: str

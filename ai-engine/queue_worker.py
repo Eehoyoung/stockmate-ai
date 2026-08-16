@@ -1578,27 +1578,41 @@ async def _apply_cross_strategy_arbitration(rdb, payload: dict) -> dict:
         return payload
     key = f"arbitration:enter:{stk_cd}"
     try:
-        existing = await rdb.get(key)
-        if existing and str(existing) != strategy:
+        reserved = await rdb.set(key, strategy, ex=STOCK_ARBITRATION_TTL_SEC, nx=True)
+        if not reserved:
+            existing = await rdb.get(key)
+            existing_strategy = (
+                existing.decode("utf-8", errors="replace")
+                if isinstance(existing, bytes)
+                else str(existing or "UNKNOWN")
+            )
             blocked = dict(payload)
             blocked["action"] = "CANCEL"
             blocked["execution_decision"] = "BLOCK"
             blocked["confidence"] = "LOW"
             blocked["skip_entry"] = True
             blocked["cancel_type"] = "CROSS_STRATEGY_ARBITRATION"
-            blocked["representative_strategy"] = str(existing)
+            blocked["representative_strategy"] = existing_strategy
             blocked["supporting_strategies"] = list(dict.fromkeys([
                 *(blocked.get("supporting_strategies") or []),
                 strategy,
             ]))
-            reason = f"Cross-strategy arbitration: {stk_cd} already represented by {existing}"
+            reason = f"Cross-strategy arbitration: {stk_cd} already represented by {existing_strategy}"
             blocked["cancel_reason"] = reason
             blocked["ai_reason"] = reason
             return blocked
-        if not existing:
-            await rdb.set(key, strategy, ex=STOCK_ARBITRATION_TTL_SEC, nx=True)
     except Exception as arb_err:
-        logger.debug("[Worker] cross-strategy arbitration skipped [%s %s]: %s", stk_cd, strategy, arb_err)
+        blocked = dict(payload)
+        blocked["action"] = "CANCEL"
+        blocked["execution_decision"] = "BLOCK"
+        blocked["confidence"] = "LOW"
+        blocked["skip_entry"] = True
+        blocked["cancel_type"] = "CROSS_STRATEGY_ARBITRATION_UNAVAILABLE"
+        reason = f"Cross-strategy arbitration unavailable: {type(arb_err).__name__}"
+        blocked["cancel_reason"] = reason
+        blocked["ai_reason"] = reason
+        logger.error("[Worker] %s [%s %s]", reason, stk_cd, strategy)
+        return blocked
     return payload
 
 

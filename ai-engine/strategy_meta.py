@@ -13,7 +13,13 @@ ai-engine/strategy_meta.py
 
 import os
 
-from strategy_catalog import ALL_SETUP_IDS, DAY_SETUP_IDS, DEFAULT_SWING_SETUP_IDS
+from strategy_catalog import (
+    ALL_SETUP_IDS,
+    DAY_SETUP_IDS,
+    DEFAULT_SWING_SETUP_IDS,
+    EFFECTIVE_RR_BY_SETUP,
+    family_live_routing_enabled,
+)
 
 # ── 전략 분류 ────────────────────────────────────────────────────────────────
 # 스윙 전략 기본값 (SWING_STRATEGIES 환경변수로 오버라이드 가능)
@@ -235,6 +241,8 @@ def get_strategy_base_rr_gate(strategy: str | None) -> float:
     """전략별 기본 실행 R:R hard gate."""
     if not strategy:
         return 1.40
+    if family_live_routing_enabled() and strategy in EFFECTIVE_RR_BY_SETUP:
+        return float(EFFECTIVE_RR_BY_SETUP[strategy])
     return float(STRATEGY_BASE_RR_GATES.get(strategy, 1.40))
 
 

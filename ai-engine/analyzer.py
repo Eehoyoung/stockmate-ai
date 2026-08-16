@@ -16,6 +16,7 @@ from typing import Optional
 import anthropic
 from strategy_meta import get_persona
 from strategy_meta import SWING_STRATEGIES as _TOSS_SWING_STRATEGIES
+from strategy_catalog import ALL_SETUP_IDS, family_for_setup, family_live_routing_enabled
 from toss_client import fetch_stock_risk_context as _toss_fetch_stock_risk_context
 
 logger = logging.getLogger(__name__)
@@ -104,12 +105,31 @@ def _build_system_prompt(signal: dict) -> str:
     """기본 시스템 프롬프트에 전략별 페르소나를 자동 주입한다."""
     strategy = signal.get("strategy")
     base = _get_system_prompt(strategy)
-    if not ENABLE_STRATEGY_PERSONA_INJECTION:
-        return base
-    persona = signal.get("persona") or get_persona(strategy)
-    if not persona:
-        return base
-    return f"{base}\n\n[전략별 자동주입 페르소나]\n{persona}"
+    sections = [base]
+    if ENABLE_STRATEGY_PERSONA_INJECTION:
+        persona = signal.get("persona") or get_persona(strategy)
+        if persona:
+            sections.append(f"[전략별 자동주입 페르소나]\n{persona}")
+    if family_live_routing_enabled() and strategy in ALL_SETUP_IDS:
+        family = family_for_setup(strategy)
+        matched = signal.get("matched_setup_ids") or [strategy]
+        sections.append(
+            "[STRATEGY FAMILY LIVE GUARD]\n"
+            f"family_id={family.family_id}; family_name={family.name}; "
+            f"primary_setup_id={strategy}; matched_setup_ids={json.dumps(matched, ensure_ascii=False)}\n"
+            "The setup-specific prompt above remains authoritative. The family is an "
+            "orchestration and attribution layer, not permission to blend setup rules, "
+            "TP/SL policies, scores, or position sizes.\n"
+            "Never override a failed hard gate, stale or missing required Kiwoom data, "
+            "effective-RR gate, session gate, active-position guard, or risk limit. "
+            "Toss data is supplementary and never an execution-price, order, fill, VI, "
+            "or real-time quote source. Do not average Toss and Kiwoom values.\n"
+            "Do not infer missing fields. Correlated setup confirmations may explain a "
+            "decision but must not increase quantity. If any required guard is failed or "
+            "unknown, return CANCEL. For ENTER, prices must satisfy "
+            "claude_tp2 >= claude_tp1 > entry_price > claude_sl; otherwise return CANCEL."
+        )
+    return "\n\n".join(sections)
 
 
 def _fmt_tpsl(signal: dict) -> str:

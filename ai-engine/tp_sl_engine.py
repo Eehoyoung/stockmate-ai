@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from price_utils import round_to_tick
+from strategy_catalog import EFFECTIVE_RR_BY_SETUP, family_live_routing_enabled
 from risk.rr import (
     calc_raw_rr as _risk_calc_raw_rr,
     calc_rr as _risk_calc_rr,
@@ -143,6 +144,8 @@ def _strategy_policy(strategy: str) -> dict[str, object]:
         **_SWING_TRAILING_DEFAULT,
     }
     base.update(_STRATEGY_POLICY.get(strategy.upper(), {}))
+    if family_live_routing_enabled() and strategy.upper() in EFFECTIVE_RR_BY_SETUP:
+        base["min_rr"] = EFFECTIVE_RR_BY_SETUP[strategy.upper()]
     return base
 
 

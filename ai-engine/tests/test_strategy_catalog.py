@@ -54,6 +54,22 @@ def test_family_lineage_preserves_legacy_setup():
     }
 
 
+def test_live_routing_kill_switch_defaults_off(monkeypatch):
+    from strategy_catalog import family_live_routing_enabled
+
+    monkeypatch.delenv("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", raising=False)
+    assert family_live_routing_enabled() is False
+    monkeypatch.setenv("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", "true")
+    assert family_live_routing_enabled() is True
+
+
+def test_every_setup_has_canonical_effective_rr():
+    from strategy_catalog import ALL_SETUP_IDS, EFFECTIVE_RR_BY_SETUP
+
+    assert set(EFFECTIVE_RR_BY_SETUP) == set(ALL_SETUP_IDS)
+    assert all(value >= 1.5 for value in EFFECTIVE_RR_BY_SETUP.values())
+
+
 @pytest.mark.asyncio
 async def test_claude_candidate_pool_catalog_includes_s16():
     import claude_analyst

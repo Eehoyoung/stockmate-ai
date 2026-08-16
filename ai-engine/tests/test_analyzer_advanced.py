@@ -309,6 +309,31 @@ class TestStrategyPrompts:
         assert "custom persona marker" in system_prompt
         assert "VI 눌림목 전담" not in system_prompt
 
+    def test_family_live_guard_is_absent_when_kill_switch_is_off(self):
+        from analyzer import _build_system_prompt
+
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "false"}):
+            prompt = _build_system_prompt(_sig("S4_BIG_CANDLE"))
+
+        assert "STRATEGY FAMILY LIVE GUARD" not in prompt
+
+    def test_family_live_guard_keeps_setup_prompt_and_blocks_rule_blending(self):
+        import analyzer
+        from analyzer import _build_system_prompt
+
+        signal = _sig(
+            "S4_BIG_CANDLE",
+            matched_setup_ids=["S4_BIG_CANDLE", "S6_THEME_LAGGARD"],
+        )
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
+            prompt = _build_system_prompt(signal)
+
+        assert analyzer._STRATEGY_PROMPTS["S4_BIG_CANDLE"] in prompt
+        assert "family_id=G06" in prompt
+        assert "S6_THEME_LAGGARD" in prompt
+        assert "must not increase quantity" in prompt
+        assert "Do not average Toss and Kiwoom values" in prompt
+
     def test_s1_prompt_contains_gap(self):
         msg = self._get_prompt(_sig("S1_GAP_OPEN", gap_pct=4.0))
         assert "4.0" in msg

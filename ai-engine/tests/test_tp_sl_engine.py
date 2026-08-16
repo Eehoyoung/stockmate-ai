@@ -1,6 +1,18 @@
 from tp_sl_engine import TpSlResult, _apply_policy_metadata, calc_tp_sl
 
 
+def test_family_live_routing_overrides_policy_and_kill_switch_restores_legacy(monkeypatch):
+    import tp_sl_engine
+
+    monkeypatch.setenv("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", "true")
+    assert tp_sl_engine._strategy_policy("S12_CLOSING")["min_rr"] == 1.50
+    assert tp_sl_engine._strategy_policy("S16_ACCUMULATION_SHADOW")["min_rr"] == 1.80
+
+    monkeypatch.setenv("ENABLE_STRATEGY_FAMILY_LIVE_ROUTING", "false")
+    assert tp_sl_engine._strategy_policy("S12_CLOSING")["min_rr"] == 1.45
+    assert tp_sl_engine._strategy_policy("S16_ACCUMULATION_SHADOW")["min_rr"] == 1.30
+
+
 def _series(base: float, step: float, size: int) -> list[float]:
     return [base + step * i for i in range(size)]
 
