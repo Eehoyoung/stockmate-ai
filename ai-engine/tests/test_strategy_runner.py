@@ -97,6 +97,35 @@ class TestPushSignals:
         assert isinstance(payload["enqueued_at"], float)
         assert payload["stk_cd"] == "005930"
 
+    def test_known_setup_adds_family_lineage_without_replacing_strategy(self):
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        signals = [{"stk_cd": "005930", "strategy": "S9_PULLBACK_SWING", "score": 70.0}]
+        with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LINEAGE": "true"}):
+            _run(_push_signals(rdb, signals, "S9_PULLBACK_SWING"))
+
+        payload = json.loads(rdb.lpush.call_args[0][1])
+        assert payload["strategy"] == "S9_PULLBACK_SWING"
+        assert payload["strategy_family"] == "G04"
+        assert payload["strategy_family_name"] == "TREND_PHASE"
+        assert payload["primary_setup_id"] == "S9_PULLBACK_SWING"
+        assert payload["matched_setup_ids"] == ["S9_PULLBACK_SWING"]
+        assert payload["family_policy_version"] == "family_v1_2026_08_16"
+
+    def test_family_lineage_kill_switch_defaults_off(self):
+        from strategy_runner import _push_signals
+
+        rdb = _make_rdb(lpush=1, expire=True)
+        signals = [{"stk_cd": "005930", "strategy": "S9_PULLBACK_SWING", "score": 70.0}]
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ENABLE_STRATEGY_FAMILY_LINEAGE", None)
+            _run(_push_signals(rdb, signals, "S9_PULLBACK_SWING"))
+
+        payload = json.loads(rdb.lpush.call_args[0][1])
+        assert payload["strategy"] == "S9_PULLBACK_SWING"
+        assert "strategy_family" not in payload
+
     def test_preserves_upstream_enqueued_at(self):
         from strategy_runner import _push_signals
 

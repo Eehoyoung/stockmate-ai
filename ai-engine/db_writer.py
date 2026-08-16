@@ -792,7 +792,10 @@ async def insert_python_signal(
                         sell_zone1_low, sell_zone1_high, zone_rr,
                         shadow_features, stk_nm,
                         entry_qty,
-                        execution_decision, decision_stage
+                        execution_decision, decision_stage,
+                        strategy_family, strategy_family_name, primary_setup_id,
+                        matched_setup_ids, family_policy_version,
+                        blocking_reasons, degraded_reasons, final_score
                     ) VALUES (
                         $1,$2,$3,$4,$5,
                         $6,$7,$8,$9,$10,
@@ -810,7 +813,10 @@ async def insert_python_signal(
                         $53,$54,$55,
                         $56::jsonb, $57,
                         $58,
-                        $59, $60
+                        $59, $60,
+                        $61, $62, $63,
+                        $64::jsonb, $65,
+                        $66::jsonb, $67::jsonb, $68
                     ) RETURNING id
                     """,
                     signal.get("stk_cd", ""),
@@ -875,6 +881,14 @@ async def insert_python_signal(
                     # action='HOLD' 0건). 어느 게이트에서 갈렸는지 남긴다.
                     _clip_str(signal.get("execution_decision"), 10),
                     _clip_str(signal.get("decision_stage"), 30),
+                    _clip_str(signal.get("strategy_family"), 3),
+                    _clip_str(signal.get("strategy_family_name"), 40),
+                    _clip_str(signal.get("primary_setup_id") or signal.get("strategy"), 40),
+                    json.dumps(signal.get("matched_setup_ids") or [signal.get("strategy")], ensure_ascii=False),
+                    _clip_str(signal.get("family_policy_version"), 40),
+                    json.dumps(signal.get("blocking_reasons") or [], ensure_ascii=False),
+                    json.dumps(signal.get("degraded_reasons") or [], ensure_ascii=False),
+                    _opt_num(signal.get("final_score")),
                 )
                 if row:
                     signal_id = row["id"]

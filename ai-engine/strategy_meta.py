@@ -13,14 +13,11 @@ ai-engine/strategy_meta.py
 
 import os
 
+from strategy_catalog import ALL_SETUP_IDS, DAY_SETUP_IDS, DEFAULT_SWING_SETUP_IDS
+
 # ── 전략 분류 ────────────────────────────────────────────────────────────────
 # 스윙 전략 기본값 (SWING_STRATEGIES 환경변수로 오버라이드 가능)
-_DEFAULT_SWING = (
-    "S3_INST_FRGN,S5_PROG_FRGN,"
-    "S7_ICHIMOKU_BREAKOUT,S8_GOLDEN_CROSS,S9_PULLBACK_SWING,S10_NEW_HIGH,"
-    "S11_FRGN_CONT,S12_CLOSING,S13_BOX_BREAKOUT,"
-    "S14_OVERSOLD_BOUNCE,S15_MOMENTUM_ALIGN,S16_ACCUMULATION_SHADOW"
-)
+_DEFAULT_SWING = ",".join(sorted(DEFAULT_SWING_SETUP_IDS))
 
 #: 스윙 전략 이름 집합 – dedup TTL 86400s (하루 1회), ForceClose 시 보유 유지
 SWING_STRATEGIES: frozenset[str] = frozenset(
@@ -28,15 +25,10 @@ SWING_STRATEGIES: frozenset[str] = frozenset(
 )
 
 #: 데이 트레이딩 전략 이름 집합 – dedup TTL 3600s (시간당 1회), 장 마감 시 ForceClose
-DAY_STRATEGIES: frozenset[str] = frozenset({
-    "S1_GAP_OPEN",
-    "S2_VI_PULLBACK",
-    "S4_BIG_CANDLE",
-    "S6_THEME_LAGGARD",
-})
+DAY_STRATEGIES: frozenset[str] = DAY_SETUP_IDS
 
 #: 전체 전략 이름 집합
-ALL_STRATEGIES: frozenset[str] = DAY_STRATEGIES | SWING_STRATEGIES
+ALL_STRATEGIES: frozenset[str] = ALL_SETUP_IDS
 
 
 # ── Claude 호출 임계값 ────────────────────────────────────────────────────────

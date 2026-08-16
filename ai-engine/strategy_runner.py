@@ -31,6 +31,7 @@ from datetime import time, timedelta, timezone
 
 from market_session import current_session, is_trading_active
 from score_utils import normalize_runner_signal
+from strategy_catalog import ALL_SETUP_IDS, family_lineage, family_lineage_enabled
 from utils import normalize_stock_code
 
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
@@ -294,6 +295,13 @@ async def _push_signals(rdb, signals: list, strategy_name: str) -> int:
         stk_cd = normalize_stock_code(sig.get("stk_cd", ""))
         sig["stk_cd"] = stk_cd
         normalize_runner_signal(sig, strategy_name)
+        # Additive family lineage.  Keep ``strategy`` as the immutable legacy
+        # setup id so existing DB constraints, prompts, reports and consumers
+        # remain compatible during shadow migration.
+        setup_id = str(sig.get("strategy") or strategy_name)
+        if family_lineage_enabled() and setup_id in ALL_SETUP_IDS:
+            for key, value in family_lineage(setup_id).items():
+                sig.setdefault(key, value)
 
         dedup_ttl = SWING_DEDUP_TTL_SEC if strategy_name in _SWING_STRATEGIES else INTRADAY_DEDUP_TTL_SEC
         dedup_key = f"scanner:dedup:{strategy_name}:{stk_cd}"

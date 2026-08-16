@@ -320,6 +320,32 @@ public class TradingSignal {
     @Column(name = "shadow_features", columnDefinition = "jsonb")
     private String shadowFeatures;
 
+    // ── G01~G07 additive family lineage (V55) ──────────────────────────────
+    // strategy remains the immutable S1~S16 setup id for compatibility.
+    @Column(name = "strategy_family", length = 3)
+    private String strategyFamily;
+
+    @Column(name = "strategy_family_name", length = 40)
+    private String strategyFamilyName;
+
+    @Column(name = "primary_setup_id", length = 40)
+    private String primarySetupId;
+
+    @Column(name = "matched_setup_ids", columnDefinition = "jsonb")
+    private String matchedSetupIds;
+
+    @Column(name = "family_policy_version", length = 40)
+    private String familyPolicyVersion;
+
+    @Column(name = "blocking_reasons", columnDefinition = "jsonb")
+    private String blockingReasons;
+
+    @Column(name = "degraded_reasons", columnDefinition = "jsonb")
+    private String degradedReasons;
+
+    @Column(name = "final_score", precision = 5, scale = 2)
+    private BigDecimal finalScore;
+
     // ── 도메인 메서드 ────────────────────────────────────────────────────
     public void updateStatus(SignalStatus status) {
         this.signalStatus = status;

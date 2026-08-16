@@ -24,6 +24,7 @@ from indicator_rsi import fetch_minute_candles, get_rsi_daily, get_rsi_minute
 from indicator_stochastic import get_stochastic_daily, get_stochastic_minute
 from ma_utils import _safe_price, _safe_vol, fetch_daily_candles
 from redis_reader import get_hoga_with_status, get_tick_with_status
+from strategy_catalog import SETUP_KEY_TO_ID, SETUP_NUMBERS
 from utils import normalize_stock_code, safe_float as _sf
 
 logger = logging.getLogger(__name__)
@@ -34,23 +35,7 @@ MINUTE_SCOPE = os.getenv("CLAUDE_ANALYST_MINUTE_SCOPE", "5")
 
 _claude_client: anthropic.AsyncAnthropic | None = None
 
-_STRATEGY_NAMES: dict[str, str] = {
-    "s1": "S1_GAP_OPEN",
-    "s2": "S2_VI_PULLBACK",
-    "s3": "S3_INST_FRGN",
-    "s4": "S4_BIG_CANDLE",
-    "s5": "S5_PROG_FRGN",
-    "s6": "S6_THEME_LAGGARD",
-    "s7": "S7_ICHIMOKU_BREAKOUT",
-    "s8": "S8_GOLDEN_CROSS",
-    "s9": "S9_PULLBACK_SWING",
-    "s10": "S10_NEW_HIGH",
-    "s11": "S11_FRGN_CONT",
-    "s12": "S12_CLOSING",
-    "s13": "S13_BOX_BREAKOUT",
-    "s14": "S14_OVERSOLD_BOUNCE",
-    "s15": "S15_MOMENTUM_ALIGN",
-}
+_STRATEGY_NAMES: dict[str, str] = SETUP_KEY_TO_ID
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -165,7 +150,7 @@ def _moving_average(closes: list[float], period: int) -> float | None:
 
 async def _check_candidate_pools(rdb, stk_cd: str) -> list[str]:
     found: list[str] = []
-    for strategy in range(1, 16):
+    for strategy in SETUP_NUMBERS:
         key_name = f"s{strategy}"
         for market in ("001", "101"):
             try:

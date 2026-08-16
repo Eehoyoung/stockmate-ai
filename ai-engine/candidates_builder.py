@@ -18,6 +18,7 @@ from http_utils import validate_kiwoom_response, kiwoom_post
 from redis_reader import get_strength_with_status
 from strategy_meta import normalize_market_type as _normalize_market_type
 from toss_client import fetch_market_ranking as _toss_fetch_market_ranking, toss_enabled as _toss_enabled
+from strategy_catalog import SETUP_NUMBERS
 from utils import safe_float as _clean, normalize_stock_code
 from config import KIWOOM_BASE_URL, MARKET_LIST as MARKETS
 
@@ -280,10 +281,6 @@ _EXCLUDE_STK_NM_KEYWORDS = (
 # 불리하게 작동해 정당한 ENTER 신호가 REST-fallback만 남은 채 차단되는 사고가
 # 있었다(2026-08-05 조사). S7/S8/S9와 같은 20점 티어로 상향해 유니버스 크기 대비
 # 형평성을 맞춘다.
-#: 후보 풀 스캔 상한. 전략을 추가할 때 이 값만 올리면 watchlist 통합 루프가
-#: 자동으로 따라온다. 하드코딩된 range(1, 16)이 s16을 누락시킨 사고 재발 방지용.
-_MAX_STRATEGY_NUM = 16
-
 _STRATEGY_PRIORITY_WEIGHT = {
     "s1": 30, "s2": 30, "s4": 30, "s13": 30,
     "s10": 25,
@@ -430,7 +427,7 @@ async def _prioritize_existing_candidate_pools(rdb, market: str, scores: dict[st
     """Reorder live strategy pools in place, preserving membership and each TTL."""
     if not scores:
         return
-    for strategy_no in range(1, 16):
+    for strategy_no in SETUP_NUMBERS:
         key = f"candidates:s{strategy_no}:{market}"
         try:
             codes = await rdb.lrange(key, 0, -1)
@@ -452,7 +449,7 @@ async def _prioritize_existing_candidate_pools(rdb, market: str, scores: dict[st
 async def _build_live_confluence(token: str, market: str, rdb) -> None:
     """Immediately enrich active candidate pools with liquidity, flow, and order-book ranks."""
     candidate_codes: set[str] = set()
-    for strategy_no in range(1, 16):
+    for strategy_no in SETUP_NUMBERS:
         try:
             candidate_codes.update(
                 normalize_stock_code(code) for code in await rdb.lrange(f"candidates:s{strategy_no}:{market}", 0, -1)
@@ -1961,7 +1958,7 @@ async def _refresh_watchlist(rdb, ttl: int = 900) -> None:
     # 굳어 있어 s16 후보 풀이 watchlist/ZSET에 한 번도 반영되지 않았고, 그 결과
     # S16 종목은 websocket-listener의 동적 구독 대상에서 통째로 빠져 있었다.
     # (같은 날 발견된 trading_signals_strategy_check의 S16 누락과 동일 계열 버그.)
-    for n in range(1, _MAX_STRATEGY_NUM + 1):
+    for n in SETUP_NUMBERS:
         sid = f"s{n}"
         for mkt in MARKETS:
             try:
