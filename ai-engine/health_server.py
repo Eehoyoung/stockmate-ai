@@ -11,10 +11,13 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
 logger = logging.getLogger("health_server")
+KST = ZoneInfo("Asia/Seoul")
 
 
 def _env_flag(name: str, default: str = "false") -> bool:
@@ -217,6 +220,25 @@ async def run_health_server(port: int, rdb) -> None:
             score_result["score_mode"] = "deep" if enable_ai else "fast"
             score_result["used_cache"] = claude_used_cache
             score_result["cache_scope"] = "claude_only" if enable_ai else "none"
+            score_result["strategy_count"] = 16
+            score_result["generated_at"] = datetime.now(KST).isoformat()
+            score_result["request_options"] = {"mode": score_result["score_mode"], "refresh": refresh}
+            ranked_results = score_result.get("results") or []
+            score_result["best_match"] = ranked_results[0] if ranked_results else None
+            family_counts = {}
+            for item in ranked_results:
+                family_id = item.get("strategy_family") or item.get("family_id") or "UNKNOWN"
+                family_counts[family_id] = family_counts.get(family_id, 0) + 1
+            score_result["family_matches"] = family_counts
+            freshness = (score_result.get("data") or {}).get("freshness") or {}
+            states = [str((v or {}).get("state") or "unknown").upper() for v in freshness.values()]
+            if any(state in {"STALE", "CANCEL", "MISSING"} for state in states):
+                quality = "STALE"
+            elif any(state in {"CAUTION", "UNKNOWN"} for state in states) or not states:
+                quality = "CAUTION"
+            else:
+                quality = "FRESH"
+            score_result["data_quality"] = {"status": quality, "freshness": freshness}
             if enable_ai and cache_ttl > 0 and not score_result.get("error") and not claude_result.get("error") and not claude_used_cache:
                 try:
                     await rdb.set(
@@ -250,6 +272,28 @@ async def run_health_server(port: int, rdb) -> None:
             logger.error("[Health] /news/brief error: %s", e)
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _news_brief_history_handler(request):
+        try:
+            limit = max(1, min(int(request.rel_url.query.get("limit", "30")), 100))
+            raw_items = await rdb.lrange("news:brief:history", 0, limit - 1)
+            items = []
+            for raw in raw_items or []:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8")
+                try:
+                    item = json.loads(raw)
+                    if isinstance(item, dict):
+                        items.append(item)
+                except (TypeError, ValueError):
+                    continue
+            return web.json_response(
+                {"count": len(items), "items": items},
+                dumps=lambda o: json.dumps(o, ensure_ascii=False, default=str),
+            )
+        except Exception as e:
+            logger.error("[Health] /news/brief/history error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
     app = web.Application()
     app.router.add_get("/health", _health_handler)
     app.router.add_get("/candidates", _candidates_handler)
@@ -257,6 +301,7 @@ async def run_health_server(port: int, rdb) -> None:
     app.router.add_get("/analyze/{stk_cd}", _analyze_handler)
     app.router.add_get("/score/{stk_cd}", _score_handler)
     app.router.add_get("/news/brief", _news_brief_handler)
+    app.router.add_get("/news/brief/history", _news_brief_history_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()

@@ -1032,7 +1032,7 @@ function formatUserSettings(filter, watchlist) {
 }
 
 /**
- * /score {종목코드} — 15전략 심사 결과 포맷
+ * /score {종목코드} — S1~S16 전략 심사 결과 포맷
  *
  * @param {Object} scoreData  ai-engine /score/{stk_cd} 응답
  *   { stk_cd, stk_nm, no_match, matched_count, results, skipped, data }
@@ -1110,7 +1110,7 @@ function _formatClaudeFull(cf, stkLabel) {
 }
 
 function formatStockScore(scoreData) {
-    const { stk_cd, stk_nm, no_match, matched_count, results, skipped, data, claude_full, score_mode, used_cache } = scoreData;
+    const { stk_cd, stk_nm, no_match, matched_count, results, skipped, data, claude_full, score_mode, used_cache, data_quality, family_matches, checked_at, generated_at } = scoreData;
     const stkLabel = stk_nm ? `${stk_nm}(${stk_cd})` : stk_cd;
 
     // ── 공통 헤더 (실시간 지표) ─────────────────────────────────
@@ -1138,11 +1138,15 @@ function formatStockScore(scoreData) {
     let header =
         `🔍 <b>[통합 분석] ${stkLabel}</b>\n` +
         `💰 현재가: <b>${curPrc.toLocaleString()}원</b>  <b>${fluSign}${fluRt}%</b>\n` +
-        `Mode: <b>${score_mode === 'fast' ? 'FAST' : 'DEEP'}</b>${used_cache ? ' | cache' : ''}\n` +
+        `분석 방식: <b>${score_mode === 'fast' ? '빠른 규칙 평가' : 'AI 정밀 평가'}</b>${used_cache ? ' | AI 캐시 재사용' : ''}\n` +
         `MA5: ${ma5} | MA20: ${ma20} | MA60: ${ma60}\n` +
         `RSI(14): ${rsi}  |  체결강도: ${strength}  |  호가비율: ${bidRatio}`;
 
     if (freshnessLine) header += `\nData: ${freshnessLine}`;
+    if (data_quality?.status) header += `\n데이터 상태: <b>${escapeHtml(data_quality.status)}</b>`;
+    const familyLine = Object.entries(family_matches || {}).map(([id, count]) => `${id} ${count}개`).join(' · ');
+    if (familyLine) header += `\n통합전략 매칭: ${escapeHtml(familyLine)}`;
+    header += `\n분석시각: ${escapeHtml(formatKstDateTime(generated_at || checked_at))}`;
 
     const claudeBlock = _formatClaudeFull(cf, stkLabel);
 
@@ -1151,7 +1155,7 @@ function formatStockScore(scoreData) {
         const skipSample = (skipped || []).slice(0, 5).join('\n  • ');
         const noMatchNote =
             `\n\n📭 <b>매칭 전략 없음</b>\n` +
-            `15개 전략 조건 미충족 — Claude 실시간 데이터 단독 분석 결과입니다.\n` +
+            `S1~S16 세부전략 조건 미충족 — Claude 실시간 데이터 단독 분석 결과입니다.\n` +
             (skipSample ? `<i>주요 탈락 사유:\n  • ${skipSample}</i>` : '');
         const firstMsg = header + noMatchNote;
         return claudeBlock

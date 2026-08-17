@@ -24,6 +24,7 @@ function buildCommands(overrides = {}) {
         ticks: overrides.ticks || {},
         hogas: overrides.hogas || {},
         hashes: overrides.hashes || {},
+        lists: overrides.lists || {},
     };
     const logs = [];
 
@@ -43,6 +44,7 @@ function buildCommands(overrides = {}) {
         },
         smembers: async (key) => [...(redisState.sets.get(key) || new Set())],
         hgetall: async (key) => redisState.hashes[key] || {},
+        lrange: async (key, start, end) => (redisState.lists[key] || []).slice(start, end + 1),
     };
 
     require.cache[redisPath] = {
@@ -402,6 +404,23 @@ function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0
         assert.strictEqual(calls.length, 1);
         assert.strictEqual(calls[0].options.refresh, true);
         assert.strictEqual(calls[0].options.ai, true);
+    });
+
+    await test('/news history replays stored scheduled briefs without AI call', async () => {
+        let called = false;
+        const { commands } = buildCommands({
+            lists: {
+                'news:brief:history': [JSON.stringify({
+                    business_date: '2026-08-18', slot: '07:50', market_sentiment: 'BULLISH',
+                    message: '반도체 중심 강세',
+                })],
+            },
+            getLiveNewsBrief: async () => { called = true; },
+        });
+        const ctx = createCtx('/news history');
+        await commands.newsStatus(ctx);
+        assert.strictEqual(called, false);
+        assert.ok(ctx.replies.some((reply) => reply.includes('최근 뉴스 브리핑 다시보기')));
     });
 
     await test('/score fast refresh passes no-ai refresh options', async () => {

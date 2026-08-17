@@ -35,6 +35,9 @@ class DashboardContractTests {
             assertTrue(html.contains("관심종목 재평가 대기열"));
             assertTrue(html.contains("누적 손익 흐름"));
             assertTrue(html.contains("CSV 저장"));
+            assertTrue(html.contains("뉴스 브리핑 다시보기"));
+            assertTrue(html.contains("텔레그램 /score와 동일"));
+            assertTrue(html.contains("/api/trading/score/full/"));
             assertFalse(html.contains("TP1</th>"));
             assertFalse(html.contains("SL</th>"));
         }

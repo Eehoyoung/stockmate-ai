@@ -102,6 +102,45 @@ public class AdminController {
         return ResponseEntity.ok(result);
     }
 
+    /** 예약 발송된 뉴스 브리핑 원문과 분석 메타데이터를 최신순으로 반환한다. */
+    @GetMapping("/briefing-history")
+    public ResponseEntity<Map<String, Object>> briefingHistory(@RequestParam(defaultValue = "30") int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        List<String> raw = redis.opsForList().range("news:brief:history", 0, safeLimit - 1L);
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (String value : raw == null ? List.<String>of() : raw) {
+            try {
+                items.add(objectMapper.readValue(value, new TypeReference<Map<String, Object>>() {}));
+            } catch (Exception e) {
+                log.debug("[Admin] briefing history parse failed: {}", e.getMessage());
+            }
+        }
+        if (items.isEmpty()) {
+            String latest = redis.opsForValue().get("news:analysis");
+            if (latest != null && !latest.isBlank()) {
+                try {
+                    Map<String, Object> analysis = objectMapper.readValue(
+                            latest, new TypeReference<Map<String, Object>>() {});
+                    Map<String, Object> fallback = new LinkedHashMap<>();
+                    fallback.put("id", "latest-cache");
+                    fallback.put("business_date", KstClock.today().toString());
+                    fallback.put("published_at", redis.opsForValue().get("ops:scheduler:news_scheduler:last_success_at"));
+                    fallback.put("slot_name", analysis.getOrDefault("brief_slot", "LATEST"));
+                    fallback.put("market_sentiment", analysis.getOrDefault("market_sentiment", "NEUTRAL"));
+                    fallback.put("news_count", analysis.getOrDefault("news_count", 0));
+                    fallback.put("ai_used", false);
+                    fallback.put("used_cached_analysis", true);
+                    fallback.put("message", analysis.getOrDefault("summary", "최근 캐시 브리핑"));
+                    fallback.put("analysis", analysis);
+                    items.add(fallback);
+                } catch (Exception e) {
+                    log.debug("[Admin] latest briefing fallback parse failed: {}", e.getMessage());
+                }
+            }
+        }
+        return ResponseEntity.ok(Map.of("count", items.size(), "items", items));
+    }
+
     /** hold_monitor_worker가 관리하는 관심종목(HOLD_WATCH) 추적 큐 현황 (hold_monitor:items 해시 파싱) */
     @GetMapping("/hold-watch")
     public ResponseEntity<List<Map<String, Object>>> holdWatch() {

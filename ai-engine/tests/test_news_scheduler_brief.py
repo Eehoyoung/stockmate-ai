@@ -9,12 +9,46 @@ from news_scheduler import KST, _build_brief_message, _next_run_slot, _prefer_ca
 class FakeRedis:
     def __init__(self, values=None):
         self.values = values or {}
+        self.lists = {}
 
     async def get(self, key):
         return self.values.get(key)
 
     async def set(self, key, value, **_kwargs):
         self.values[key] = value
+
+    async def lpush(self, key, value):
+        self.lists.setdefault(key, []).insert(0, value)
+
+    async def ltrim(self, key, start, end):
+        self.lists[key] = self.lists.get(key, [])[start:end + 1]
+
+    async def expire(self, _key, _ttl):
+        return True
+
+    async def delete(self, key):
+        self.values.pop(key, None)
+
+
+def test_scheduled_brief_is_saved_to_replay_history():
+    import news_scheduler
+
+    rdb = FakeRedis()
+    analysis = {
+        "market_sentiment": "BULLISH",
+        "recommended_sectors": ["반도체"],
+        "urgent_news": [],
+        "risk_factors": [],
+        "summary": "시장 강세",
+        "news_count": 7,
+    }
+
+    asyncio.run(news_scheduler._emit_scheduled_brief(rdb, analysis, "MORNING", (7, 50)))
+
+    saved = json.loads(rdb.lists["news:brief:history"][0])
+    assert saved["slot_name"] == "MORNING"
+    assert saved["news_count"] == 7
+    assert saved["analysis"]["summary"] == "시장 강세"
 
 
 def test_scheduled_brief_skips_closed_day_before_news_or_ai(monkeypatch):

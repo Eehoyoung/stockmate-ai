@@ -205,6 +205,7 @@ function parseNewsOptions(ctx) {
     return {
         refresh: args.includes('refresh') || args.includes('force'),
         deep,
+        history: args.includes('history') || args.includes('replay') || args.includes('다시보기'),
     };
 }
 
@@ -871,6 +872,37 @@ const userSettings = guard(async (ctx) => {
 /** /뉴스 – 최근 뉴스 + 분석 결과 */
 const newsStatus = guard(async (ctx) => {
     const options = parseNewsOptions(ctx);
+    if (options.history) {
+        const redis = getClient();
+        const rawItems = await redis.lrange('news:brief:history', 0, 9);
+        const items = rawItems.map((raw) => {
+            try { return JSON.parse(raw); } catch (_) { return null; }
+        }).filter(Boolean);
+        if (!items.length) {
+            try {
+                const latest = await redis.get('news:analysis');
+                if (latest) {
+                    const analysis = JSON.parse(latest);
+                    items.push({
+                        business_date: getKstBusinessDateCompact(),
+                        slot_name: analysis.brief_slot || 'LATEST',
+                        market_sentiment: analysis.market_sentiment || 'NEUTRAL',
+                        message: analysis.summary || '최근 캐시 브리핑',
+                    });
+                }
+            } catch (_) {}
+        }
+        if (!items.length) return ctx.reply('📭 저장된 뉴스 브리핑이 없습니다.');
+        const list = items.map((item, index) => {
+            const sentiment = { BULLISH: '강세', NEUTRAL: '중립', BEARISH: '약세' }[item.market_sentiment] || item.market_sentiment;
+            return `${index + 1}. <b>${escapeHtml(item.business_date)} ${escapeHtml(item.slot || item.slot_name)}</b> · ${escapeHtml(sentiment || '-')}` +
+                `\n${escapeHtml(String(item.message || item.analysis?.summary || '').replace(/<[^>]+>/g, '').slice(0, 180))}`;
+        });
+        return sendOperationalReplies(ctx, 'news-history', {
+            text: `🗂 <b>최근 뉴스 브리핑 다시보기</b>\n\n${list.join('\n\n')}\n\n웹 대시보드에서 전체 내용을 펼쳐볼 수 있습니다.`,
+            options: { parse_mode: 'HTML', disable_web_page_preview: true },
+        });
+    }
     await sendOperationalReplies(ctx, 'news', '뉴스와 장상황을 즉시 재분석 중입니다. 잠시만 기다리세요.');
 
     try {
@@ -919,7 +951,7 @@ const sectorStatus = guard(async (ctx) => {
 });
 
 /**
- * /score {종목코드} — 실시간 데이터 수집 → 15전략 심사 + AI 스코어링 + Claude 종합 분석
+ * /score {종목코드} — 실시간 데이터 수집 → S1~S16 심사 + AI 스코어링 + Claude 종합 분석
  * 전략 매칭 시: 전략별 rule_score + AI 스코어링 카드 + Claude 종합 의견
  * 전략 미매칭 시: Claude 실시간 데이터 단독 AI 분석 반환 (후보풀 무관 동작)
  */
@@ -930,7 +962,7 @@ const scoreStock = guard(async (ctx) => {
     if (!stkCd || !/^\d{6}$/.test(stkCd)) return ctx.reply('❌ 종목코드는 6자리 숫자입니다. 예: /score 005930');
 
     await ctx.reply(
-        `🔍 <b>${stkCd}</b> 분석 중...\n실시간 데이터 수집 → 15전략 심사 → Claude 종합 분석 (최대 90초 소요)`,
+        `🔍 <b>${stkCd}</b> 분석 중...\n실시간 데이터 수집 → S1~S16 심사 → 전략군 통합 → Claude 종합 분석 (최대 90초 소요)`,
         { parse_mode: 'HTML' },
     );
 

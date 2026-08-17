@@ -464,6 +464,37 @@ public class TradingController {
         return ResponseEntity.ok(result);
     }
 
+    /** 텔레그램 /score와 동일한 Python 통합 분석을 웹에 제공한다. */
+    @GetMapping("/score/full/{stkCd}")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<?> scoreStockFull(
+            @PathVariable String stkCd,
+            @RequestParam(defaultValue = "deep") String mode,
+            @RequestParam(defaultValue = "false") boolean refresh) {
+        String normalized = stkCd == null ? "" : stkCd.trim();
+        if (!normalized.matches("\\d{6}")) {
+            return ResponseEntity.badRequest().body(Map.of("error", "6자리 종목코드가 필요합니다."));
+        }
+        String normalizedMode = mode == null ? "deep" : mode.trim().toLowerCase();
+        if (!Set.of("fast", "deep").contains(normalizedMode)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "mode는 fast 또는 deep만 가능합니다."));
+        }
+        try {
+            Map<String, Object> result = internalWebClient.get()
+                    .uri(aiEngineUrl + "/score/" + normalized
+                            + "?ai=" + "deep".equals(normalizedMode)
+                            + "&refresh=" + refresh)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block(Duration.ofSeconds(110));
+            return ResponseEntity.ok(result == null ? Map.of("error", "분석 결과가 없습니다.") : result);
+        } catch (Exception e) {
+            log.warn("[ScoreProxy] full score failed stkCd={} mode={}: {}", normalized, normalizedMode, e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body(Map.of("error", "AI 통합 분석 연결 실패", "detail", e.getMessage()));
+        }
+    }
+
     // ──────────────────────────────────────────────────────────────
     // Feature 5 – 시스템 모니터링
     // ──────────────────────────────────────────────────────────────

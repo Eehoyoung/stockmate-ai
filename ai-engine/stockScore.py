@@ -1192,7 +1192,7 @@ async def score_stock(stk_cd: str, rdb, enable_ai: bool = True) -> dict:
             "data":         {},
         }
 
-    # 2. 15전략 1차 체크
+    # 2. S1~S16 전체 세부전략 1차 체크
     matched_signals, skipped = run_all_checks(snap)
 
     if not matched_signals:

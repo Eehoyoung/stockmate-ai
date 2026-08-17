@@ -36,6 +36,9 @@ _SLOTS: list[dict[str, object]] = [
 ]
 
 _KEY_ANALYSIS = "news:analysis"
+_KEY_BRIEF_HISTORY = "news:brief:history"
+_BRIEF_HISTORY_MAX = 100
+_BRIEF_HISTORY_TTL = 30 * 24 * 60 * 60
 _KEY_SECTORS = "news:sector_recommend"
 _KEY_SENTIMENT = "news:market_sentiment"
 _KEY_SCORED_QUEUE = "ai_scored_queue"
@@ -394,6 +397,24 @@ async def _emit_scheduled_brief(rdb, analysis: dict, slot_name: str, slot_time: 
     }
     await rdb.lpush(_KEY_SCORED_QUEUE, json.dumps(payload, ensure_ascii=False))
     await rdb.expire(_KEY_SCORED_QUEUE, _TTL_ALERT_Q)
+    history_item = {
+        "id": f"{_now_kst().strftime('%Y%m%d')}-{slot_name}",
+        "business_date": _now_kst().date().isoformat(),
+        "published_at": _now_kst().isoformat(),
+        "slot": payload["slot"],
+        "slot_name": slot_name,
+        "market_sentiment": payload["market_sentiment"],
+        "news_count": int(analysis.get("news_count") or 0),
+        "ai_used": not bool(analysis.get("used_cached_analysis")),
+        "used_cached_analysis": bool(analysis.get("used_cached_analysis")),
+        "used_fallback_analysis": payload["used_fallback_analysis"],
+        "fallback_reason": fallback_reason,
+        "message": payload["message"],
+        "analysis": analysis,
+    }
+    await rdb.lpush(_KEY_BRIEF_HISTORY, json.dumps(history_item, ensure_ascii=False, default=str))
+    await rdb.ltrim(_KEY_BRIEF_HISTORY, 0, _BRIEF_HISTORY_MAX - 1)
+    await rdb.expire(_KEY_BRIEF_HISTORY, _BRIEF_HISTORY_TTL)
     if analysis.get("_fallback"):
         await rdb.set("ops:scheduler:news_scheduler:last_status", "WARN", ex=_TTL_ANALYSIS)
         await rdb.set(
