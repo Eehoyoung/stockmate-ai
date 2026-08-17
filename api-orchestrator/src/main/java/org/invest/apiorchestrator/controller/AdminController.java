@@ -89,6 +89,19 @@ public class AdminController {
         return ResponseEntity.ok(result);
     }
 
+    /** Toss 국내 장 운영 캘린더를 대시보드가 외부 호출 없이 확인한다. */
+    @GetMapping("/market-calendar")
+    public ResponseEntity<Map<String, Object>> marketCalendar() {
+        String date = KstClock.today().toString();
+        String status = redis.opsForValue().get("market:kr:calendar:" + date);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("business_date", date);
+        result.put("status", status == null ? "UNKNOWN" : status);
+        result.put("source", status == null ? "NONE" : "TOSS");
+        result.put("scheduled_work_enabled", "OPEN".equals(status));
+        return ResponseEntity.ok(result);
+    }
+
     /** hold_monitor_worker가 관리하는 관심종목(HOLD_WATCH) 추적 큐 현황 (hold_monitor:items 해시 파싱) */
     @GetMapping("/hold-watch")
     public ResponseEntity<List<Map<String, Object>>> holdWatch() {

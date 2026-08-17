@@ -30,6 +30,11 @@ class DashboardContractTests {
             assertTrue(html.contains("손절가"));
             assertTrue(html.contains("손익비"));
             assertTrue(html.contains("/signals/performance/summary/family"));
+            assertTrue(html.contains("/api/admin/market-calendar"));
+            assertTrue(html.contains("오늘의 판단 퍼널"));
+            assertTrue(html.contains("관심종목 재평가 대기열"));
+            assertTrue(html.contains("누적 손익 흐름"));
+            assertTrue(html.contains("CSV 저장"));
             assertFalse(html.contains("TP1</th>"));
             assertFalse(html.contains("SL</th>"));
         }
