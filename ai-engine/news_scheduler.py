@@ -9,6 +9,7 @@ news_scheduler.py
 """
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -117,11 +118,16 @@ def _sentence_lines(value: str, limit: int = 5) -> list[str]:
 
 
 def _bullet_lines(values: list[str] | None, limit: int) -> list[str]:
-    return [f"• {item}" for item in _normalize_lines(values, limit)]
+    return [f"• {html.escape(item)}" for item in _normalize_lines(values, limit)]
 
 
 def _paragraph_bullets(value: str, limit: int = 5) -> list[str]:
-    return [f"• {item}" for item in _sentence_lines(value, limit)]
+    return [f"• {html.escape(item)}" for item in _sentence_lines(value, limit)]
+
+
+def _blockquote(lines: list[str], *, expandable: bool = False) -> str:
+    attribute = " expandable" if expandable else ""
+    return f"<blockquote{attribute}>{chr(10).join(lines)}</blockquote>"
 
 
 def _slot_header(slot_name: str) -> str:
@@ -172,16 +178,16 @@ def _build_morning_message(analysis: dict) -> str:
     urgent_news = _normalize_lines(analysis.get("urgent_news", []), 6)
     if urgent_news:
         lines.extend(["", "<b>6) 영향 뉴스</b>"])
-        lines.extend(_bullet_lines(urgent_news, 6))
+        lines.append(_blockquote(_bullet_lines(urgent_news, 6), expandable=True))
 
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
-        lines.extend(_bullet_lines(risk_factors, 3))
+        lines.append(_blockquote(_bullet_lines(risk_factors, 3), expandable=True))
 
     summary = str(analysis.get("summary", "") or "").strip()
     if summary:
         lines.extend(["", "<b>한 줄 결론</b>"])
-        lines.extend(_paragraph_bullets(summary, 5))
+        lines.append(_blockquote([f"<b>{html.escape(summary)}</b>"]))
 
     return "\n".join(lines).strip()
 
@@ -220,16 +226,16 @@ def _build_midday_message(analysis: dict, slot_name: str = "MIDDAY") -> str:
 
     if urgent_news:
         lines.extend(["", "<b>5) 영향 뉴스 / 장중 변수</b>"])
-        lines.extend(_bullet_lines(urgent_news, 6))
+        lines.append(_blockquote(_bullet_lines(urgent_news, 6), expandable=True))
 
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
-        lines.extend(_bullet_lines(risk_factors, 3))
+        lines.append(_blockquote(_bullet_lines(risk_factors, 3), expandable=True))
 
     summary = str(analysis.get("summary", "") or "").strip()
     if summary:
         lines.extend(["", "<b>한 줄 결론</b>"])
-        lines.extend(_paragraph_bullets(summary, 4))
+        lines.append(_blockquote([f"<b>{html.escape(summary)}</b>"]))
 
     return "\n".join(lines).strip()
 
@@ -262,16 +268,16 @@ def _build_close_message(analysis: dict) -> str:
 
     if urgent_news:
         lines.extend(["", "<b>4) 장중 영향 뉴스</b>"])
-        lines.extend(_bullet_lines(urgent_news, 6))
+        lines.append(_blockquote(_bullet_lines(urgent_news, 6), expandable=True))
 
     if risk_factors:
         lines.extend(["", "<b>체크 리스크</b>"])
-        lines.extend(_bullet_lines(risk_factors, 3))
+        lines.append(_blockquote(_bullet_lines(risk_factors, 3), expandable=True))
 
     summary = str(analysis.get("summary", "") or "").strip()
     if summary:
         lines.extend(["", "<b>한 줄 결론</b>"])
-        lines.extend(_paragraph_bullets(summary, 4))
+        lines.append(_blockquote([f"<b>{html.escape(summary)}</b>"]))
 
     return "\n".join(lines).strip()
 

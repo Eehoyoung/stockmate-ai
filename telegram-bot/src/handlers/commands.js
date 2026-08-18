@@ -326,8 +326,8 @@ function formatNewsBriefResponse(brief) {
         ? normalizeList([...(analysis.us_market_points || []), ...(analysis.us_sector_points || []), ...(analysis.macro_points || []), ...urgentNews])
         : urgentNews;
     if (macroLines.length > 0) {
-        lines.push('', '<b>3) 영향 뉴스 / 외부 변수</b>');
-        macroLines.slice(0, 8).forEach((item) => lines.push(`• ${escapeHtml(item)}`));
+        const detail = macroLines.slice(0, 8).map((item) => `• ${escapeHtml(item)}`).join('\n');
+        lines.push('', '<b>3) 영향 뉴스 / 외부 변수</b>', `<blockquote expandable>${detail}</blockquote>`);
     }
 
     const outlook = ['MIDMORNING', 'MIDDAY', 'AFTERNOON'].includes(slotName)
@@ -340,12 +340,12 @@ function formatNewsBriefResponse(brief) {
     }
 
     if (risks.length > 0) {
-        lines.push('', '<b>5) 리스크</b>');
-        risks.slice(0, 6).forEach((risk) => lines.push(`• ${escapeHtml(risk)}`));
+        const detail = risks.slice(0, 6).map((risk) => `• ${escapeHtml(risk)}`).join('\n');
+        lines.push('', '<b>5) 리스크</b>', `<blockquote expandable>${detail}</blockquote>`);
     }
 
     if (analysis.summary) {
-        lines.push('', '<b>한 줄 결론</b>', escapeHtml(String(analysis.summary).trim()));
+        lines.push('', '<b>한 줄 결론</b>', `<blockquote><b>${escapeHtml(String(analysis.summary).trim())}</b></blockquote>`);
     }
 
     if (brief?.used_cached_analysis) {

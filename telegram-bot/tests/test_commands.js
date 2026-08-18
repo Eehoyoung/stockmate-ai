@@ -342,6 +342,8 @@ function assertDeliveryLog(logs, message, chatId, sentCount = 1, failedCount = 0
         assert.ok(ctx.replies[1].includes('주요 섹터'));
         assert.ok(ctx.replies[1].includes('영향 뉴스'));
         assert.ok(ctx.replies[1].includes('한 줄 결론'));
+        assert.ok(ctx.replies[1].includes('<blockquote expandable>'));
+        assert.ok(ctx.replies[1].includes('<blockquote><b>'));
     });
 
     await test('/status writes operational delivery log', async () => {

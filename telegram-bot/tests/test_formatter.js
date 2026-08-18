@@ -371,6 +371,7 @@ test('formatSignal renders upgraded ENTER form with Korean price and execution l
         '2차 목표가', '손절가', '기본 손익비', '비용 반영 손익비',
         '최소 기준', '호가비율', '매수·매도 가격차', '추격 위험 낮음',
     ]) assert.ok(msg.includes(text), `${text} 포함`);
+    assert.ok(msg.includes('<blockquote><b>추천 이유</b>'), 'ENTER 판단 근거 인용 표시');
     for (const forbidden of ['R:R', '현재 장세 기준 RR', 'TP1:', 'TP2:', 'SL:']) {
         assert.ok(!msg.includes(forbidden), `${forbidden} 미표시`);
     }
@@ -547,6 +548,8 @@ test('formatHoldWatch는 통일된 관심종목 폼과 실제 장세 손익비 �
     assert.ok(msg.includes('가격 출처: 키움 실시간'), '진입가 출처 표시');
     assert.ok(msg.includes('호가 1초 미만'), '과도한 밀리초 정밀도 축약');
     assert.ok(msg.includes('적용 기준 <b>1.36</b>'), '실제 장세 적용 기준 표시');
+    assert.ok(msg.includes('<code>S9_PULLBACK_SWING</code>'), '전략 식별자 인라인 코드 표시');
+    assert.ok(msg.includes('<blockquote>'), '관망 사유 인용 표시');
     assert.ok(!msg.includes('최소 기준 1.50'), '전략 자문 기준을 실제 기준처럼 표시하지 않음');
     assert.ok(msg.includes('이전 고점 · 최소 3% 목표'), '내부 목표가 메서드 한국어화');
     assert.ok(msg.includes('15일 저점'), '내부 손절 메서드 한국어화');

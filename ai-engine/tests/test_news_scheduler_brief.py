@@ -299,4 +299,18 @@ def test_build_morning_message_formats_sector_and_summary_as_bullets():
     assert "<b>5) 오늘 볼 섹터</b>\n• 은행·보험주" in msg
     assert ", 반도체:" not in msg
     assert "<b>4) 오늘 국장 예상 흐름</b>\n• 코스피는 약세 출발 가능성이 높다." in msg
-    assert "<b>한 줄 결론</b>\n• 추격 매수보다 눌림 확인이 우선이다." in msg
+    assert "<b>한 줄 결론</b>\n<blockquote><b>추격 매수보다 눌림 확인이 우선이다." in msg
+
+
+def test_build_news_message_uses_safe_expandable_detail_blocks():
+    msg = _build_brief_message({
+        "market_sentiment": "NEUTRAL",
+        "urgent_news": ["환율 < 1,500원 여부"],
+        "risk_factors": ["외국인 매도 & 변동성"],
+        "summary": "추격보다 확인이 우선입니다.",
+    }, "MIDDAY")
+
+    assert msg.count("<blockquote expandable>") == 2
+    assert "환율 &lt; 1,500원 여부" in msg
+    assert "외국인 매도 &amp; 변동성" in msg
+    assert "<blockquote><b>추격보다 확인이 우선입니다.</b></blockquote>" in msg

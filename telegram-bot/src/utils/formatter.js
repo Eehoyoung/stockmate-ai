@@ -88,6 +88,9 @@ function _humanizeTerms(value) {
         .replace(/\bSL\b/gi, '손절가')
         .replace(/\bsetup\b/gi, '세부전략')
         .replace(/\bminimum\b/gi, '최소 기준')
+        .replace(/\s+below\s+/gi, ' 미만 ')
+        .replace(/\bWATCH until\b/gi, '관찰 유지:')
+        .replace(/\bWATCH\b/gi, '관찰')
         .replace(/\bkiwoom_ws\b/gi, '키움 실시간')
         .replace(/\bkiwoom_rest\b/gi, '키움 조회')
         .replace(/\btoss\b/gi, '토스 조회');
@@ -725,7 +728,7 @@ function formatSignal(item) {
         }
         if (item.ai_reason) {
             const reasonText = isS1GapOpen ? _s1ReasonText(item.ai_reason) : item.ai_reason;
-            lines.push(`${isS1GapOpen ? '관찰 근거' : '추천이유'}: ${escapeHtml(_humanizeTerms(reasonText))}`);
+            lines.push(`<blockquote><b>${isS1GapOpen ? '관찰 근거' : '추천 이유'}</b>\n${escapeHtml(_humanizeTerms(reasonText))}</blockquote>`);
         }
 
         lines.push('');
@@ -828,7 +831,7 @@ function formatSignal(item) {
     // AI 분석 근거
     if (item.ai_reason && effectiveAction !== 'ENTER') {
         lines.push('');
-        lines.push(`💬 <i>${escapeHtml(_humanizeTerms(isS1GapOpen ? _s1ReasonText(item.ai_reason) : item.ai_reason))}</i>`);
+        lines.push(`<blockquote><b>관망 근거</b>\n${escapeHtml(_humanizeTerms(isS1GapOpen ? _s1ReasonText(item.ai_reason) : item.ai_reason))}</blockquote>`);
     }
 
     // 신호 시간
@@ -1289,7 +1292,7 @@ function formatHoldWatch(item) {
     const marketLabel = _marketLabel(item.market_type || item.market);
     const lines = [
         `🔎 <b>[관심종목 · 조건 대기] ${escapeHtml(stock || '')}</b>`,
-        `${escapeHtml(item.strategy_family || '-')} ${escapeHtml(familyLabel)} · ${escapeHtml(setup)} · ${_holdingType(setup)}${marketLabel ? ` · ${escapeHtml(marketLabel)}` : ''}`,
+        `${escapeHtml(item.strategy_family || '-')} ${escapeHtml(familyLabel)} · <code>${escapeHtml(setup)}</code> · ${_holdingType(setup)}${marketLabel ? ` · ${escapeHtml(marketLabel)}` : ''}`,
     ];
     const confirmations = item.confirmed_by || item.matched_setup_ids;
     if (Array.isArray(confirmations) && confirmations.length > 1) {
@@ -1327,7 +1330,10 @@ function formatHoldWatch(item) {
         lines.push(`비용 반영 손익비 <b>${effectiveRr.toFixed(2)}</b> / 적용 기준 <b>${Number.isFinite(appliedGate) ? appliedGate.toFixed(2) : '-'}</b> (${regime})`);
         if (Number.isFinite(rawRr)) lines.push(`참고: 비용 반영 전 ${rawRr.toFixed(2)}${Number.isFinite(deficit) && deficit > 0 ? ` · 기준까지 ${deficit.toFixed(2)} 부족` : ''}`);
     } else if (reason) {
-        lines.push(`사유: ${escapeHtml(_humanizeTerms(reason))}`);
+        lines.push(`<blockquote>${escapeHtml(_humanizeTerms(reason))}</blockquote>`);
+    }
+    if (reason && Number.isFinite(effectiveRr)) {
+        lines.push(`<blockquote>${escapeHtml(_humanizeTerms(reason))}</blockquote>`);
     }
 
     const ages = item.source_age_ms || {};
@@ -1515,13 +1521,13 @@ function formatNewsAlert(item) {
 
     const lines = [
         `📰 <b>[뉴스 브리프]</b>`,
-        `시장심리: ${sentimentLabel[item.market_sentiment] || item.market_sentiment || '-'}`,
+        `시장심리: <b>${escapeHtml(sentimentLabel[item.market_sentiment] || item.market_sentiment || '-')}</b>`,
     ];
     if (item.sectors && item.sectors.length > 0) {
-        lines.push(`추천섹터: ${item.sectors.join(', ')}`);
+        lines.push(`추천섹터: <code>${escapeHtml(item.sectors.join(', '))}</code>`);
     }
     if (item.summary) {
-        lines.push(`요약: ${item.summary}`);
+        lines.push(`<blockquote>${escapeHtml(item.summary)}</blockquote>`);
     }
     return lines.join('\n');
 }
