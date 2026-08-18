@@ -107,7 +107,9 @@ def _build_system_prompt(signal: dict) -> str:
     """기본 시스템 프롬프트에 전략별 페르소나를 자동 주입한다."""
     strategy = signal.get("strategy")
     base = _get_system_prompt(strategy)
-    sections = [base]
+    # Strategy prompts contain the setup-specific judgement.  Append the shared
+    # runtime contract last so stale wording in one setup cannot weaken live guards.
+    sections = [base] if base == _SYS_PROMPT else [base, _SYS_PROMPT]
     if ENABLE_STRATEGY_PERSONA_INJECTION:
         persona = signal.get("persona") or get_persona(strategy)
         if persona:
@@ -573,6 +575,10 @@ def _build_user_message(signal: dict, market_ctx: dict, rule_score: float) -> st
         f"RR품질: {signal.get('rr_quality_bucket', 'N/A')}, "
         f"성과EV: {signal.get('strategy_ev_pct', signal.get('expected_value', 'N/A'))}, "
         f"표본수: {signal.get('strategy_sample_count', signal.get('sample_n', 'N/A'))}\n"
+        f"비용 반영 손익비: {signal.get('effective_rr', signal.get('rr_ratio', 'N/A'))}, "
+        f"현재 적용 최소 손익비: {signal.get('final_rr_gate', signal.get('rr_regime_threshold', 'N/A'))}, "
+        f"데이터 품질: {signal.get('data_quality', 'N/A')}, "
+        f"하드게이트 실패 사유: {signal.get('hard_gate_reason') or '없음'}\n"
     )
 
     # 시장 컨텍스트: 지수 등락률, 거래대금, 시가총액
