@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import anthropic
+from ai_gateway import create_message
 from strategy_meta import get_persona
 from strategy_meta import SWING_STRATEGIES as _TOSS_SWING_STRATEGIES
 from strategy_catalog import ALL_SETUP_IDS, family_for_setup, family_live_routing_enabled
@@ -684,7 +685,10 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
     raw_text = ""
     try:
         response = await asyncio.wait_for(
-            client.messages.create(
+            create_message(
+                client,
+                purpose="signal_analysis",
+                metadata={"strategy": signal.get("strategy"), "stk_cd": signal.get("stk_cd")},
                 model      = CLAUDE_MODEL,
                 max_tokens = MAX_TOKENS,
                 system     = system_prompt,
@@ -916,7 +920,10 @@ async def analyze_exit(
     raw_text = ""
     try:
         response = await asyncio.wait_for(
-            client.messages.create(
+            create_message(
+                client,
+                purpose="exit_analysis",
+                metadata={"strategy": strategy, "stk_cd": stk_cd},
                 model      = CLAUDE_MODEL,
                 max_tokens = 256,
                 system     = _EXIT_SYS_PROMPT,

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import anthropic
+from ai_gateway import create_message
 
 logger = logging.getLogger(__name__)
 
@@ -191,9 +192,11 @@ def _build_compact_retry_prompt(news_list: List[Dict], slot_name: str) -> str:
     return "\n".join(lines)
 
 
-async def _call_claude(client, user_message: str, max_tokens: int) -> tuple[str, str]:
+async def _call_claude(client, user_message: str, max_tokens: int, purpose: str) -> tuple[str, str]:
     response = await asyncio.wait_for(
-        client.messages.create(
+        create_message(
+            client,
+            purpose=purpose,
             model=CLAUDE_MODEL,
             max_tokens=max_tokens,
             system=_NEWS_SYS_PROMPT,
@@ -344,7 +347,7 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
     stop_reason = ""
 
     try:
-        raw_text, stop_reason = await _call_claude(client, user_message, NEWS_MAX_TOKENS)
+        raw_text, stop_reason = await _call_claude(client, user_message, NEWS_MAX_TOKENS, f"news_{slot_name.lower()}")
         try:
             result = _parse_news_json(raw_text)
         except json.JSONDecodeError:
@@ -358,7 +361,7 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
                 NEWS_RETRY_MAX_TOKENS,
             )
             retry_prompt = _build_compact_retry_prompt(news_list, slot_name)
-            raw_text, stop_reason = await _call_claude(client, retry_prompt, NEWS_RETRY_MAX_TOKENS)
+            raw_text, stop_reason = await _call_claude(client, retry_prompt, NEWS_RETRY_MAX_TOKENS, f"news_{slot_name.lower()}_retry")
             result = _parse_news_json(raw_text)
         logger.info(
             "[NewsAnalyzer] done slot=%s sentiment=%s sectors=%s confidence=%s stop_reason=%s",

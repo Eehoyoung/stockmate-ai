@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 import anthropic
+from ai_gateway import create_message
 
 from http_utils import fetch_cntr_strength_cached, fetch_hoga, fetch_stk_nm
 from indicator_atr import get_atr_daily, get_atr_minute
@@ -314,7 +315,10 @@ def _build_prompt(stk_cd: str, stk_nm: str, analysis_input: dict[str, Any]) -> s
 
 async def _call_claude(stk_cd: str, stk_nm: str, analysis_input: dict[str, Any]) -> dict[str, Any]:
     prompt = _build_prompt(stk_cd, stk_nm, analysis_input)
-    response = await _get_client().messages.create(
+    response = await create_message(
+        _get_client(),
+        purpose="stock_analysis",
+        metadata={"stk_cd": stk_cd},
         model=CLAUDE_MODEL,
         max_tokens=1200,
         system=(

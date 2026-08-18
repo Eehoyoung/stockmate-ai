@@ -24,6 +24,7 @@ from datetime import datetime, timezone, timedelta
 
 import asyncpg
 import redis.asyncio as aioredis
+import ai_gateway
 
 from health_server import run_health_server
 from queue_worker import run_worker
@@ -171,6 +172,10 @@ async def main():
         except Exception as e:
             logger.warning("[PG] PostgreSQL 연결 실패 – DB 쓰기 비활성화: %s", e)
             pg_pool = None
+
+    ai_gateway.configure(pg_pool)
+    if pg_pool:
+        await ai_gateway.purge_old_usage()
 
     # 종료 시그널
     loop      = asyncio.get_running_loop()
