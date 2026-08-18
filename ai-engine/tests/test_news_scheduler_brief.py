@@ -3,6 +3,20 @@ import json
 from datetime import datetime
 
 from news_analyzer import NEWS_PROMPT_DESC_CHARS, _build_news_prompt
+
+
+def test_news_slots_have_dedicated_prompts_and_cache_common_instructions(monkeypatch):
+    import news_analyzer
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    response = SimpleNamespace(content=[SimpleNamespace(text='{}')], stop_reason="end_turn")
+    call = AsyncMock(return_value=response)
+    monkeypatch.setattr(news_analyzer, "create_message", call)
+    asyncio.run(news_analyzer._call_claude(SimpleNamespace(), "news", 4000, "news_close", "CLOSE"))
+    system = call.await_args.kwargs["system"]
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+    assert "장마감 전용" in system[1]["text"]
 from news_scheduler import KST, _build_brief_message, _next_run_slot, _prefer_cached_on_fallback
 
 

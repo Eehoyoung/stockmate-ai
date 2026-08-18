@@ -42,6 +42,14 @@ except Exception:
         '"summary":"","confidence":"HIGH|MEDIUM|LOW"}'
     )
 
+
+def _slot_system_prompt(slot_name: str) -> str:
+    path = _PROMPT_DIR / f"news_analysis_{str(slot_name).lower()}.txt"
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return "현재 시간대에 필요한 정보만 작성하고 관련 없는 필드는 빈 배열 또는 빈 문자열로 반환한다."
+
 _NEWS_CALLS_KEY_PREFIX = "claude_news_calls:"
 _NEWS_API_BLOCK_KEY = "claude:news_api_blocked"
 _MIN_API_BLOCK_TTL_SEC = 3600
@@ -192,14 +200,17 @@ def _build_compact_retry_prompt(news_list: List[Dict], slot_name: str) -> str:
     return "\n".join(lines)
 
 
-async def _call_claude(client, user_message: str, max_tokens: int, purpose: str) -> tuple[str, str]:
+async def _call_claude(client, user_message: str, max_tokens: int, purpose: str, slot_name: str) -> tuple[str, str]:
     response = await asyncio.wait_for(
         create_message(
             client,
             purpose=purpose,
             model=CLAUDE_MODEL,
             max_tokens=max_tokens,
-            system=_NEWS_SYS_PROMPT,
+            system=[
+                {"type": "text", "text": _NEWS_SYS_PROMPT, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": _slot_system_prompt(slot_name)},
+            ],
             messages=[{"role": "user", "content": user_message}],
         ),
         timeout=NEWS_CLAUDE_TIMEOUT,
@@ -347,7 +358,7 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
     stop_reason = ""
 
     try:
-        raw_text, stop_reason = await _call_claude(client, user_message, NEWS_MAX_TOKENS, f"news_{slot_name.lower()}")
+        raw_text, stop_reason = await _call_claude(client, user_message, NEWS_MAX_TOKENS, f"news_{slot_name.lower()}", slot_name)
         try:
             result = _parse_news_json(raw_text)
         except json.JSONDecodeError:
@@ -361,7 +372,7 @@ async def analyze_news(news_list: List[Dict], rdb, slot_name: str = "MORNING") -
                 NEWS_RETRY_MAX_TOKENS,
             )
             retry_prompt = _build_compact_retry_prompt(news_list, slot_name)
-            raw_text, stop_reason = await _call_claude(client, retry_prompt, NEWS_RETRY_MAX_TOKENS, f"news_{slot_name.lower()}_retry")
+            raw_text, stop_reason = await _call_claude(client, retry_prompt, NEWS_RETRY_MAX_TOKENS, f"news_{slot_name.lower()}_retry", slot_name)
             result = _parse_news_json(raw_text)
         logger.info(
             "[NewsAnalyzer] done slot=%s sentiment=%s sectors=%s confidence=%s stop_reason=%s",

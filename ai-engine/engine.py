@@ -173,7 +173,7 @@ async def main():
             logger.warning("[PG] PostgreSQL 연결 실패 – DB 쓰기 비활성화: %s", e)
             pg_pool = None
 
-    ai_gateway.configure(pg_pool)
+    ai_gateway.configure(pg_pool, rdb)
     if pg_pool:
         await ai_gateway.purge_old_usage()
 

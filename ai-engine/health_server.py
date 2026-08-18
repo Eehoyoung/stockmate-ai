@@ -172,12 +172,12 @@ async def run_health_server(port: int, rdb) -> None:
 
                 if claude_used_cache:
                     try:
-                        score_result = await score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai)
+                        score_result = await score_stock_strategies(stk_cd, rdb, enable_ai=False)
                     except Exception as exc:
                         score_result = exc
                 else:
                     score_result, claude_result = await asyncio.gather(
-                        score_stock_strategies(stk_cd, rdb, enable_ai=enable_ai),
+                        score_stock_strategies(stk_cd, rdb, enable_ai=False),
                         analyze_stock_for_user(rdb, stk_cd),
                         return_exceptions=True,
                     )

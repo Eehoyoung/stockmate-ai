@@ -1,0 +1,4 @@
+[12:30 장중 전용]
+오전 고점·저점 이후 방향, 수급 지속 또는 반전, 대형주와 중소형주의 온도차를 우선한다.
+오전 뉴스가 가격에 이미 반영됐는지 구분하고 오후에 확인할 가격·수급 조건을 제시한다.
+midday_sectors, midday_index_commentary, midday_recap, afternoon_outlook을 작성하고 장전·마감 전용 필드는 비운다.

@@ -312,3 +312,22 @@ def test_release_all_for_close_notifies_each_item_then_clears():
     assert {r["stk_cd"] for r in released} == {"005930", "000660"}
     assert all(r["type"] == "HOLD_RELEASED" for r in released)
     mock_clear.assert_awaited_once()
+
+
+def test_evaluate_hold_item_stops_after_per_item_ai_recheck_limit():
+    rdb = _rdb()
+    with patch("hold_monitor_worker.HOLD_MONITOR_USE_REST_FALLBACK", False), \
+         patch("hold_monitor_worker.qw._build_market_ctx", new_callable=AsyncMock, return_value=_ctx()), \
+         patch("hold_monitor_worker.rule_score", return_value=(92.0, {})), \
+         patch("hold_monitor_worker.should_skip_ai", return_value=False), \
+         patch("hold_monitor_worker.qw._rr_prefilter_reason", return_value=None), \
+         patch("hold_monitor_worker.qw._s8_buy_zone_gate_failure", return_value=None), \
+         patch("hold_monitor_worker.qw._s1_fallback_quality_failure", return_value=None), \
+         patch("hold_monitor_worker.qw._hard_gate_failure", return_value=None), \
+         patch("hold_monitor_worker.qw._freshness_cancel_reason", return_value=None):
+        from hold_monitor_worker import evaluate_hold_item, HOLD_MONITOR_MAX_AI_RECHECKS
+        payload = _payload(hold_monitor_last_ai_at=0.0, hold_monitor_ai_rechecks=HOLD_MONITOR_MAX_AI_RECHECKS)
+        result = _run(evaluate_hold_item(rdb, payload))
+
+    assert result == {}
+    assert payload["hold_monitor_last_gate"] == "AI recheck limit reached"

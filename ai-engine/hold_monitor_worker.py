@@ -27,12 +27,13 @@ KST = timezone(timedelta(hours=9))
 
 HOLD_MONITOR_INTERVAL_SEC = float(os.getenv("HOLD_MONITOR_INTERVAL_SEC", "5.0"))
 HOLD_MONITOR_RECHECK_SEC = float(os.getenv("HOLD_MONITOR_RECHECK_SEC", "10.0"))
-HOLD_MONITOR_AI_COOLDOWN_SEC = float(os.getenv("HOLD_MONITOR_AI_COOLDOWN_SEC", "60.0"))
+HOLD_MONITOR_AI_COOLDOWN_SEC = float(os.getenv("HOLD_MONITOR_AI_COOLDOWN_SEC", "300.0"))
 # 룰 게이트는 통과했지만 직전 Claude 호출 대비 rule_score가 이만큼도 움직이지 않았다면
 # 같은 판단을 반복해서 물어보는 셈이므로 Claude 재호출을 건너뛴다. 2026-08-12 관측:
 # 종목 278470(S15)이 30분간 rule_score 90~100 유지 상태에서 60초 쿨다운마다 계속
 # Claude를 호출했지만 ai_score가 72~76 사이 노이즈만 오갔음(방향성 없음, 30회 이상 낭비 호출).
 HOLD_MONITOR_MIN_SCORE_DELTA = float(os.getenv("HOLD_MONITOR_MIN_SCORE_DELTA", "5.0"))
+HOLD_MONITOR_MAX_AI_RECHECKS = int(os.getenv("HOLD_MONITOR_MAX_AI_RECHECKS", "2"))
 HOLD_MONITOR_BATCH_LIMIT = int(os.getenv("HOLD_MONITOR_BATCH_LIMIT", "20"))
 HOLD_MONITOR_CLOSE_HHMM = os.getenv("HOLD_MONITOR_CLOSE_HHMM", "15:30")
 HOLD_MONITOR_USE_REST_FALLBACK = os.getenv("HOLD_MONITOR_USE_REST_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
@@ -286,6 +287,11 @@ async def evaluate_hold_item(rdb, payload: dict) -> dict:
         )
         return {}
 
+    ai_rechecks = int(_fv(payload.get("hold_monitor_ai_rechecks"), 0) or 0)
+    if ai_rechecks >= HOLD_MONITOR_MAX_AI_RECHECKS:
+        payload["hold_monitor_last_gate"] = "AI recheck limit reached"
+        return {}
+
     payload["hold_monitor_last_ai_at"] = _now_kst().timestamp()
     payload["hold_monitor_last_ai_rule_score"] = r_score
 
@@ -301,6 +307,7 @@ async def evaluate_hold_item(rdb, payload: dict) -> dict:
         "ai_reason": "HOLD monitor conditions improved; re-enter queue_worker for full validation",
         "cancel_reason": None,
         "hold_monitor_recheck": True,
+        "hold_monitor_ai_rechecks": ai_rechecks + 1,
         "hold_monitor_promoted": False,
         "origin_hold_monitor_key": payload.get("hold_monitor_key"),
         "hold_monitor_last_gate": None,

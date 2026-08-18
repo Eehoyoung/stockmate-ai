@@ -11,11 +11,35 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 _pool = None
+_rdb = None
+_BLOCK_KEY = "claude:api_blocked"
+_BLOCK_TTL_SEC = 3600
 
 
-def configure(pool) -> None:
-    global _pool
+def configure(pool, rdb=None) -> None:
+    global _pool, _rdb
     _pool = pool
+    _rdb = rdb
+
+
+class ProviderBlockedError(RuntimeError):
+    pass
+
+
+def _is_confirmed_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in (
+        "credit balance is too low", "insufficient credit", "usage limit", "usage limits", "billing",
+    ))
+
+
+async def _blocked_reason() -> str | None:
+    if _rdb is None:
+        return None
+    try:
+        return await _rdb.get(_BLOCK_KEY)
+    except Exception:
+        return None
 
 
 def _usage(response) -> tuple[int, int, int, int]:
@@ -62,6 +86,14 @@ async def create_message(client, *, purpose: str, metadata: dict | None = None, 
     """Call Claude and persist success/failure usage without breaking the caller on audit failure."""
     started = time.perf_counter()
     model = str(request.get("model", "unknown"))
+    blocked = await _blocked_reason()
+    if blocked:
+        exc = ProviderBlockedError(f"Claude calls blocked: {blocked}")
+        await _record(
+            purpose=purpose, model=model, status="ERROR", tokens=(0, 0, 0, 0), cost=Decimal(0),
+            duration_ms=0, metadata=metadata, error_type=type(exc).__name__, error_message=str(exc),
+        )
+        raise exc
     try:
         response = await client.messages.create(**request)
         tokens = _usage(response)
@@ -79,6 +111,11 @@ async def create_message(client, *, purpose: str, metadata: dict | None = None, 
         ))
         raise
     except Exception as exc:
+        if _rdb is not None and _is_confirmed_limit_error(exc):
+            try:
+                await _rdb.set(_BLOCK_KEY, type(exc).__name__, ex=_BLOCK_TTL_SEC)
+            except Exception:
+                pass
         await _record(
             purpose=purpose, model=model, status="ERROR", tokens=(0, 0, 0, 0), cost=Decimal(0),
             duration_ms=int((time.perf_counter() - started) * 1000), metadata=metadata,
