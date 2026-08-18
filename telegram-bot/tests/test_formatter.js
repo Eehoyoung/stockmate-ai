@@ -507,7 +507,7 @@ test('SIZE_4 최고 강도 — 하향 사유 없음', () => {
     assert.ok(!msg.includes('관찰 전용'), '관찰 전용 문구 없음');
 });
 
-test('formatHoldWatch는 조건부 진입(관심종목) 라벨과 사유를 포함', () => {
+test('formatHoldWatch는 통일된 관심종목 폼과 실제 장세 손익비 기준을 표시', () => {
     const msg = formatHoldWatch({
         strategy: 'S9_PULLBACK_SWING',
         stk_cd: '005930',
@@ -520,6 +520,8 @@ test('formatHoldWatch는 조건부 진입(관심종목) 라벨과 사유를 포�
         raw_rr: 1.1,
         effective_rr: 0.9,
         min_rr_ratio: 1.5,
+        final_rr_gate: 1.36,
+        rr_regime: 'bull',
         tp1_price: 11000,
         tp2_price: 11800,
         sl_price: 9700,
@@ -529,21 +531,28 @@ test('formatHoldWatch는 조건부 진입(관심종목) 라벨과 사유를 포�
         data_quality: 'OK',
         data_source: { hoga: 'kiwoom_ws' },
         source_age_ms: { hoga: 420 },
-        hold_reason: 'rr_ratio가 장세별(bull) 임계값 미달',
+        tp1_method: 'prev_swing_high+min_3pct',
+        sl_method: 'swing_low_D15(MA20_gap>6%)',
+        hold_reason: 'R:R 0.90 below 1.36(bull); WATCH until R:R improves',
     });
-    assert.ok(msg.includes('조건부 진입 (관심종목)'), '조건부 진입 라벨 포함');
+    assert.ok(msg.includes('관심종목 · 조건 대기'), '통일된 관심종목 라벨 포함');
     assert.ok(msg.includes('삼성전자 (005930)'), '종목명 포함');
     assert.ok(msg.includes('10,000원'), '현재가 포함');
-    assert.ok(msg.includes('손익비가 장세별(bull) 임계값 미달'), 'HOLD 분류 사유 포함');
-    assert.ok(msg.includes('1차 목표가'), '1차 목표가 한국어 표시');
-    assert.ok(msg.includes('2차 목표가'), '2차 목표가 한국어 표시');
-    assert.ok(msg.includes('손절가'), '손절가 한국어 표시');
+    assert.ok(msg.includes('1차 목표'), '1차 목표가 한국어 표시');
+    assert.ok(msg.includes('2차 목표'), '2차 목표가 한국어 표시');
+    assert.ok(msg.includes('손절 기준'), '손절가 한국어 표시');
     assert.ok(msg.includes('비용 반영 손익비'), '손익비 한국어 표시');
     assert.ok(msg.includes('G04 추세단계'), '통합전략 한국어 표시');
-    assert.ok(msg.includes('함께 확인된 세부전략'), '확증 세부전략 한국어 표시');
-    assert.ok(msg.includes('출처 키움 실시간'), '진입가 출처 표시');
-    assert.ok(msg.includes('420밀리초'), '데이터 경과시간 표시');
+    assert.ok(msg.includes('확증 세부전략'), '확증 세부전략 한국어 표시');
+    assert.ok(msg.includes('가격 출처: 키움 실시간'), '진입가 출처 표시');
+    assert.ok(msg.includes('호가 1초 미만'), '과도한 밀리초 정밀도 축약');
+    assert.ok(msg.includes('적용 기준 <b>1.36</b>'), '실제 장세 적용 기준 표시');
+    assert.ok(!msg.includes('최소 기준 1.50'), '전략 자문 기준을 실제 기준처럼 표시하지 않음');
+    assert.ok(msg.includes('이전 고점 · 최소 3% 목표'), '내부 목표가 메서드 한국어화');
+    assert.ok(msg.includes('15일 저점'), '내부 손절 메서드 한국어화');
     assert.ok(!msg.includes('R:R'), '전문 약어 미표시');
+    assert.ok(!msg.includes('below'), '영문 판정 문구 미표시');
+    assert.ok(!msg.includes('WATCH'), '영문 상태 문구 미표시');
 });
 
 test('formatHoldWatch는 ai_reason을 hold_reason 폴백으로 사용', () => {
@@ -553,7 +562,7 @@ test('formatHoldWatch는 ai_reason을 hold_reason 폴백으로 사용', () => {
         cur_prc: 5000,
         ai_reason: 'Claude HOLD | WATCH retained',
     });
-    assert.ok(msg.includes('Claude HOLD'), 'ai_reason 폴백 사유 포함');
+    assert.ok(msg.includes('보류 조건이 개선되면'), 'ai_reason 폴백 시 재평가 안내 포함');
 });
 
 test('formatHoldReleased는 관심 해제 라벨과 해제 사유를 포함', () => {

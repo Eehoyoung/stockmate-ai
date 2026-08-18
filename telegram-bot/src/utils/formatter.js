@@ -328,6 +328,60 @@ function _priceMethod(value) {
     return value ? ` · 산출 근거 ${_humanizeTerms(value)}` : '';
 }
 
+function _compactPriceMethod(value) {
+    if (!value) return '';
+    return String(value)
+        .replace(/single_tp_avg\([^)]*\)/gi, '복수 목표 평균')
+        .replace(/rr_fit_[a-z0-9_]+/gi, '손익비 조정')
+        .replace(/swing_resistance/gi, '스윙 저항')
+        .replace(/prev_swing_high/gi, '이전 고점')
+        .replace(/swing_low_D15/gi, '15일 저점')
+        .replace(/bollinger_upper/gi, '볼린저 상단')
+        .replace(/fib_1272(?:\([^)]*\))?/gi, '피보나치 1.272')
+        .replace(/MA20_support/gi, '20일선 지지')
+        .replace(/MA20/gi, '20일선')
+        .replace(/min_3pct/gi, '최소 3% 목표')
+        .replace(/pct_([\d.]+)%?_fallback/gi, '$1% 기본 목표')
+        .replace(/\(×([\d.]+)\)/g, ' ×$1')
+        .replace(/\(MA20_gap>6%\)/gi, ' · 20일선 괴리 6% 초과')
+        .split('+')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(' · ');
+}
+
+function _regimeLabel(value) {
+    return { bull: '상승장', bear: '하락장', neutral: '중립장', sideways: '횡보장' }[String(value || '').toLowerCase()]
+        || '현재 장세';
+}
+
+function _resolveHoldRrGate(item, reason) {
+    for (const value of [item.final_rr_gate, item.rr_regime_threshold, item.market_rr_threshold]) {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    }
+    const matched = String(reason || '').match(/below\s+([\d.]+)/i);
+    if (matched) return Number(matched[1]);
+    const advisory = Number(item.min_rr_ratio);
+    return Number.isFinite(advisory) && advisory > 0 ? advisory : null;
+}
+
+function _shortAge(value) {
+    const ms = Number(value);
+    if (!Number.isFinite(ms) || ms < 0) return null;
+    if (ms < 1000) return '1초 미만';
+    if (ms < 10000) return `${(ms / 1000).toFixed(1)}초`;
+    return `${Math.round(ms / 1000)}초`;
+}
+
+function _priceWithMove(value, entry) {
+    const price = normalizeForDisplay(value ?? 0);
+    if (!(price > 0)) return '-';
+    const base = Number(entry);
+    const move = Number.isFinite(base) && base > 0 ? ` (${((price - base) / base * 100) >= 0 ? '+' : ''}${((price - base) / base * 100).toFixed(1)}%)` : '';
+    return `${price.toLocaleString()}원${move}`;
+}
+
 function _formatDecisionStatus(item) {
     const hardGate = item.hard_gates_passed ?? item.hard_gate_passed;
     const portfolio = item.portfolio_arbitration_passed;
@@ -1230,53 +1284,66 @@ function formatHoldWatch(item) {
     const aiScore = item.ai_score != null ? Number(item.ai_score).toFixed(1) : null;
     const ruleScore = item.rule_score != null ? Number(item.rule_score).toFixed(1) : null;
 
-    const lines = [
-        `🔎 <b>[조건부 진입 (관심종목)] ${emoji} ${escapeHtml(item.strategy || '-')}</b>`,
-        `종목: <b>${escapeHtml(stock || '')}</b>`,
-    ];
-    if (item.strategy_family) {
-        const familyLabel = FAMILY_LABEL[item.strategy_family] || item.strategy_family_name || '통합전략';
-        lines.push(`통합전략: <b>${escapeHtml(item.strategy_family)} ${escapeHtml(familyLabel)}</b>`);
-        lines.push(`대표 세부전략: ${escapeHtml(item.primary_setup_id || item.strategy || '-')} · ${_holdingType(item.primary_setup_id || item.strategy)}`);
-        const confirmations = item.confirmed_by || item.matched_setup_ids;
-        if (Array.isArray(confirmations) && confirmations.length > 1) {
-            lines.push(`함께 확인된 세부전략: ${escapeHtml(confirmations.join(', '))}`);
-        }
-    } else {
-        lines.push(`보유 유형: ${_holdingType(item.strategy)}`);
-    }
+    const familyLabel = FAMILY_LABEL[item.strategy_family] || item.strategy_family_name || '통합전략';
+    const setup = item.primary_setup_id || item.strategy || '-';
     const marketLabel = _marketLabel(item.market_type || item.market);
-    if (marketLabel) lines.push(`시장: ${escapeHtml(marketLabel)}`);
-    if (curPrc > 0) lines.push(`진입 관찰가: <b>${curPrc.toLocaleString()}원</b>${_sourceAndAge(item, 'hoga') || _sourceAndAge(item, 'entry')}`);
+    const lines = [
+        `🔎 <b>[관심종목 · 조건 대기] ${escapeHtml(stock || '')}</b>`,
+        `${escapeHtml(item.strategy_family || '-')} ${escapeHtml(familyLabel)} · ${escapeHtml(setup)} · ${_holdingType(setup)}${marketLabel ? ` · ${escapeHtml(marketLabel)}` : ''}`,
+    ];
+    const confirmations = item.confirmed_by || item.matched_setup_ids;
+    if (Array.isArray(confirmations) && confirmations.length > 1) {
+        lines.push(`확증 세부전략: ${escapeHtml(confirmations.join(', '))}`);
+    }
 
-    const scoreLine = [
-        aiScore != null ? `AI 점수: <b>${aiScore}</b>점` : null,
-        ruleScore != null ? `규칙 점수: ${ruleScore}점` : null,
-    ].filter(Boolean).join('  |  ');
     const finalScore = item.final_score == null ? null : Number(item.final_score);
-    if (scoreLine) lines.push(`${scoreLine}${Number.isFinite(finalScore) ? `  |  종합 점수: ${finalScore.toFixed(1)}점` : ''}`);
+    const scoreLine = [
+        ruleScore != null ? `규칙 ${ruleScore}` : null,
+        aiScore != null ? `AI ${aiScore}` : null,
+        Number.isFinite(finalScore) ? `종합 ${finalScore.toFixed(1)}` : null,
+    ].filter(Boolean).join(' · ');
+    if (scoreLine) lines.push(`점수: <b>${scoreLine}</b>`);
     const decisionStatus = _formatDecisionStatus(item);
     if (decisionStatus) lines.push(decisionStatus);
 
     const tp1 = item.claude_tp1 ?? item.tp1_price;
     const tp2 = item.claude_tp2 ?? item.display_tp2_price ?? item.tp2_price;
     const sl = item.claude_sl ?? item.sl_price;
-    if (tp1) lines.push(`1차 목표가: <b>${normalizeForDisplay(tp1).toLocaleString()}원</b>${_priceMethod(item.tp1_method || item.tp_method)}`);
-    if (tp2) lines.push(`2차 목표가: <b>${normalizeForDisplay(tp2).toLocaleString()}원</b>${_priceMethod(item.tp2_method)}`);
-    if (sl) lines.push(`손절가: <b>${normalizeForDisplay(sl).toLocaleString()}원</b>${_priceMethod(item.sl_method)}`);
-    const ratioParts = [
-        item.raw_rr != null ? `기본 손익비 ${Number(item.raw_rr).toFixed(2)}` : null,
-        (item.effective_rr ?? item.rr_ratio) != null ? `비용 반영 손익비 <b>${Number(item.effective_rr ?? item.rr_ratio).toFixed(2)}</b>` : null,
-        item.min_rr_ratio != null ? `최소 기준 ${Number(item.min_rr_ratio).toFixed(2)}` : null,
-    ].filter(Boolean);
-    if (ratioParts.length) lines.push(`손익 계획: ${ratioParts.join(' · ')}`);
-    const dataQualityLine = _formatDataQualityLine(item);
-    if (dataQualityLine) lines.push(dataQualityLine);
-
     const reason = item.hold_reason || item.ai_reason;
-    if (reason) lines.push('', `관망 사유: ${escapeHtml(_humanizeTerms(reason))}`);
+    const effectiveRr = Number(item.effective_rr ?? item.rr_ratio);
+    const rawRr = Number(item.raw_rr);
+    const appliedGate = _resolveHoldRrGate(item, reason);
+    const deficit = Number.isFinite(effectiveRr) && Number.isFinite(appliedGate) ? Math.max(0, appliedGate - effectiveRr) : null;
 
-    lines.push('', '조건이 개선되면 추적 관찰 후 진입 신호로 승격되거나, 관심 해제로 안내됩니다.');
+    lines.push('', '<b>가격 계획</b>');
+    if (curPrc > 0) lines.push(`관찰가  <b>${curPrc.toLocaleString()}원</b>`);
+    if (tp1) lines.push(`1차 목표  <b>${_priceWithMove(tp1, curPrc)}</b> · ${escapeHtml(_compactPriceMethod(item.tp1_method || item.tp_method))}`);
+    if (tp2) lines.push(`2차 목표  <b>${_priceWithMove(tp2, curPrc)}</b> · ${escapeHtml(_compactPriceMethod(item.tp2_method))}`);
+    if (sl) lines.push(`손절 기준  <b>${_priceWithMove(sl, curPrc)}</b> · ${escapeHtml(_compactPriceMethod(item.sl_method))}`);
+
+    lines.push('', '<b>보류 판정</b>');
+    if (Number.isFinite(effectiveRr)) {
+        const regime = _regimeLabel(item.rr_regime || String(reason || '').match(/\((bull|bear|neutral|sideways)\)/i)?.[1]);
+        lines.push(`비용 반영 손익비 <b>${effectiveRr.toFixed(2)}</b> / 적용 기준 <b>${Number.isFinite(appliedGate) ? appliedGate.toFixed(2) : '-'}</b> (${regime})`);
+        if (Number.isFinite(rawRr)) lines.push(`참고: 비용 반영 전 ${rawRr.toFixed(2)}${Number.isFinite(deficit) && deficit > 0 ? ` · 기준까지 ${deficit.toFixed(2)} 부족` : ''}`);
+    } else if (reason) {
+        lines.push(`사유: ${escapeHtml(_humanizeTerms(reason))}`);
+    }
+
+    const ages = item.source_age_ms || {};
+    const ageParts = [['현재가', ages.tick], ['호가', ages.hoga], ['체결강도', ages.strength]]
+        .map(([label, age]) => [label, _shortAge(age)])
+        .filter(([, age]) => age)
+        .map(([label, age]) => `${label} ${age}`);
+    if (ageParts.length) lines.push(`데이터: ${ageParts.join(' · ')}`);
+    const source = item.data_source?.hoga || item.data_source?.entry;
+    if (source) lines.push(`가격 출처: ${escapeHtml(String(source).toLowerCase() === 'rest' ? '조회 보완 데이터' : _humanizeTerms(source))}`);
+
+    lines.push('', `<b>재평가 조건</b>`);
+    lines.push(Number.isFinite(appliedGate)
+        ? `비용 반영 손익비가 <b>${appliedGate.toFixed(2)} 이상</b>으로 개선되면 진입 여부를 다시 심사합니다.`
+        : '보류 조건이 개선되면 진입 여부를 다시 심사합니다.');
+    lines.push('개선되지 않거나 관찰 시간이 끝나면 관심 해제로 안내합니다.');
     _appendSellFooter(lines, item);
     return lines.join('\n');
 }
