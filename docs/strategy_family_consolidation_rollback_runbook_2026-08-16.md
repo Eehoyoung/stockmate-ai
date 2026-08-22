@@ -85,6 +85,8 @@ V55는 additive 컬럼과 인덱스만 추가하며 기존 `strategy` 값과 제
 - 2026-08-16 23:37 KST DB V55 적용 완료. 배포 전 DB archive는 `backups/strategy-family-live-canary-20260816-2340/postgres.dump`이며 `pg_restore --list` 판독을 통과했다.
 - 같은 디렉터리에 Redis RDB, `.env.predeploy`, 이전 이미지 목록, Git HEAD를 보존했다.
 - 2026-08-16 23:38 KST API, AI, Telegram live canary 재배포 완료. 세 서비스 health는 모두 healthy다.
-- family lineage, 비교점수 기록, live routing이 모두 ON이다. 비교점수는 관측 필드이며 주문 자체는 shadow가 아니다.
+- 2026-08-22 source timestamp 계보 누락 ENTER 2건을 발견해 1단계 논리 롤백을 실행했다. 현재 family lineage와 비교점수 기록은 ON, live routing은 OFF다.
+- 원인 수정 커밋은 `bf9ebe1`이며 API/AI Docker 이미지를 재빌드·재배포했다. 컨테이너 내부 `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=false`를 확인했다.
+- 최초 관찰창의 위반 기록은 감사 증거이므로 삭제하지 않는다. 재승격 시 `monitor_strategy_family_canary.ps1 -SinceKst <새 시작시각>`으로 새 관찰창을 사용하고 5 KRX 거래일을 다시 채운다.
 - 배포 시각은 일요일 장외이므로 신규 주문 발생은 없었다. 첫 거래일부터 5거래일 카나리 지표를 집계한다.
 - 이전 이미지 3개는 `pre-family-20260816` tag로 고정했다.

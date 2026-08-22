@@ -2,15 +2,15 @@
 
 ## 결론
 
-코드 구현, 전체 회귀, V55 적용, Docker live 배포와 즉시 롤백 준비는 완료됐다. 최종 승인에는 실제 KRX 5거래일 결과가 필요하므로 WP-10과 WP-12의 최종 성과 판정은 아직 진행 중이다.
+코드 구현, 전체 회귀와 Docker 배포는 완료됐다. 다만 2026-08-22 감사에서 과거 ENTER 2건의 source timestamp 계보 누락을 확인해 승인 규칙대로 live family 라우팅을 즉시 차단했다. 최종 승인에는 수정 후 새 관찰창의 실제 KRX 5거래일 결과가 필요하므로 WP-10~WP-12는 진행 중이다.
 
 ## 현재 배포
 
 - 배포 브랜치: `codex/strategy-family-consolidation`
-- 배포 코드 checkpoint: `118518b`
+- 배포 코드 checkpoint: `bf9ebe1`
 - DB: Flyway V56 (V55 family 계보 + V56 version/source 계보)
-- live 환경: `ENABLE_STRATEGY_FAMILY_LINEAGE=true`, `ENABLE_STRATEGY_FAMILY_SHADOW_SCORING=true`, `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=true`
-- 비교점수는 관측값이고 주문/신호 라우팅은 live다.
+- 현재 환경: `ENABLE_STRATEGY_FAMILY_LINEAGE=true`, `ENABLE_STRATEGY_FAMILY_SHADOW_SCORING=true`, `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=false`
+- family 계보와 비교점수는 계속 수집하지만 주문/신호 판정은 레거시 경로다.
 - API, AI, Telegram, WebSocket, PostgreSQL, Redis health: 모두 healthy
 
 ## WP별 증거
@@ -27,9 +27,9 @@
 | WP-07 | 완료 | setup prompt + family guard, strict schema validator, mismatch fail-closed | live AI 실패율 관찰 |
 | WP-08 | 완료 | family key→stock key 원자 예약, Redis 장애 fail-closed, theme exposure guard | 실제 동시신호 표본 대기 |
 | WP-09 | 완료 | DB dual-write, G family API, Telegram family 표시와 `/filter g01~g07` alias | 없음 |
-| WP-10 | 진행 중 | predeploy test/replay, canary monitor | 5 KRX 거래일 결과·성과지표 필요 |
-| WP-11 | 진행 중 | live 배포, 세 kill switch, pre-family 이미지 tag, DB/Redis 백업 | 실제 rollback 조건 감시 |
-| WP-12 | 진행 중 | 계획서, JSON prompt, rollback runbook, 본 감사서 | 5일 최종 보고서 추가 |
+| WP-10 | 진행 중 | predeploy test/replay, canary monitor, 4개 개장일 관찰 | 계보 수정 후 새 5 KRX 거래일 결과·성과지표 필요 |
+| WP-11 | 진행 중 | live 배포, 계보 위반 감지 후 논리 롤백 실행, pre-family 이미지 tag, DB/Redis 백업 | 새 canary 재승격 전 gate 재검증 |
+| WP-12 | 진행 중 | 계획서, JSON prompt, rollback runbook, 본 감사서 | 새 5일 최종 보고서 추가 |
 
 ## 전체 회귀
 
@@ -85,3 +85,12 @@
 - 과거 20일에 6개 setup 신호와 전체 trade outcome이 없어 전략별 기대값 비교가 불가능하다.
 - AI strict schema 도입 직후이므로 첫 거래일 `AI_SCHEMA_INVALID` 비율을 별도 확인해야 한다.
 - 키움·Telegram 인증정보는 앞선 진단 출력에 노출됐으므로 운영자가 회전해야 한다. 회전 전까지 해당 자격증명의 보안 위험은 남아 있다.
+
+## 2026-08-22 롤백 사건
+
+- 최초 관찰창(2026-08-16 23:37 KST 이후)에서 392개 신호를 확인했다. family/setup 계보 결측, 중복 활성 종목, stale ENTER는 0건이었다.
+- ENTER 2건(`trading_signals.id` 4379, 4424)은 `data_source`와 `source_age_ms`가 있었지만 `source_timestamp`가 비어 있었다. 두 건 모두 S11/G02이며 현재 활성 포지션은 없다.
+- 원인은 REST/신호 fallback freshness가 `updated_at_ms`를 만들지 않아 downstream timestamp 변환이 빈 객체가 된 것이었다.
+- `bf9ebe1`에서 fallback 계보 생성기를 공통 보완하고, live family ENTER에 tick/hoga/strength source·timestamp·age가 모두 없으면 `SOURCE_LINEAGE_GUARD`로 차단하도록 수정했다.
+- AI 전체 1,149 tests와 Java 전체 tests를 통과하고 API/AI 이미지를 재빌드했다. 2026-08-17은 `CLOSED`, 2026-08-18은 `OPEN`으로 historical calendar API가 판정한다.
+- 과거 위반 행을 삭제하거나 소급 보정하지 않는다. 현재 monitor 결과는 의도대로 `ROLLBACK_NOW`이며 live family routing은 OFF다. 수정 후 새 canary는 별도의 `SinceKst`로 시작하고 5거래일을 다시 채워야 한다.

@@ -1,7 +1,7 @@
 # 16개 전략 → 7개 전략군 통합 작업계획서
 
 - 작성일: 2026-08-16
-- 상태: 구현·전체 회귀·Docker 실전 canary 배포 완료, 5거래일 관찰 진행
+- 상태: 구현·전체 회귀·Docker 배포 완료, 계보 위반으로 live family 라우팅 롤백 후 재관찰 대기
 - 범위: `api-orchestrator`, `ai-engine`, `websocket-listener`, `telegram-bot`, PostgreSQL, Redis, Kiwoom/Toss 조회 계약
 - 배포 원칙: 구현·테스트·롤백 리허설 완료 후 Docker 실전 canary로 배포한다. 전용 shadow 배포는 하지 않되 dual-score 계측은 유지한다.
 
@@ -9,11 +9,11 @@
 
 - 배포 시각: 2026-08-16 23:37~23:38 KST
 - 적용 DB: Flyway V56, 기존 `strategy` 보존 및 G family·version·source 계보 additive backfill 4,064건 확인
-- 활성 플래그: lineage=true, shadow-scoring=true, live-routing=true. 여기서 shadow-scoring은 비교 관측값일 뿐 주문 모드는 live다.
+- 현재 활성 플래그: lineage=true, shadow-scoring=true, live-routing=false. 2026-08-22 source timestamp 계보 누락 ENTER 2건을 확인해 승인 규칙대로 논리 롤백했다.
 - 전체 회귀: AI engine 1,108 passed, WebSocket 99 passed, Java 전체 test 성공, Telegram formatter 36 + limiter 22 passed
 - 복구점: `backups/strategy-family-live-canary-20260816-2340/`의 PostgreSQL custom archive, Redis RDB, 배포 전 `.env`, Git HEAD, 이미지 목록
 - 이미지 롤백 tag: API/AI/Telegram 각각 `pre-family-20260816`
-- 카나리 거래일: KRX 개장일 기준 첫 5일. 2026-08-17은 광복절 대체휴일이므로 예상 관찰일은 8월 18·19·20·21·24일이며 실제 세션 상태로 최종 판정한다.
+- 최초 카나리 관찰: 8월 18·19·20·21일의 4개 KRX 개장일을 확인했다. 과거 위반 기록은 보존하며, `bf9ebe1` 수정 후 live 재승격 시 새 시작시각부터 5개 개장일을 다시 관찰한다.
 
 ## 1. 결정 요약
 
@@ -415,4 +415,4 @@ family 주문 라우팅은 feature flag로 즉시 차단할 수 있어야 한다
 
 ## 14. 현재 단계 결론
 
-구현과 최종 Docker live canary가 승인됐다. 배포 전 전체 테스트·DB 백업·rollback 리허설과 실전 설정 preflight를 완료해야 하며, 5거래일 평가 후 유지 또는 롤백한다.
+구현과 Docker live canary는 승인됐으나 2026-08-22 계보 위반 2건으로 논리 롤백됐다. 원인 수정과 전체 회귀·재배포는 끝났지만 live family 라우팅 재승격 전 preflight를 다시 수행하고, 새 관찰창의 5거래일 평가 후에만 유지 여부를 결정한다.
