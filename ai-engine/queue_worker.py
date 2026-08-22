@@ -917,6 +917,32 @@ async def _refresh_chart_if_needed(
             logger.debug("[Worker] chart minute refresh failed [%s %s]: %s", stk_cd, strategy, e)
 
 
+def _refreshed_freshness(kind: str, source: str, age_ms: float | int | None) -> dict:
+    """Build complete lineage for data observed by a fallback request."""
+    age = max(0, int(float(age_ms or 0)))
+    return {
+        "state": "caution",
+        "kind": kind,
+        "age_ms": age,
+        "updated_at_ms": int(time.time() * 1000) - age,
+        "source": source,
+    }
+
+
+def _source_lineage_enter_failure(payload: dict) -> str | None:
+    """Fail closed when a family-routed ENTER cannot prove its market-data origin."""
+    if payload.get("action") != "ENTER" or not family_live_routing_enabled():
+        return None
+    sources = payload.get("data_source") or {}
+    timestamps = payload.get("source_timestamp") or {}
+    ages = payload.get("source_age_ms") or {}
+    missing = [
+        kind for kind in ("tick", "hoga", "strength")
+        if not sources.get(kind) or timestamps.get(kind) is None or ages.get(kind) is None
+    ]
+    return f"required source lineage missing: {','.join(missing)}" if missing else None
+
+
 async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy: str = "") -> None:
     """
     tick/hoga/strength 중 stale/missing 항목을 갱신한다.
@@ -991,10 +1017,9 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
                     "flu_rt": float(tick_data.get("flu_rt") or 0),
                 })
                 ctx["tick"] = refreshed_tick
-                freshness["tick"] = {
-                    "state": "caution", "kind": "tick",
-                    "age_ms": tick_meta.get("latency_ms", 0), "source": "rest",
-                }
+                freshness["tick"] = _refreshed_freshness(
+                    "tick", "rest", tick_meta.get("latency_ms", 0)
+                )
                 _refresh_sources["tick"] = "rest"
                 logger.debug("[Worker] tick refreshed via REST direct [%s]: prc=%s",
                              stk_cd, tick_data["cur_prc"])
@@ -1020,11 +1045,9 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
             if signal.get("acc_trde_qty") not in (None, ""):
                 refreshed_tick["acc_trde_qty"] = signal.get("acc_trde_qty")
             ctx["tick"] = refreshed_tick
-            freshness["tick"] = {
-                "state": "caution", "kind": "tick",
-                "age_ms": signal_age["age_sec"] * 1000.0,
-                "source": "signal_fallback",
-            }
+            freshness["tick"] = _refreshed_freshness(
+                "tick", "signal_fallback", signal_age["age_sec"] * 1000.0
+            )
             _refresh_sources["tick"] = "signal_fallback"
             logger.debug("[Worker] tick_ctx refreshed from recent signal [%s]: prc=%.0f flu=%.2f age=%.3fs",
                          stk_cd, _cur, _flu, signal_age["age_sec"])
@@ -1040,10 +1063,9 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
             )
             if new_str is not None:
                 ctx["strength"] = new_str
-                freshness["strength"] = {
-                    "state": "caution", "kind": "strength",
-                    "age_ms": str_meta.get("latency_ms", 0), "source": "rest",
-                }
+                freshness["strength"] = _refreshed_freshness(
+                    "strength", "rest", str_meta.get("latency_ms", 0)
+                )
                 _refresh_sources["strength"] = "rest"
                 logger.debug("[Worker] strength refreshed via REST direct [%s]: %.1f", stk_cd, new_str)
             else:
@@ -1063,10 +1085,9 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
                 )
                 if new_bid is not None:
                     ctx["hoga"] = {"total_buy_bid_req": float(new_bid), "total_sel_bid_req": 1.0}
-                    freshness["hoga"] = {
-                        "state": "caution", "kind": "hoga",
-                        "age_ms": hoga_meta.get("latency_ms", 0), "source": "rest",
-                    }
+                    freshness["hoga"] = _refreshed_freshness(
+                        "hoga", "rest", hoga_meta.get("latency_ms", 0)
+                    )
                     _refresh_sources["hoga"] = "rest"
                     logger.debug("[Worker] hoga refreshed via REST direct [%s]: %.2f", stk_cd, new_bid)
                 else:
@@ -1084,11 +1105,9 @@ async def _refresh_stale_ctx(ctx: dict, stk_cd: str, rdb, signal: dict, strategy
             if signal_fallback_allowed:
                 _b = float(sig_bid)
                 ctx["hoga"] = {"total_buy_bid_req": _b, "total_sel_bid_req": 1.0}
-                freshness["hoga"] = {
-                    "state": "caution", "kind": "hoga",
-                    "age_ms": signal_age["age_sec"] * 1000.0,
-                    "source": "signal_fallback",
-                }
+                freshness["hoga"] = _refreshed_freshness(
+                    "hoga", "signal_fallback", signal_age["age_sec"] * 1000.0
+                )
                 _refresh_sources["hoga"] = "signal_fallback"
                 logger.debug("[Worker] hoga_ctx refreshed from recent signal [%s]: bid=%.2f age=%.3fs",
                              stk_cd, _b, signal_age["age_sec"])
@@ -2130,6 +2149,12 @@ async def process_one(rdb, pg_pool=None) -> bool:
             for kind, status in (ctx.get("freshness") or {}).items()
             if isinstance(status, dict) and (status or {}).get("age_ms") is not None
         }
+        _data_source = {
+            kind: (status or {}).get("source") or "kiwoom_ws"
+            for kind, status in (ctx.get("freshness") or {}).items()
+            if isinstance(status, dict) and (status or {}).get("updated_at_ms") is not None
+        }
+        _data_source.update((ctx.get("refresh_meta") or {}).get("market_data_sources", {}))
         _confirmed_by_family_ids = []
         for _matched_setup in signal.get("matched_setup_ids") or [strategy]:
             if _matched_setup not in ALL_SETUP_IDS:
@@ -2194,7 +2219,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "freshness_decision": _freshness_dec,
             # REST 보강 메타데이터 (관측·디버깅용)
             "market_data_sources": (ctx.get("refresh_meta") or {}).get("market_data_sources", {}),
-            "data_source": (ctx.get("refresh_meta") or {}).get("market_data_sources", {}),
+            "data_source": _data_source,
             "source_timestamp": _source_timestamp,
             "source_age_ms": _source_age_ms,
             "fallback_reason": (ctx.get("refresh_meta") or {}).get("retry_failures", []),
@@ -2250,6 +2275,15 @@ async def process_one(rdb, pg_pool=None) -> bool:
         if ctx.get("chart_fallback_used") and enriched.get("confidence") == "HIGH":
             enriched["confidence"] = "MEDIUM"
         normalize_signal_prices(enriched)
+        _lineage_reason = _source_lineage_enter_failure(enriched)
+        if _lineage_reason:
+            enriched.update({
+                "action": "CANCEL",
+                "execution_decision": "BLOCK",
+                "confidence": "LOW",
+                "cancel_type": "SOURCE_LINEAGE_GUARD",
+                "cancel_reason": _lineage_reason,
+            })
         # REST fallback ENTER 판정 (STRICT_REST_ENTER_GUARD=true 시)
         if STRICT_REST_ENTER_GUARD and enriched.get("action") == "ENTER":
             _stale_reason = _rest_only_enter_stale_reason(enriched, ctx)

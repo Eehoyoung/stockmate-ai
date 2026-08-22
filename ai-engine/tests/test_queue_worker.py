@@ -1653,6 +1653,7 @@ class TestRefreshStaleCtxBypass:
         mock_str_rest.assert_not_awaited()
         assert ctx["freshness"]["hoga"]["source"] == "rest"
         assert ctx["freshness"]["hoga"]["state"] == "caution"
+        assert ctx["freshness"]["hoga"]["updated_at_ms"] > 0
 
     def test_tick_signal_fallback_preserves_cumulative_trade_amount(self):
         ctx = {
@@ -1681,6 +1682,7 @@ class TestRefreshStaleCtxBypass:
         assert ctx["tick"]["flu_rt"] == 2.0
         assert ctx["tick"]["acc_trde_qty"] == "250000"
         assert ctx["tick"]["acc_trde_prica"] == "12500"
+        assert ctx["freshness"]["tick"]["updated_at_ms"] > 0
 
     def test_stale_signal_cannot_refresh_tick(self):
         ctx = {
@@ -1728,6 +1730,7 @@ class TestRefreshStaleCtxBypass:
         mock_hoga_rest.assert_not_awaited()
         assert ctx["freshness"]["strength"]["source"] == "rest"
         assert ctx["strength"] == 118.0
+        assert ctx["freshness"]["strength"]["updated_at_ms"] > 0
 
     def test_hoga_rest_takes_priority_over_recent_signal_bid(self):
         """hoga cancel + signal에 bid_ratio 있음 → REST 호출 없이 signal fallback 사용"""
@@ -1819,3 +1822,20 @@ class TestRefreshStaleCtxBypass:
 
         mock_hoga_rest.assert_not_awaited()
         mock_str_rest.assert_not_awaited()
+
+
+def test_family_enter_requires_complete_source_lineage():
+    from queue_worker import _source_lineage_enter_failure
+
+    complete = {
+        "action": "ENTER",
+        "data_source": {"tick": "rest", "hoga": "rest", "strength": "rest"},
+        "source_timestamp": {"tick": 1, "hoga": 1, "strength": 1},
+        "source_age_ms": {"tick": 10, "hoga": 10, "strength": 10},
+    }
+    with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
+        assert _source_lineage_enter_failure(complete) is None
+        incomplete = {**complete, "source_timestamp": {}}
+        assert _source_lineage_enter_failure(incomplete) == (
+            "required source lineage missing: tick,hoga,strength"
+        )

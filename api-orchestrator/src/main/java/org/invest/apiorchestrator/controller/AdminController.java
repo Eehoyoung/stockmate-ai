@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -91,11 +92,12 @@ public class AdminController {
 
     /** Toss 국내 장 운영 캘린더를 대시보드가 외부 호출 없이 확인한다. */
     @GetMapping("/market-calendar")
-    public ResponseEntity<Map<String, Object>> marketCalendar() {
-        String date = KstClock.today().toString();
-        String status = redis.opsForValue().get("market:kr:calendar:" + date);
+    public ResponseEntity<Map<String, Object>> marketCalendar(
+            @RequestParam(required = false) LocalDate date) {
+        String businessDate = (date == null ? KstClock.today() : date).toString();
+        String status = redis.opsForValue().get("market:kr:calendar:" + businessDate);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("business_date", date);
+        result.put("business_date", businessDate);
         result.put("status", status == null ? "UNKNOWN" : status);
         result.put("source", status == null ? "NONE" : "TOSS");
         result.put("scheduled_work_enabled", "OPEN".equals(status));

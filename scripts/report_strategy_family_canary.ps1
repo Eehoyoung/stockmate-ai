@@ -74,7 +74,17 @@ SELECT count(*),
 FROM trading_signals WHERE created_at >= '$sinceIso'
 "@
 
-$tradingDays = (Query "select count(distinct date) from market_daily_context where date >= '$($SinceKst.ToString('yyyy-MM-dd'))'::date and source_complete=true and official_snapshot is not null")[0]
+$tradingDays = 0
+for ($day = $SinceKst.Date; $day -le (Get-Date).Date; $day = $day.AddDays(1)) {
+    try {
+        $calendar = Invoke-RestMethod -Uri (
+            "http://localhost:5050/api/admin/market-calendar?date=" + $day.ToString("yyyy-MM-dd")
+        ) -TimeoutSec 5
+        if ($calendar.status -eq "OPEN") { $tradingDays++ }
+    } catch {
+        # Unknown dates are deliberately not counted as trading days.
+    }
+}
 $groups = Query $groupSql
 $markets = Query $marketSql
 $overlap = (Query $overlapSql | Select-Object -First 1) -split '\|', -1

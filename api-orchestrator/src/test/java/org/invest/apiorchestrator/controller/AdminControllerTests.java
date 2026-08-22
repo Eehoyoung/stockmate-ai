@@ -19,6 +19,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,6 +39,19 @@ class AdminControllerTests {
     final ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks AdminController controller;
+
+    @Test
+    void marketCalendarReadsRequestedHistoricalDate() {
+        ValueOperations<String, String> values = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.get("market:kr:calendar:2026-08-17")).thenReturn("CLOSED");
+
+        var response = controller.marketCalendar(LocalDate.of(2026, 8, 17));
+
+        assertEquals("2026-08-17", response.getBody().get("business_date"));
+        assertEquals("CLOSED", response.getBody().get("status"));
+        assertEquals(false, response.getBody().get("scheduled_work_enabled"));
+    }
 
     @Test
     void overviewMergesOwnHealthSnapshotWithCrossServiceCheck() {
