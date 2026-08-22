@@ -39,6 +39,31 @@
 - Telegram: commands 21, formatter 36, rate limiter 22 passed
 - live API: family summary HTTP 200, 잘못된 `G99` HTTP 400
 
+## 실행 프롬프트 필수 테스트 추적
+
+| 필수 계약 | 직접 증거 | 판정 |
+|---|---|---|
+| 16 setup이 정확히 한 family에 매핑 | `test_strategy_catalog.py::test_catalog_maps_all_16_setups_exactly_once` | 충족 |
+| 알 수 없는 family/setup fail closed | `test_strategy_catalog.py::test_unknown_setup_and_number_fail_closed`, family API G99 test | 충족 |
+| S2 event 경로 유지 | `test_strategy_runner.py::test_s2_not_scheduled_in_strategy_runner`, `test_vi_watch_worker.py` | 충족 |
+| S12 overnight가 S1/S2에 전파되지 않음 | session별 catalog/policy·runner tests | 충족 |
+| 동일 종목 복수 setup 주문계획 1개 | `test_queue_worker.py::test_second_strategy_for_same_stock_is_blocked` 및 family reservation tests | 충족 |
+| ACTIVE/PARTIAL_TP/OVERNIGHT 신규주문 차단 | repository query는 세 상태를 포함하고 service는 `existsActivePosition`을 사용 | 부분: 세 상태별 통합 test 필요 |
+| stale Kiwoom ENTER 금지 | `test_signal_readiness_gate.py`, `test_rest_enter_guard.py`, source lineage guard test | 충족 |
+| Toss 부재가 사실을 만들지 않음 | `test_family_scoring.py::test_optional_toss_absence_is_degraded_without_blocking` | 충족 |
+| Kiwoom HTTP 200 오류본문 실패 | `test_http_utils.py`, `KiwoomResponseContractTests` | 충족 |
+| Kiwoom/Toss candle 부분병합 금지 | `test_ma_utils.py::test_fallback_replaces_when_toss_has_more_candles` | 충족 |
+| rule component clamp | `test_family_scoring.py::test_component_caps_sum_to_100` | 충족 |
+| 상관 확증 할인 | `test_family_scoring.py::test_independent_confirmation_is_larger_but_total_is_capped` | 충족 |
+| AI HOLD는 WATCH | queue worker와 scoring pipeline HOLD tests | 충족 |
+| AI hard gate/RR 우회 금지 | queue worker Claude RR·geometry tests | 충족 |
+| TP1 partial 상태전이 | `test_position_monitor.py::test_tp1_with_second_target_transitions_to_partial_tp` | 충족 |
+| queue→DB→API→Telegram 계보 | 16 setup queue, DB additive lineage, family API, formatter tests가 각각 존재 | 부분: 단일 종단간 fixture 필요 |
+| legacy S와 G query 동시 제공 | `TradingControllerPythonStrategyProxyTests::familySummaryUsesFamilyAggregationWithoutChangingLegacySummary` | 충족 |
+| rollback이 데이터 손실 없이 legacy 판정 복구 | TP/SL·RR kill-switch tests와 additive migration test | 충족 |
+
+`부분` 항목은 전체 회귀 통과와 별개로 완료 증거가 아니다. WP-10 최종 승인 전에 해당 통합 fixtures를 추가하고 실제 새 canary 기록과 함께 재검증한다.
+
 ## 신규 소비자 계약
 
 - `GET /api/trading/signals/performance/family/{G01..G07}`: 당일 family 신호
