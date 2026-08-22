@@ -1,6 +1,25 @@
 import json
+from pathlib import Path
 
 import pytest
+
+
+FIXTURE = json.loads(
+    (Path(__file__).parents[2] / "test-fixtures" / "strategy_family_lineage.json")
+    .read_text(encoding="utf-8")
+)
+
+
+def test_queue_lineage_matches_shared_consumer_contract():
+    from strategy_catalog import family_lineage
+
+    lineage = family_lineage(FIXTURE["strategy"])
+    for key in (
+        "strategy_family", "strategy_family_name", "primary_setup_id",
+        "matched_setup_ids", "confirmed_by_family_ids", "family_policy_version",
+        "setup_version", "rule_score_version", "prompt_version",
+    ):
+        assert lineage[key] == FIXTURE[key]
 
 
 class _Transaction:
@@ -55,24 +74,10 @@ async def test_insert_python_signal_persists_additive_family_lineage():
     signal_id = await insert_python_signal(
         pool,
         {
-            "stk_cd": "005930",
-            "strategy": "S9_PULLBACK_SWING",
-            "strategy_family": "G04",
-            "strategy_family_name": "TREND_PHASE",
-            "primary_setup_id": "S9_PULLBACK_SWING",
-            "matched_setup_ids": ["S8_GOLDEN_CROSS", "S9_PULLBACK_SWING"],
-            "family_policy_version": "family_v1_2026_08_16",
+            **FIXTURE,
             "blocking_reasons": [],
             "degraded_reasons": ["TOSS_RISK_MISSING"],
             "final_score": 77.25,
-            "confirmed_by_family_ids": ["G05"],
-            "setup_version": "s9_family_v1",
-            "rule_score_version": "family_score_v1_2026_08_16",
-            "prompt_version": "family_prompt_v1_2026_08_16",
-            "data_source": {"tick": "ws"},
-            "source_timestamp": {"tick": 1234567890},
-            "source_age_ms": {"tick": 120},
-            "fallback_reason": [],
             "cur_prc": 70000,
         },
         action="ENTER",
@@ -92,19 +97,19 @@ async def test_insert_python_signal_persists_additive_family_lineage():
         "G04",
         "TREND_PHASE",
         "S9_PULLBACK_SWING",
-        json.dumps(["S8_GOLDEN_CROSS", "S9_PULLBACK_SWING"], ensure_ascii=False),
+        json.dumps(FIXTURE["matched_setup_ids"], ensure_ascii=False),
         "family_v1_2026_08_16",
         "[]",
         json.dumps(["TOSS_RISK_MISSING"], ensure_ascii=False),
         77.25,
     )
     assert args[68:76] == (
-        json.dumps(["G05"], ensure_ascii=False),
-        "s9_family_v1",
+        json.dumps(FIXTURE["confirmed_by_family_ids"], ensure_ascii=False),
+        "s9_pullback_swing_family_v1",
         "family_score_v1_2026_08_16",
         "family_prompt_v1_2026_08_16",
-        json.dumps({"tick": "ws"}, ensure_ascii=False),
-        json.dumps({"tick": 1234567890}, ensure_ascii=False),
-        json.dumps({"tick": 120}, ensure_ascii=False),
+        json.dumps(FIXTURE["data_source"], ensure_ascii=False),
+        json.dumps(FIXTURE["source_timestamp"], ensure_ascii=False),
+        json.dumps(FIXTURE["source_age_ms"], ensure_ascii=False),
         "[]",
     )

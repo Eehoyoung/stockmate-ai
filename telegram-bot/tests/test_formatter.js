@@ -1,6 +1,7 @@
 ﻿'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 
 const {
@@ -337,6 +338,18 @@ test('formatSignal renders family lineage without replacing legacy setup', () =>
     assert.ok(msg.includes('G06 장중급등·테마'));
     assert.ok(msg.includes('대표 세부전략: S4_BIG_CANDLE'));
     assert.ok(msg.includes('S6_THEME_LAGGARD'));
+});
+
+test('formatSignal preserves shared queue DB API Telegram lineage fixture', () => {
+    const fixture = JSON.parse(fs.readFileSync(
+        path.join(__dirname, '../../test-fixtures/strategy_family_lineage.json'),
+        'utf8',
+    ));
+    const msg = formatSignal(makeSignal(fixture));
+
+    assert.ok(msg.includes(`[${fixture.strategy}]`));
+    assert.ok(msg.includes(`${fixture.strategy_family} 추세단계`));
+    assert.ok(msg.includes(`대표 세부전략: ${fixture.primary_setup_id}`));
 });
 
 test('formatSignal renders upgraded ENTER form with Korean price and execution labels', () => {

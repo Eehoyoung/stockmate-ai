@@ -58,11 +58,11 @@
 | AI HOLD는 WATCH | queue worker와 scoring pipeline HOLD tests | 충족 |
 | AI hard gate/RR 우회 금지 | queue worker Claude RR·geometry tests | 충족 |
 | TP1 partial 상태전이 | `test_position_monitor.py::test_tp1_with_second_target_transitions_to_partial_tp` | 충족 |
-| queue→DB→API→Telegram 계보 | 16 setup queue, DB additive lineage, family API, formatter tests가 각각 존재 | 부분: 단일 종단간 fixture 필요 |
+| queue→DB→API→Telegram 계보 | 공통 `test-fixtures/strategy_family_lineage.json`을 Python queue/DB, Java API 직렬화, Telegram formatter가 함께 검증 | 충족 |
 | legacy S와 G query 동시 제공 | `TradingControllerPythonStrategyProxyTests::familySummaryUsesFamilyAggregationWithoutChangingLegacySummary` | 충족 |
 | rollback이 데이터 손실 없이 legacy 판정 복구 | TP/SL·RR kill-switch tests와 additive migration test | 충족 |
 
-`부분` 항목은 전체 회귀 통과와 별개로 완료 증거가 아니다. WP-10 최종 승인 전에 해당 종단간 fixture를 추가하고 실제 새 canary 기록과 함께 재검증한다.
+18개 필수 계약의 직접 테스트 증거가 모두 존재한다. 이는 구조·전달 계약의 증거이며, WP-10의 실제 5거래일 성과·안전 관찰을 대체하지 않는다.
 
 ## 신규 소비자 계약
 

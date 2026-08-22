@@ -1,0 +1,18 @@
+{
+  "stk_cd": "005930",
+  "stk_nm": "삼성전자",
+  "strategy": "S9_PULLBACK_SWING",
+  "strategy_family": "G04",
+  "strategy_family_name": "TREND_PHASE",
+  "primary_setup_id": "S9_PULLBACK_SWING",
+  "matched_setup_ids": ["S9_PULLBACK_SWING"],
+  "confirmed_by_family_ids": [],
+  "family_policy_version": "family_v1_2026_08_16",
+  "setup_version": "s9_pullback_swing_family_v1",
+  "rule_score_version": "family_score_v1_2026_08_16",
+  "prompt_version": "family_prompt_v1_2026_08_16",
+  "data_source": {"tick": "kiwoom_ws", "hoga": "kiwoom_ws", "strength": "kiwoom_ws"},
+  "source_timestamp": {"tick": 1787389200000, "hoga": 1787389200000, "strength": 1787389200000},
+  "source_age_ms": {"tick": 120, "hoga": 80, "strength": 140},
+  "fallback_reason": []
+}
