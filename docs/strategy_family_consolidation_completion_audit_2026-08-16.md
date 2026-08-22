@@ -9,8 +9,8 @@
 - 배포 브랜치: `codex/strategy-family-consolidation`
 - 배포 코드 checkpoint: `bf9ebe1`
 - DB: Flyway V56 (V55 family 계보 + V56 version/source 계보)
-- 현재 환경: `ENABLE_STRATEGY_FAMILY_LINEAGE=true`, `ENABLE_STRATEGY_FAMILY_SHADOW_SCORING=true`, `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=true`
-- 새 canary 시작: 2026-08-22 17:11:22 KST. 자동 주문 경로는 없고 family 신호 판정만 live다.
+- 현재 환경: `ENABLE_STRATEGY_FAMILY_LINEAGE=true`, `ENABLE_STRATEGY_FAMILY_SHADOW_SCORING=true`, `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=false`
+- 2026-08-22 ENTER 사후분석에서 family hard gate 우회를 추가 확인해 새 canary를 중단했다.
 - API, AI, Telegram, WebSocket, PostgreSQL, Redis health: 모두 healthy
 
 ## WP별 증거
@@ -120,3 +120,11 @@
 - AI 전체 1,149 tests와 Java 전체 tests를 통과하고 API/AI 이미지를 재빌드했다. 2026-08-17은 `CLOSED`, 2026-08-18은 `OPEN`으로 historical calendar API가 판정한다.
 - 과거 위반 행을 삭제하거나 소급 보정하지 않는다. 최초 관찰창 monitor는 계속 `ROLLBACK_NOW`를 반환한다.
 - 2026-08-22 17:11:22 KST부터 새 canary를 시작했다. 재승격 직후 신호·위반은 모두 0, monitor 종료코드는 0이며 5거래일을 다시 채운다.
+
+## 2026-08-22 ENTER 사후분석 추가 롤백
+
+- 8월 18~21일 350개 신호 중 ENTER는 2건이며 모두 S11/G02 동일고무벨트였다.
+- 두 ENTER의 `blocking_reasons`에 `REQUIRED_MARKET_DATA_UNUSABLE`이 있었지만 진입 판정으로 통과했다. 현재 family scorer도 이 사유를 shadow로만 기록하고 실전 진입 차단에 연결하지 않는다.
+- 두 건은 실제 포지션·체결·성과가 없으며 EXPIRED 상태다. Kiwoom 가격 재생상으로는 두 계획 모두 1차 목표가 미도달 후 다음 거래일 손절가를 하회했다.
+- 승인된 hard gate 우회 즉시 롤백 조건에 따라 family live routing을 다시 OFF로 전환하고 API·AI를 재생성했다. DB 자료는 보존됐고 모든 컨테이너 healthy다.
+- 상세 분석과 재현 쿼리는 `analysis_enter_signals_2026-08-18_to_2026-08-21.md/.sql`에 기록했다.
