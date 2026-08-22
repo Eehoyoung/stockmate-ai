@@ -1,5 +1,5 @@
 param(
-    [datetime]$SinceKst = [datetime]"2026-08-16T23:37:00+09:00"
+    [datetime]$SinceKst = [datetime]"2026-08-22T17:11:22+09:00"
 )
 
 $ErrorActionPreference = "Stop"

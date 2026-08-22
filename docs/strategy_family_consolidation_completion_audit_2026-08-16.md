@@ -2,15 +2,15 @@
 
 ## 결론
 
-코드 구현, 전체 회귀와 Docker 배포는 완료됐다. 다만 2026-08-22 감사에서 과거 ENTER 2건의 source timestamp 계보 누락을 확인해 승인 규칙대로 live family 라우팅을 즉시 차단했다. 최종 승인에는 수정 후 새 관찰창의 실제 KRX 5거래일 결과가 필요하므로 WP-10~WP-12는 진행 중이다.
+코드 구현, 전체 회귀와 Docker 배포는 완료됐다. 2026-08-22 감사에서 과거 ENTER 2건의 source timestamp 계보 누락을 확인해 승인 규칙대로 live family 라우팅을 즉시 차단했고, 원인 수정·전체 회귀·재배포 후 새 관찰창으로 재승격했다. 최종 승인에는 새 관찰창의 실제 KRX 5거래일 결과가 필요하므로 WP-10~WP-12는 진행 중이다.
 
 ## 현재 배포
 
 - 배포 브랜치: `codex/strategy-family-consolidation`
 - 배포 코드 checkpoint: `bf9ebe1`
 - DB: Flyway V56 (V55 family 계보 + V56 version/source 계보)
-- 현재 환경: `ENABLE_STRATEGY_FAMILY_LINEAGE=true`, `ENABLE_STRATEGY_FAMILY_SHADOW_SCORING=true`, `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=false`
-- family 계보와 비교점수는 계속 수집하지만 주문/신호 판정은 레거시 경로다.
+- 현재 환경: `ENABLE_STRATEGY_FAMILY_LINEAGE=true`, `ENABLE_STRATEGY_FAMILY_SHADOW_SCORING=true`, `ENABLE_STRATEGY_FAMILY_LIVE_ROUTING=true`
+- 새 canary 시작: 2026-08-22 17:11:22 KST. 자동 주문 경로는 없고 family 신호 판정만 live다.
 - API, AI, Telegram, WebSocket, PostgreSQL, Redis health: 모두 healthy
 
 ## WP별 증거
@@ -93,4 +93,5 @@
 - 원인은 REST/신호 fallback freshness가 `updated_at_ms`를 만들지 않아 downstream timestamp 변환이 빈 객체가 된 것이었다.
 - `bf9ebe1`에서 fallback 계보 생성기를 공통 보완하고, live family ENTER에 tick/hoga/strength source·timestamp·age가 모두 없으면 `SOURCE_LINEAGE_GUARD`로 차단하도록 수정했다.
 - AI 전체 1,149 tests와 Java 전체 tests를 통과하고 API/AI 이미지를 재빌드했다. 2026-08-17은 `CLOSED`, 2026-08-18은 `OPEN`으로 historical calendar API가 판정한다.
-- 과거 위반 행을 삭제하거나 소급 보정하지 않는다. 현재 monitor 결과는 의도대로 `ROLLBACK_NOW`이며 live family routing은 OFF다. 수정 후 새 canary는 별도의 `SinceKst`로 시작하고 5거래일을 다시 채워야 한다.
+- 과거 위반 행을 삭제하거나 소급 보정하지 않는다. 최초 관찰창 monitor는 계속 `ROLLBACK_NOW`를 반환한다.
+- 2026-08-22 17:11:22 KST부터 새 canary를 시작했다. 재승격 직후 신호·위반은 모두 0, monitor 종료코드는 0이며 5거래일을 다시 채운다.

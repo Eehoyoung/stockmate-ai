@@ -1,7 +1,7 @@
 # 16개 전략 → 7개 전략군 통합 작업계획서
 
 - 작성일: 2026-08-16
-- 상태: 구현·전체 회귀·Docker 배포 완료, 계보 위반으로 live family 라우팅 롤백 후 재관찰 대기
+- 상태: 구현·전체 회귀·Docker 배포 완료, 계보 위반 롤백·원인 수정 후 새 5거래일 live canary 진행
 - 범위: `api-orchestrator`, `ai-engine`, `websocket-listener`, `telegram-bot`, PostgreSQL, Redis, Kiwoom/Toss 조회 계약
 - 배포 원칙: 구현·테스트·롤백 리허설 완료 후 Docker 실전 canary로 배포한다. 전용 shadow 배포는 하지 않되 dual-score 계측은 유지한다.
 
@@ -9,7 +9,7 @@
 
 - 배포 시각: 2026-08-16 23:37~23:38 KST
 - 적용 DB: Flyway V56, 기존 `strategy` 보존 및 G family·version·source 계보 additive backfill 4,064건 확인
-- 현재 활성 플래그: lineage=true, shadow-scoring=true, live-routing=false. 2026-08-22 source timestamp 계보 누락 ENTER 2건을 확인해 승인 규칙대로 논리 롤백했다.
+- 현재 활성 플래그: lineage=true, shadow-scoring=true, live-routing=true. 2026-08-22 source timestamp 계보 누락 ENTER 2건으로 논리 롤백한 뒤 `bf9ebe1` 수정·회귀·재배포를 거쳐 17:11:22 KST 새 관찰창으로 재승격했다.
 - 전체 회귀: AI engine 1,108 passed, WebSocket 99 passed, Java 전체 test 성공, Telegram formatter 36 + limiter 22 passed
 - 복구점: `backups/strategy-family-live-canary-20260816-2340/`의 PostgreSQL custom archive, Redis RDB, 배포 전 `.env`, Git HEAD, 이미지 목록
 - 이미지 롤백 tag: API/AI/Telegram 각각 `pre-family-20260816`
