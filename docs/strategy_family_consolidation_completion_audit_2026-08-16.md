@@ -48,7 +48,7 @@
 | S2 event 경로 유지 | `test_strategy_runner.py::test_s2_not_scheduled_in_strategy_runner`, `test_vi_watch_worker.py` | 충족 |
 | S12 overnight가 S1/S2에 전파되지 않음 | session별 catalog/policy·runner tests | 충족 |
 | 동일 종목 복수 setup 주문계획 1개 | `test_queue_worker.py::test_second_strategy_for_same_stock_is_blocked` 및 family reservation tests | 충족 |
-| ACTIVE/PARTIAL_TP/OVERNIGHT 신규주문 차단 | repository query는 세 상태를 포함하고 service는 `existsActivePosition`을 사용 | 부분: 세 상태별 통합 test 필요 |
+| ACTIVE/PARTIAL_TP/OVERNIGHT 신규주문 차단 | `TradingSignalRepositoryPositionGuardTests::everyLivePositionStateBlocksAnotherEntry` | 충족 |
 | stale Kiwoom ENTER 금지 | `test_signal_readiness_gate.py`, `test_rest_enter_guard.py`, source lineage guard test | 충족 |
 | Toss 부재가 사실을 만들지 않음 | `test_family_scoring.py::test_optional_toss_absence_is_degraded_without_blocking` | 충족 |
 | Kiwoom HTTP 200 오류본문 실패 | `test_http_utils.py`, `KiwoomResponseContractTests` | 충족 |
@@ -62,7 +62,7 @@
 | legacy S와 G query 동시 제공 | `TradingControllerPythonStrategyProxyTests::familySummaryUsesFamilyAggregationWithoutChangingLegacySummary` | 충족 |
 | rollback이 데이터 손실 없이 legacy 판정 복구 | TP/SL·RR kill-switch tests와 additive migration test | 충족 |
 
-`부분` 항목은 전체 회귀 통과와 별개로 완료 증거가 아니다. WP-10 최종 승인 전에 해당 통합 fixtures를 추가하고 실제 새 canary 기록과 함께 재검증한다.
+`부분` 항목은 전체 회귀 통과와 별개로 완료 증거가 아니다. WP-10 최종 승인 전에 해당 종단간 fixture를 추가하고 실제 새 canary 기록과 함께 재검증한다.
 
 ## 신규 소비자 계약
 
