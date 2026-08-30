@@ -192,6 +192,17 @@ async function test(name, fn) {
         assert.strictEqual(redisState.setCalls[0].key, 'telegram:user-send:status:2026-05-22:MORNING');
     });
 
+    await test('routes SYSTEM_ALERT only to primary chats', async () => {
+        const { signals, sends, bot } = loadSignals();
+
+        await signals.processItem(bot, {
+            type: 'SYSTEM_ALERT',
+            message: '[시스템 경고] test',
+        });
+
+        assert.deepStrictEqual(sends.map(({ chatId }) => chatId), ['900']);
+    });
+
     await test('deduplicates HOLD_WATCH sends by stock+strategy identity', async () => {
         const { signals, redisState, sends, bot } = loadSignals();
         const item = {

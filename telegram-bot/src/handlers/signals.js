@@ -14,6 +14,7 @@ const {
 const { formatThreadsSignal, formatThreadsBriefing, computeThreadsRR } = require('../utils/threads_formatter');
 const threads = require('../services/threads');
 const { getLogger } = require('../utils/logger');
+const { sendMessageWithRetry } = require('../services/telegramSend');
 
 const logger = getLogger('signals');
 
@@ -276,7 +277,7 @@ async function _broadcast(bot, { type, text, logLabel, logMeta = {}, extraOpts =
 
     for (const chatId of targetChatIds) {
         try {
-            await bot.telegram.sendMessage(chatId, displayText, options);
+            await sendMessageWithRetry(bot.telegram, chatId, displayText, options);
             sentCount++;
         } catch (e) {
             failedCount++;
@@ -350,6 +351,7 @@ const BROADCAST_HANDLERS = {
 
     SYSTEM_ALERT: (item) => ({
         type: 'SYSTEM_ALERT',
+        chatIds: getPrimaryChatIds(),
         text: item.message || `[시스템 경고]\n${(item.alerts || []).join('\n')}`,
         logMeta: { alerts: (item.alerts || []).length },
     }),
@@ -531,7 +533,7 @@ async function processItem(bot, item) {
             continue;
         }
         try {
-            await bot.telegram.sendMessage(chatId, message, {
+            await sendMessageWithRetry(bot.telegram, chatId, message, {
                 parse_mode: 'HTML',
                 disable_web_page_preview: true,
             });

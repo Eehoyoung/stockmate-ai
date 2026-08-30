@@ -218,14 +218,18 @@ async def _apply_ws_control_ack(rdb, trnm: str, grp_no: str, return_code: str):
         items = [str(code) for code in (entry.get("item") or []) if code is not None]
         for ttype in (entry.get("type") or []):
             state_key = f"ws:subscribed:{ttype}"
+            group_state_key = f"{state_key}:{operation['grp_no']}"
             if trnm == "REG" and operation["full_snapshot"]:
                 await _replace_subscription_set(rdb, state_key, items)
+                await _replace_subscription_set(rdb, group_state_key, items)
             elif trnm == "REG":
                 for code in items:
                     await _add_subscription_code(rdb, state_key, code)
+                    await _add_subscription_code(rdb, group_state_key, code)
             elif trnm == "REMOVE":
                 for code in items:
                     await _remove_subscription_code(rdb, state_key, code)
+                    await _remove_subscription_code(rdb, group_state_key, code)
     return operation
 
 
@@ -295,7 +299,9 @@ async def _replace_subscription_set(rdb, key: str, codes: list[str]):
     phase refresh and causes duplicate REG requests to accumulate server-side.
     """
     try:
-        uniq = [code for code in dict.fromkeys(codes) if code]
+        # An empty item is Kiwoom's valid "all symbols" marker (for example 1h).
+        # Persist it so reconciliation does not re-register the wildcard forever.
+        uniq = [code for code in dict.fromkeys(codes) if code is not None]
         await rdb.delete(key)
         if uniq:
             await rdb.sadd(key, *uniq)
@@ -304,7 +310,7 @@ async def _replace_subscription_set(rdb, key: str, codes: list[str]):
 
 
 async def _add_subscription_code(rdb, key: str, code: str):
-    if not code:
+    if code is None:
         return
     try:
         await rdb.sadd(key, code)
@@ -313,7 +319,7 @@ async def _add_subscription_code(rdb, key: str, code: str):
 
 
 async def _remove_subscription_code(rdb, key: str, code: str):
-    if not code:
+    if code is None:
         return
     try:
         await rdb.srem(key, code)
@@ -321,10 +327,11 @@ async def _remove_subscription_code(rdb, key: str, code: str):
         logger.debug("[WS] subscription set remove failed %s %s: %s", key, code, e)
 
 
-async def _get_subscription_codes(rdb, ttype: str) -> list[str]:
+async def _get_subscription_codes(rdb, ttype: str, grp_no: str | None = None) -> list[str]:
     """Return the locally tracked codes for a realtime type."""
     try:
-        raw = await rdb.smembers(f"ws:subscribed:{ttype}")
+        suffix = f":{grp_no}" if grp_no is not None else ""
+        raw = await rdb.smembers(f"ws:subscribed:{ttype}{suffix}")
     except Exception as e:
         logger.debug("[WS] subscription set read failed %s: %s", ttype, e)
         return []
@@ -363,9 +370,13 @@ async def _reset_local_subscription_sets(rdb):
     global _ws_connection_generation
     _ws_connection_generation += 1
     _pending_ws_controls.clear()
-    for ttype in ("0B", "0H", "0D", "0w", "1h"):
+    groups = {"0B": ("1", "6"), "0H": ("2",), "1h": ("3",), "0D": ("4",), "0w": ("5",)}
+    for ttype, group_numbers in groups.items():
         await _replace_subscription_set(rdb, f"ws:subscribed:{ttype}", [])
         await _replace_subscription_set(rdb, f"ws:desired:{ttype}", [])
+        for grp_no in group_numbers:
+            await _replace_subscription_set(rdb, f"ws:subscribed:{ttype}:{grp_no}", [])
+            await _replace_subscription_set(rdb, f"ws:desired:{ttype}:{grp_no}", [])
 
 
 async def _get_candidates(rdb, market: str = "001") -> list[str]:
@@ -466,25 +477,25 @@ def _get_market_phase() -> str:
 
 
 def _groups_for_session(session: str, all_cands: list[str], top100: list[str]) -> list[tuple[str, str, list[str]]]:
+    tick_groups = [("1", "0B", all_cands[:100])]
+    if len(all_cands) > 100:
+        tick_groups.append(("6", "0B", all_cands[100:200]))
     if session == "pre_market":
-        return [
-            ("1", "0B", all_cands),
+        return tick_groups + [
             ("2", "0H", top100),
             ("4", "0D", top100),
             ("5", "0w", top100),
             ("3", "1h", [""]),
         ]
     if session == "opening_auction":
-        return [
-            ("1", "0B", all_cands),
+        return tick_groups + [
             ("2", "0H", top100),
             ("4", "0D", top100),
             ("5", "0w", top100),
             ("3", "1h", [""]),
         ]
     if session in {"main_market", "closing_auction", "after_preopen", "after_market"}:
-        return [
-            ("1", "0B", all_cands),
+        return tick_groups + [
             ("4", "0D", top100),
             ("5", "0w", top100),
             ("3", "1h", [""]),
@@ -515,7 +526,7 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     groups = _groups_for_session(session, all_cands, top100)
 
     if not groups:
-        for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("3", "1h"), ("4", "0D"), ("5", "0w")]:
+        for grp_no, ttype in [("1", "0B"), ("6", "0B"), ("2", "0H"), ("3", "1h"), ("4", "0D"), ("5", "0w")]:
             try:
                 await _clear_subscription_type(ws, rdb, grp_no, ttype)
                 await asyncio.sleep(0.1)
@@ -529,12 +540,17 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     # "허용 개수 초과" 거부로 이어지므로, 이미 구독 중인 종목은 다시 보내지 않고
     # 차집합(diff)만 REG/REMOVE 한다.
     subscribed_counts: dict[str, int] = {}
+    desired_by_type: dict[str, list[str]] = defaultdict(list)
+    for _, ttype, items in groups:
+        desired_by_type[ttype].extend(items)
+    for ttype, items in desired_by_type.items():
+        await _replace_subscription_set(rdb, f"ws:desired:{ttype}", list(dict.fromkeys(items)))
     for grp_no, ttype, items in groups:
         if not items:
             continue
         deduped = list(dict.fromkeys(items))
         items = deduped[:WS_GROUP_MAX_ITEMS]
-        subscribed_counts[ttype] = len(items)
+        subscribed_counts[ttype] = subscribed_counts.get(ttype, 0) + len(items)
         # 그룹 상한에 걸려 잘려나간 종목은 실시간 시세를 전혀 받지 못한다.
         # 그 종목을 평가하는 전략(S10 등)은 flu_rt를 0.0으로 읽어 "등락률 범위
         # 초과"로 오탐 제외하게 되므로, 절단이 발생하면 반드시 눈에 띄어야 한다.
@@ -545,9 +561,9 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
                 "(WS_GROUP_MAX_ITEMS=%d)",
                 ttype, len(deduped), len(items), dropped, WS_GROUP_MAX_ITEMS,
             )
-        await _replace_subscription_set(rdb, f"ws:desired:{ttype}", items)
+        await _replace_subscription_set(rdb, f"ws:desired:{ttype}:{grp_no}", items)
 
-        current = set(await _get_subscription_codes(rdb, ttype))
+        current = set(await _get_subscription_codes(rdb, ttype, grp_no))
         desired = set(items)
         to_remove = list(current - desired)
         to_add = [code for code in items if code not in current]
@@ -719,7 +735,9 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
             removed_codes = subscribed_set - watchset
 
             for code in new_codes:
-                groups = [("1", "0B")]
+                primary_ticks = set(await _get_subscription_codes(rdb, "0B", "1"))
+                tick_group = "1" if len(primary_ticks) < WS_GROUP_MAX_ITEMS else "6"
+                groups = [(tick_group, "0B")]
                 if "0H" in active_types and code in topset:
                     groups.append(("2", "0H"))
                 if "0D" in active_types and code in topset:
@@ -727,7 +745,7 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                 if "0w" in active_types and code in topset:
                     groups.append(("5", "0w"))
                 for grp_no, ttype in groups:
-                    subscribed_codes = set(await _get_subscription_codes(rdb, ttype))
+                    subscribed_codes = set(await _get_subscription_codes(rdb, ttype, grp_no))
                     if code in subscribed_codes:
                         continue
                     if len(subscribed_codes) >= WS_GROUP_MAX_ITEMS:
@@ -740,8 +758,8 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                 logger.info("[WS] 동적 구독 추가 [%s]", code)
 
             for code in removed_codes:
-                for grp_no, ttype in [("1", "0B"), ("2", "0H"), ("4", "0D"), ("5", "0w")]:
-                    if code not in set(await _get_subscription_codes(rdb, ttype)):
+                for grp_no, ttype in [("1", "0B"), ("6", "0B"), ("2", "0H"), ("4", "0D"), ("5", "0w")]:
+                    if code not in set(await _get_subscription_codes(rdb, ttype, grp_no)):
                         continue
                     await _send_remove(ws, grp_no, ttype, [code])
                 subscribed_set.discard(code)

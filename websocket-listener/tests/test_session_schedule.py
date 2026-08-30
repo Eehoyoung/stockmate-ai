@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -180,6 +180,7 @@ async def test_closed_session_clears_subscriptions_only():
     rdb.smembers.side_effect = [
         {"005930"},
         set(),
+        set(),
         {""},
         {"005930"},
         {"005930"},
@@ -204,11 +205,10 @@ async def test_reset_local_subscription_sets_clears_connection_scoped_state():
     await ws_client._reset_local_subscription_sets(rdb)
 
     keys = [call.args[0] for call in rdb.delete.call_args_list]
-    assert keys == [
-        key
-        for ttype in ("0B", "0H", "0D", "0w", "1h")
-        for key in (f"ws:subscribed:{ttype}", f"ws:desired:{ttype}")
-    ]
+    assert "ws:subscribed:0B" in keys
+    assert "ws:subscribed:0B:1" in keys
+    assert "ws:subscribed:0B:6" in keys
+    assert "ws:desired:0B:6" in keys
 
 
 @pytest.mark.asyncio
@@ -231,9 +231,42 @@ async def test_subscription_state_commits_only_after_success_ack():
     # Real Kiwoom ACK payloads always echo grp_no="" regardless of the grp_no that was
     # requested; matching must still succeed using this real-world (empty) grp_no.
     await ws_client._apply_ws_control_ack(rdb, "REG", "", "0")
-    rdb.delete.assert_awaited_with("ws:subscribed:0B")
-    rdb.sadd.assert_awaited_with("ws:subscribed:0B", "005930", "000660")
+    assert call("ws:subscribed:0B") in rdb.delete.await_args_list
+    assert call("ws:subscribed:0B:1") in rdb.delete.await_args_list
+    assert call("ws:subscribed:0B", "005930", "000660") in rdb.sadd.await_args_list
+    assert call("ws:subscribed:0B:1", "005930", "000660") in rdb.sadd.await_args_list
     rdb.expire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wildcard_subscription_is_tracked_after_success_ack():
+    import ws_client
+
+    ws_client._pending_ws_controls.clear()
+    ws = AsyncMock()
+    rdb = AsyncMock()
+    payload = {
+        "trnm": "REG",
+        "grp_no": "3",
+        "refresh": "1",
+        "data": [{"item": [""], "type": ["1h"]}],
+    }
+
+    await ws_client._send_ws_control(ws, payload)
+    await ws_client._apply_ws_control_ack(rdb, "REG", "", "0")
+
+    assert call("ws:subscribed:1h", "") in rdb.sadd.await_args_list
+    assert call("ws:subscribed:1h:3", "") in rdb.sadd.await_args_list
+
+
+def test_main_market_splits_200_tick_candidates_across_two_groups():
+    import ws_client
+
+    candidates = [f"{idx:06d}" for idx in range(200)]
+    tick_groups = [group for group in ws_client._groups_for_session("main_market", candidates, candidates[:100]) if group[1] == "0B"]
+
+    assert [(group_no, len(items)) for group_no, _, items in tick_groups] == [("1", 100), ("6", 100)]
+    assert tick_groups[0][2] + tick_groups[1][2] == candidates
 
 
 @pytest.mark.asyncio

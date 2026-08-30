@@ -1,14 +1,24 @@
 'use strict';
 
 const axios = require('axios');
+const Redis = require('ioredis');
 const { Client } = require('pg');
-const { getClient: getRedis, close: closeRedis } = require('./services/redis');
 
 async function checkRedis() {
-    const redis = getRedis();
-    const pong = await redis.ping();
-    if (pong !== 'PONG') {
-        throw new Error(`redis ping unexpected response: ${pong}`);
+    const redis = new Redis({
+        host: process.env.REDIS_HOST ?? 'localhost',
+        port: Number(process.env.REDIS_PORT ?? 6379),
+        password: process.env.REDIS_PASSWORD || undefined,
+        lazyConnect: true,
+        connectTimeout: 3000,
+        maxRetriesPerRequest: 0,
+    });
+    try {
+        await redis.connect();
+        const pong = await redis.ping();
+        if (pong !== 'PONG') throw new Error(`redis ping unexpected response: ${pong}`);
+    } finally {
+        redis.disconnect();
     }
 }
 
@@ -45,12 +55,6 @@ async function main() {
     } catch (err) {
         console.error(`[telegram-bot healthcheck] ${err.message}`);
         process.exit(1);
-    } finally {
-        try {
-            await closeRedis();
-        } catch (_) {
-            // ignore shutdown noise during healthcheck
-        }
     }
 }
 
