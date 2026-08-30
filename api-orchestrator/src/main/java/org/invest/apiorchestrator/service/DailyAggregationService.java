@@ -92,6 +92,9 @@ public class DailyAggregationService {
                 .totalSignals(aggregation.totalSignals())
                 .enterCount(aggregation.enterCount())
                 .cancelCount(aggregation.cancelCount())
+                .decisionEnterCount(aggregation.decisionEnterCount())
+                .watchCount(aggregation.watchCount())
+                .signalExpiredCount(aggregation.signalExpiredCount())
                 .closedCount(aggregation.closedCount())
                 .tpHitCount(aggregation.tpHitCount())
                 .slHitCount(aggregation.slHitCount())
@@ -124,6 +127,9 @@ public class DailyAggregationService {
                     .enterCount(stat.enterCount())
                     .cancelCount(stat.cancelCount())
                     .skipEntryCount(stat.skipEntryCount())
+                    .decisionEnterCount(stat.decisionEnterCount())
+                    .watchCount(stat.watchCount())
+                    .signalExpiredCount(stat.signalExpiredCount())
                     .tp1HitCount(stat.tpHitCount())
                     .tp2HitCount(stat.tp2HitCount())
                     .slHitCount(stat.slHitCount())
@@ -151,6 +157,9 @@ public class DailyAggregationService {
             int totalSignals,
             int enterCount,
             int cancelCount,
+            int decisionEnterCount,
+            int watchCount,
+            int signalExpiredCount,
             int closedCount,
             int tpHitCount,
             int slHitCount,
@@ -194,6 +203,9 @@ public class DailyAggregationService {
                     signals.size(),
                     (int) signals.stream().filter(DailyAggregationService::isExecutedSignal).count(),
                     (int) signals.stream().filter(signal -> "CANCEL".equals(signal.getAction())).count(),
+                    (int) signals.stream().filter(DailyAggregationService::isEnterDecision).count(),
+                    (int) signals.stream().filter(DailyAggregationService::isWatchDecision).count(),
+                    (int) signals.stream().filter(DailyAggregationService::isSignalExpired).count(),
                     outcomes.size(),
                     (int) outcomes.stream().filter(OutcomeFact::isTpHit).count(),
                     (int) outcomes.stream().filter(OutcomeFact::isSlHit).count(),
@@ -224,6 +236,18 @@ public class DailyAggregationService {
             return (int) signals.stream().filter(DailyAggregationService::isExecutedSignal).count();
         }
 
+        int decisionEnterCount() {
+            return (int) signals.stream().filter(DailyAggregationService::isEnterDecision).count();
+        }
+
+        int watchCount() {
+            return (int) signals.stream().filter(DailyAggregationService::isWatchDecision).count();
+        }
+
+        int signalExpiredCount() {
+            return (int) signals.stream().filter(DailyAggregationService::isSignalExpired).count();
+        }
+
         int cancelCount() {
             return (int) signals.stream().filter(signal -> "CANCEL".equals(signal.getAction())).count();
         }
@@ -249,7 +273,7 @@ public class DailyAggregationService {
         }
 
         int expiredCount() {
-            return (int) outcomes.stream().filter(OutcomeFact::isExpired).count();
+            return signalExpiredCount();
         }
 
         int overnightCount() {
@@ -351,6 +375,18 @@ public class DailyAggregationService {
         return signal.getExecutedAt() != null
                 && signal.getEntryQty() != null
                 && signal.getEntryQty() > 0;
+    }
+
+    private static boolean isEnterDecision(TradingSignal signal) {
+        return "ENTER".equals(signal.getExecutionDecision());
+    }
+
+    private static boolean isWatchDecision(TradingSignal signal) {
+        return "WATCH".equals(signal.getExecutionDecision());
+    }
+
+    private static boolean isSignalExpired(TradingSignal signal) {
+        return signal.getSignalStatus() == TradingSignal.SignalStatus.EXPIRED;
     }
 
     private static BigDecimal avgOutcomePnlPct(Collection<OutcomeFact> outcomes) {

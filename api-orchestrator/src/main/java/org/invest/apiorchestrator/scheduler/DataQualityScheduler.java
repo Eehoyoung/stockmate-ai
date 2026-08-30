@@ -30,6 +30,7 @@ public class DataQualityScheduler {
     private static final String KEY_WS_RECONNECT_COUNT = "monitor:ws_reconnect_count";
 
     private final AtomicLong lastWsAlertMs = new AtomicLong(0);
+    private final AtomicLong lastErrorQueueAlertCount = new AtomicLong(0);
 
     private final RedisMarketDataService redisService;
     private final StringRedisTemplate redis;
@@ -57,9 +58,11 @@ public class DataQualityScheduler {
 
         try {
             long errCount = redisService.getErrorQueueDepth();
-            if (errCount > ERROR_QUEUE_WARN) {
+            if (errCount > ERROR_QUEUE_WARN && lastErrorQueueAlertCount.getAndSet(errCount) != errCount) {
                 alerts.add(String.format("AI error_queue accumulated: %d", errCount));
                 log.warn("[DataQuality] error_queue accumulated {}", errCount);
+            } else if (errCount <= ERROR_QUEUE_WARN) {
+                lastErrorQueueAlertCount.set(0);
             }
         } catch (Exception e) {
             log.debug("[DataQuality] error_queue check failed: {}", e.getMessage());

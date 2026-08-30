@@ -157,6 +157,13 @@ public class TradingSignal {
     @Column(name = "action", length = 20)
     private String action;
 
+    /** ENTER / WATCH / BLOCK 정규 실행 판정. */
+    @Column(name = "execution_decision", length = 10)
+    private String executionDecision;
+
+    @Column(name = "decision_stage", length = 30)
+    private String decisionStage;
+
     /** 신뢰도: HIGH / MEDIUM / LOW */
     @Column(name = "confidence", length = 10)
     private String confidence;
@@ -181,6 +188,10 @@ public class TradingSignal {
     /** 스코어링 완료 시각 */
     @Column(name = "scored_at")
     private OffsetDateTime scoredAt;
+
+    /** 최종 execution_decision 확정 시각 (DB는 UTC, 표시 경계는 KST). */
+    @Column(name = "decision_at")
+    private OffsetDateTime decisionAt;
 
     // ── 신호 시점 기술지표 스냅샷 ─────────────────────────────────────────
     @Column(name = "ma5_at_signal", precision = 10, scale = 0)
@@ -255,6 +266,9 @@ public class TradingSignal {
 
     @Column(name = "trailing_activation", precision = 10, scale = 0)
     private BigDecimal trailingActivation;
+
+    @Column(name = "trailing_stop_price", precision = 10, scale = 0)
+    private BigDecimal trailingStopPrice;
 
     @Column(name = "trailing_basis", length = 40)
     private String trailingBasis;
@@ -371,6 +385,15 @@ public class TradingSignal {
     @Column(name = "fallback_reason", columnDefinition = "jsonb")
     private String fallbackReason;
 
+    @Column(name = "reevaluation_of_signal_id")
+    private Long reevaluationOfSignalId;
+
+    @Column(name = "evaluation_input", columnDefinition = "jsonb")
+    private String evaluationInput;
+
+    @Column(name = "input_fingerprint", length = 64)
+    private String inputFingerprint;
+
     // ── 도메인 메서드 ────────────────────────────────────────────────────
     public void updateStatus(SignalStatus status) {
         this.signalStatus = status;
@@ -381,6 +404,20 @@ public class TradingSignal {
         this.closedAt = KstClock.now();
         this.positionStatus = "CLOSED";
         this.signalStatus = pnl >= 0 ? SignalStatus.WIN : SignalStatus.LOSS;
+    }
+
+    public void updatePaperPeak(BigDecimal currentPrice, BigDecimal trailingStopPrice) {
+        if (currentPrice != null && (this.peakPrice == null || currentPrice.compareTo(this.peakPrice) > 0)) {
+            this.peakPrice = currentPrice;
+        }
+        this.trailingStopPrice = trailingStopPrice;
+    }
+
+    public void closePaperSignal(String exitType, BigDecimal currentPrice, double pnlPct) {
+        this.exitType = exitType;
+        this.exitPrice = currentPrice;
+        this.exitPnlPct = BigDecimal.valueOf(pnlPct);
+        closeSignal(pnlPct);
     }
 
     /** ForceCloseScheduler 가 청산 결과를 기록할 때 사용 */
@@ -436,7 +473,7 @@ public class TradingSignal {
     }
 
     public enum SignalStatus {
-        PENDING, SENT, EXECUTED, WIN, LOSS, EXPIRED, CANCELLED, OVERNIGHT_HOLD
+        PENDING, WATCHING, SENT, EXECUTED, WIN, LOSS, EXPIRED, CANCELLED, OVERNIGHT_HOLD
     }
 
     public enum StrategyType {

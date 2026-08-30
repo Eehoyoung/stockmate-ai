@@ -39,6 +39,9 @@ public class StrategyDailyStat {
     @Column(name = "enter_count")      @Builder.Default private Integer enterCount     = 0;
     @Column(name = "cancel_count")     @Builder.Default private Integer cancelCount    = 0;
     @Column(name = "skip_entry_count") @Builder.Default private Integer skipEntryCount = 0;
+    @Column(name = "decision_enter_count") @Builder.Default private Integer decisionEnterCount = 0;
+    @Column(name = "watch_count") @Builder.Default private Integer watchCount = 0;
+    @Column(name = "signal_expired_count") @Builder.Default private Integer signalExpiredCount = 0;
 
     // ── 청산 결과 ──────────────────────────────────────────────────────────
     @Column(name = "tp1_hit_count")     @Builder.Default private Integer tp1HitCount    = 0;

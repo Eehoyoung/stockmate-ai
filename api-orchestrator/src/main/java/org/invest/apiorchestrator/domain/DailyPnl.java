@@ -33,6 +33,9 @@ public class DailyPnl {
     @Column(name = "total_signals")  @Builder.Default private Integer totalSignals = 0;
     @Column(name = "enter_count")    @Builder.Default private Integer enterCount   = 0;
     @Column(name = "cancel_count")   @Builder.Default private Integer cancelCount  = 0;
+    @Column(name = "decision_enter_count") @Builder.Default private Integer decisionEnterCount = 0;
+    @Column(name = "watch_count") @Builder.Default private Integer watchCount = 0;
+    @Column(name = "signal_expired_count") @Builder.Default private Integer signalExpiredCount = 0;
 
     // ── 당일 청산 결과 ───────────────────────────────────────────────────
     @Column(name = "closed_count")       @Builder.Default private Integer closedCount     = 0;

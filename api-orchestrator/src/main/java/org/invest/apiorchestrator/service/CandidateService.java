@@ -37,6 +37,17 @@ public class CandidateService {
     private static final Duration TAG_TTL       = Duration.ofHours(24);
     private static final Duration POOL_TTL      = Duration.ofMinutes(20);
     private static final Duration S4_TTL        = Duration.ofMinutes(5);
+    private static final List<String> FUND_NAME_PREFIXES = List.of(
+            "KODEX ", "TIGER ", "RISE ", "ACE ", "PLUS ", "SOL ", "KIWOOM ",
+            "HANARO ", "1Q ", "KOACT ", "TIME ", "WON ", "IBK ", "BNK ",
+            "FOCUS ", "UNICORN ", "MIDAS ", "TRUSTON ", "HK ", "DS ",
+            "DAISHIN343 ", "파워 ", "에셋플러스 ", "마이티 ",
+            "KBSTAR ", "KINDEX ", "ARIRANG ", "KOSEF ", "TIMEFOLIO ", "SMART ",
+            "TREX ", "KTOP ", "WOORI "
+    );
+    private static final List<String> FUND_NAME_MARKERS = List.of(
+            "ETF", "ETN", "레버리지", "인버스", "2X", "3X", "곱버스", "선물", "합성", "액티브"
+    );
 
     /**
      * 예상체결등락률 상위 종목코드 반환 (ka10029, 캐시 3분).
@@ -433,9 +444,12 @@ public class CandidateService {
         catch (NumberFormatException e) { return 0; }
     }
 
-    private static boolean isEtfOrEtn(String stkNm) {
-        String normalized = stkNm == null ? "" : stkNm.toUpperCase(java.util.Locale.ROOT);
-        return normalized.contains("ETF") || normalized.contains("ETN");
+    static boolean isEtfOrEtn(String stkNm) {
+        String normalized = stkNm == null ? "" : stkNm.trim().replaceAll("\\s+", " ")
+                .toUpperCase(java.util.Locale.ROOT);
+        if (normalized.isBlank()) return true;
+        return FUND_NAME_PREFIXES.stream().anyMatch(normalized::startsWith)
+                || FUND_NAME_MARKERS.stream().anyMatch(normalized::contains);
     }
 
     public boolean javaOwnsCandidatePools() {

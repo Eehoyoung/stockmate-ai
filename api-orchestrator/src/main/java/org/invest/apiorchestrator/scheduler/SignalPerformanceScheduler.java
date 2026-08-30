@@ -14,6 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
 
@@ -26,7 +28,7 @@ public class SignalPerformanceScheduler {
     private final RedisMarketDataService redisService;
     private final DailyAggregationService dailyAggregationService;
 
-    @Scheduled(cron = "0 0/10 9-15 * * MON-FRI", zone = "Asia/Seoul")
+    @Scheduled(cron = "0 * 9-15 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void updatePerformance() {
         LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
@@ -102,7 +104,7 @@ public class SignalPerformanceScheduler {
         }
     }
 
-    private boolean evaluateSignal(TradingSignal signal) {
+    boolean evaluateSignal(TradingSignal signal) {
         if (signal.getEntryPrice() == null || signal.getEntryPrice() <= 0) {
             return false;
         }
@@ -133,18 +135,46 @@ public class SignalPerformanceScheduler {
         double pnlPct = (curPrc - entryPrice) / entryPrice * 100.0;
         double targetPct = signal.getTargetPct() != null ? signal.getTargetPct() : 3.5;
         double stopPct = signal.getStopPct() != null ? signal.getStopPct() : -2.0;
+        double targetPrice = signal.getTargetPrice() != null && signal.getTargetPrice() > 0
+                ? signal.getTargetPrice() : entryPrice * (1.0 + targetPct / 100.0);
+        double stopPrice = signal.getStopPrice() != null && signal.getStopPrice() > 0
+                ? signal.getStopPrice() : entryPrice * (1.0 + stopPct / 100.0);
 
-        if (pnlPct >= targetPct) {
-            signal.closeSignal(pnlPct);
+        if (curPrc >= targetPrice) {
+            signal.closePaperSignal("TP_HIT", BigDecimal.valueOf(curPrc), pnlPct);
             log.info("[Performance] WIN [{} {}] entry={} cur={} pnl={}",
                     signal.getStkCd(), signal.getStrategy(), entryPrice, curPrc, pnlPct);
             return true;
         }
-        if (pnlPct <= stopPct) {
-            signal.closeSignal(pnlPct);
+        if (curPrc <= stopPrice) {
+            signal.closePaperSignal("SL_HIT", BigDecimal.valueOf(curPrc), pnlPct);
             log.info("[Performance] LOSS [{} {}] entry={} cur={} pnl={}",
                     signal.getStkCd(), signal.getStrategy(), entryPrice, curPrc, pnlPct);
             return true;
+        }
+
+        BigDecimal current = BigDecimal.valueOf(curPrc);
+        BigDecimal peak = signal.getPeakPrice();
+        if (peak == null || current.compareTo(peak) > 0) {
+            peak = current;
+        }
+        BigDecimal trailingPct = signal.getTrailingPct();
+        BigDecimal activation = signal.getTrailingActivation();
+        if (trailingPct != null && trailingPct.signum() > 0
+                && activation != null && activation.signum() > 0
+                && peak.compareTo(activation) >= 0) {
+            BigDecimal trailingStop = peak.multiply(
+                    BigDecimal.ONE.subtract(trailingPct.movePointLeft(2)))
+                    .setScale(0, RoundingMode.HALF_UP);
+            signal.updatePaperPeak(peak, trailingStop);
+            if (current.compareTo(trailingStop) <= 0) {
+                signal.closePaperSignal("TRAILING_STOP", current, pnlPct);
+                log.info("[Performance] TRAILING_STOP [{} {}] entry={} peak={} stop={} cur={} pnl={}",
+                        signal.getStkCd(), signal.getStrategy(), entryPrice, peak, trailingStop, curPrc, pnlPct);
+                return true;
+            }
+        } else {
+            signal.updatePaperPeak(peak, signal.getTrailingStopPrice());
         }
 
         return false;

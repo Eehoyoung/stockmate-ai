@@ -85,6 +85,7 @@ class DailyAggregationServiceTests {
                 .id(1L)
                 .strategy(TradingSignal.StrategyType.S11_FRGN_CONT)
                 .action("ENTER")
+                .executionDecision("ENTER")
                 .signalStatus(TradingSignal.SignalStatus.EXPIRED)
                 .build();
 
@@ -101,7 +102,37 @@ class DailyAggregationServiceTests {
 
         assertEquals(1, aggregation.totalSignals());
         assertEquals(0, aggregation.enterCount());
+        assertEquals(1, aggregation.decisionEnterCount());
+        assertEquals(1, aggregation.signalExpiredCount());
         assertEquals(0, aggregation.byStrategy().get("S11_FRGN_CONT").enterCount());
+        assertEquals(1, aggregation.byStrategy().get("S11_FRGN_CONT").decisionEnterCount());
+        assertEquals(1, aggregation.byStrategy().get("S11_FRGN_CONT").expiredCount());
+    }
+
+    @Test
+    void aggregateDoesNotCountWatchAsCancel() {
+        LocalDate date = LocalDate.of(2026, 8, 24);
+        TradingSignal watch = TradingSignal.builder()
+                .id(2L)
+                .strategy(TradingSignal.StrategyType.S9_PULLBACK_SWING)
+                .action("HOLD")
+                .executionDecision("WATCH")
+                .signalStatus(TradingSignal.SignalStatus.WATCHING)
+                .build();
+
+        when(signalRepository.findSignalsCreatedBetween(
+                LocalDateTime.of(date, LocalTime.MIDNIGHT),
+                LocalDateTime.of(date.plusDays(1), LocalTime.MIDNIGHT)))
+                .thenReturn(List.of(watch));
+        when(tradeOutcomeRepository.findByExitTsGreaterThanEqualAndExitTsLessThanOrderByExitTsAsc(
+                LocalDateTime.of(date, LocalTime.MIDNIGHT).atZone(KstClock.ZONE_ID).toOffsetDateTime(),
+                LocalDateTime.of(date.plusDays(1), LocalTime.MIDNIGHT).atZone(KstClock.ZONE_ID).toOffsetDateTime()))
+                .thenReturn(List.of());
+
+        DailyAggregationService.DailyAggregation aggregation = service().aggregate(date);
+
+        assertEquals(1, aggregation.watchCount());
+        assertEquals(0, aggregation.cancelCount());
     }
 
     @Test

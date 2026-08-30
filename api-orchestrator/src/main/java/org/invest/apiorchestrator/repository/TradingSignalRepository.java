@@ -76,7 +76,7 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
     @Modifying
     @Query("""
         UPDATE TradingSignal s SET s.signalStatus = 'EXPIRED'
-        WHERE s.signalStatus IN ('PENDING','SENT')
+        WHERE s.signalStatus = 'PENDING'
           AND s.createdAt < :expireBefore
         """)
     int expireOldSignals(@Param("expireBefore") LocalDateTime expireBefore);

@@ -389,6 +389,9 @@ public class TradingScheduler {
 
             long totalSignals = aggregation.totalSignals();
             long enterCount = aggregation.enterCount();
+            long decisionEnterCount = aggregation.decisionEnterCount();
+            long watchCount = aggregation.watchCount();
+            long signalExpiredCount = aggregation.signalExpiredCount();
             long cancelCount = aggregation.cancelCount();
             long closedCount = aggregation.closedCount();
             double totalScore = 0;
@@ -413,6 +416,9 @@ public class TradingScheduler {
 
             redis.opsForHash().put(summaryKey, "total_signals", String.valueOf(totalSignals));
             redis.opsForHash().put(summaryKey, "enter_count", String.valueOf(enterCount));
+            redis.opsForHash().put(summaryKey, "decision_enter_count", String.valueOf(decisionEnterCount));
+            redis.opsForHash().put(summaryKey, "watch_count", String.valueOf(watchCount));
+            redis.opsForHash().put(summaryKey, "signal_expired_count", String.valueOf(signalExpiredCount));
             redis.opsForHash().put(summaryKey, "cancel_count", String.valueOf(cancelCount));
             redis.opsForHash().put(summaryKey, "closed_count", String.valueOf(closedCount));
             redis.opsForHash().put(summaryKey, "avg_score", String.format("%.1f", avgScore));
@@ -433,6 +439,9 @@ public class TradingScheduler {
                 report.put("date", today);
                 report.put("total_signals", totalSignals);
                 report.put("enter_count", enterCount);
+                report.put("decision_enter_count", decisionEnterCount);
+                report.put("watch_count", watchCount);
+                report.put("signal_expired_count", signalExpiredCount);
                 report.put("cancel_count", cancelCount);
                 report.put("closed_count", closedCount);
                 report.put("avg_score", avgScore);
