@@ -269,7 +269,18 @@ async def _record_s3s5_status(
 # 계획 4.4 섹션 기준: ETF/ETN/SPAC/우선주/리츠/인프라 등 포함
 _EXCLUDE_STK_NM_KEYWORDS = (
     "ETF", "ETN", "레버리지", "인버스", "2X", "곱버스", "SPAC", "스팩",
-    "선물", "합성", "액티브", "우선", "리츠", "인프라",
+    "3X", "선물", "합성", "액티브", "우선", "리츠", "인프라",
+)
+
+# 공백까지 포함해 일반 상장사(BNK금융지주, IBK기업은행 등)와 충돌하지 않는다.
+_EXCLUDE_FUND_NAME_PREFIXES = (
+    "KODEX ", "TIGER ", "RISE ", "ACE ", "PLUS ", "SOL ", "KIWOOM ",
+    "HANARO ", "1Q ", "KOACT ", "TIME ", "WON ", "IBK ", "BNK ",
+    "FOCUS ", "UNICORN ", "MIDAS ", "TRUSTON ", "HK ", "DS ",
+    "DAISHIN343 ", "파워 ", "에셋플러스 ", "마이티 ",
+    # 구 브랜드/캐시 잔존 방어
+    "KBSTAR ", "KINDEX ", "ARIRANG ", "KOSEF ", "TIMEFOLIO ", "SMART ",
+    "TREX ", "KTOP ", "WOORI ",
 )
 
 # 전략별 우선순위 가중치 (watchlist ZSET 점수 계산용)
@@ -309,15 +320,22 @@ _LIVE_CONFLUENCE_WEIGHTS = {
 }
 
 
+def _is_excluded_fund_name(stk_nm: object) -> bool:
+    """Return whether a normalized stock name identifies a pooled fund product."""
+    normalized = " ".join(str(stk_nm or "").strip().upper().split())
+    return normalized.startswith(_EXCLUDE_FUND_NAME_PREFIXES) or any(
+        keyword in normalized for keyword in _EXCLUDE_STK_NM_KEYWORDS
+    )
+
+
 def _is_etf_or_etn_name(stk_nm: object) -> bool:
-    """Return whether a Kiwoom response name identifies an ETF or ETN."""
-    normalized = str(stk_nm or "").upper()
-    return "ETF" in normalized or "ETN" in normalized
+    """Backward-compatible alias for candidate source filters."""
+    return _is_excluded_fund_name(stk_nm)
 
 
 async def _filter_individual_stocks(rdb, codes: list[str]) -> list[str]:
     """stock:code_map Redis 해시에서 종목명을 일괄 조회해 ETF/ETN/파생 종목을 제거한다.
-    Redis 장애나 이름 미조회 시 원본 목록을 그대로 반환해 안전하게 fallback한다."""
+    이름을 확인할 수 없으면 상품 여부도 검증할 수 없으므로 후보 풀에는 넣지 않는다."""
     if not codes or not rdb:
         return codes
     try:
@@ -327,15 +345,15 @@ async def _filter_individual_stocks(rdb, codes: list[str]) -> list[str]:
         names = await pipe.execute()
         filtered = [
             code for code, name in zip(codes, names)
-            if not (name and any(kw in name for kw in _EXCLUDE_STK_NM_KEYWORDS))
+            if name and not _is_excluded_fund_name(name)
         ]
         removed = len(codes) - len(filtered)
         if removed:
             logger.debug("[builder] ETF/ETN 필터: %d종목 제거 (잔류 %d)", removed, len(filtered))
         return filtered
     except Exception as exc:
-        logger.debug("[builder] ETF 이름 필터 실패 – 원본 반환: %s", exc)
-        return codes
+        logger.warning("[builder] fund name filter unavailable – candidates blocked: %s", exc)
+        return []
 
 
 def _live_confluence_requests(market: str, as_of: datetime | None = None) -> tuple[tuple[str, dict, str, str], ...]:
@@ -526,10 +544,8 @@ def _assess_candidate_quality(stk_cd: str, raw_data: dict, strategy_id: str) -> 
 
     # 1. 종목명 기반 ETF/ETN/SPAC/우선주 필터
     stk_nm = str(raw_data.get("stk_nm", "") or "")
-    for kw in _EXCLUDE_STK_NM_KEYWORDS:
-        if kw in stk_nm:
-            reject_reasons.append(f"name_filter:{kw}")
-            break
+    if _is_excluded_fund_name(stk_nm):
+        reject_reasons.append("name_filter:fund_product")
 
     # 2. 관리/거래정지 상태 필터 (status 필드가 있는 경우만)
     status_filter_pass = True
@@ -982,14 +998,9 @@ async def _build_s7(token: str, market: str, rdb) -> None:
             break
 
     existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
-    toss_items = await _toss_ranking_supplement(
-        rdb, market, 0.5, 10.0, max(0, CANDIDATE_LIMIT_S7 - len(codes)),
+    codes, toss_items = await _filter_and_replenish_with_toss(
+        rdb, market, codes, existing, 0.5, 10.0, CANDIDATE_LIMIT_S7,
     )
-    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
-    if toss_items:
-        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S7]
-
-    codes = await _filter_individual_stocks(rdb, codes)
     meta = {
         "raw_count": raw_count,
         "filtered_count": len(codes),
@@ -1118,6 +1129,37 @@ async def _toss_ranking_supplement(
     return out
 
 
+async def _filter_and_replenish_with_toss(
+    rdb,
+    market: str,
+    codes: list[str],
+    existing: set[str],
+    flu_lo: float,
+    flu_hi: float,
+    limit: int,
+) -> tuple[list[str], list[dict]]:
+    """Filter Kiwoom products first, then fill only the freed capacity from Toss."""
+    filtered = (await _filter_individual_stocks(rdb, list(dict.fromkeys(codes))))[:limit]
+    remaining = max(0, limit - len(filtered))
+    if remaining == 0:
+        return filtered, []
+
+    # Fetch the bounded Toss ranking window before filtering. Requesting only
+    # ``remaining`` would leave holes whenever those first rows are ETF/ETN.
+    toss_items = await _toss_ranking_supplement(rdb, market, flu_lo, flu_hi, 100)
+    candidates = []
+    seen = set(existing) | set(filtered)
+    for item in toss_items:
+        code = item["stk_cd"]
+        if code in seen:
+            continue
+        seen.add(code)
+        candidates.append(item)
+    allowed_codes = set(await _filter_individual_stocks(rdb, [item["stk_cd"] for item in candidates]))
+    accepted = [item for item in candidates if item["stk_cd"] in allowed_codes][:remaining]
+    return filtered + [item["stk_cd"] for item in accepted], accepted
+
+
 # ── ka10027 전일대비등락률상위 공통 ─────────────────────────────────────
 
 async def _fetch_ka10027(token: str, market: str, sort_tp: str = "1") -> list[dict]:
@@ -1195,18 +1237,11 @@ async def _build_s4(token: str, market: str, rdb) -> None:
     codes = (strong + normal)[:CANDIDATE_LIMIT_S4]
 
     existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
-    toss_items = await _toss_ranking_supplement(
-        rdb, market, S4_FLU_LO, S4_FLU_HI, max(0, CANDIDATE_LIMIT_S4 - len(codes)),
+    codes, toss_items = await _filter_and_replenish_with_toss(
+        rdb, market, codes, existing, S4_FLU_LO, S4_FLU_HI, CANDIDATE_LIMIT_S4,
     )
-    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
     if toss_items:
         items = items + toss_items
-        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S4]
-
-    # 토스 랭킹 항목은 종목명이 없어(symbol만 제공) _assess_candidate_quality의
-    # 이름 기반 ETF/ETN 필터가 못 잡는다. stock:code_map 코드 기반 필터를 병합된
-    # 최종 목록에 적용해 출처와 무관하게 ETF/ETN이 후보풀에 들어오지 않게 한다.
-    codes = await _filter_individual_stocks(rdb, codes)
 
     codes = await _persist_candidate_quality_batch(
         rdb,
@@ -1250,14 +1285,9 @@ async def _build_s8(token: str, market: str, rdb) -> None:
             break
 
     existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
-    toss_items = await _toss_ranking_supplement(
-        rdb, market, 0.5, 8.0, max(0, CANDIDATE_LIMIT_S8 - len(codes)),
+    codes, _toss_items = await _filter_and_replenish_with_toss(
+        rdb, market, codes, existing, 0.5, 8.0, CANDIDATE_LIMIT_S8,
     )
-    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
-    if toss_items:
-        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S8]
-
-    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s8:{market}", codes, 1800)
 
 
@@ -1277,14 +1307,9 @@ async def _build_s9(token: str, market: str, rdb) -> None:
             break
 
     existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
-    toss_items = await _toss_ranking_supplement(
-        rdb, market, 0.5, 8.0, max(0, CANDIDATE_LIMIT_S9 - len(codes)),
+    codes, _toss_items = await _filter_and_replenish_with_toss(
+        rdb, market, codes, existing, 0.5, 8.0, CANDIDATE_LIMIT_S9,
     )
-    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
-    if toss_items:
-        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S9]
-
-    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s9:{market}", codes, 1800)
 
 
@@ -1305,14 +1330,9 @@ async def _build_s14(token: str, market: str, rdb) -> None:
     # sort_tp=3(하락률)이라 flu_rt/changeRate 모두 음수 — 밴드도 음수로 맞춘다
     # (하락 3.0~10.0% == changeRate -10.0~-3.0%).
     existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
-    toss_items = await _toss_ranking_supplement(
-        rdb, market, -10.0, -3.0, max(0, CANDIDATE_LIMIT_S14 - len(codes)),
+    codes, _toss_items = await _filter_and_replenish_with_toss(
+        rdb, market, codes, existing, -10.0, -3.0, CANDIDATE_LIMIT_S14,
     )
-    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
-    if toss_items:
-        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S14]
-
-    codes = await _filter_individual_stocks(rdb, codes)
     await _lpush_with_ttl(rdb, f"candidates:s14:{market}", codes, 1800)
 
 
@@ -1771,15 +1791,11 @@ async def _build_s13(token: str, market: str, rdb) -> None:
             break
 
     existing = {normalize_stock_code(x.get("stk_cd", "")) for x in items}
-    toss_items = await _toss_ranking_supplement(
-        rdb, market, S13_FLU_LO, S13_FLU_HI, max(0, CANDIDATE_LIMIT_S13 - len(codes)),
+    codes, toss_items = await _filter_and_replenish_with_toss(
+        rdb, market, codes, existing, S13_FLU_LO, S13_FLU_HI, CANDIDATE_LIMIT_S13,
     )
-    toss_items = [t for t in toss_items if t["stk_cd"] not in existing]
     if toss_items:
         items = items + toss_items
-        codes = list(dict.fromkeys(codes + [t["stk_cd"] for t in toss_items]))[:CANDIDATE_LIMIT_S13]
-
-    codes = await _filter_individual_stocks(rdb, codes)
 
     codes = await _persist_candidate_quality_batch(
         rdb,

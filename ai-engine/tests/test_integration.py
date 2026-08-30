@@ -53,6 +53,21 @@ def _make_claude_response(action="ENTER", ai_score=78, confidence="HIGH",
         "claude_tp2": claude_tp2,
         "claude_sl": claude_sl,
     })
+
+
+def _with_live_ws(ctx):
+    ctx.update({
+        "ws_online": True,
+        "freshness": {
+            "tick": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+            "hoga": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+            "strength": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+        },
+        "refresh_meta": {"market_data_sources": {
+            "tick": "kiwoom_ws", "hoga": "kiwoom_ws", "strength": "kiwoom_ws",
+        }},
+    })
+    return ctx
     usage = MagicMock()
     usage.input_tokens = 300
     usage.output_tokens = 100
@@ -79,13 +94,13 @@ class TestFullPipeline:
             "stop_pct": -2.0,
             "cur_prc": 84300,
         }
-        ctx = {
+        ctx = _with_live_ws({
             "tick": {"flu_rt": "4.0"},
             "hoga": {"total_buy_bid_req": "3000", "total_sel_bid_req": "1000"},
             "strength": 155.0,
             "vi": {},
             "market_session": "main_market",
-        }
+        })
         rdb = _make_full_rdb(json.dumps(signal))
 
         captured = []
@@ -226,13 +241,13 @@ class TestFullPipeline:
             "target_pct": 4.0,
             "stop_pct": -2.0,
         }
-        ctx = {
+        ctx = _with_live_ws({
             "tick": {"flu_rt": "4.0"},
             "hoga": {"total_buy_bid_req": "3000", "total_sel_bid_req": "1000"},
             "strength": 155.0,
             "vi": {},
             "market_session": "main_market",
-        }
+        })
 
         processed = []
 

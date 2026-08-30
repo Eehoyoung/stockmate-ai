@@ -124,6 +124,22 @@ async def create_message(client, *, purpose: str, metadata: dict | None = None, 
         raise
 
 
+async def mark_response_unusable(request_id: str | None, error_type: str, error_message: str) -> None:
+    """Turn a provider-success row into an application error when its body is unusable."""
+    if _pool is None or not request_id:
+        return
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE ai_api_usage
+                   SET status='ERROR', error_type=$2, error_message=$3
+                   WHERE request_id=$1 AND status='SUCCESS'""",
+                request_id, error_type[:120], error_message[:1000],
+            )
+    except Exception as exc:
+        logger.warning("[AIGateway] unusable-response audit update failed: %s", exc)
+
+
 async def purge_old_usage() -> None:
     if _pool is None:
         return

@@ -93,6 +93,41 @@ async def test_supplement_toss_disabled_returns_empty(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_filter_then_replenish_fills_product_holes_with_ordinary_stocks(monkeypatch):
+    import candidates_builder
+
+    names = {
+        "069500": "KODEX 200",
+        "005930": "삼성전자",
+        "091160": "KODEX 반도체",
+        "035720": "카카오",
+        "000660": "SK하이닉스",
+    }
+
+    async def fake_filter(_rdb, codes):
+        return [code for code in codes if not candidates_builder._is_excluded_fund_name(names[code])]
+
+    async def fake_supplement(_rdb, market, lo, hi, limit):
+        assert limit == 100
+        return [
+            {"stk_cd": "091160", "source": "toss_ranking"},
+            {"stk_cd": "035720", "source": "toss_ranking"},
+            {"stk_cd": "035720", "source": "toss_ranking"},
+            {"stk_cd": "000660", "source": "toss_ranking"},
+        ]
+
+    monkeypatch.setattr(candidates_builder, "_filter_individual_stocks", fake_filter)
+    monkeypatch.setattr(candidates_builder, "_toss_ranking_supplement", fake_supplement)
+
+    codes, accepted = await candidates_builder._filter_and_replenish_with_toss(
+        object(), "001", ["069500", "005930"], {"069500", "005930"}, 0.5, 8.0, 3,
+    )
+
+    assert codes == ["005930", "035720", "000660"]
+    assert [item["stk_cd"] for item in accepted] == ["035720", "000660"]
+
+
+@pytest.mark.asyncio
 async def test_build_s4_merges_toss_supplement_into_final_pool(monkeypatch):
     """토스 랭킹으로만 발견된 종목이 Kiwoom raw_items 없이도 최종 후보풀에서 살아남는지 —
     _persist_candidate_quality_batch가 raw_items를 기준으로 순회하므로 toss 후보도
@@ -119,7 +154,8 @@ async def test_build_s4_merges_toss_supplement_into_final_pool(monkeypatch):
     pipe.hget = MagicMock(side_effect=lambda key, code: pipe._queued_codes.append(code))
 
     async def fake_execute():
-        names = [None] * len(pipe._queued_codes)
+        name_map = {"005930": "삼성전자", "035720": "카카오"}
+        names = [name_map.get(code) for code in pipe._queued_codes]
         pipe._queued_codes = []
         return names
 

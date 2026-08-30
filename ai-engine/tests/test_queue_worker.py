@@ -50,11 +50,23 @@ def _signal(**overrides):
 
 def _ctx():
     return {
-        "tick": {},
+        "tick": {"cur_prc": "10000"},
         "hoga": {"total_buy_bid_req": "200", "total_sel_bid_req": "100"},
         "strength": 120.0,
         "vi": {},
-        "ws_online": False,
+        "ws_online": True,
+        "freshness": {
+            "tick": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+            "hoga": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+            "strength": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+        },
+        "refresh_meta": {
+            "market_data_sources": {
+                "tick": "kiwoom_ws",
+                "hoga": "kiwoom_ws",
+                "strength": "kiwoom_ws",
+            }
+        },
     }
 
 
@@ -144,7 +156,7 @@ class TestQueueWorkerHappyPath:
         assert result is True
         assert captured[0]["toss_risk"] == {"short_selling": {"shortSellingAmountRate": "0.1"}}
 
-    def test_enter_signal_creates_shadow_trade_record(self):
+    def test_enter_signal_does_not_create_shadow_trade_record(self):
         item = _signal(entry_price=10000, cur_prc=10000, tp1_price=10800, tp2_price=11200, sl_price=9700, rr_ratio=2.6)
         rdb = _make_rdb(json.dumps(item))
         pg_pool = object()
@@ -976,6 +988,38 @@ class TestClaudeRiskPostprocess:
         assert confidence == "HIGH"
         assert "ai_score alone cannot promote to ENTER" in reason
         assert cancel_reason is None
+
+    def test_revalidated_high_confidence_hold_promotes_to_enter(self):
+        from queue_worker import _maybe_promote_hold_to_enter
+
+        action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
+            strategy="S9_PULLBACK_SWING",
+            action="HOLD",
+            confidence="HIGH",
+            reason="conditions improved",
+            cancel_reason=None,
+            ai_score=80.0,
+            allow_promotion=True,
+        )
+
+        assert action == "ENTER"
+        assert confidence == "HIGH"
+        assert "HOLD promoted to ENTER after full revalidation" in reason
+        assert cancel_reason is None
+
+    def test_revalidated_hold_requires_high_confidence_and_score(self):
+        from queue_worker import _maybe_promote_hold_to_enter
+
+        for confidence, score in (("MEDIUM", 95.0), ("HIGH", 79.9)):
+            action, _, _, _ = _maybe_promote_hold_to_enter(
+                action="HOLD",
+                confidence=confidence,
+                reason="not strong enough",
+                cancel_reason=None,
+                ai_score=score,
+                allow_promotion=True,
+            )
+            assert action == "HOLD"
 
     def test_hold_or_cancel_nulls_claude_prices(self):
         from queue_worker import _apply_claude_postprocess_hard_rules

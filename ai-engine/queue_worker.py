@@ -184,13 +184,12 @@ S8_SUPPORT_ZONE_HARD_CANCEL_GAP_PCT = float(os.getenv("S8_SUPPORT_ZONE_HARD_CANC
 S8_MIN_ZONE_RR = float(os.getenv("S8_MIN_ZONE_RR", "1.5"))
 S1_FALLBACK_MIN_STRENGTH = float(os.getenv("S1_FALLBACK_MIN_STRENGTH", "130.0"))
 S1_FALLBACK_MIN_BID_RATIO = float(os.getenv("S1_FALLBACK_MIN_BID_RATIO", "0.8"))
-# Not currently read by the HOLD decision path — keep_hold_as_watch() always keeps
-# Claude HOLD as HOLD/WATCH regardless of ai_score. Kept for potential future gating.
 HOLD_TO_ENTER_MIN_AI_SCORE = float(os.getenv("HOLD_TO_ENTER_MIN_AI_SCORE", "80.0"))
 SESSION_ENTER_GUARD_ENABLED = os.getenv("SESSION_ENTER_GUARD_ENABLED", "false").lower() == "true"
 ENABLE_SCORING_DATA_RETRY = os.getenv("ENABLE_SCORING_DATA_RETRY", "true").lower() == "true"
 ENABLE_TICK_REST_FALLBACK = os.getenv("ENABLE_TICK_REST_FALLBACK", "false").lower() == "true"
-STRICT_REST_ENTER_GUARD = os.getenv("STRICT_REST_ENTER_GUARD", "false").lower() == "true"
+STRICT_REST_ENTER_GUARD = os.getenv("STRICT_REST_ENTER_GUARD", "true").lower() == "true"
+SHADOW_MODE_FORBIDDEN = os.getenv("SHADOW_MODE_FORBIDDEN", "true").lower() == "true"
 ENABLE_STRATEGY_FAMILY_SHADOW_SCORING = (
     os.getenv("ENABLE_STRATEGY_FAMILY_SHADOW_SCORING", "false").lower() == "true"
 )
@@ -346,44 +345,27 @@ def _is_rest_only_sources(sources: dict | None) -> bool:
 
 
 def _rest_only_enter_stale_reason(payload: dict, ctx: dict | None) -> str | None:
-    """REST 단독 ENTER를 차단해야 하면 사유 문자열, 허용 가능하면 None.
-
-    기존 가드는 출처가 REST라는 이유만으로 무조건 CANCEL했다. 그런데 REST는
-    요청 시점에 즉시 받아오므로 실측 age가 0.1초 수준으로, 3초 컷오프에 걸린
-    WS 데이터보다 오히려 신선한 경우가 많다(2026-08-10 실측: REST 평균 0.1s,
-    WS 평균 0.9s). 그 결과 정상적인 진입 신호가 출처만으로 차단됐다
-    (7월 이후 이 사유로 80건 취소).
-
-    이제 출처가 아니라 **나이**로 판단한다. REST 단독이어도 모든 실시간 항목이
-    REST_ENTER_MAX_AGE_MS 이내면 통과시키고, 나이를 확인할 수 없거나 기준을
-    넘으면 종전대로 차단한다. signal_fallback(큐 페이로드 재사용)은 애초에
-    'rest'가 아니므로 이 완화 경로를 타지 않는다.
-    """
-    sources = payload.get("market_data_sources")
-    if not _is_rest_only_sources(sources):
-        return None
-
+    """필수 실시간 데이터가 최신 WS가 아니면 ENTER 차단 사유를 반환한다."""
+    sources = payload.get("market_data_sources") or payload.get("data_source") or {}
     freshness = (ctx or {}).get("freshness") or {}
-    stale: list[str] = []
-    verified = 0
+    failures: list[str] = []
+    ws_sources = {"redis", "kiwoom_ws", "ws"}
 
     for kind in _REST_GUARD_REALTIME_KINDS:
-        if kind not in sources:
-            continue
-        age_ms = (freshness.get(kind) or {}).get("age_ms")
+        source = str(sources.get(kind) or "").lower()
+        status = freshness.get(kind) or {}
+        age_ms = status.get("age_ms")
+        state = str(status.get("state") or "missing").lower()
+        if source not in ws_sources:
+            failures.append(f"{kind}:source={source or 'missing'}")
         if age_ms is None:
-            stale.append(f"{kind}:age_unknown")
-            continue
-        verified += 1
-        if float(age_ms) > REST_ENTER_MAX_AGE_MS:
-            stale.append(f"{kind}:{int(float(age_ms))}ms>{REST_ENTER_MAX_AGE_MS}ms")
+            failures.append(f"{kind}:age_unknown")
+        elif float(age_ms) > REST_ENTER_MAX_AGE_MS:
+            failures.append(f"{kind}:{int(float(age_ms))}ms>{REST_ENTER_MAX_AGE_MS}ms")
+        if state != "fresh":
+            failures.append(f"{kind}:state={state}")
 
-    if stale:
-        return ", ".join(stale)
-    if verified == 0:
-        # REST 단독인데 나이를 하나도 검증하지 못했다 → 보수적으로 차단 유지.
-        return "no_verifiable_realtime_age"
-    return None
+    return ", ".join(failures) or None
 
 
 def _apply_session_enter_guard(payload: dict, ctx: dict | None = None, *, enabled: bool | None = None) -> dict:
@@ -1389,9 +1371,22 @@ def _maybe_promote_hold_to_enter(
     reason: str,
     cancel_reason: str | None,
     ai_score: float | None,
+    allow_promotion: bool = False,
 ) -> tuple[str, str, str, str | None]:
-    """Despite the name, this never promotes: delegates to keep_hold_as_watch(),
-    which always keeps a Claude HOLD as HOLD/WATCH regardless of ai_score."""
+    """Promote only a fully revalidated HOLD with strong, high-confidence AI output."""
+    if (
+        allow_promotion
+        and str(action).upper() == "HOLD"
+        and str(confidence).upper() == "HIGH"
+        and ai_score is not None
+        and float(ai_score) >= HOLD_TO_ENTER_MIN_AI_SCORE
+    ):
+        return (
+            "ENTER",
+            "HIGH",
+            f"HOLD promoted to ENTER after full revalidation (ai_score={float(ai_score):.1f}) | {reason}",
+            None,
+        )
     return _risk_keep_hold_as_watch(
         action=action,
         confidence=confidence,
@@ -1908,10 +1903,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
     stk_cd = normalize_stock_code(item.get("stk_cd", ""))
     strategy = item.get("strategy") or ""
     item["stk_cd"] = stk_cd
-    if (
-        str(os.getenv("LIVE_ONLY_MODE", "true")).strip().lower() == "true"
-        and str(item.get("signal_mode", "")).upper() == "SHADOW"
-    ):
+    if SHADOW_MODE_FORBIDDEN and str(item.get("signal_mode", "")).upper() == "SHADOW":
         await _incr_pipeline(rdb, strategy, "non_live_rejected")
         logger.warning("[Worker] live-only policy rejected non-live candidate [%s %s]", strategy, stk_cd)
         return True
@@ -2103,7 +2095,10 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 check_daily_limit_fn=_check_signal_ai_budget,
                 analyze_signal_fn=analyze_signal,
                 normalize_score_fn=normalize_score_0_100,
-                hold_policy_fn=_maybe_promote_hold_to_enter,
+                hold_policy_fn=lambda **kwargs: _maybe_promote_hold_to_enter(
+                    allow_promotion=bool(signal.get("hold_monitor_recheck")),
+                    **kwargs,
+                ),
             )
             if ai_decision.get("error"):
                 logger.warning(
@@ -2177,6 +2172,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
             "signal_fallback_allowed": bool(ctx.get("signal_fallback_allowed")),
             "rule_score": r_score,
             "ai_score": ai_score_val,
+            "final_score": round(0.70 * r_score + 0.30 * _fv(ai_score_val, 0.0), 2),
+            "decision_at": datetime.now(timezone.utc),
             "action": action,
             "execution_decision": _execution_decision_from_action(action, cancel_type=cancel_type),
             "confidence": confidence,
@@ -2284,22 +2281,16 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 "cancel_type": "SOURCE_LINEAGE_GUARD",
                 "cancel_reason": _lineage_reason,
             })
-        # REST fallback ENTER 판정 (STRICT_REST_ENTER_GUARD=true 시)
+        # 필수 실시간 데이터 ENTER 판정 (STRICT_REST_ENTER_GUARD=true 시)
         if STRICT_REST_ENTER_GUARD and enriched.get("action") == "ENTER":
             _stale_reason = _rest_only_enter_stale_reason(enriched, ctx)
             if _stale_reason is not None:
                 enriched["confidence"] = "LOW"
                 enriched["cancel_reason"] = (
-                    f"REST fallback data stale — aggressive entry blocked ({_stale_reason})"
+                    f"Required WS market data unusable — ENTER blocked ({_stale_reason})"
                 )
-                enriched["cancel_type"] = "STRICT_REST_ENTER_GUARD"
+                enriched["cancel_type"] = "REQUIRED_MARKET_DATA_UNUSABLE"
                 enriched["action"] = "CANCEL"
-            elif _is_rest_only_sources(enriched.get("market_data_sources")):
-                # REST 단독이지만 나이가 충분히 신선하다 → 진입은 허용하되
-                # 실시간 스트림이 없다는 사실은 confidence로 남긴다.
-                if enriched.get("confidence") == "HIGH":
-                    enriched["confidence"] = "MEDIUM"
-                enriched["rest_only_entry"] = True
         enriched = _apply_claude_postprocess_hard_rules(enriched)
         enriched = _apply_claude_rr_override(enriched, ctx)
         session_guard_enabled = await get_runtime_flag(rdb, "session_enter_guard", SESSION_ENTER_GUARD_ENABLED)
@@ -2315,31 +2306,8 @@ async def process_one(rdb, pg_pool=None) -> bool:
         reason = enriched.get("ai_reason", reason)
         display_reason = _resolve_display_reason(action, reason, cancel_reason)
         enriched["ai_reason"] = display_reason
-        await route_execution_payload(
-            rdb=rdb,
-            payload=enriched,
-            strategy=strategy,
-            stk_cd=stk_cd,
-            execution_decision=execution_decision,
-            display_reason=display_reason,
-            push_hold_monitor_queue_fn=push_hold_monitor_queue,
-            push_score_only_queue_fn=push_score_only_queue,
-            incr_pipeline_fn=_incr_pipeline,
-            logger=logger,
-        )
-
         rule_only_payload = None
-        if execution_decision == "ENTER":
-            await _incr_pipeline(rdb, strategy, "publish")
-
-        await record_execution_decision_metric(
-            rdb,
-            strategy=strategy,
-            decision=execution_decision,
-            ttl_sec=STATUS_DECISION_TTL_SEC,
-            logger=logger,
-        )
-
+        persistence_terminal = False
         if pg_pool:
             persistence_terminal = await persist_processed_signal(
                 pg_pool=pg_pool,
@@ -2365,9 +2333,7 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 insert_score_components_fn=insert_score_components,
                 confirm_open_position_fn=confirm_open_position,
                 create_shadow_trade_fn=create_shadow_trade,
-                shadow_persistence_enabled=(
-                    str(os.getenv("LIVE_ONLY_MODE", "true")).strip().lower() != "true"
-                ),
+                shadow_persistence_enabled=False,
                 insert_rule_cancel_signal_fn=insert_rule_cancel_signal,
                 insert_ai_cancel_signal_fn=insert_ai_cancel_signal,
                 insert_signal_freshness_log_fn=insert_signal_freshness_log,
@@ -2376,8 +2342,31 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 fv_fn=_fv,
                 logger=logger,
             )
-            if persistence_terminal:
-                return True
+        await route_execution_payload(
+            rdb=rdb,
+            payload=enriched,
+            strategy=strategy,
+            stk_cd=stk_cd,
+            execution_decision=execution_decision,
+            display_reason=display_reason,
+            push_hold_monitor_queue_fn=push_hold_monitor_queue,
+            push_score_only_queue_fn=push_score_only_queue,
+            incr_pipeline_fn=_incr_pipeline,
+            logger=logger,
+        )
+
+        if execution_decision == "ENTER":
+            await _incr_pipeline(rdb, strategy, "publish")
+
+        await record_execution_decision_metric(
+            rdb,
+            strategy=strategy,
+            decision=execution_decision,
+            ttl_sec=STATUS_DECISION_TTL_SEC,
+            logger=logger,
+        )
+        if persistence_terminal:
+            return True
     except Exception as err:
         logger.error("[Worker] processing failed [%s %s]: %s", stk_cd, strategy, err)
         await _incr_pipeline(rdb, strategy, "processing_error")

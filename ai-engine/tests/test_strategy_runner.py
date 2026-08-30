@@ -402,6 +402,22 @@ class TestSemaphore:
         assert rdb.hset.await_args.args[0] == "status:strategy_latency:S3"
         assert any(call.args[1] == "slow" for call in rdb.hincrby.await_args_list)
 
+    def test_strategy_run_records_exactly_one_terminal_state(self):
+        import strategy_runner
+
+        strategy_runner._semaphore = None
+        rdb = MagicMock()
+        rdb.hset = AsyncMock(return_value=True)
+        rdb.expire = AsyncMock(return_value=True)
+        rdb.hincrby = AsyncMock(return_value=1)
+
+        _run(strategy_runner._run_strategy_with_semaphore("S8", asyncio.sleep(0), rdb=rdb))
+
+        run_calls = [c for c in rdb.hset.await_args_list if c.args[0] == "status:strategy_run:S8"]
+        assert len(run_calls) == 1
+        assert run_calls[0].kwargs["mapping"]["state"] == "SUCCESS_NO_MATCH"
+        assert run_calls[0].kwargs["mapping"]["scan_run_id"]
+
 
 class TestRunOnce:
     def test_session_filter_flag_off_allows_existing_flow(self, monkeypatch):

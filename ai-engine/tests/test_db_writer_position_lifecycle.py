@@ -3,6 +3,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+
+def test_signal_status_preserves_watch_semantics():
+    from db_writer import _signal_status_for_action
+
+    assert _signal_status_for_action("ENTER") == "SENT"
+    assert _signal_status_for_action("HOLD") == "WATCHING"
+    assert _signal_status_for_action("CANCEL") == "CANCELLED"
+
 from db_writer import _is_monitorable_position, insert_signal_freshness_log, update_signal_score
 
 

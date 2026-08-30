@@ -93,7 +93,7 @@ async def persist_processed_signal(
         )
 
     if not db_id:
-        return False
+        raise RuntimeError(f"signal persistence failed [{stk_cd} {strategy}]")
 
     if insert_signal_freshness_log_fn is not None:
         await insert_signal_freshness_log_fn(

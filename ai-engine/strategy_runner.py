@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import time as _time
+import uuid
 from datetime import time, timedelta, timezone
 
 from market_session import current_session, is_trading_active
@@ -43,8 +44,11 @@ REDIS_TOKEN_KEY = "kiwoom:token"
 _STRATEGY_TOKEN_CONTEXT: ContextVar[str | None] = ContextVar(
     "strategy_token_context", default=None
 )
+_SCAN_RUN_CONTEXT: ContextVar[str | None] = ContextVar("scan_run_context", default=None)
+_SCAN_PUBLISHED_CONTEXT: ContextVar[dict | None] = ContextVar("scan_published_context", default=None)
 STRATEGY_EXECUTION_OWNER = str(os.getenv("STRATEGY_EXECUTION_OWNER", "PYTHON")).strip().upper()
 LIVE_ONLY_MODE = str(os.getenv("LIVE_ONLY_MODE", "true")).strip().lower() == "true"
+SHADOW_MODE_FORBIDDEN = str(os.getenv("SHADOW_MODE_FORBIDDEN", "true")).strip().lower() == "true"
 SCAN_INTERVAL_SEC = float(os.getenv("STRATEGY_SCAN_INTERVAL_SEC", "60.0"))
 QUEUE_TTL_SECONDS = 43200
 SWING_DEDUP_TTL_SEC = int(os.getenv("SWING_SIGNAL_DEDUP_SEC", "7200"))
@@ -75,6 +79,7 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
 
 
 RUNNER_POOL_READ_LIMIT_S1 = _int_env("RUNNER_POOL_READ_LIMIT_S1", 100)
+STRATEGY_SCAN_KIWOOM_CALL_BUDGET = _int_env("STRATEGY_SCAN_KIWOOM_CALL_BUDGET", 120)
 # S4 풀 읽기/스캔/시그널 제한값은 strategy_4_big_candle.scan_big_candle() 내부로 이관됨
 # (동일한 RUNNER_POOL_READ_LIMIT_S4 / RUNNER_SCAN_LIMIT_S4 / RUNNER_SIGNAL_LIMIT_S4
 #  env var 이름을 그대로 사용하므로 운영 설정은 변경할 필요 없음).
@@ -173,6 +178,25 @@ async def _record_strategy_latency(rdb, name: str, elapsed_sec: float, state: st
         logger.debug("[Runner] strategy latency metric failed [%s]: %s", name, metric_err)
 
 
+async def _record_run_result(rdb, name: str, run_id: str, state: str, published: int, elapsed_sec: float) -> None:
+    """Persist one explicit terminal result per scheduled strategy run."""
+    if not rdb:
+        return
+    try:
+        key = f"status:strategy_run:{name}"
+        await rdb.hset(key, mapping={
+            "scan_run_id": run_id,
+            "state": state,
+            "published": str(published),
+            "elapsed_ms": str(int(elapsed_sec * 1000)),
+            "completed_at": datetime.datetime.now(timezone.utc).isoformat(),
+        })
+        await rdb.expire(key, 172800)
+        await _incr_pipeline_daily(rdb, name, f"run_{state.lower()}")
+    except Exception as metric_err:
+        logger.debug("[Runner] strategy run metric failed [%s]: %s", name, metric_err)
+
+
 def _current_kst_time() -> time:
     return datetime.datetime.now(KST).time()
 
@@ -229,9 +253,18 @@ async def _run_strategy_with_semaphore(name: str, coro, rdb=None):
         logger.debug("[Runner] [%s] 세마포어 대기 중 (동시 실행 %d개 한도)", name, MAX_CONCURRENT_STRATEGIES)
     async with sem:
         started_at = _time.monotonic()
+        run_id = str(uuid.uuid4())
+        run_token = _SCAN_RUN_CONTEXT.set(run_id)
+        published_state = {"count": 0}
+        published_token = _SCAN_PUBLISHED_CONTEXT.set(published_state)
+        from http_utils import begin_call_budget, end_call_budget
+        budget_token = begin_call_budget(STRATEGY_SCAN_KIWOOM_CALL_BUDGET)
         try:
             result = await asyncio.wait_for(coro, timeout=timeout_sec)
             elapsed_sec = _time.monotonic() - started_at
+            published = published_state["count"]
+            state = "COMPLETED_WITH_SIGNALS" if published else "SUCCESS_NO_MATCH"
+            await _record_run_result(rdb, name, run_id, state, published, elapsed_sec)
             if elapsed_sec >= _SLOW_STRATEGY_WARN_SEC:
                 logger.warning("[Runner] [%s] 느린 실행 감지 (%.1fs, timeout=%ds)", name, elapsed_sec, timeout_sec)
                 await _record_strategy_latency(rdb, name, elapsed_sec, "slow")
@@ -244,12 +277,17 @@ async def _run_strategy_with_semaphore(name: str, coro, rdb=None):
             logger.error("[Runner] [%s] 전략 실행 타임아웃 (%ds) - 강제 취소 elapsed=%.1fs", name, timeout_sec, elapsed_sec)
             await _incr_pipeline_daily(rdb, name, "timeout")
             await _record_strategy_latency(rdb, name, elapsed_sec, "timeout")
+            await _record_run_result(rdb, name, run_id, "TIMEOUT", published_state["count"], elapsed_sec)
         except Exception:
             elapsed_sec = _time.monotonic() - started_at
             logger.exception("[Runner] [%s] 실행 실패 (%.1fs)", name, elapsed_sec)
             await _incr_pipeline_daily(rdb, name, "error")
             await _record_strategy_latency(rdb, name, elapsed_sec, "error")
-            raise
+            await _record_run_result(rdb, name, run_id, "API_ERROR", published_state["count"], elapsed_sec)
+        finally:
+            end_call_budget(budget_token)
+            _SCAN_PUBLISHED_CONTEXT.reset(published_token)
+            _SCAN_RUN_CONTEXT.reset(run_token)
 
 
 async def _load_token(rdb) -> str | None:
@@ -285,7 +323,7 @@ async def _push_signals(rdb, signals: list, strategy_name: str) -> int:
 
     published = 0
     for sig in signals:
-        if LIVE_ONLY_MODE and str(sig.get("signal_mode", "")).upper() == "SHADOW":
+        if SHADOW_MODE_FORBIDDEN and str(sig.get("signal_mode", "")).upper() == "SHADOW":
             logger.warning(
                 "[Runner] live-only policy rejected non-live candidate [%s %s]",
                 strategy_name,
@@ -294,6 +332,7 @@ async def _push_signals(rdb, signals: list, strategy_name: str) -> int:
             continue
         stk_cd = normalize_stock_code(sig.get("stk_cd", ""))
         sig["stk_cd"] = stk_cd
+        sig.setdefault("scan_run_id", _SCAN_RUN_CONTEXT.get())
         normalize_runner_signal(sig, strategy_name)
         # Additive family lineage.  Keep ``strategy`` as the immutable legacy
         # setup id so existing DB constraints, prompts, reports and consumers
@@ -372,6 +411,9 @@ async def _push_signals(rdb, signals: list, strategy_name: str) -> int:
                 logger.debug("[Runner] status signal metric failed [%s]: %s", strategy_name, status_err)
             logger.info("[Runner] 신호 발행 [%s] stk=%s score=%s", strategy_name, sig.get("stk_cd"), sig.get("score", "N/A"))
             published += 1
+            published_state = _SCAN_PUBLISHED_CONTEXT.get()
+            if published_state is not None:
+                published_state["count"] += 1
         except Exception as exc:
             logger.error("[Runner] 신호 발행 실패 [%s]: %s", strategy_name, exc)
 
@@ -443,6 +485,7 @@ async def _scan_s1(rdb, token):
         await _push_signals(rdb, signals, "S1_GAP_OPEN")
     except Exception as exc:
         logger.exception("[Runner] S1 스캔 오류")
+        raise
 
 
 async def _scan_s2(rdb, token):
@@ -474,6 +517,7 @@ async def _scan_s2(rdb, token):
         await _push_signals(rdb, s2_signals, "S2_VI_PULLBACK")
     except Exception as exc:
         logger.exception("[Runner] S2 스캔 오류")
+        raise
 
 
 async def _scan_s3(rdb, token):
@@ -485,6 +529,7 @@ async def _scan_s3(rdb, token):
             await _push_signals(rdb, signals, "S3_INST_FRGN")
     except Exception as exc:
         logger.exception("[Runner] S3 스캔 오류")
+        raise
 
 
 async def _scan_s4(rdb, token):
@@ -495,6 +540,7 @@ async def _scan_s4(rdb, token):
         await _push_signals(rdb, s4_signals, "S4_BIG_CANDLE")
     except Exception as exc:
         logger.exception("[Runner] S4 스캔 오류")
+        raise
 
 
 async def _scan_s5(rdb, token):
@@ -506,6 +552,7 @@ async def _scan_s5(rdb, token):
             await _push_signals(rdb, signals, "S5_PROG_FRGN")
     except Exception as exc:
         logger.exception("[Runner] S5 스캔 오류")
+        raise
 
 
 async def _scan_s6(rdb, token):
@@ -516,6 +563,7 @@ async def _scan_s6(rdb, token):
         await _push_signals(rdb, signals, "S6_THEME_LAGGARD")
     except Exception as exc:
         logger.exception("[Runner] S6 스캔 오류")
+        raise
 
 
 async def _scan_s7(rdb, token):
@@ -526,6 +574,7 @@ async def _scan_s7(rdb, token):
         await _push_signals(rdb, signals, "S7_ICHIMOKU_BREAKOUT")
     except Exception as exc:
         logger.exception("[Runner] S7 스캔 오류")
+        raise
 
 
 async def _scan_s8(rdb, token):
@@ -536,7 +585,7 @@ async def _scan_s8(rdb, token):
         return await _push_signals(rdb, signals, "S8_GOLDEN_CROSS")
     except Exception as exc:
         logger.exception("[Runner] S8 스캔 오류")
-        return 0
+        raise
 
 
 async def _scan_s9(rdb, token):
@@ -547,7 +596,7 @@ async def _scan_s9(rdb, token):
         return await _push_signals(rdb, signals, "S9_PULLBACK_SWING")
     except Exception as exc:
         logger.exception("[Runner] S9 스캔 오류")
-        return 0
+        raise
 
 
 async def _scan_s10(rdb, token):
@@ -558,6 +607,7 @@ async def _scan_s10(rdb, token):
         await _push_signals(rdb, signals, "S10_NEW_HIGH")
     except Exception as exc:
         logger.exception("[Runner] S10 스캔 오류")
+        raise
 
 
 async def _scan_s11(rdb, token):
@@ -570,6 +620,7 @@ async def _scan_s11(rdb, token):
             published += await _push_signals(rdb, signals, "S11_FRGN_CONT")
     except Exception as exc:
         logger.exception("[Runner] S11 스캔 오류")
+        raise
     return published
 
 
@@ -582,6 +633,7 @@ async def _scan_s12(rdb, token):
             await _push_signals(rdb, signals, "S12_CLOSING")
     except Exception as exc:
         logger.exception("[Runner] S12 스캔 오류")
+        raise
 
 
 async def _scan_s13(rdb, token):
@@ -592,7 +644,7 @@ async def _scan_s13(rdb, token):
         return await _push_signals(rdb, signals, "S13_BOX_BREAKOUT")
     except Exception as exc:
         logger.exception("[Runner] S13 스캔 오류")
-        return 0
+        raise
 
 
 async def _scan_s14(rdb, token):
@@ -603,7 +655,7 @@ async def _scan_s14(rdb, token):
         return await _push_signals(rdb, signals, "S14_OVERSOLD_BOUNCE")
     except Exception as exc:
         logger.exception("[Runner] S14 스캔 오류")
-        return 0
+        raise
 
 
 async def _scan_s15(rdb, token):
@@ -614,7 +666,7 @@ async def _scan_s15(rdb, token):
         return await _push_signals(rdb, signals, "S15_MOMENTUM_ALIGN")
     except Exception as exc:
         logger.exception("[Runner] S15 스캔 오류")
-        return 0
+        raise
 
 
 async def _scan_s16(rdb, token):
@@ -625,7 +677,7 @@ async def _scan_s16(rdb, token):
         return await _push_signals(rdb, signals, "S16_ACCUMULATION_SHADOW")
     except Exception:
         logger.exception("[Runner] S16 스캔 오류")
-        return 0
+        raise
 
 
 _SCHEDULE: list[tuple[str, time, time, callable]] = [
@@ -669,7 +721,12 @@ async def run_manual_scan(rdb, code: str) -> dict:
     token = await _load_token(rdb)
     if not token:
         return {"strategy": strategy_name, "published": 0, "error": "kiwoom:token not available"}
-    published = await fn(rdb, token)
+    from http_utils import begin_call_budget, end_call_budget
+    budget_token = begin_call_budget(STRATEGY_SCAN_KIWOOM_CALL_BUDGET)
+    try:
+        published = await fn(rdb, token)
+    finally:
+        end_call_budget(budget_token)
     return {"strategy": strategy_name, "published": int(published or 0)}
 
 

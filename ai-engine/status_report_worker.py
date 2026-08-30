@@ -211,8 +211,13 @@ def _build_message(
     )
 
 
-async def _publish_status_report(rdb) -> None:
+async def _publish_status_report(rdb, scheduled_slot: datetime | None = None) -> None:
     now_kst = datetime.now(KST)
+    logical_slot = scheduled_slot or now_kst.replace(second=0, microsecond=0)
+    claim_key = f"status_report:published:{logical_slot.strftime('%Y-%m-%d:%H:%M')}"
+    if not await rdb.set(claim_key, "1", nx=True, ex=STATUS_REPORT_QUEUE_TTL):
+        logger.info("[StatusReport] duplicate slot skipped slot=%s", logical_slot.strftime("%H:%M"))
+        return
     active = [name for name in STRATEGY_WINDOWS if _is_active(now_kst, name)]
 
     pool_counts: dict[str, int] = {}
@@ -291,7 +296,7 @@ async def _publish_status_report(rdb) -> None:
 
     payload = {
         "type": "STATUS_REPORT",
-        "logical_slot": now_kst.strftime("%H:%M"),
+        "logical_slot": logical_slot.strftime("%H:%M"),
         "message": _build_message(
             now_kst, active, pool_counts, queue_counts, ws_online, recent_stats,
             position_count=position_count,
@@ -347,13 +352,14 @@ def _next_report_slot(now_kst: datetime) -> datetime:
     return next_day.replace(hour=first_slot.hour, minute=first_slot.minute, second=0, microsecond=0)
 
 
-async def _sleep_until_next_slot() -> None:
+async def _sleep_until_next_slot() -> datetime:
     now_kst = datetime.now(KST)
     next_slot = _next_report_slot(now_kst)
     sleep_seconds = max(1.0, (next_slot - now_kst).total_seconds())
     logger.info("[StatusReport] next scheduled briefing at %s KST (in %.0fs)",
                 next_slot.strftime("%Y-%m-%d %H:%M"), sleep_seconds)
     await asyncio.sleep(sleep_seconds)
+    return next_slot
 
 
 async def run_status_report_worker(rdb) -> None:
@@ -365,8 +371,8 @@ async def run_status_report_worker(rdb) -> None:
     logger.info("[StatusReport] started scheduled slots=%s KST", slots)
     while True:
         try:
-            await _sleep_until_next_slot()
-            await _publish_status_report(rdb)
+            scheduled_slot = await _sleep_until_next_slot()
+            await _publish_status_report(rdb, scheduled_slot)
         except asyncio.CancelledError:
             logger.info("[StatusReport] stopped")
             break

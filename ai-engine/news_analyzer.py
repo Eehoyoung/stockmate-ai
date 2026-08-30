@@ -208,7 +208,7 @@ async def _call_claude(client, user_message: str, max_tokens: int, purpose: str,
             model=CLAUDE_MODEL,
             max_tokens=max_tokens,
             system=[
-                {"type": "text", "text": _NEWS_SYS_PROMPT, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": _NEWS_SYS_PROMPT},
                 {"type": "text", "text": _slot_system_prompt(slot_name)},
             ],
             messages=[{"role": "user", "content": user_message}],

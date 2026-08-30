@@ -78,10 +78,11 @@ async def test_freshness_log_recorded_for_enter_with_existing_signal_id():
 
 
 @pytest.mark.asyncio
-async def test_freshness_log_skipped_when_db_id_missing():
+async def test_persistence_failure_blocks_delivery_when_db_id_missing():
     kwargs = _base_kwargs(insert_python_signal_fn=AsyncMock(return_value=None))
 
-    await persist_processed_signal(**kwargs)
+    with pytest.raises(RuntimeError, match="signal persistence failed"):
+        await persist_processed_signal(**kwargs)
 
     kwargs["insert_signal_freshness_log_fn"].assert_not_awaited()
 
@@ -137,7 +138,7 @@ async def test_hold_monitor_recheck_enter_is_still_persisted():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["ENTER", "CANCEL"])
-async def test_live_only_policy_does_not_persist_shadow_ledger(action):
+async def test_shadow_forbidden_policy_does_not_persist_shadow_ledger(action):
     kwargs = _base_kwargs(
         action=action,
         cancel_reason=None if action == "ENTER" else "Rule threshold not met",

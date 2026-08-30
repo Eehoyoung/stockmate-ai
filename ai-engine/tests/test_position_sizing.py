@@ -368,12 +368,19 @@ def _base_signal(**overrides):
 
 def _ctx():
     return {
-        "tick": {},
+        "tick": {"cur_prc": "70000"},
         "hoga": {"total_buy_bid_req": "200", "total_sel_bid_req": "100"},
         "strength": 120.0,
         "vi": {},
-        "ws_online": False,
-        "freshness": {},
+        "ws_online": True,
+        "freshness": {
+            "tick": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+            "hoga": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+            "strength": {"state": "fresh", "age_ms": 100, "updated_at_ms": 1},
+        },
+        "refresh_meta": {"market_data_sources": {
+            "tick": "kiwoom_ws", "hoga": "kiwoom_ws", "strength": "kiwoom_ws",
+        }},
         "market_session": "main_market",
     }
 

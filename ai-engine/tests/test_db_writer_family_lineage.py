@@ -92,7 +92,9 @@ async def test_insert_python_signal_persists_additive_family_lineage():
     sql, args = pool.conn.fetchrow_calls[0]
     assert "strategy_family" in sql
     assert "$76" in sql
-    assert len(args) == 76
+    assert len(args) == 80
+    assert "reevaluation_of_signal_id" in sql
+    assert "ON CONFLICT (correlation_id, strategy, stk_cd)" in sql
     assert args[60:68] == (
         "G04",
         "TREND_PHASE",

@@ -11,6 +11,7 @@ import math
 import os
 import time as _time
 from collections import defaultdict
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -29,6 +30,31 @@ KIWOOM_AUTH_ERROR_CODES = {"8005", "8050", "8103"}
 
 class KiwoomReservationUnavailable(RuntimeError):
     """Raised when the cross-process Kiwoom reservation cannot be acquired safely."""
+
+
+class KiwoomCallBudgetExceeded(RuntimeError):
+    """Raised before a scan exceeds its configured total Kiwoom REST budget."""
+
+
+_CALL_BUDGET: ContextVar[dict | None] = ContextVar("kiwoom_call_budget", default=None)
+
+
+def begin_call_budget(limit: int):
+    return _CALL_BUDGET.set({"remaining": max(0, int(limit)), "used": 0})
+
+
+def end_call_budget(token) -> None:
+    _CALL_BUDGET.reset(token)
+
+
+def _consume_call_budget(api_id: str) -> None:
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return
+    if budget["remaining"] <= 0:
+        raise KiwoomCallBudgetExceeded(f"Kiwoom call budget exhausted before {api_id}")
+    budget["remaining"] -= 1
+    budget["used"] += 1
 
 
 def classify_kiwoom_return_code(return_code) -> str:
@@ -177,6 +203,7 @@ class _KiwoomRateLimiter:
 
     async def acquire(self, api_id: str = "unknown") -> None:
         metric_api = api_id or "unknown"
+        _consume_call_budget(metric_api)
         started = _time.monotonic()
         await self._metric(metric_api, "requested", 1)
         await self._metric(metric_api, "pending", 1)
@@ -319,6 +346,8 @@ async def kiwoom_post(
                 continue
             logger.error("[http_utils] %s HTTP 오류 최종 실패: %s", api_id, e)
             return None
+        except KiwoomCallBudgetExceeded:
+            raise
         except Exception as e:
             logger.error("[http_utils] %s 요청 오류: %s", api_id, e)
             return None

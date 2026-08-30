@@ -49,7 +49,6 @@ def test_sl_hit_sends_exactly_one_sell_message():
     rdb = _rdb()
 
     with patch("position_monitor.get_tick_data", new_callable=AsyncMock, return_value={"cur_prc": "9500"}), \
-         patch("position_monitor.update_shadow_trade_mark", new_callable=AsyncMock), \
          patch("position_monitor.close_open_position", new_callable=AsyncMock, return_value=True):
         from position_monitor import _check_position
 
@@ -65,7 +64,6 @@ def test_tp1_hit_sends_exactly_one_sell_message():
     rdb = _rdb()
 
     with patch("position_monitor.get_tick_data", new_callable=AsyncMock, return_value={"cur_prc": "11500"}), \
-         patch("position_monitor.update_shadow_trade_mark", new_callable=AsyncMock), \
          patch("position_monitor.close_open_position", new_callable=AsyncMock, return_value=True):
         from position_monitor import _check_position
 
@@ -82,7 +80,6 @@ def test_tp1_with_second_target_transitions_to_partial_tp():
     rdb = _rdb()
 
     with patch("position_monitor.get_tick_data", new_callable=AsyncMock, return_value={"cur_prc": "11500"}), \
-         patch("position_monitor.update_shadow_trade_mark", new_callable=AsyncMock), \
          patch("position_monitor.mark_tp1_hit", new_callable=AsyncMock, return_value=True) as mark_partial, \
          patch("position_monitor.close_open_position", new_callable=AsyncMock) as close_position:
         from position_monitor import _check_position
@@ -100,7 +97,6 @@ def test_tp2_closes_active_position_before_tp1_partial_transition():
     rdb = _rdb()
 
     with patch("position_monitor.get_tick_data", new_callable=AsyncMock, return_value={"cur_prc": "12100"}), \
-         patch("position_monitor.update_shadow_trade_mark", new_callable=AsyncMock), \
          patch("position_monitor.mark_tp1_hit", new_callable=AsyncMock) as mark_partial, \
          patch("position_monitor.close_open_position", new_callable=AsyncMock, return_value=True) as close_position:
         from position_monitor import _check_position
@@ -118,7 +114,6 @@ def test_trailing_stop_sends_exactly_one_sell_message():
     rdb = _rdb()
 
     with patch("position_monitor.get_tick_data", new_callable=AsyncMock, return_value={"cur_prc": "10300"}), \
-         patch("position_monitor.update_shadow_trade_mark", new_callable=AsyncMock), \
          patch("position_monitor.update_peak_price", new_callable=AsyncMock), \
          patch("position_monitor.close_open_position", new_callable=AsyncMock, return_value=True):
         from position_monitor import _check_position

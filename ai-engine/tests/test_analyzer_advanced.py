@@ -284,20 +284,21 @@ class TestStrategyPrompts:
             from analyzer import analyze_signal
             _run(analyze_signal(signal, _ctx(), 75.0))
 
-        return mock_client.messages.create.call_args.kwargs["system"]
+        system = mock_client.messages.create.call_args.kwargs["system"]
+        return "\n".join(block["text"] for block in system)
 
     def test_s1_uses_gap_open_system_prompt(self):
         import analyzer
         system_prompt = self._get_system_arg(_sig("S1_GAP_OPEN", gap_pct=4.0))
         # D8: _S1_GAP_OPEN_SYS_PROMPT → _STRATEGY_PROMPTS["S1_GAP_OPEN"]
-        assert analyzer._STRATEGY_PROMPTS["S1_GAP_OPEN"] in system_prompt
+        assert analyzer._setup_only_prompt(analyzer._STRATEGY_PROMPTS["S1_GAP_OPEN"]) in system_prompt
         assert "전략별 자동주입 페르소나" in system_prompt
 
     def test_non_s1_uses_dedicated_strategy_prompt(self):
         import analyzer
         # D8: 모든 전략이 개별 프롬프트를 가짐 — S2도 전용 프롬프트 사용
         system_prompt = self._get_system_arg(_sig("S2_VI_PULLBACK", pullback_pct=-1.5))
-        assert analyzer._STRATEGY_PROMPTS["S2_VI_PULLBACK"] in system_prompt
+        assert analyzer._setup_only_prompt(analyzer._STRATEGY_PROMPTS["S2_VI_PULLBACK"]) in system_prompt
         assert "VI 눌림목" in system_prompt
 
     def test_explicit_persona_overrides_default(self):
@@ -308,6 +309,22 @@ class TestStrategyPrompts:
         ))
         assert "custom persona marker" in system_prompt
         assert "VI 눌림목 전담" not in system_prompt
+
+    def test_signal_prompt_cache_and_usage_scope_are_sent_to_gateway(self):
+        import analyzer
+
+        response = _make_response('{"action":"HOLD","ai_score":60,"confidence":"MEDIUM","reason":"watch"}')
+        call = AsyncMock(return_value=response)
+        with patch("analyzer.create_message", call), patch.dict(
+            os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}
+        ):
+            _run(analyzer.analyze_signal(_sig("S4_BIG_CANDLE", hold_monitor_recheck=True), _ctx(), 75.0))
+
+        kwargs = call.await_args.kwargs
+        assert kwargs["purpose"] == "signal_hold_recheck"
+        assert kwargs["metadata"]["scope"] == "hold_recheck"
+        assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "STRATEGY FAMILY LIVE GUARD" in kwargs["system"][1]["text"]
 
     def test_family_live_guard_is_absent_when_kill_switch_is_off(self):
         from analyzer import _build_system_prompt
@@ -328,7 +345,7 @@ class TestStrategyPrompts:
         with patch.dict(os.environ, {"ENABLE_STRATEGY_FAMILY_LIVE_ROUTING": "true"}):
             prompt = _build_system_prompt(signal)
 
-        assert analyzer._STRATEGY_PROMPTS["S4_BIG_CANDLE"] in prompt
+        assert analyzer._setup_only_prompt(analyzer._STRATEGY_PROMPTS["S4_BIG_CANDLE"]) in prompt
         assert "family_id=G06" in prompt
         assert "S6_THEME_LAGGARD" in prompt
         assert "must not increase quantity" in prompt

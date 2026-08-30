@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import anthropic
-from ai_gateway import create_message
+from ai_gateway import create_message, mark_response_unusable
 from strategy_meta import get_persona
 from strategy_meta import SWING_STRATEGIES as _TOSS_SWING_STRATEGIES
 from strategy_catalog import ALL_SETUP_IDS, family_for_setup, family_live_routing_enabled
@@ -103,42 +103,50 @@ def _get_system_prompt(strategy: str | None) -> str:
     return _SYS_PROMPT
 
 
-def _build_system_prompt(signal: dict) -> str:
-    """기본 시스템 프롬프트에 전략별 페르소나를 자동 주입한다."""
+def _setup_only_prompt(prompt: str) -> str:
+    """Drop boilerplate already enforced by the shared runtime contract."""
+    lines = prompt.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith("[")), 0)
+    end = next(
+        (
+            i for i, line in enumerate(lines[start:], start)
+            if line.startswith("[HOLD 주의]") or line.startswith("[cancel_reason 규칙]")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end]).strip()
+
+
+def _build_system_sections(signal: dict) -> tuple[str, str | None]:
+    """Return a cacheable strategy contract and optional per-signal lineage guard."""
     strategy = signal.get("strategy")
     base = _get_system_prompt(strategy)
-    # Strategy prompts contain the setup-specific judgement.  Append the shared
-    # runtime contract last so stale wording in one setup cannot weaken live guards.
-    sections = [base] if base == _SYS_PROMPT else [base, _SYS_PROMPT]
+    sections = [_SYS_PROMPT] if base == _SYS_PROMPT else [_setup_only_prompt(base), _SYS_PROMPT]
     if ENABLE_STRATEGY_PERSONA_INJECTION:
         persona = signal.get("persona") or get_persona(strategy)
         if persona:
             sections.append(f"[전략별 자동주입 페르소나]\n{persona}")
+
+    dynamic_guard = None
     if family_live_routing_enabled() and strategy in ALL_SETUP_IDS:
         family = family_for_setup(strategy)
         matched = signal.get("matched_setup_ids") or [strategy]
-        sections.append(
+        dynamic_guard = (
             "[STRATEGY FAMILY LIVE GUARD]\n"
             f"family_id={family.family_id}; family_name={family.name}; "
             f"primary_setup_id={strategy}; matched_setup_ids={json.dumps(matched, ensure_ascii=False)}\n"
-            "The setup-specific prompt above remains authoritative. The family is an "
-            "orchestration and attribution layer, not permission to blend setup rules, "
-            "TP/SL policies, scores, or position sizes.\n"
-            "Never override a failed hard gate, stale or missing required Kiwoom data, "
-            "effective-RR gate, session gate, active-position guard, or risk limit. "
-            "Toss data is supplementary and never an execution-price, order, fill, VI, "
-            "or real-time quote source. Do not average Toss and Kiwoom values.\n"
-            "Do not infer missing fields. Correlated setup confirmations may explain a "
-            "decision but must not increase quantity. If any required guard is failed or "
-            "unknown, return CANCEL. For ENTER, prices must satisfy "
-            "claude_tp2 >= claude_tp1 > entry_price > claude_sl; otherwise return CANCEL.\n"
-            "Return strict JSON only with these required fields: action, ai_score, confidence, "
-            "reason, cancel_reason, validated_family_id, validated_setup_id, "
-            "independent_confirmations, data_quality, risk_flags, claude_tp1, claude_tp2, "
-            "claude_sl, effective_rr. Echo the family/setup identifiers exactly. "
-            "data_quality must be OK, DEGRADED, or BLOCKED."
+            "The setup-specific rules remain authoritative; family confirmations are attribution only "
+            "and must not increase quantity or blend rules. Do not average Toss and Kiwoom values. "
+            "Echo validated_family_id and validated_setup_id exactly, include independent_confirmations, "
+            "data_quality(OK|DEGRADED|BLOCKED), risk_flags and effective_rr in the JSON."
         )
-    return "\n\n".join(sections)
+    return "\n\n".join(sections), dynamic_guard
+
+
+def _build_system_prompt(signal: dict) -> str:
+    """Build the complete prompt used by tests and diagnostics."""
+    stable, dynamic = _build_system_sections(signal)
+    return "\n\n".join(part for part in (stable, dynamic) if part)
 
 
 def _fmt_tpsl(signal: dict) -> str:
@@ -686,18 +694,27 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
         if toss_risk:
             market_ctx = {**market_ctx, "toss_risk": toss_risk}
     user_message = _build_user_message(signal, market_ctx, rule_score)
-    system_prompt = _build_system_prompt(signal)
+    stable_system_prompt, dynamic_system_guard = _build_system_sections(signal)
+    system_blocks = [
+        {"type": "text", "text": stable_system_prompt, "cache_control": {"type": "ephemeral"}},
+    ]
+    if dynamic_system_guard:
+        system_blocks.append({"type": "text", "text": dynamic_system_guard})
 
     raw_text = ""
     try:
         response = await asyncio.wait_for(
             create_message(
                 client,
-                purpose="signal_analysis",
-                metadata={"strategy": signal.get("strategy"), "stk_cd": signal.get("stk_cd")},
+                purpose="signal_hold_recheck" if signal.get("hold_monitor_recheck") else "signal_primary",
+                metadata={
+                    "strategy": signal.get("strategy"),
+                    "stk_cd": signal.get("stk_cd"),
+                    "scope": "hold_recheck" if signal.get("hold_monitor_recheck") else "primary",
+                },
                 model      = CLAUDE_MODEL,
                 max_tokens = MAX_TOKENS,
-                system     = system_prompt,
+                system     = system_blocks,
                 messages   = [{"role": "user", "content": user_message}],
             ),
             timeout=CLAUDE_TIMEOUT,
@@ -742,6 +759,11 @@ async def analyze_signal(signal: dict, market_ctx: dict, rule_score: float,
                        CLAUDE_TIMEOUT, signal.get("stk_cd"), signal.get("strategy"))
         return _ai_failure_cancel(rule_score, "AI analysis timeout")
     except json.JSONDecodeError as e:
+        await mark_response_unusable(
+            getattr(locals().get("response"), "id", None),
+            "JSONDecodeError",
+            f"AI response JSON parse failed: {e}",
+        )
         logger.error("[AI] JSON 파싱 실패: %s / raw=%.200s", e, raw_text)
         return _ai_failure_cancel(rule_score, "AI response JSON parse failed")
     except anthropic.APIError as e:

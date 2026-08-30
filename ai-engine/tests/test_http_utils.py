@@ -12,6 +12,7 @@ import asyncio
 import json
 import httpx
 import pytest
+import http_utils
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -40,8 +41,6 @@ def test_classify_kiwoom_return_code():
 
 @pytest.mark.skipif(not HAS_HTTP_UTILS, reason="http_utils.py not found")
 def test_global_rate_limiter_wait_timeout_fails_closed():
-    import http_utils
-
     limiter = http_utils._KiwoomRateLimiter(real_rate=1000.0)
     limiter._global_wait_ms = 0
     fake_redis = MagicMock()
@@ -1113,3 +1112,24 @@ class TestKiwoomSupplyAndProfileHelpers:
         assert meta["api_id"] == "ka10064"
         assert meta["error"] == "empty records"
         assert mock_post.await_args.args[2]["mrkt_tp"] == "001"
+def test_scan_call_budget_fails_before_limit_is_exceeded():
+    token = http_utils.begin_call_budget(2)
+    try:
+        http_utils._consume_call_budget("ka10001")
+        http_utils._consume_call_budget("ka10004")
+        with pytest.raises(http_utils.KiwoomCallBudgetExceeded):
+            http_utils._consume_call_budget("ka10081")
+    finally:
+        http_utils.end_call_budget(token)
+
+
+@pytest.mark.asyncio
+async def test_kiwoom_post_propagates_call_budget_exhaustion():
+    client = AsyncMock()
+    client.post.side_effect = http_utils.KiwoomCallBudgetExceeded("budget exhausted")
+    context = AsyncMock()
+    context.__aenter__.return_value = client
+
+    with patch.object(http_utils, "kiwoom_client", return_value=context):
+        with pytest.raises(http_utils.KiwoomCallBudgetExceeded):
+            await http_utils.kiwoom_post("https://example.test", {}, {}, "ka10081")

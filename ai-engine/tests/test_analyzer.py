@@ -27,10 +27,11 @@ def test_every_strategy_prompt_ends_with_current_runtime_contract():
 
     for strategy, dedicated in analyzer._STRATEGY_PROMPTS.items():
         prompt = analyzer._build_system_prompt({"strategy": strategy})
-        assert dedicated in prompt
+        assert analyzer._setup_only_prompt(dedicated) in prompt
+        assert "[출력 형식" not in analyzer._setup_only_prompt(dedicated)
         assert "점수가 높아도 ENTER로 자동 승격되지 않습니다" in prompt
         assert "final_rr_gate 또는 rr_regime_threshold" in prompt
-        assert prompt.index(dedicated) < prompt.index("[판단 경계]")
+        assert prompt.index(analyzer._setup_only_prompt(dedicated)) < prompt.index("[판단 경계]")
         assert "시스템이 자동으로 ENTER로 승격" not in dedicated
         assert "HOLD→ENTER 승격 기준" not in dedicated
 

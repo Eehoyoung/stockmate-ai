@@ -18,7 +18,7 @@ from typing import Optional
 
 import httpx
 
-from http_utils import validate_kiwoom_response, kiwoom_client, coalesce_request
+from http_utils import KiwoomCallBudgetExceeded, validate_kiwoom_response, kiwoom_client, coalesce_request
 from toss_client import fetch_stock_candles as _toss_fetch_stock_candles, toss_enabled as _toss_enabled
 
 logger = logging.getLogger(__name__)
@@ -286,6 +286,8 @@ async def _fetch_daily_candles_uncached(token: str, stk_cd: str, target_count: i
                 import asyncio
                 await asyncio.sleep(_API_INTERVAL)
 
+            except KiwoomCallBudgetExceeded:
+                raise
             except Exception as e:
                 logger.error(f"[ma] ka10081 연속조회 중 오류 [%s]: %s", stk_cd, e)
                 break

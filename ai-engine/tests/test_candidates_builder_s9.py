@@ -7,6 +7,10 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+async def _async_value(value):
+    return value
+
+
 @pytest.mark.asyncio
 async def test_build_s9_uses_s8_source_filter_but_writes_s9_pool(monkeypatch):
     import candidates_builder
@@ -28,6 +32,7 @@ async def test_build_s9_uses_s8_source_filter_but_writes_s9_pool(monkeypatch):
 
     monkeypatch.setattr(candidates_builder, "_fetch_ka10027", fake_fetch)
     monkeypatch.setattr(candidates_builder, "_lpush_with_ttl", fake_lpush)
+    monkeypatch.setattr(candidates_builder, "_filter_individual_stocks", lambda _rdb, codes: _async_value(codes))
 
     await candidates_builder._build_s9("token", "001", object())
 
@@ -56,6 +61,7 @@ async def test_build_s3_writes_status_meta_and_pipeline_when_enabled(monkeypatch
     monkeypatch.setattr(candidates_builder, "ENABLE_S3S5_LATENCY_STATUS", True)
     monkeypatch.setattr(candidates_builder, "_fetch_ka10065_set", fake_fetch)
     monkeypatch.setattr(candidates_builder, "_lpush_with_ttl", fake_lpush)
+    monkeypatch.setattr(candidates_builder, "_filter_individual_stocks", lambda _rdb, codes: _async_value(codes))
 
     await candidates_builder._build_s3("token", "001", rdb)
 
@@ -228,8 +234,25 @@ async def test_filter_individual_stocks_removes_etf_etn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_filter_individual_stocks_falls_back_on_redis_error():
-    """Redis 파이프라인 오류 시 원본 목록을 그대로 반환해야 한다."""
+async def test_filter_individual_stocks_removes_brand_prefix_without_blocking_companies():
+    import candidates_builder
+
+    codes = ["069500", "0208N0", "138930", "024110", "005930"]
+    names = ["KODEX 200", "IBK 코스피액티브", "BNK금융지주", "IBK기업은행", "삼성전자"]
+    pipe_mock = AsyncMock()
+    pipe_mock.hget = MagicMock(return_value=None)
+    pipe_mock.execute = AsyncMock(return_value=names)
+    rdb = MagicMock()
+    rdb.pipeline = MagicMock(return_value=pipe_mock)
+
+    result = await candidates_builder._filter_individual_stocks(rdb, codes)
+
+    assert result == ["138930", "024110", "005930"]
+
+
+@pytest.mark.asyncio
+async def test_filter_individual_stocks_blocks_on_redis_error():
+    """Redis 오류로 이름을 검증할 수 없으면 후보를 차단해야 한다."""
     import candidates_builder
 
     codes = ["005930", "069500"]
@@ -239,12 +262,12 @@ async def test_filter_individual_stocks_falls_back_on_redis_error():
 
     result = await candidates_builder._filter_individual_stocks(rdb, codes)
 
-    assert result == codes
+    assert result == []
 
 
 @pytest.mark.asyncio
-async def test_filter_individual_stocks_handles_none_names():
-    """stock:code_map에 이름이 없는 종목은 제거하지 않고 유지해야 한다."""
+async def test_filter_individual_stocks_blocks_none_names():
+    """stock:code_map에 이름이 없는 종목은 상품 여부를 확인할 수 없어 차단한다."""
     import candidates_builder
 
     codes = ["000001", "000002"]
@@ -258,7 +281,7 @@ async def test_filter_individual_stocks_handles_none_names():
 
     result = await candidates_builder._filter_individual_stocks(rdb, codes)
 
-    assert result == codes
+    assert result == []
 
 
 @pytest.mark.asyncio

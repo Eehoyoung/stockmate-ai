@@ -43,6 +43,16 @@ async def test_gateway_records_api_errors_and_reraises():
 
 
 @pytest.mark.asyncio
+async def test_gateway_marks_provider_success_as_unusable_after_parse_failure():
+    conn = SimpleNamespace(execute=AsyncMock())
+    ai_gateway.configure(SimpleNamespace(acquire=lambda: _Acquire(conn)))
+
+    await ai_gateway.mark_response_unusable("msg_bad", "JSONDecodeError", "invalid JSON")
+
+    assert conn.execute.await_args.args[1:] == ("msg_bad", "JSONDecodeError", "invalid JSON")
+
+
+@pytest.mark.asyncio
 async def test_gateway_blocks_calls_after_confirmed_credit_failure():
     conn = SimpleNamespace(execute=AsyncMock())
     rdb = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())

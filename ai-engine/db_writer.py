@@ -6,6 +6,7 @@ Python ai-engine PostgreSQL write helpers (asyncpg based).
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -85,6 +86,10 @@ def _clip_str(v, limit: int) -> Optional[str]:
     if not s:
         return None
     return s[:limit]
+
+
+def _signal_status_for_action(action: str) -> str:
+    return {"ENTER": "SENT", "HOLD": "WATCHING"}.get(str(action or "").upper(), "CANCELLED")
 
 
 def _add_business_days(start_dt: datetime, days: int) -> datetime:
@@ -786,7 +791,18 @@ async def insert_python_signal(
         logger.error("[DBWriter] insert_python_signal aborted: strategy is empty (stk_cd=%s)", signal["stk_cd"])
         return None
     now = datetime.now(timezone.utc)
-    status = "SENT" if action == "ENTER" else "CANCELLED"
+    evaluation_input = {
+        key: signal.get(key)
+        for key in (
+            "cur_prc", "entry_price", "tp1_price", "tp2_price", "sl_price",
+            "vol_ratio", "cntr_strength", "bid_ratio", "freshness_status",
+            "data_source", "source_timestamp", "source_age_ms",
+        )
+        if signal.get(key) is not None
+    }
+    evaluation_input_json = json.dumps(evaluation_input, ensure_ascii=False, sort_keys=True, default=str)
+    input_fingerprint = hashlib.sha256(evaluation_input_json.encode("utf-8")).hexdigest()
+    status = _signal_status_for_action(action)
     time_stop_deadline_at = _resolve_time_stop_deadline_utc(
         created_at_utc=now.replace(tzinfo=timezone.utc),
         time_stop_type=signal.get("time_stop_type"),
@@ -821,7 +837,9 @@ async def insert_python_signal(
                         matched_setup_ids, family_policy_version,
                         blocking_reasons, degraded_reasons, final_score,
                         confirmed_by_family_ids, setup_version, rule_score_version, prompt_version,
-                        data_source, source_timestamp, source_age_ms, fallback_reason
+                        data_source, source_timestamp, source_age_ms, fallback_reason,
+                        decision_at, correlation_id,
+                        evaluation_input, input_fingerprint, reevaluation_of_signal_id
                     ) VALUES (
                         $1,$2,$3,$4,$5,
                         $6,$7,$8,$9,$10,
@@ -844,8 +862,16 @@ async def insert_python_signal(
                         $64::jsonb, $65,
                         $66::jsonb, $67::jsonb, $68,
                         $69::jsonb, $70, $71, $72,
-                        $73::jsonb, $74::jsonb, $75::jsonb, $76::jsonb
-                    ) RETURNING id
+                        $73::jsonb, $74::jsonb, $75::jsonb, $76::jsonb,
+                        $77, $78::uuid,
+                        $79::jsonb, $80,
+                        (SELECT id FROM trading_signals
+                         WHERE stk_cd = $1::varchar AND strategy = $2::varchar
+                         ORDER BY created_at DESC, id DESC LIMIT 1)
+                    )
+                    ON CONFLICT (correlation_id, strategy, stk_cd)
+                        WHERE correlation_id IS NOT NULL DO NOTHING
+                    RETURNING id
                     """,
                     signal.get("stk_cd", ""),
                     signal.get("strategy", ""),
@@ -925,6 +951,10 @@ async def insert_python_signal(
                     json.dumps(signal.get("source_timestamp") or {}, ensure_ascii=False),
                     json.dumps(signal.get("source_age_ms") or {}, ensure_ascii=False),
                     json.dumps(signal.get("fallback_reason") or [], ensure_ascii=False),
+                    signal.get("decision_at") or now,
+                    signal.get("correlation_id") or signal.get("scan_run_id"),
+                    evaluation_input_json,
+                    input_fingerprint,
                 )
                 if row:
                     signal_id = row["id"]
@@ -1675,14 +1705,6 @@ async def close_open_position(
                     exit_reason=exit_type,
                     exit_price=exit_price,
                     realized_pnl_pct=realized_pnl_pct,
-                )
-                await close_shadow_trade(
-                    conn,
-                    signal_id=signal_id,
-                    exit_reason=exit_type,
-                    exit_price=exit_price,
-                    realized_pnl_pct=realized_pnl_pct,
-                    data_quality_detail={"closed_by": "position_monitor"},
                 )
                 await _insert_position_state_event(
                     conn,
