@@ -1,0 +1,78 @@
+{
+  "metadata": {
+    "title": "2026-08-25 KST 런타임 감사 문제 수정 프롬프트",
+    "repository": "C:\\Users\\LeeHoYoung\\IdeaProjects\\t\\stockmate-ai",
+    "analysis_window": "2026-08-25T07:00:00+09:00/2026-08-25T11:26:00+09:00",
+    "execution_mode": "IMPLEMENT_REBUILD_VERIFY"
+  },
+  "objective": "로그, Redis, PostgreSQL, 실제 전달 이력을 교차검증해 확인된 런타임 문제를 공통 원인에서 최소 수정하고 Docker 재배포 후 재발 여부를 검증한다.",
+  "issues": [
+    {
+      "id": "P0-DB-01",
+      "problem": "49개 신호의 INSERT가 PostgreSQL 파라미터 타입 충돌로 모두 실패했지만 Telegram 전달은 진행됐다.",
+      "required_fix": [
+        "lineage 서브쿼리의 stk_cd와 strategy 파라미터를 varchar로 명시한다.",
+        "DB 저장 성공 전에는 사용자 전달 및 실행 라우팅을 금지한다.",
+        "INSERT가 ID를 반환하지 않으면 실패로 처리한다."
+      ],
+      "acceptance": [
+        "실제 PostgreSQL PREPARE가 성공한다.",
+        "저장 실패 테스트에서 전달 함수가 호출되지 않는다."
+      ]
+    },
+    {
+      "id": "P1-METRIC-02",
+      "problem": "asyncio.wait_for 자식 태스크의 ContextVar 정수 변경이 부모에 반영되지 않아 published가 항상 0으로 기록됐다.",
+      "required_fix": [
+        "스캔 단위 mutable 상태를 ContextVar로 전달해 실제 publish 수를 기록한다."
+      ],
+      "acceptance": [
+        "신호를 발행한 스캔은 COMPLETED_WITH_SIGNALS 및 published>0으로 기록된다."
+      ]
+    },
+    {
+      "id": "P1-BUDGET-03",
+      "problem": "13개 전략이 공유한 Kiwoom 500회 예산을 먼저 실행된 전략이 소진해 후속 전략이 실패했다.",
+      "required_fix": [
+        "API 호출 예산을 전략별 120회로 격리한다."
+      ],
+      "acceptance": [
+        "한 전략의 예산 소진이 다른 전략의 호출을 차단하지 않는다."
+      ]
+    },
+    {
+      "id": "P1-WS-04",
+      "problem": "0B 후보 200개 중 그룹 상한 때문에 100개만 구독됐다.",
+      "required_fix": [
+        "0B를 그룹 1과 6에 100개씩 분할하고 그룹별 상태를 추적한다."
+      ],
+      "acceptance": [
+        "런타임 로그에 후보=200, 0B=200이 표시된다."
+      ]
+    },
+    {
+      "id": "P1-REPORT-05",
+      "problem": "08:30 상태 보고서가 경계 계산 경쟁으로 두 번 발행됐다.",
+      "required_fix": [
+        "KST 논리 슬롯별 Redis NX 키로 생산자 중복 발행을 차단한다."
+      ],
+      "acceptance": [
+        "동일 날짜와 논리 슬롯의 STATUS_REPORT는 한 번만 큐에 적재된다."
+      ]
+    }
+  ],
+  "invariants": [
+    "사용자 표시 시간은 Asia/Seoul이며 DB 내부 시각은 timezone-aware로 유지한다.",
+    "SHADOW 신호와 shadow ledger 생성을 금지한다.",
+    "필수 WS 시장데이터가 없거나 stale이면 ENTER를 fail-closed 처리한다.",
+    "과거 실패 신호는 추측으로 복원하거나 백필하지 않는다."
+  ],
+  "verification": [
+    "ai-engine 전체 pytest",
+    "websocket-listener 전체 pytest",
+    "api-orchestrator Gradle test",
+    "telegram-bot 전체 Node 실행형 테스트",
+    "변경 서비스 Docker build 및 force-recreate",
+    "컨테이너 health, Flyway V58/V59, 0B 200개 구독, 신규 오류 로그 확인"
+  ]
+}

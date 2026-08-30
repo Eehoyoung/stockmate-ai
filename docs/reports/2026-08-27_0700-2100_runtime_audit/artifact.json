@@ -1,0 +1,72 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "StockMate AI 2026-08-27 운영 평가",
+    "description": "KST 07:00 이상 21:00 미만의 Docker 로그와 PostgreSQL 데이터를 교차 검증한 기술 보고서",
+    "generatedAt": "2026-08-28T00:00:00+09:00",
+    "blocks": [
+      {"id":"title","type":"markdown","body":"# StockMate AI 2026-08-27 운영 평가\n\n**조회 범위:** 2026-08-27 07:00:00 이상, 21:00:00 미만 KST  \n**판정:** 시스템은 멈추지 않았지만 실전 성과 경로는 사실상 비어 있었고, 핵심 원인은 AI 오류가 아니라 Kiwoom 호출 경합과 느린 전략 스캔이다."},
+      {"id":"summary","type":"markdown","sourceId":"db-signals","body":"## 기술 요약\n\n107개 신호 중 최종 ENTER 판단은 1개(0.9%)였고 실제 체결·포지션·거래결과는 0개였다. 유일한 ENTER는 13:29 KST 키다리스튜디오(S11)였으며 텔레그램 4개 대상에 발송됐지만 14:59 만료됐다. 일 집계의 107개·취소 106개·판단 ENTER 1개·만료 1개는 원천 신호와 일치한다."},
+      {"id":"kpis","type":"table","tableId":"kpi-table"},
+      {"id":"findings","type":"markdown","body":"## 핵심 문제 평가\n\n1. **높음 — 전략 스캔 처리량 병목.** 완료 로그 392회 중 느림 경고가 206회(52.6%)였고 전략 타임아웃 3회, 실행 실패 3회가 발생했다. Kiwoom 글로벌 제한 대기 초과가 22회였으며 ka10055·ka10081·ka10035 경로가 주로 영향을 받았다. 후보를 많이 유지해도 검증 호출이 제때 끝나지 않으면 진입 기회를 놓칠 수 있다.\n2. **높음 — 실시간 데이터가 있는데도 REST 의존이 과도함.** 신선도 로그 107건 중 CAUTION 84건(78.5%), REST 대체 사용 79건(73.8%)이었다. 같은 구간 WebSocket 틱은 3,566,241건·694종목으로 충분히 유입됐다. 구독 종목 범위, Redis 키 갱신, 신선도 임계값 중 하나 이상이 신호 평가 종목과 맞지 않는 정황이다. 단, 유일한 ENTER는 tick·hoga·strength가 모두 Redis FRESH였으므로 최종 진입 안전 게이트는 작동했다.\n3. **중간 — HOLD 재검증은 작동하지만 전환 효율이 낮음.** HOLD_WATCH 46회, HOLD_RELEASED 42회, AI HOLD 재검증 6회, ENTER 승격 1회가 로그로 확인됐다. 10초 단위 관찰·5분 AI 쿨다운·30분 만료 규칙은 작동했으나 승격 후에도 체결 없이 만료됐다. 비용 0.0699345달러가 완전 낭비는 아니지만 실현 성과는 0이었다.\n4. **중간 — AI 성공 지표가 업무 성공을 과대평가함.** `ai_api_usage`는 35회 전부 SUCCESS지만 10:53에 Claude 응답 JSON 파싱 실패가 1회 있었다. HTTP 성공과 사용 가능한 판단 성공을 분리하지 않아 운영 지표가 오류를 숨긴다.\n5. **중간 — 뉴스 감사 데이터가 DB에 남지 않음.** 5개 브리핑은 모두 생성·Redis 갱신·텔레그램 4곳 발송에 성공했고 비용은 0.230463달러였지만 `news_analysis`에는 해당 시간대 레코드가 0개다. 사후 재현성과 비용 대비 품질 검증이 불가능하다.\n6. **낮음 — 계보 필드가 불완전함.** 신호의 correlation_id와 input_fingerprint는 107건 모두 존재하고 fingerprint 중복은 없었지만 release_id와 config_version은 107건 모두 비어 있었다. 후보 이력은 107개 신호 중 72개만 signal_id로 연결됐다."},
+      {"id":"strategy-chart-block","type":"chart","chartId":"strategy-chart"},
+      {"id":"strategy-table-block","type":"table","tableId":"strategy-table"},
+      {"id":"positives","type":"markdown","body":"## 정상 작동한 항목\n\n- Docker UTC 타임스탬프와 애플리케이션 KST 시각은 정확히 9시간 차로 정렬되어 KST 설정이 정상이다.\n- 시스템 헬스는 조회 구간 동안 비정상 판정이 없었고 텔레그램 전송 실패도 0건이다.\n- ETF·ETN 접두사 필터 결과 후보 이력에 상품형 종목은 0건이며 WebSocket VI 경로에서도 상품 억제 로그가 확인됐다.\n- 3,566,241개 틱 모두 source timestamp가 존재하고 PARSED 상태였다. 5초 초과 clock skew는 49,270건(1.38%), 30초 초과는 877건(0.025%), 5분 초과는 14건이었다."},
+      {"id":"method","type":"markdown","body":"## 범위와 방법\n\nDocker 로그는 컨테이너 타임스탬프 기준 `[2026-08-27T07:00:00+09:00, 2026-08-27T21:00:00+09:00)`만 추출했다. PostgreSQL의 `timestamptz`는 세션을 Asia/Seoul로 고정하고 동일한 반개구간 조건을 적용했다. 신호, 신선도, 틱, AI 사용량, 후보 이력, 일 집계, 손익·리스크 결과를 서로 대조했다. 일 단위 후보 이력은 first_seen/last_seen이 조회 구간과 겹치는 항목만 해석했다. 단일 거래일 평가이므로 전략 기대수익이나 통계적 우열은 판정하지 않았다. 차트는 한 거래일의 정확한 감사 수치를 표가 더 명확하게 보여 주므로 생략했다."},
+      {"id":"next","type":"markdown","body":"## 우선 조치 제안\n\n1. Kiwoom 호출을 전략별 중복 조회가 아니라 공용 캐시·배치 결과로 재사용하고, ka10055/ka10081/ka10035 호출량과 대기시간을 전략별로 계측한다.\n2. REST 대체가 발생한 79건의 종목이 WebSocket 구독 집합에 있었는지 대조해 구독 누락과 Redis 신선도 문제를 분리한다.\n3. AI 사용량 상태를 `transport_success`와 `parse_success`로 분리하고 파싱 실패도 비용·오류 지표에 포함한다.\n4. 뉴스 분석 결과를 텔레그램 발송 전에 DB에 영속화하고 slot·prompt_version·request_id를 연결한다.\n5. HOLD 승격 KPI를 `초기 HOLD 수 → AI 재검증 수 → ENTER 승격 수 → 실제 체결 수`로 고정해 비용 대비 전환을 매일 계산한다."},
+      {"id":"limits","type":"markdown","body":"## 한계와 추가 확인 질문\n\n실제 증권사 주문 API의 주문·체결 테이블은 현재 스키마에서 확인되지 않아, 본 보고서의 ‘체결 0’은 `executed_at`, `entry_at`, `trade_outcomes`, 활성 position 기준이다. ENTER 텔레그램 발송을 실전투입의 최종 단계로 보는지, 별도 주문 시스템이 있는지는 추가 확인이 필요하다. 또한 한 거래일만으로 0.9% ENTER 비율이 과도한지 시장 선택성인지 단정할 수 없으므로 최소 20거래일 비교가 필요하다."}
+    ],
+    "tables": [
+      {"id":"kpi-table","title":"07:00–21:00 핵심 수치","dataset":"kpis","density":"dense","sourceId":"db-signals","columns":[{"field":"metric","label":"지표","type":"text"},{"field":"value","label":"값","type":"text"},{"field":"assessment","label":"평가","type":"text"}]},
+      {"id":"strategy-table","title":"전략별 신호 결과","dataset":"strategies","density":"dense","sourceId":"db-signals","columns":[{"field":"strategy","label":"전략","type":"text"},{"field":"signals","label":"신호","format":"number"},{"field":"watch","label":"WATCH","format":"number"},{"field":"decision_enter","label":"판단 ENTER","format":"number"},{"field":"executed","label":"체결","format":"number"}]}
+    ],
+    "charts": [
+      {"id":"strategy-chart","title":"전략별 생성 신호 수","subtitle":"2026-08-27 07:00–21:00 KST, 재평가 포함 107건","type":"bar","dataset":"strategies","sourceId":"db-signals","encodings":{"x":{"field":"strategy","type":"nominal","label":"전략"},"y":{"field":"signals","type":"quantitative","label":"신호 수","format":"number"},"tooltip":[{"field":"signals","type":"quantitative","label":"신호"},{"field":"watch","type":"quantitative","label":"WATCH"},{"field":"decision_enter","type":"quantitative","label":"판단 ENTER"}]},"valueFormat":"number","layout":"full","maxRows":10}
+    ],
+    "sources": [
+      {"id":"db-signals","label":"PostgreSQL SMA 운영 DB","query":{"engine":"PostgreSQL 16","sql":"SELECT strategy, count(*) AS signals, count(*) FILTER (WHERE execution_decision = 'WATCH') AS watch, count(*) FILTER (WHERE execution_decision = 'ENTER') AS decision_enter, count(*) FILTER (WHERE executed_at IS NOT NULL OR entry_at IS NOT NULL) AS executed FROM trading_signals WHERE created_at >= TIMESTAMPTZ '2026-08-27 07:00:00+09' AND created_at < TIMESTAMPTZ '2026-08-27 21:00:00+09' GROUP BY strategy ORDER BY signals DESC;","description":"신호·체결·일 집계·AI 사용량·후보 이력을 KST 고정 구간으로 집계","executed_at":"2026-08-28T00:00:00+09:00","language":"sql","tables_used":["trading_signals","signal_data_freshness_log","ws_tick_data_partitioned","ai_api_usage","candidate_pool_history","daily_pnl","strategy_daily_stats","trade_outcomes","risk_events","news_analysis"],"filters":["created_at >= 2026-08-27 07:00:00+09","created_at < 2026-08-27 21:00:00+09"],"metric_definitions":["실제 체결은 executed_at 또는 entry_at 또는 trade_outcomes가 존재하는 신호","ENTER 비율은 execution_decision=ENTER / 전체 trading_signals"]}},
+      {"id":"runtime-logs","label":"Docker Compose 서비스 로그","query":{"engine":"Docker Compose","query":"docker compose logs -t --since 2026-08-27T07:00:00+09:00 --until 2026-08-27T21:00:00+09:00 api-orchestrator ai-engine websocket-listener telegram-bot","description":"api-orchestrator, ai-engine, websocket-listener, telegram-bot 로그의 오류·지연·발송·HOLD 이벤트 집계","executed_at":"2026-08-28T00:00:00+09:00","language":"text","filters":["--since 2026-08-27T07:00:00+09:00","--until 2026-08-27T21:00:00+09:00"]}}
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-28T00:00:00+09:00",
+    "status": "ready",
+    "datasets": {
+      "kpis": [
+        {"metric":"전체 신호","value":"107","assessment":"42개 최초 평가 + 65개 재평가 계보"},
+        {"metric":"최종 ENTER 판단","value":"1 (0.9%)","assessment":"13:29 키다리스튜디오 S11"},
+        {"metric":"실제 체결·거래결과","value":"0","assessment":"ENTER는 14:59 만료"},
+        {"metric":"HOLD AI 재검증","value":"6회 / $0.0699345","assessment":"ENTER 승격 1회"},
+        {"metric":"전체 AI 비용","value":"$0.5563072","assessment":"신호 $0.325844 + 뉴스 $0.230463"},
+        {"metric":"시세 입력","value":"3,566,241 ticks / 694종목","assessment":"모두 source time PARSED"}
+      ],
+      "operations": [
+        {"area":"전략 실행 지연","observed":"392회 완료 중 206회 느림 경고; timeout 3회; 실행 실패 3회","severity":"높음"},
+        {"area":"Kiwoom 호출 경합","observed":"global limiter 대기 초과 22회; 요청 오류 11회","severity":"높음"},
+        {"area":"시세 신선도","observed":"CAUTION 84/107; REST 대체 79/107","severity":"높음"},
+        {"area":"AI 결과 품질 계측","observed":"사용량 DB는 전부 SUCCESS, 로그에는 JSON 파싱 실패 1회","severity":"중간"},
+        {"area":"뉴스 영속성","observed":"5회 발송 성공, news_analysis 0행","severity":"중간"},
+        {"area":"ETF·ETN 차단","observed":"후보 이력 상품형 0건; VI 억제 로그 확인","severity":"정상"}
+      ],
+      "strategies": [
+        {"strategy":"S11_FRGN_CONT","signals":39,"watch":21,"decision_enter":1,"executed":0},
+        {"strategy":"S15_MOMENTUM_ALIGN","signals":21,"watch":6,"decision_enter":0,"executed":0},
+        {"strategy":"S12_CLOSING","signals":14,"watch":6,"decision_enter":0,"executed":0},
+        {"strategy":"S7_ICHIMOKU_BREAKOUT","signals":8,"watch":2,"decision_enter":0,"executed":0},
+        {"strategy":"S1_GAP_OPEN","signals":7,"watch":4,"decision_enter":0,"executed":0},
+        {"strategy":"S5_PROG_FRGN","signals":6,"watch":0,"decision_enter":0,"executed":0},
+        {"strategy":"S8_GOLDEN_CROSS","signals":4,"watch":3,"decision_enter":0,"executed":0},
+        {"strategy":"S6_THEME_LAGGARD","signals":3,"watch":0,"decision_enter":0,"executed":0},
+        {"strategy":"S9_PULLBACK_SWING","signals":3,"watch":3,"decision_enter":0,"executed":0},
+        {"strategy":"S3_INST_FRGN","signals":2,"watch":1,"decision_enter":0,"executed":0}
+      ]
+    }
+  },
+  "sources": [
+    {"id":"db-signals","label":"PostgreSQL SMA 운영 DB"},
+    {"id":"runtime-logs","label":"Docker Compose 서비스 로그"}
+  ]
+}
