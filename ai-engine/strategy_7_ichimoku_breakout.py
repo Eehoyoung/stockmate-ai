@@ -64,7 +64,7 @@ from tp_sl_engine import calc_tp_sl
 logger = logging.getLogger(__name__)
 _API_INTERVAL = float(os.getenv("KIWOOM_API_INTERVAL", "0.8"))
 _S7_POOL_READ_LIMIT = int(os.getenv("S7_POOL_READ_LIMIT", "180"))
-_S7_SCAN_LIMIT = int(os.getenv("S7_SCAN_LIMIT", "60"))
+_S7_SCAN_LIMIT = int(os.getenv("S7_SCAN_LIMIT", "40"))
 
 # 일목균형표 최소 필요 봉 수 (일봉 / 60분봉 동일)
 _ICHIMOKU_MIN_BARS    = 78   # 일봉: senkou_b_period(52) + displacement(26)

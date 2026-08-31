@@ -288,3 +288,22 @@ async def test_s15_cancelled_strong_realtime_values_do_not_raise_score(monkeypat
     assert result[0]["cntr_strength"] == 100.0
     assert result[0]["score"] == 83.6
     safe_strength.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_s15_skips_candidate_when_strength_fallback_is_unavailable(monkeypatch):
+    import strategy_15_momentum_align as s15
+
+    candles = [{
+        "cur_prc": "101", "open_pric": "100", "high_pric": "102",
+        "low_pric": "99", "trde_qty": "1000",
+    } for _ in range(40)]
+    rdb = AsyncMock()
+    rdb.lrange = AsyncMock(side_effect=[["005930"], []])
+    monkeypatch.setattr(s15.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(s15, "fetch_daily_candles", AsyncMock(return_value=candles))
+    monkeypatch.setattr(s15, "get_tick_with_status", AsyncMock(return_value={"data": {}}))
+    monkeypatch.setattr(s15, "get_strength_with_status", AsyncMock(return_value={"data": None}))
+    monkeypatch.setattr(s15, "fetch_cntr_strength_cached", AsyncMock(return_value=(None, "unavailable")))
+
+    assert await s15.scan_momentum_align("token", rdb=rdb) == []

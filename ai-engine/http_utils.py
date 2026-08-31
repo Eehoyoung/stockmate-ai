@@ -185,9 +185,8 @@ class _KiwoomRateLimiter:
             os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_INTERVAL_MS_HEAVY", str(int(1000 / heavy_rate)))
         )
         self._global_key = os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_KEY", "kiwoom:global_rate_limit:lock")
-        # 요율을 낮췄으므로 정상적인 FIFO 대기가 false "deadline exceeded"로
-        # 드롭되지 않도록 기본 대기 한도를 5000ms → 8000ms로 상향한다.
-        self._global_wait_ms = int(os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_WAIT_MS", "8000"))
+        # 장중 동시 전략의 정상 FIFO 대기가 호출 폐기로 바뀌지 않게 한다.
+        self._global_wait_ms = int(os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_WAIT_MS", "15000"))
         self._unavailable_backoff_ms = int(os.getenv("KIWOOM_GLOBAL_RATE_LIMIT_UNAVAILABLE_BACKOFF_MS", "30000"))
         self._redis = None
         self._global_disabled_until = 0.0

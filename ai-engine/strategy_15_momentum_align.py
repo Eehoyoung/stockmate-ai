@@ -157,6 +157,9 @@ async def scan_momentum_align(token: str, rdb=None) -> list:
         if cntr_str is None:
             await asyncio.sleep(_API_INTERVAL)
             cntr_str, _ = await fetch_cntr_strength_cached(token, stk_cd, rdb=rdb)
+        if cntr_str is None:
+            _reject("strength_unavailable", stk_cd)
+            continue
 
         # ── 필수 2: 양봉 + 과열 미달 ─────────────────────────────
         if flu_rt <= 0 or flu_rt > 12.0:
