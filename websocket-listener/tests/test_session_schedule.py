@@ -250,14 +250,16 @@ async def test_wildcard_subscription_is_tracked_after_success_ack():
     assert call("ws:subscribed:1h:3", "") in rdb.sadd.await_args_list
 
 
-def test_main_market_splits_200_tick_candidates_across_two_groups():
+def test_main_market_keeps_total_registration_under_account_limit():
     import ws_client
 
     candidates = [f"{idx:06d}" for idx in range(200)]
-    tick_groups = [group for group in ws_client._groups_for_session("main_market", candidates, candidates[:100]) if group[1] == "0B"]
+    groups = ws_client._groups_for_session("main_market", candidates, candidates[:100])
+    concrete = [group for group in groups if group[2] and group[1] != "1h"]
 
-    assert [(group_no, len(items)) for group_no, _, items in tick_groups] == [("1", 100), ("6", 100)]
-    assert tick_groups[0][2] + tick_groups[1][2] == candidates
+    assert sum(len(items) for _, _, items in groups) <= 200
+    assert {ttype for _, ttype, _ in concrete} == {"0B", "0D", "0w"}
+    assert all(items == candidates[:66] for _, _, items in concrete)
 
 
 @pytest.mark.asyncio
