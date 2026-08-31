@@ -465,6 +465,27 @@ class TestTossCandleFallback:
         assert len(result) == 5
         assert result[0]["source"] == "toss_candle_fallback"
 
+    def test_budget_exhaustion_uses_toss_fallback(self):
+        import ma_utils
+        from http_utils import KiwoomCallBudgetExceeded
+
+        ma_utils._CANDLE_CACHE.clear()
+        client = _DailyClient([])
+        client.post.side_effect = KiwoomCallBudgetExceeded("budget exhausted")
+        toss_candles = [
+            {"timestamp": f"2026-08-{d:02d}T09:00:00+09:00", "openPrice": "100",
+             "highPrice": "110", "lowPrice": "90", "closePrice": "105", "volume": "1000"}
+            for d in range(1, 6)
+        ]
+
+        with patch("ma_utils.kiwoom_client", return_value=client), \
+             patch("ma_utils._toss_enabled", return_value=True), \
+             patch("ma_utils._toss_fetch_stock_candles", new_callable=AsyncMock, return_value=toss_candles):
+            result = _run(ma_utils.fetch_daily_candles("tok", "005930", target_count=5))
+
+        assert len(result) == 5
+        assert result[0]["source"] == "toss_candle_fallback"
+
     def test_fallback_not_used_when_kiwoom_has_enough(self):
         import ma_utils
 

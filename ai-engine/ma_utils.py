@@ -286,8 +286,9 @@ async def _fetch_daily_candles_uncached(token: str, stk_cd: str, target_count: i
                 import asyncio
                 await asyncio.sleep(_API_INTERVAL)
 
-            except KiwoomCallBudgetExceeded:
-                raise
+            except KiwoomCallBudgetExceeded as e:
+                logger.info("[ma] ka10081 호출 예산 소진 [%s] - 토스 캔들 폴백 시도: %s", stk_cd, e)
+                break
             except Exception as e:
                 logger.error(f"[ma] ka10081 연속조회 중 오류 [%s]: %s", stk_cd, e)
                 break
