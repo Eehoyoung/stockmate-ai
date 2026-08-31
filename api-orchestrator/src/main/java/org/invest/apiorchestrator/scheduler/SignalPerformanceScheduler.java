@@ -31,10 +31,8 @@ public class SignalPerformanceScheduler {
     @Scheduled(cron = "0 * 9-15 * * MON-FRI", zone = "Asia/Seoul")
     @Transactional
     public void updatePerformance() {
-        LocalDateTime startOfDay = LocalDateTime.of(KstClock.today(), LocalTime.MIDNIGHT);
         List<TradingSignal> sentSignals =
-                signalRepository.findBySignalStatusAndCreatedAtAfter(
-                        TradingSignal.SignalStatus.SENT, startOfDay);
+                signalRepository.findMonitorablePaperPositions();
 
         if (sentSignals.isEmpty()) {
             return;

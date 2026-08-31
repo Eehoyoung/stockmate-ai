@@ -1313,13 +1313,14 @@ async def confirm_open_position(
                             WHEN signal_status IN ('PENDING', 'CANCELLED') OR signal_status IS NULL THEN 'SENT'
                             ELSE signal_status
                         END,
-                        position_status = NULL,
+                        position_status = 'ACTIVE',
+                        entry_at = COALESCE(entry_at, created_at),
                         ai_score = COALESCE($2, ai_score),
                         tp1_price = COALESCE($3::NUMERIC, tp1_price),
                         tp2_price = COALESCE($4::NUMERIC, tp2_price),
                         sl_price = COALESCE($5::NUMERIC, sl_price),
                         rr_ratio = COALESCE($6::NUMERIC, rr_ratio),
-                        monitor_enabled = FALSE,
+                        monitor_enabled = TRUE,
                         is_overnight = FALSE,
                         overnight_verdict = NULL,
                         overnight_score = NULL,
@@ -1394,7 +1395,7 @@ async def confirm_open_position(
                     conn,
                     signal_id=signal_id,
                     event_type="SIGNAL_CONFIRMED",
-                    position_status=None,
+                    position_status="ACTIVE",
                     payload={
                         "rr_ratio": round(rr_ratio, 3) if rr_ratio is not None else None,
                         "effective_rr": _opt_num(effective_rr or rr_ratio),

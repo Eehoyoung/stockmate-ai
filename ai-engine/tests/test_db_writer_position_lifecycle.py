@@ -1,4 +1,5 @@
 import json
+import inspect
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,6 +13,15 @@ def test_signal_status_preserves_watch_semantics():
     assert _signal_status_for_action("CANCEL") == "CANCELLED"
 
 from db_writer import _is_monitorable_position, insert_signal_freshness_log, update_signal_score
+
+
+def test_confirmed_enter_becomes_monitorable_paper_position():
+    from db_writer import confirm_open_position
+
+    source = inspect.getsource(confirm_open_position)
+    assert "position_status = 'ACTIVE'" in source
+    assert "monitor_enabled = TRUE" in source
+    assert 'position_status="ACTIVE"' in source
 
 
 def _row(signal_status="EXECUTED", position_status="ACTIVE", exit_type=None,

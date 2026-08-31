@@ -33,6 +33,15 @@ public interface TradingSignalRepository extends JpaRepository<TradingSignal, Lo
             @Param("status") TradingSignal.SignalStatus status,
             @Param("after") LocalDateTime after);
 
+    @Query("""
+        SELECT s FROM TradingSignal s
+        WHERE s.signalStatus = 'SENT'
+          AND s.positionStatus IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+          AND COALESCE(s.monitorEnabled, TRUE) = TRUE
+          AND s.executedAt IS NULL
+        """)
+    List<TradingSignal> findMonitorablePaperPositions();
+
     Optional<TradingSignal> findTopByStkCdAndStrategyAndCreatedAtAfterOrderByCreatedAtDesc(
             String stkCd, TradingSignal.StrategyType strategy, LocalDateTime after);
 
