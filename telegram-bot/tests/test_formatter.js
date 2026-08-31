@@ -77,7 +77,7 @@ test('escapeHtml escapes special characters', () => {
 
 test('formatSignal includes basic trade context', () => {
     const msg = formatSignal(makeSignal());
-    assert.ok(msg.includes('S1_GAP_OPEN'));
+    assert.ok(msg.includes('갭 상승 개장'));
     assert.ok(msg.includes('005930'));
     assert.ok(msg.includes('삼성전자'));
     assert.ok(!msg.includes('초보자용 매수 가이드'));
@@ -165,7 +165,7 @@ test('formatSignal renders 손익비 with market regime policy wording', () => {
         rr_regime: 'bull',
         rr_regime_threshold: 0.65,
     }));
-    assert.ok(msg.includes('현재 장세 손익비/bull'));
+    assert.ok(msg.includes('상승장 손익비 판정'));
     assert.ok(msg.includes('통과'));
     assert.ok(!msg.includes('R:R'));
 });
@@ -178,8 +178,9 @@ test('formatSignal escapes RR regime label', () => {
         rr_regime: '<bull&bear>',
         rr_regime_threshold: 0.65,
     }));
-    assert.ok(msg.includes('&lt;bull&amp;bear&gt;'));
-    assert.ok(!msg.includes('손익비/<bull&bear>'));
+    assert.ok(msg.includes('현재 장세 손익비 판정'));
+    assert.ok(!msg.includes('bull'));
+    assert.ok(!msg.includes('bear'));
 });
 
 test('formatSignal renders toss risk line for swing ENTER signals', () => {
@@ -194,7 +195,7 @@ test('formatSignal renders toss risk line for swing ENTER signals', () => {
     assert.ok(msg.includes('토스 리스크'));
     assert.ok(msg.includes('공매도비중 12.0%'));
     assert.ok(msg.includes('신용융자잔고 6.00%'));
-    assert.ok(msg.includes('매수유의사항[OVERHEATED]'));
+    assert.ok(msg.includes('매수유의사항[과열]'));
 });
 
 test('formatSignal combines investor flow trend with toss risk under one swing block', () => {
@@ -320,7 +321,7 @@ test('formatSignal renders S16 accumulation strategy identity', () => {
         rr_ratio: 1.8,
         s16_state: 'TRIGGERED',
     }));
-    assert.ok(msg.includes('S16_ACCUMULATION_SHADOW'));
+    assert.ok(msg.includes('매집 돌파'));
     assert.ok(msg.includes('Accumulation Test'));
     assert.ok(msg.includes('세력 매집'));
 });
@@ -334,10 +335,10 @@ test('formatSignal renders family lineage without replacing legacy setup', () =>
         matched_setup_ids: ['S4_BIG_CANDLE', 'S6_THEME_LAGGARD'],
     }));
 
-    assert.ok(msg.includes('[S4_BIG_CANDLE]'));
-    assert.ok(msg.includes('G06 장중급등·테마'));
-    assert.ok(msg.includes('대표 세부전략: S4_BIG_CANDLE'));
-    assert.ok(msg.includes('S6_THEME_LAGGARD'));
+    assert.ok(msg.includes('[장대양봉]'));
+    assert.ok(msg.includes('통합전략: <b>장중급등·테마</b>'));
+    assert.ok(msg.includes('대표 전략: 장대양봉'));
+    assert.ok(msg.includes('테마 후발주'));
 });
 
 test('formatSignal preserves shared queue DB API Telegram lineage fixture', () => {
@@ -347,9 +348,9 @@ test('formatSignal preserves shared queue DB API Telegram lineage fixture', () =
     ));
     const msg = formatSignal(makeSignal(fixture));
 
-    assert.ok(msg.includes(`[${fixture.strategy}]`));
-    assert.ok(msg.includes(`${fixture.strategy_family} 추세단계`));
-    assert.ok(msg.includes(`대표 세부전략: ${fixture.primary_setup_id}`));
+    assert.ok(msg.includes('[정배열 눌림목]'));
+    assert.ok(msg.includes('통합전략: <b>추세단계</b>'));
+    assert.ok(msg.includes('대표 전략: 정배열 눌림목'));
 });
 
 test('formatSignal renders upgraded ENTER form with Korean price and execution labels', () => {
@@ -379,7 +380,7 @@ test('formatSignal renders upgraded ENTER form with Korean price and execution l
         chase_risk: 'LOW',
     }));
     for (const text of [
-        '시장: 코스닥', '스윙형', '함께 확인된 세부전략', '필수조건 통과',
+        '시장: 코스닥', '스윙형', '함께 확인된 전략', '필수조건 통과',
         '데이터 상태 정상', '진입가', '출처 키움 실시간', '1차 목표가',
         '2차 목표가', '손절가', '기본 손익비', '비용 반영 손익비',
         '최소 기준', '호가비율', '매수·매도 가격차', '추격 위험 낮음',
@@ -396,7 +397,50 @@ test('formatSignal prefixes hold-promoted ENTER strategy with H tag', () => {
         signal_stage: 'ENTRY',
         hold_promoted_to_enter: true,
     }));
-    assert.ok(msg.includes('[H][S2_VI_PULLBACK]'));
+    assert.ok(msg.includes('[변동성완화장치 눌림목 · 관망 후 승격]'));
+});
+
+test('formatSignal separates S15 execution target from lower resistance zone', () => {
+    const msg = formatSignal(makeSignal({
+        strategy: 'S15_MOMENTUM_ALIGN',
+        strategy_family: 'G04',
+        primary_setup_id: 'S15_MOMENTUM_ALIGN',
+        stk_cd: '373220',
+        stk_nm: 'LG에너지솔루션',
+        cur_prc: 372000,
+        ai_score: 72,
+        rule_score: 76,
+        final_score: 74.8,
+        confidence: 'MEDIUM',
+        market_type: '001',
+        tp1_price: 422000,
+        tp2_price: 448000,
+        sl_price: 350500,
+        tp_method: 'fib_1272(swing_momentum)+rr_fit_s15_momentum+single_tp_avg(413503/430043)',
+        sl_method: 'MA20_support(×0.99)',
+        raw_rr: 2.33,
+        effective_rr: 1.877,
+        min_rr_ratio: 1.55,
+        rr_regime: 'bear',
+        rr_regime_threshold: 1.45,
+        buy_zone: { low: 308354, high: 318896, anchors: ['SWING_LOW', 'SWING_LOW'], strength: 2 },
+        sell_zone1: { low: 378057, high: 388598, anchors: ['BB_UPPER'] },
+        zone_rr: 3.413,
+        entry_type: '당일종가_또는_익일시가',
+        vol_ratio: 0.71,
+        rsi: 57.2,
+        atr_pct: 4.72,
+        cond_count: 3,
+        holding_days: '5~10거래일',
+        signal_time: '2026-08-31T13:45:39+09:00',
+    }));
+
+    for (const text of ['1차 목표가', '422,000원', '목표가 전 중간 저항 구간', '378,057', '1차 목표가가 아니며', '피보나치 1.272', '손익비 조정', '복수 목표 평균', '20일선 지지']) {
+        assert.ok(msg.includes(text), `${text} 포함`);
+    }
+    for (const forbidden of ['1차 매도 박스', '308,354', '매수구간 기준 손익비', 'S15_MOMENTUM_ALIGN', 'G04', 'AI', 'bear', 'half', 'SWING_LOW', 'BB_UPPER', 'rr_fit', 'single_tp', 'fib_1272', 'MA20', 'RSI', 'PM']) {
+        assert.ok(!msg.includes(forbidden), `${forbidden} 미표시`);
+    }
 });
 
 test('formatForceClose renders stock code and strategy', () => {
@@ -479,7 +523,7 @@ test('SIZE_2 신호에 진입 강도 표시', () => {
         entry_size_basis: 'model_relative_not_account',
         size_downgrade_flags: ['spread_too_wide'],
     }));
-    assert.ok(msg.includes('SIZE_2'), 'SIZE_2 포함');
+    assert.ok(msg.includes('진입 강도: 보통'), '한국어 강도 포함');
     assert.ok(msg.includes('0.50'), 'weight 포함');
     assert.ok(msg.includes('스프레드 넓음'), '한국어 플래그');
     assert.ok(msg.includes('하향 사유'), '하향 사유 줄 포함');
@@ -503,7 +547,7 @@ test('SIZE_0이면 관찰 전용 주의 문구 포함', () => {
         size_downgrade_flags: ['low_liquidity', 'high_stop_pct'],
     }));
     assert.ok(msg.includes('관찰 전용'), '관찰 전용 문구');
-    assert.ok(msg.includes('SIZE_0'), 'SIZE_0 포함');
+    assert.ok(msg.includes('진입 강도: 관찰 전용'), '한국어 강도 포함');
     assert.ok(msg.includes('유동성 부족'), '한국어 플래그 low_liquidity');
     assert.ok(msg.includes('손절폭 큼'), '한국어 플래그 high_stop_pct');
 });
@@ -515,7 +559,7 @@ test('SIZE_4 최고 강도 — 하향 사유 없음', () => {
         entry_size_weight: 1.00,
         size_downgrade_flags: [],
     }));
-    assert.ok(msg.includes('SIZE_4'), 'SIZE_4 포함');
+    assert.ok(msg.includes('진입 강도: 매우 강함'), '한국어 강도 포함');
     assert.ok(msg.includes('1.00'), 'weight 1.00 포함');
     assert.ok(!msg.includes('하향 사유'), '하향 사유 없음');
     assert.ok(!msg.includes('관찰 전용'), '관찰 전용 문구 없음');

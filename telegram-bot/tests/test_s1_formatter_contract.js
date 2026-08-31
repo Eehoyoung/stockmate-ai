@@ -9,7 +9,7 @@ function makeS1(overrides = {}) {
     return {
         strategy: 'S1_GAP_OPEN',
         stk_cd: '005930',
-        stk_nm: 'Samsung Electronics',
+        stk_nm: '삼성전자',
         action: 'ENTER',
         ai_score: 81.2,
         rule_score: 100,
@@ -22,7 +22,7 @@ function makeS1(overrides = {}) {
         claude_tp2: 93000,
         claude_sl: 81000,
         rr_ratio: 1.65,
-        ai_reason: 'opening gap confirmed',
+        ai_reason: '시초가 갭 확인',
         ...overrides,
     };
 }
@@ -35,15 +35,15 @@ function assertIncludes(message, expected) {
 }
 
 const msg = formatSignal(makeS1());
-assertIncludes(msg, 'S1_GAP_OPEN');
+assertIncludes(msg, '갭 상승 개장');
 assertIncludes(msg, '005930');
-assertIncludes(msg, 'Samsung Electronics');
+assertIncludes(msg, '삼성전자');
 assertIncludes(msg, '84,300');
 assertIncludes(msg, '90,000');
 assertIncludes(msg, '93,000');
 assertIncludes(msg, '81,000');
 assertIncludes(msg, '1.65');
-assertIncludes(msg, 'opening gap confirmed');
+assertIncludes(msg, '시초가 갭 확인');
 assert.ok(!msg.includes('88,000'), 'claude_tp1 should win over rule tp1_price');
 assert.ok(!msg.includes('92,000'), 'claude_tp2 should win over display_tp2_price');
 assert.ok(!msg.includes('82,000'), 'claude_sl should win over rule sl_price');

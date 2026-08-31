@@ -23,26 +23,37 @@ const STRATEGY_EMOJI = {
     S13_BOX_BREAKOUT:   '📦',
     S14_OVERSOLD_BOUNCE:'🔄',
     S15_MOMENTUM_ALIGN: '🔥',
-    S16_ACCUMULATION_SHADOW: 'S16',
+    S16_ACCUMULATION_SHADOW: '🧭',
 };
 
 const STRATEGY_DESC = {
     S1_GAP_OPEN:        '갭 상승 개장 (전일 대비 갭 3~15%)',
-    S2_VI_PULLBACK:     'VI 발동 후 눌림목 반등',
+    S2_VI_PULLBACK:     '변동성완화장치 발동 후 눌림목 반등',
     S3_INST_FRGN:       '기관+외국인 동시 순매수',
     S4_BIG_CANDLE:      '장대양봉 + 거래량 급증',
     S5_PROG_FRGN:       '프로그램+외국인 동반 매수',
     S6_THEME_LAGGARD:   '테마주 후발 소외주 갭 상승',
     S7_ICHIMOKU_BREAKOUT:         '일목균형표 구름대 돌파 스윙',
-    S8_GOLDEN_CROSS:    'MA5×MA20 골든크로스 + 거래량 확인',
-    S9_PULLBACK_SWING:  '정배열 내 5MA 눌림목 반등',
+    S8_GOLDEN_CROSS:    '5일선·20일선 골든크로스 + 거래량 확인',
+    S9_PULLBACK_SWING:  '정배열 내 5일선 눌림목 반등',
     S10_NEW_HIGH:       '52주 신고가 돌파 + 거래량 급증',
     S11_FRGN_CONT:      '외국인 연속 3일 이상 순매수',
     S12_CLOSING:        '장 마감 30분 종가강도 매집',
     S13_BOX_BREAKOUT:   '박스권 상단 돌파 + 거래량 폭발',
-    S14_OVERSOLD_BOUNCE:'RSI 과매도 구간 반등 신호 (RSI < 35)',
-    S15_MOMENTUM_ALIGN: '다중 모멘텀 정렬 상승 (RSI+MA+거래량)',
+    S14_OVERSOLD_BOUNCE:'상대강도지수 과매도 구간 반등 신호',
+    S15_MOMENTUM_ALIGN: '다중 모멘텀 정렬 상승 (상대강도·이동평균·거래량)',
     S16_ACCUMULATION_SHADOW: '세력 매집 의심 박스 돌파/첫 눌림 트리거',
+};
+
+const STRATEGY_LABEL = {
+    S1_GAP_OPEN: '갭 상승 개장', S2_VI_PULLBACK: '변동성완화장치 눌림목',
+    S3_INST_FRGN: '기관·외국인 동반 매수', S4_BIG_CANDLE: '장대양봉',
+    S5_PROG_FRGN: '프로그램·외국인 동반 매수', S6_THEME_LAGGARD: '테마 후발주',
+    S7_ICHIMOKU_BREAKOUT: '일목균형표 돌파', S8_GOLDEN_CROSS: '골든크로스',
+    S9_PULLBACK_SWING: '정배열 눌림목', S10_NEW_HIGH: '52주 신고가',
+    S11_FRGN_CONT: '외국인 연속 매수', S12_CLOSING: '종가 강도',
+    S13_BOX_BREAKOUT: '박스권 돌파', S14_OVERSOLD_BOUNCE: '과매도 반등',
+    S15_MOMENTUM_ALIGN: '다중 모멘텀 정렬', S16_ACCUMULATION_SHADOW: '매집 돌파',
 };
 
 const FAMILY_LABEL = {
@@ -93,7 +104,15 @@ function _humanizeTerms(value) {
         .replace(/\bWATCH\b/gi, '관찰')
         .replace(/\bkiwoom_ws\b/gi, '키움 실시간')
         .replace(/\bkiwoom_rest\b/gi, '키움 조회')
-        .replace(/\btoss\b/gi, '토스 조회');
+        .replace(/\btoss\b/gi, '토스 조회')
+        .replace(/\bRSI\b/gi, '상대강도지수')
+        .replace(/\bMA(\d+)\b/gi, '$1일선')
+        .replace(/\b5D\b/gi, '최근 5일')
+        .replace(/\bbull\b/gi, '상승장')
+        .replace(/\bbear\b/gi, '하락장')
+        .replace(/\bsideways\b/gi, '횡보장')
+        .replace(/\bneutral\b/gi, '중립장')
+        .replace(/([\d.]+)x\b/gi, '$1배');
 }
 
 function _dataQualityLabel(value) {
@@ -102,7 +121,16 @@ function _dataQualityLabel(value) {
         OK: '정상',
         DEGRADED: '보조정보 부족',
         BLOCKED: '진입 차단',
-    }[normalized] || _humanizeTerms(value);
+    }[normalized] || '확인 필요';
+}
+
+function _enterText(value) {
+    return _humanizeTerms(value)
+        .replace(/\bVWAP\b/gi, '거래량가중평균가')
+        .replace(/\bMACD\b/gi, '이동평균수렴확산')
+        .replace(/\bADX\b/gi, '추세강도')
+        .replace(/\bOBV\b/gi, '누적거래량')
+        .replace(/\b[A-Za-z][A-Za-z0-9_]*\b/g, '내부 지표');
 }
 
 /**
@@ -202,7 +230,7 @@ const STRENGTH_STARS = ['', '☆☆☆☆☆', '★☆☆☆☆', '★★☆☆�
  * @param {number} curPrc  현재가
  * @returns {string|null}
  */
-function _formatZoneBlock(item, curPrc) {
+function _formatZoneBlock(item, curPrc, targetPrc) {
     if (!ZONE_STRATEGIES.has(item.strategy)) return null;
 
     const bz = item.buy_zone;
@@ -232,12 +260,18 @@ function _formatZoneBlock(item, curPrc) {
         }
     }
 
-    const lines = [
-        `▼ 매수 박스 [강도 ${stars}]`,
-        `  ${bzLow.toLocaleString()} ━━━━━━━━━━━━ ${bzHigh.toLocaleString()} (${rangePct}%)`,
-        `  근거: ${escapeHtml(anchors)}`,
-    ];
-    if (posLabel) lines.push(`  현재가 위치: ${posLabel}`);
+    const lines = [];
+    // 현재가가 이미 매수 구간을 벗어났다면 과거 지지 구간과 그 손익비를
+    // 신규 진입 가격처럼 보여주지 않는다.
+    const actionableBuyZone = curPrc > 0 && curPrc >= bzLow && curPrc <= bzHigh;
+    if (actionableBuyZone) {
+        lines.push(
+            `▼ 매수 가능 구간 [강도 ${stars}]`,
+            `  ${bzLow.toLocaleString()} ━━━━━━━━━━━━ ${bzHigh.toLocaleString()} (${rangePct}%)`,
+            `  근거: ${escapeHtml(_zoneAnchors(anchors))}`,
+        );
+        if (posLabel) lines.push(`  현재가 위치: ${posLabel}`);
+    }
 
     if (sz && typeof sz === 'object') {
         const szLow  = Number(sz.low  || 0);
@@ -245,24 +279,33 @@ function _formatZoneBlock(item, curPrc) {
         if (szLow > 0 && szHigh > 0) {
             const szRangePct = ((szHigh - szLow) / szLow * 100).toFixed(2);
             const szAnchors  = Array.isArray(sz.anchors) ? sz.anchors.join(' · ') : '-';
-            lines.push('');
-            lines.push('▼ 1차 매도 박스');
+            if (lines.length) lines.push('');
+            const isIntermediate = Number(targetPrc) > szHigh;
+            lines.push(isIntermediate ? '▼ 목표가 전 중간 저항 구간' : '▼ 1차 목표 구간');
             lines.push(`  ${szLow.toLocaleString()} ━━━━━━━━━━━━ ${szHigh.toLocaleString()} (${szRangePct}%)`);
-            lines.push(`  근거: ${escapeHtml(szAnchors)}`);
+            lines.push(`  근거: ${escapeHtml(_zoneAnchors(szAnchors))}`);
+            if (isIntermediate) lines.push('  참고: 1차 목표가가 아니며, 이 구간에서 매물 소화 여부 확인');
         }
     }
 
-    // 사용자 메시지는 내부 R:R 용어 대신 손익비로 표시한다.
-    const pointRR = item.rr_ratio != null
-        ? `현재가 기준 손익비: <b>${Number(item.rr_ratio).toFixed(2)}</b>` : null;
     const zoneRRVal = item.zone_rr != null ? Number(item.zone_rr) : null;
     const zoneOK    = zoneRRVal !== null && zoneRRVal >= 1.3 ? '✅' : '⚠️';
-    const zoneRRStr = zoneRRVal !== null
+    const zoneRRStr = actionableBuyZone && zoneRRVal !== null
         ? `매수구간 기준 손익비: <b>${zoneRRVal.toFixed(2)}</b> ${zoneOK}` : null;
-    const rrLine = [pointRR, zoneRRStr].filter(Boolean).join('  |  ');
+    const rrLine = [zoneRRStr].filter(Boolean).join('  |  ');
     if (rrLine) { lines.push(''); lines.push(rrLine); }
 
-    return lines.join('\n');
+    return lines.length ? lines.join('\n') : null;
+}
+
+function _zoneAnchors(value) {
+    return String(value || '-')
+        .replace(/SWING_LOW/gi, '이전 저점')
+        .replace(/SWING_HIGH/gi, '이전 고점')
+        .replace(/BB_UPPER/gi, '볼린저 상단')
+        .replace(/BB_LOWER/gi, '볼린저 하단')
+        .replace(/MA(\d+)/gi, '$1일선')
+        .replace(/ATR/gi, '평균 변동폭');
 }
 
 /**
@@ -283,11 +326,11 @@ function _effectiveRR(stkCd, entry, tp1, sl) {
 function _formatRegimeRR(item, rrVal) {
     const threshold = Number(item.rr_regime_threshold ?? item.market_rr_threshold);
     if (!Number.isFinite(rrVal)) return null;
-    const regime = item.rr_regime ? escapeHtml(item.rr_regime) : '';
+    const regime = item.rr_regime ? escapeHtml(_regimeLabel(item.rr_regime)) : '';
     if (Number.isFinite(threshold) && threshold > 0) {
         const status = rrVal >= threshold ? '통과' : '주의';
-        const regimeText = regime ? `/${regime}` : '';
-        return `현재 장세 손익비${regimeText}: <b>${status}</b> (${rrVal.toFixed(2)} / 기준 ${threshold.toFixed(2)})`;
+        const regimeText = regime ? `${regime} ` : '';
+        return `${regimeText}손익비 판정: <b>${status}</b> (${rrVal.toFixed(2)} / 기준 ${threshold.toFixed(2)})`;
     }
     const status = rrVal < 0.8 ? '주의' : '통과';
     return `현재 장세 손익비: <b>${status}</b> (${rrVal.toFixed(2)})`;
@@ -306,7 +349,7 @@ function _formatDataQualityLine(item) {
             const sourceLabel = {
                 hoga: '호가', tick: '현재가', strength: '체결강도',
                 entry: '진입가', risk: '위험정보', vi: '변동성완화장치',
-            }[source] || _humanizeTerms(source);
+            }[source] || '기타 데이터';
             parts.push(`${sourceLabel} ${ms < 1000 ? `${Math.round(ms)}밀리초` : `${(ms / 1000).toFixed(1)}초`} 전`);
         }
     }
@@ -320,7 +363,10 @@ function _sourceAndAge(item, key) {
     const rawAge = ages && typeof ages === 'object' ? ages[key] : null;
     const age = rawAge == null ? null : Number(rawAge);
     const details = [];
-    if (source) details.push(`출처 ${_humanizeTerms(source)}`);
+    if (source) {
+        const sourceLabel = { kiwoom_ws: '키움 실시간', kiwoom_rest: '키움 조회', toss: '토스 조회' }[source] || '시장 데이터';
+        details.push(`출처 ${sourceLabel}`);
+    }
     if (Number.isFinite(age) && age >= 0) {
         details.push(`관측 후 ${age < 1000 ? `${Math.round(age)}밀리초` : `${(age / 1000).toFixed(1)}초`} 경과`);
     }
@@ -328,7 +374,7 @@ function _sourceAndAge(item, key) {
 }
 
 function _priceMethod(value) {
-    return value ? ` · 산출 근거 ${_humanizeTerms(value)}` : '';
+    return value ? ` · 산출 근거 ${_compactPriceMethod(value)}` : '';
 }
 
 function _compactPriceMethod(value) {
@@ -341,16 +387,40 @@ function _compactPriceMethod(value) {
         .replace(/swing_low_D15/gi, '15일 저점')
         .replace(/bollinger_upper/gi, '볼린저 상단')
         .replace(/fib_1272(?:\([^)]*\))?/gi, '피보나치 1.272')
+        .replace(/fib_1618(?:\([^)]*\))?/gi, '피보나치 1.618')
         .replace(/MA20_support/gi, '20일선 지지')
+        .replace(/\(MA20_gap>6%\)/gi, ' · 20일선 괴리 6% 초과')
         .replace(/MA20/gi, '20일선')
+        .replace(/ATR/gi, '평균 변동폭')
+        .replace(/single_tp_primary/gi, '단일 목표 적용')
+        .replace(/fib_min3pct/gi, '최소 3% 보정')
+        .replace(/pct_10%_min/gi, '최소 10% 보정')
         .replace(/min_3pct/gi, '최소 3% 목표')
         .replace(/pct_([\d.]+)%?_fallback/gi, '$1% 기본 목표')
         .replace(/\(×([\d.]+)\)/g, ' ×$1')
-        .replace(/\(MA20_gap>6%\)/gi, ' · 20일선 괴리 6% 초과')
         .split('+')
         .map((part) => part.trim())
+        .map((part) => /[A-Za-z_]/.test(part) ? '전략 계산' : part)
         .filter(Boolean)
+        .filter((part, index, parts) => parts.indexOf(part) === index)
         .join(' · ');
+}
+
+function _entryTypeLabel(value) {
+    return {
+        '당일종가_또는_익일시가': '당일 종가 또는 다음 거래일 시가',
+        '시장가': '시장가',
+        '지정가': '지정가',
+    }[String(value || '')] || '전략 지정 방식';
+}
+
+function _strategyLabel(value) {
+    return STRATEGY_LABEL[value] || '복합 전략';
+}
+
+function _sizeTierLabel(value) {
+    return { SIZE_4: '매우 강함', SIZE_3: '강함', SIZE_2: '보통', SIZE_1: '낮음', SIZE_0: '관찰 전용' }[value]
+        || '보통';
 }
 
 function _regimeLabel(value) {
@@ -401,9 +471,9 @@ function _formatDecisionStatus(item) {
 function _positionSize(aiScore, confidence) {
     const score = Number(aiScore ?? 0);
     const conf  = confidence ?? 'LOW';
-    if (score >= 85 && conf === 'HIGH')   return '대 (full)';
+    if (score >= 85 && conf === 'HIGH')   return '대';
     if (score >= 75 && conf !== 'LOW')    return '중';
-    if (score >= 65)                      return '소 (half)';
+    if (score >= 65)                      return '소';
     return null;
 }
 
@@ -438,7 +508,8 @@ function _formatTossRiskLine(tossRisk) {
 
     const warnings = tossRisk.warnings;
     if (Array.isArray(warnings) && warnings.length) {
-        const types = [...new Set(warnings.map(w => w?.warningType).filter(Boolean))];
+        const warningLabels = { OVERHEATED: '과열', INVESTMENT_WARNING: '투자 경고', INVESTMENT_RISK: '투자 위험', CAUTION: '주의' };
+        const types = [...new Set(warnings.map(w => warningLabels[w?.warningType] || '기타 주의').filter(Boolean))];
         if (types.length) parts.push(`⚠️ 매수유의사항[${types.join(',')}]`);
     }
 
@@ -463,7 +534,7 @@ function _formatInvestorFlowTrendLine(trend) {
         const iDelta = data.institution_net_delta;
         if (fDelta == null && iDelta == null) continue;
         const fmt = (v) => {
-            if (v == null) return 'N/A';
+            if (v == null) return '자료 없음';
             const eok = Number(v) / 1e8;
             const sign = eok >= 0 ? '+' : '';
             return `${sign}${eok.toFixed(0)}억`;
@@ -546,7 +617,7 @@ function formatSignal(item) {
     const isS1GapOpen = item.strategy === 'S1_GAP_OPEN';
     const emoji    = STRATEGY_EMOJI[item.strategy] ?? '📌';
     const action   = ACTION_LABEL[effectiveAction]     ?? effectiveAction;
-    const conf     = CONFIDENCE_LABEL[item.confidence] ?? item.confidence;
+    const conf     = CONFIDENCE_LABEL[item.confidence] ?? '⚪ 확인 필요';
     const aiScore  = (item.ai_score ?? 0).toFixed(1);
     const ruleScore= (item.rule_score ?? 0).toFixed(1);
     const stratDesc = STRATEGY_DESC[item.strategy];
@@ -554,24 +625,24 @@ function formatSignal(item) {
     const stockLabel = item.stk_nm
         ? `${item.stk_nm} (${item.stk_cd})`
         : item.stk_cd;
-    const strategyTag = item.hold_promoted_to_enter ? `[H][${item.strategy}]` : `[${item.strategy}]`;
+    const strategyTag = effectiveAction === 'ENTER'
+        ? `[${_strategyLabel(item.strategy)}${item.hold_promoted_to_enter ? ' · 관망 후 승격' : ''}]`
+        : `[${item.strategy}]`;
     const lines = [
         `${emoji} <b>${strategyTag} ${stockLabel}</b>`,
     ];
     if (item.strategy_family) {
-        const familyName = FAMILY_LABEL[item.strategy_family]
-            || item.strategy_family_name
-            || '통합전략';
+        const familyName = FAMILY_LABEL[item.strategy_family] || '복합 전략';
         const primarySetup = item.primary_setup_id || item.strategy;
-        lines.push(`통합전략: <b>${escapeHtml(String(item.strategy_family))} ${escapeHtml(String(familyName))}</b>`);
-        lines.push(`대표 세부전략: ${escapeHtml(String(primarySetup))} · ${_holdingType(primarySetup)}`);
+        lines.push(`통합전략: <b>${escapeHtml(String(familyName))}</b>`);
+        lines.push(`대표 전략: ${escapeHtml(_strategyLabel(primarySetup))} · ${_holdingType(primarySetup)}`);
         const confirmations = item.confirmed_by || item.matched_setup_ids;
         if (Array.isArray(confirmations) && confirmations.length > 1) {
-            lines.push(`함께 확인된 세부전략: ${escapeHtml(confirmations.join(', '))}`);
+            lines.push(`함께 확인된 전략: ${escapeHtml(confirmations.map(_strategyLabel).join(' · '))}`);
         }
     }
     if (stratDesc) lines.push(`<i>${stratDesc}</i>`);
-    if (item.readiness_action) {
+    if (item.readiness_action && effectiveAction !== 'ENTER') {
         lines.push(`준비 상태: <b>${escapeHtml(_humanizeTerms(item.readiness_action))}</b>`);
         if (Array.isArray(item.readiness_reasons) && item.readiness_reasons.length) {
             lines.push(`판단 근거: ${escapeHtml(_humanizeTerms(item.readiness_reasons.slice(0, 3).join(' | ')))}`);
@@ -611,7 +682,7 @@ function formatSignal(item) {
             lines.push(`진입 판단: <b>진입 조건 통과</b>`);
         }
         const finalScore = item.final_score == null ? null : Number(item.final_score);
-        lines.push(`점수: 규칙 ${ruleScore}점 · AI ${aiScore}점${Number.isFinite(finalScore) ? ` · 종합 ${finalScore.toFixed(1)}점` : ''}`);
+        lines.push(`점수: 규칙 ${ruleScore}점 · 인공지능 ${aiScore}점${Number.isFinite(finalScore) ? ` · 종합 ${finalScore.toFixed(1)}점` : ''}`);
         const marketLabel = _marketLabel(item.market_type || item.market);
         lines.push(`신뢰도: ${conf} · 보유 유형: ${_holdingType(item.primary_setup_id || item.strategy)}${marketLabel ? ` · 시장: ${escapeHtml(marketLabel)}` : ''}`);
         const decisionStatus = _formatDecisionStatus(item);
@@ -661,7 +732,7 @@ function formatSignal(item) {
         }
 
         const flowLine = [
-            item.daily_strength_avg_5 != null ? `5D강도 ${Number(item.daily_strength_avg_5).toFixed(0)}` : null,
+            item.daily_strength_avg_5 != null ? `최근 5일 강도 ${Number(item.daily_strength_avg_5).toFixed(0)}` : null,
             item.investor_smart_money != null ? `스마트머니 ${Number(item.investor_smart_money).toLocaleString()}` : null,
             item.program_net_buy_amt != null ? `프로그램 ${Number(item.program_net_buy_amt).toLocaleString()}` : null,
         ].filter(Boolean).join(' | ');
@@ -693,7 +764,7 @@ function formatSignal(item) {
             const weightDisplay = item.entry_size_weight !== undefined
                 ? ` (모델 상대 ${Number(item.entry_size_weight).toFixed(2)})`
                 : '';
-            lines.push(`${tierEmoji} 진입 강도: ${item.entry_size_tier}${weightDisplay}`);
+            lines.push(`${tierEmoji} 진입 강도: ${_sizeTierLabel(item.entry_size_tier)}${weightDisplay}`);
 
             if (item.size_downgrade_flags && item.size_downgrade_flags.length > 0) {
                 const flagKorean = {
@@ -708,7 +779,7 @@ function formatSignal(item) {
                     'execution_quality_reject':'체결 품질 불량',
                 };
                 const flagsKor = item.size_downgrade_flags
-                    .map(f => flagKorean[f] || f)
+                    .map(f => flagKorean[f] || '기타 위험 요인')
                     .join(', ');
                 lines.push(`⬇️ 하향 사유: ${flagsKor}`);
             }
@@ -719,16 +790,16 @@ function formatSignal(item) {
         }
 
         // 매수/매도 박스 블록 (zone 전략만)
-        const zoneBlock = _formatZoneBlock(item, curPrc);
+        const zoneBlock = _formatZoneBlock(item, curPrc, displayedTp1);
         if (zoneBlock) { lines.push(''); lines.push(zoneBlock); }
 
         if (item.entry_type) {
-            const entryLabel = isS1GapOpen ? _s1EntryConditionLabel(item.entry_type) : item.entry_type;
+            const entryLabel = isS1GapOpen ? _s1EntryConditionLabel(item.entry_type) : _entryTypeLabel(item.entry_type);
             if (entryLabel) lines.push(`${isS1GapOpen ? '확인 조건' : '매수 방식'}: ${entryLabel}`);
         }
         if (item.ai_reason) {
             const reasonText = isS1GapOpen ? _s1ReasonText(item.ai_reason) : item.ai_reason;
-            lines.push(`<blockquote><b>${isS1GapOpen ? '관찰 근거' : '추천 이유'}</b>\n${escapeHtml(_humanizeTerms(reasonText))}</blockquote>`);
+            lines.push(`<blockquote><b>${isS1GapOpen ? '관찰 근거' : '추천 이유'}</b>\n${escapeHtml(_enterText(reasonText))}</blockquote>`);
         }
 
         lines.push('');
@@ -804,16 +875,19 @@ function formatSignal(item) {
     if (item.gap_pct      != null) indLines.push(`갭: ${item.gap_pct}%`);
     if (effectiveAction !== 'ENTER' && item.cntr_strength != null) indLines.push(`체결강도: ${item.cntr_strength}%`);
     if (effectiveAction !== 'ENTER' && item.bid_ratio != null) indLines.push(`호가비율: ${item.bid_ratio}`);
-    if (item.vol_ratio    != null) indLines.push(`거래량: ${item.vol_ratio}x`);
+    if (item.vol_ratio    != null) indLines.push(`거래량: ${item.vol_ratio}배`);
     if (item.pullback_pct != null) indLines.push(`눌림: ${item.pullback_pct}%`);
     if (indLines.length > 0) lines.push(indLines.join('  |  '));
 
     // 기술 지표 (RSI, ATR, 조건수, 보유목표일)
     const techLines = [];
-    if (item.rsi      != null) techLines.push(`RSI: ${Number(item.rsi).toFixed(1)}`);
+    if (item.rsi      != null) techLines.push(`상대강도지수: ${Number(item.rsi).toFixed(1)}`);
     if (item.atr_pct  != null) techLines.push(`평균 변동폭: ${Number(item.atr_pct).toFixed(2)}%`);
     if (item.cond_count != null && Number(item.cond_count) > 0) techLines.push(`조건충족: ${item.cond_count}개`);
-    if (item.holding_days != null) techLines.push(`보유목표: ${item.holding_days}일`);
+    if (item.holding_days != null) {
+        const holdingDays = String(item.holding_days);
+        techLines.push(`보유 목표: ${holdingDays}${/일$/.test(holdingDays) ? '' : '일'}`);
+    }
     if (techLines.length > 0) lines.push(techLines.join('  |  '));
 
     if (item.theme_name   != null) lines.push(`테마: ${item.theme_name}`);
@@ -836,8 +910,8 @@ function formatSignal(item) {
 
     // 신호 시간
     const signalTime = item.signal_time
-        ? new Date(item.signal_time).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })
-        : new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' });
+        ? new Date(item.signal_time).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false })
+        : new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
     lines.push(`\n🕐 ${signalTime}`);
 
     return lines.join('\n');
