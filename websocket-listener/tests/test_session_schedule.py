@@ -117,20 +117,15 @@ async def test_pre_market_subscribes_0b_0h_0d_0w_1h():
             sent_types.extend(payload["data"][0]["type"])
             refresh_values.append(payload["refresh"])
 
-    assert sent_types == ["0B", "0H", "0D", "0w", "1h"]
-    # diff 기반 구독 갱신: 신규 종목은 항상 refresh="1"(추가)로 전송하고,
-    # 이미 구독 중인 종목은 재전송하지 않아 Kiwoom 측 중복 누적을 막는다.
-    assert refresh_values == ["1", "1", "1", "1", "1"]
+    assert sent_types == ["0B", "0D", "0w", "0H", "1h"]
+    # 그룹 전체 교체는 기존 항목을 먼저 해제하므로 후보 회전 중 순간적인
+    # 200종목 초과가 발생하지 않는다.
+    assert refresh_values == ["0", "0", "0", "0", "0"]
 
 
 @pytest.mark.asyncio
-async def test_subscribe_by_phase_diffs_instead_of_resending():
-    """이미 구독 중인 종목은 REG를 재전송하지 않고, 더 이상 필요 없는 종목만 REMOVE 한다.
-
-    07-23~24 로그에서 관측된 "허용 개수(200) 초과" 반복 거부는 주기적 전체
-    재전송(refresh 무관 REG 누적)이 원인으로 추정되어, diff 기반 갱신으로
-    동일 종목이 중복 등록되지 않는지 검증한다.
-    """
+async def test_subscribe_by_phase_replaces_changed_group_atomically():
+    """변경된 그룹은 refresh=0 스냅샷 한 번으로 교체한다."""
     import ws_client
 
     ws = AsyncMock()
@@ -149,8 +144,7 @@ async def test_subscribe_by_phase_diffs_instead_of_resending():
         ranked.return_value = (["005930", "000660", "035420"], ["005930", "000660"])
         await ws_client._subscribe_by_phase(ws, rdb, "pre_market")
 
-    reg_items_0b = []
-    remove_items_0b = []
+    reg_payloads_0b = []
     for call in ws.send.call_args_list:
         payload = json.loads(call.args[0])
         if payload["grp_no"] != "1":
@@ -159,16 +153,11 @@ async def test_subscribe_by_phase_diffs_instead_of_resending():
         if "0B" not in entry["type"]:
             continue
         if payload["trnm"] == "REG":
-            reg_items_0b.extend(entry["item"])
-        elif payload["trnm"] == "REMOVE":
-            remove_items_0b.extend(entry["item"])
+            reg_payloads_0b.append(payload)
 
-    # 이미 구독 중인 "005930"은 다시 REG로 보내지 않는다.
-    assert "005930" not in reg_items_0b
-    # 신규 종목만 REG로 전송한다.
-    assert set(reg_items_0b) == {"000660", "035420"}
-    # 더 이상 후보가 아닌 "999999"는 REMOVE 한다.
-    assert remove_items_0b == ["999999"]
+    assert len(reg_payloads_0b) == 1
+    assert reg_payloads_0b[0]["refresh"] == "0"
+    assert reg_payloads_0b[0]["data"][0]["item"] == ["005930", "000660", "035420"]
 
 
 @pytest.mark.asyncio
@@ -177,14 +166,13 @@ async def test_closed_session_clears_subscriptions_only():
 
     ws = AsyncMock()
     rdb = AsyncMock()
-    rdb.smembers.side_effect = [
-        {"005930"},
-        set(),
-        set(),
-        {""},
-        {"005930"},
-        {"005930"},
-    ]
+    existing = {
+        "ws:subscribed:0B:1": {"005930"},
+        "ws:subscribed:1h:3": {""},
+        "ws:subscribed:0D:4": {"005930"},
+        "ws:subscribed:0w:5": {"005930"},
+    }
+    rdb.smembers.side_effect = lambda key: existing.get(key, set())
     with patch("ws_client._get_ranked_candidates", new_callable=AsyncMock) as ranked, \
          patch("ws_client.asyncio.sleep", new_callable=AsyncMock):
         ranked.return_value = (["005930"], ["005930"])
@@ -218,6 +206,7 @@ async def test_subscription_state_commits_only_after_success_ack():
     ws_client._pending_ws_controls.clear()
     ws = AsyncMock()
     rdb = AsyncMock()
+    rdb.smembers.side_effect = lambda key: {"005930", "000660"} if key == "ws:subscribed:0B:1" else set()
     payload = {
         "trnm": "REG",
         "grp_no": "1",
@@ -233,7 +222,8 @@ async def test_subscription_state_commits_only_after_success_ack():
     await ws_client._apply_ws_control_ack(rdb, "REG", "", "0")
     assert call("ws:subscribed:0B") in rdb.delete.await_args_list
     assert call("ws:subscribed:0B:1") in rdb.delete.await_args_list
-    assert call("ws:subscribed:0B", "005930", "000660") in rdb.sadd.await_args_list
+    union_call = next(c for c in rdb.sadd.await_args_list if c.args[0] == "ws:subscribed:0B")
+    assert set(union_call.args[1:]) == {"005930", "000660"}
     assert call("ws:subscribed:0B:1", "005930", "000660") in rdb.sadd.await_args_list
     rdb.expire.assert_not_awaited()
 
@@ -245,6 +235,7 @@ async def test_wildcard_subscription_is_tracked_after_success_ack():
     ws_client._pending_ws_controls.clear()
     ws = AsyncMock()
     rdb = AsyncMock()
+    rdb.smembers.side_effect = lambda key: {""} if key == "ws:subscribed:1h:3" else set()
     payload = {
         "trnm": "REG",
         "grp_no": "3",

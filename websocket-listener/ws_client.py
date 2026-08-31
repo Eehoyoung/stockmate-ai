@@ -145,6 +145,13 @@ WS_CONTROL_BACKOFF_SEC = float(os.getenv("WS_CONTROL_BACKOFF_SEC", "30"))
 WS_GROUP_MAX_ITEMS = max(1, min(100, int(os.getenv("WS_GROUP_MAX_ITEMS", "100"))))
 WS_DYNAMIC_REG_ENABLED = os.getenv("WS_DYNAMIC_REG_ENABLED", "false").lower() in ("1", "true", "yes")
 WS_CONTROL_ACK_TIMEOUT_SEC = max(1.0, float(os.getenv("WS_CONTROL_ACK_TIMEOUT_SEC", "10")))
+SUBSCRIPTION_GROUPS = {
+    "0B": ("1", "6"),
+    "0H": ("2", "9"),
+    "1h": ("3",),
+    "0D": ("4", "7"),
+    "0w": ("5", "8"),
+}
 
 _ws_control_lock = asyncio.Lock()
 _ws_control_last_sent_at = 0.0
@@ -220,16 +227,14 @@ async def _apply_ws_control_ack(rdb, trnm: str, grp_no: str, return_code: str):
             state_key = f"ws:subscribed:{ttype}"
             group_state_key = f"{state_key}:{operation['grp_no']}"
             if trnm == "REG" and operation["full_snapshot"]:
-                await _replace_subscription_set(rdb, state_key, items)
                 await _replace_subscription_set(rdb, group_state_key, items)
             elif trnm == "REG":
                 for code in items:
-                    await _add_subscription_code(rdb, state_key, code)
                     await _add_subscription_code(rdb, group_state_key, code)
             elif trnm == "REMOVE":
                 for code in items:
-                    await _remove_subscription_code(rdb, state_key, code)
                     await _remove_subscription_code(rdb, group_state_key, code)
+            await _refresh_subscription_union(rdb, ttype)
     return operation
 
 
@@ -343,6 +348,14 @@ async def _get_subscription_codes(rdb, ttype: str, grp_no: str | None = None) ->
     return [str(c) for c in codes]
 
 
+async def _refresh_subscription_union(rdb, ttype: str) -> None:
+    """Keep the legacy type-level set equal to the acknowledged group union."""
+    union: set[str] = set()
+    for grp_no in SUBSCRIPTION_GROUPS.get(ttype, ()):
+        union.update(await _get_subscription_codes(rdb, ttype, grp_no))
+    await _replace_subscription_set(rdb, f"ws:subscribed:{ttype}", sorted(union))
+
+
 async def _send_remove(ws, grp_no: str, ttype: str, items: list[str]):
     """Send Kiwoom REMOVE only for concrete tracked items."""
     uniq = [code for code in dict.fromkeys(items) if code is not None]
@@ -357,8 +370,8 @@ async def _send_remove(ws, grp_no: str, ttype: str, items: list[str]):
 
 async def _clear_subscription_type(ws, rdb, grp_no: str, ttype: str):
     """Idempotently release one realtime type using local subscription state."""
-    codes = await _get_subscription_codes(rdb, ttype)
-    await _replace_subscription_set(rdb, f"ws:desired:{ttype}", [])
+    codes = await _get_subscription_codes(rdb, ttype, grp_no)
+    await _replace_subscription_set(rdb, f"ws:desired:{ttype}:{grp_no}", [])
     sent = await _send_remove(ws, grp_no, ttype, codes)
     if sent:
         logger.info("[WS] subscription cleared grp=%s type=%s count=%d", grp_no, ttype, len(codes))
@@ -370,8 +383,7 @@ async def _reset_local_subscription_sets(rdb):
     global _ws_connection_generation
     _ws_connection_generation += 1
     _pending_ws_controls.clear()
-    groups = {"0B": ("1", "6"), "0H": ("2",), "1h": ("3",), "0D": ("4",), "0w": ("5",)}
-    for ttype, group_numbers in groups.items():
+    for ttype, group_numbers in SUBSCRIPTION_GROUPS.items():
         await _replace_subscription_set(rdb, f"ws:subscribed:{ttype}", [])
         await _replace_subscription_set(rdb, f"ws:desired:{ttype}", [])
         for grp_no in group_numbers:
@@ -477,27 +489,21 @@ def _get_market_phase() -> str:
 
 
 def _groups_for_session(session: str, all_cands: list[str], top100: list[str]) -> list[tuple[str, str, list[str]]]:
-    tick_groups = [("1", "0B", all_cands[:100])]
-    if len(all_cands) > 100:
-        tick_groups.append(("6", "0B", all_cands[100:200]))
+    tick_groups = [("1", "0B", all_cands[:100]), ("6", "0B", all_cands[100:200])]
+    hoga_groups = [("4", "0D", all_cands[:100]), ("7", "0D", all_cands[100:200])]
+    program_groups = [("5", "0w", all_cands[:100]), ("8", "0w", all_cands[100:200])]
     if session == "pre_market":
-        return tick_groups + [
+        return tick_groups + hoga_groups + program_groups + [
             ("2", "0H", top100),
-            ("4", "0D", top100),
-            ("5", "0w", top100),
             ("3", "1h", [""]),
         ]
     if session == "opening_auction":
-        return tick_groups + [
+        return tick_groups + hoga_groups + program_groups + [
             ("2", "0H", top100),
-            ("4", "0D", top100),
-            ("5", "0w", top100),
             ("3", "1h", [""]),
         ]
     if session in {"main_market", "closing_auction", "after_preopen", "after_market"}:
-        return tick_groups + [
-            ("4", "0D", top100),
-            ("5", "0w", top100),
+        return tick_groups + hoga_groups + program_groups + [
             ("3", "1h", [""]),
         ]
     return []
@@ -526,12 +532,13 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     groups = _groups_for_session(session, all_cands, top100)
 
     if not groups:
-        for grp_no, ttype in [("1", "0B"), ("6", "0B"), ("2", "0H"), ("3", "1h"), ("4", "0D"), ("5", "0w")]:
-            try:
-                await _clear_subscription_type(ws, rdb, grp_no, ttype)
-                await asyncio.sleep(0.1)
-            except Exception:
-                pass
+        for ttype, group_numbers in SUBSCRIPTION_GROUPS.items():
+            for grp_no in group_numbers:
+                try:
+                    await _clear_subscription_type(ws, rdb, grp_no, ttype)
+                    await asyncio.sleep(0.1)
+                except Exception:
+                    pass
         logger.info("[WS] session=%s, all subscriptions cleared", session)
         return
 
@@ -546,8 +553,6 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
     for ttype, items in desired_by_type.items():
         await _replace_subscription_set(rdb, f"ws:desired:{ttype}", list(dict.fromkeys(items)))
     for grp_no, ttype, items in groups:
-        if not items:
-            continue
         deduped = list(dict.fromkeys(items))
         items = deduped[:WS_GROUP_MAX_ITEMS]
         subscribed_counts[ttype] = subscribed_counts.get(ttype, 0) + len(items)
@@ -565,28 +570,22 @@ async def _subscribe_by_phase(ws, rdb, phase: str):
 
         current = set(await _get_subscription_codes(rdb, ttype, grp_no))
         desired = set(items)
-        to_remove = list(current - desired)
-        to_add = [code for code in items if code not in current]
-
-        if to_remove:
-            await _send_remove(ws, grp_no, ttype, to_remove)
-            logger.info("[WS] 구독 해제 grp=%s type=%s %d개", grp_no, ttype, len(to_remove))
-            await asyncio.sleep(0.3)
-
-        if not to_add:
+        if current == desired:
             continue
-
-        for i in range(0, len(to_add), 100):
-            batch = to_add[i:i + 100]
-            payload = {
-                "trnm":    "REG",
-                "grp_no":  grp_no,
-                "refresh": "1",
-                "data":    [{"item": batch, "type": [ttype]}],
-            }
-            await _send_ws_control(ws, payload, full_snapshot=False)
-            logger.info("[WS] 구독 grp=%s type=%s %d개(신규)", grp_no, ttype, len(batch))
+        if not items:
+            await _send_remove(ws, grp_no, ttype, list(current))
+            logger.info("[WS] 구독 해제 grp=%s type=%s %d개", grp_no, ttype, len(current))
             await asyncio.sleep(0.3)
+            continue
+        payload = {
+            "trnm": "REG",
+            "grp_no": grp_no,
+            "refresh": "0",
+            "data": [{"item": items, "type": [ttype]}],
+        }
+        await _send_ws_control(ws, payload, full_snapshot=True)
+        logger.info("[WS] 구독 교체 grp=%s type=%s %d개", grp_no, ttype, len(items))
+        await asyncio.sleep(0.3)
 
     # 0H is only valid through opening_auction; make later sessions explicitly release it.
     if phase in {"main_market", "closing_auction", "after_preopen", "after_market"}:
@@ -730,40 +729,11 @@ async def _watchlist_poller(ws, rdb, subscribed_set: set):
                 continue
 
             watchset = set(watchlist)
-            topset = set(top100)
-            new_codes     = watchset - subscribed_set
-            removed_codes = subscribed_set - watchset
-
-            for code in new_codes:
-                primary_ticks = set(await _get_subscription_codes(rdb, "0B", "1"))
-                tick_group = "1" if len(primary_ticks) < WS_GROUP_MAX_ITEMS else "6"
-                groups = [(tick_group, "0B")]
-                if "0H" in active_types and code in topset:
-                    groups.append(("2", "0H"))
-                if "0D" in active_types and code in topset:
-                    groups.append(("4", "0D"))
-                if "0w" in active_types and code in topset:
-                    groups.append(("5", "0w"))
-                for grp_no, ttype in groups:
-                    subscribed_codes = set(await _get_subscription_codes(rdb, ttype, grp_no))
-                    if code in subscribed_codes:
-                        continue
-                    if len(subscribed_codes) >= WS_GROUP_MAX_ITEMS:
-                        logger.warning("[WS] dynamic REG skipped grp=%s type=%s code=%s: group limit reached", grp_no, ttype, code)
-                        continue
-                    payload = {"trnm": "REG", "grp_no": grp_no, "refresh": "1",
-                               "data": [{"item": [code], "type": [ttype]}]}
-                    await _send_ws_control(ws, payload)
-                subscribed_set.add(code)
-                logger.info("[WS] 동적 구독 추가 [%s]", code)
-
-            for code in removed_codes:
-                for grp_no, ttype in [("1", "0B"), ("6", "0B"), ("2", "0H"), ("4", "0D"), ("5", "0w")]:
-                    if code not in set(await _get_subscription_codes(rdb, ttype, grp_no)):
-                        continue
-                    await _send_remove(ws, grp_no, ttype, [code])
-                subscribed_set.discard(code)
-                logger.info("[WS] 동적 구독 해제 [%s]", code)
+            if watchset == subscribed_set:
+                continue
+            await _subscribe_by_phase(ws, rdb, session)
+            subscribed_set.clear()
+            subscribed_set.update(watchset)
 
         except Exception as e:
             logger.warning("[WS] watchlist 폴러 오류: %s", e)
