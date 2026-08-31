@@ -2,6 +2,8 @@ package org.invest.apiorchestrator.domain;
 
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
@@ -331,7 +333,7 @@ public class TradingSignal {
     @Column(name = "zone_rr", precision = 5, scale = 3)
     private BigDecimal zoneRr;
 
-    @Column(name = "shadow_features", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "shadow_features", columnDefinition = "jsonb")
     private String shadowFeatures;
 
     // ── G01~G07 additive family lineage (V55) ──────────────────────────────
@@ -345,23 +347,23 @@ public class TradingSignal {
     @Column(name = "primary_setup_id", length = 40)
     private String primarySetupId;
 
-    @Column(name = "matched_setup_ids", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "matched_setup_ids", columnDefinition = "jsonb")
     private String matchedSetupIds;
 
     @Column(name = "family_policy_version", length = 40)
     private String familyPolicyVersion;
 
-    @Column(name = "blocking_reasons", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "blocking_reasons", columnDefinition = "jsonb")
     private String blockingReasons;
 
-    @Column(name = "degraded_reasons", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "degraded_reasons", columnDefinition = "jsonb")
     private String degradedReasons;
 
     @Column(name = "final_score", precision = 5, scale = 2)
     private BigDecimal finalScore;
 
     // ── Complete family/source lineage (V56) ──────────────────────────────
-    @Column(name = "confirmed_by_family_ids", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "confirmed_by_family_ids", columnDefinition = "jsonb")
     private String confirmedByFamilyIds;
 
     @Column(name = "setup_version", length = 50)
@@ -373,22 +375,22 @@ public class TradingSignal {
     @Column(name = "prompt_version", length = 50)
     private String promptVersion;
 
-    @Column(name = "data_source", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "data_source", columnDefinition = "jsonb")
     private String dataSource;
 
-    @Column(name = "source_timestamp", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "source_timestamp", columnDefinition = "jsonb")
     private String sourceTimestamp;
 
-    @Column(name = "source_age_ms", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "source_age_ms", columnDefinition = "jsonb")
     private String sourceAgeMs;
 
-    @Column(name = "fallback_reason", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "fallback_reason", columnDefinition = "jsonb")
     private String fallbackReason;
 
     @Column(name = "reevaluation_of_signal_id")
     private Long reevaluationOfSignalId;
 
-    @Column(name = "evaluation_input", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "evaluation_input", columnDefinition = "jsonb")
     private String evaluationInput;
 
     @Column(name = "input_fingerprint", length = 64)
