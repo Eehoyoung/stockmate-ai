@@ -18,6 +18,18 @@ import static org.mockito.Mockito.when;
 class TossTokenRefreshSchedulerTests {
 
     @Test
+    void startupPreparesTossTokenWhenEnabled() {
+        TossAuthService auth = mock(TossAuthService.class);
+        TossMarketCalendarService calendar = mock(TossMarketCalendarService.class);
+        TossInvestProperties properties = new TossInvestProperties();
+        properties.setEnabled(true);
+
+        new TossTokenRefreshScheduler(auth, properties, calendar).refreshOnStartup();
+
+        verify(auth).getValidToken();
+    }
+
+    @Test
     void closedMarketSkipsMorningTokenRefresh() {
         TossAuthService auth = mock(TossAuthService.class);
         TossMarketCalendarService calendar = mock(TossMarketCalendarService.class);

@@ -7,6 +7,8 @@ import org.invest.apiorchestrator.service.TossAuthService;
 import org.invest.apiorchestrator.service.TossMarketCalendarService;
 import org.invest.apiorchestrator.util.KstClock;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 /**
@@ -22,6 +24,19 @@ public class TossTokenRefreshScheduler {
     private final TossAuthService tossAuthService;
     private final TossInvestProperties tossProperties;
     private final TossMarketCalendarService marketCalendarService;
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void refreshOnStartup() {
+        if (!tossProperties.isEnabled()) {
+            return;
+        }
+        try {
+            tossAuthService.getValidToken();
+            log.info("[Toss] 시작 시 토큰 준비 완료");
+        } catch (Exception e) {
+            log.warn("[Toss] 시작 시 토큰 준비 실패 (지연 발급으로 폴백): {}", e.getMessage());
+        }
+    }
 
     @Scheduled(cron = "0 0 7 * * MON-FRI", zone = "Asia/Seoul")
     public void refreshMorning() {
