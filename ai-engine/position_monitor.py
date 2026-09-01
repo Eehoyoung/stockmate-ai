@@ -186,6 +186,8 @@ REVERSAL_CLAUDE_ENABLED = os.getenv("REVERSAL_CLAUDE_ENABLED", "true").lower() =
 # 포지션당 Claude 호출 쿨다운 (초) — 동일 포지션에 연속 호출 방지
 _CLAUDE_CALL_COOLDOWN   = int(os.getenv("REVERSAL_CLAUDE_COOLDOWN_SEC", "120"))
 REDIS_TOKEN_KEY         = "kiwoom:token"
+ACTIVE_POSITION_WATCHLIST = "active_position:watchlist"
+ACTIVE_POSITION_WATCHLIST_TTL_SEC = max(60, MONITOR_INTERVAL_SEC * 4)
 
 # {position_id: last_claude_call_ts}
 _last_claude_call: dict[int, float] = {}
@@ -215,6 +217,7 @@ async def run_position_monitor(rdb, pg_pool):
 
 async def _scan_all(rdb, pg_pool):
     positions = await get_active_positions(pg_pool)
+    await _sync_active_position_watchlist(rdb, positions)
     if not positions:
         return
     logger.debug("[PosMon] 활성 포지션 %d건 스캔", len(positions))
@@ -230,6 +233,20 @@ async def _scan_all(rdb, pg_pool):
 
     tasks = [_check_position(rdb, pg_pool, pos) for pos in positions]
     await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _sync_active_position_watchlist(rdb, positions: list[dict]) -> None:
+    codes = sorted({str(p.get("stk_cd") or "").strip() for p in positions} - {""})
+    if not codes:
+        await rdb.delete(ACTIVE_POSITION_WATCHLIST)
+        return
+    temp_key = f"{ACTIVE_POSITION_WATCHLIST}:next"
+    pipe = rdb.pipeline(transaction=True)
+    pipe.delete(temp_key)
+    pipe.sadd(temp_key, *codes)
+    pipe.expire(temp_key, ACTIVE_POSITION_WATCHLIST_TTL_SEC)
+    pipe.rename(temp_key, ACTIVE_POSITION_WATCHLIST)
+    await pipe.execute()
 
 
 async def _check_position(rdb, pg_pool, pos: dict):

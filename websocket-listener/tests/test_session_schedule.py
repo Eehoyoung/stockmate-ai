@@ -98,7 +98,7 @@ async def test_after_market_subscribes_0b_0d_0w_1h_without_0h():
 
 
 @pytest.mark.asyncio
-async def test_pre_market_subscribes_0b_0h_0d_0w_1h():
+async def test_pre_market_subscribes_0b_0h_0d_1h():
     import ws_client
 
     ws = AsyncMock()
@@ -117,10 +117,10 @@ async def test_pre_market_subscribes_0b_0h_0d_0w_1h():
             sent_types.extend(payload["data"][0]["type"])
             refresh_values.append(payload["refresh"])
 
-    assert sent_types == ["0B", "0D", "0w", "0H", "1h"]
+    assert sent_types == ["0B", "0D", "0H", "1h"]
     # 그룹 전체 교체는 기존 항목을 먼저 해제하므로 후보 회전 중 순간적인
     # 200종목 초과가 발생하지 않는다.
-    assert refresh_values == ["0", "0", "0", "0", "0"]
+    assert refresh_values == ["0", "0", "0", "0"]
 
 
 @pytest.mark.asyncio
@@ -259,7 +259,9 @@ def test_main_market_keeps_total_registration_under_account_limit():
 
     assert sum(len(items) for _, _, items in groups) <= 200
     assert {ttype for _, ttype, _ in concrete} == {"0B", "0D", "0w"}
-    assert all(items == candidates[:66] for _, _, items in concrete)
+    counts = {ttype: len(items) for _, ttype, items in concrete}
+    assert counts == {"0B": 89, "0D": 89, "0w": 20}
+    assert concrete[0][2][0] == candidates[0]
 
 
 @pytest.mark.asyncio

@@ -131,6 +131,7 @@ WS_CONTROL_BACKOFF_SEC = float(os.getenv("WS_CONTROL_BACKOFF_SEC", "30"))
 # 키움은 그룹당 100개, 계정 전체 등록 항목은 200개가 상한이다.
 WS_GROUP_MAX_ITEMS = max(1, min(100, int(os.getenv("WS_GROUP_MAX_ITEMS", "100"))))
 WS_TOTAL_REG_ITEMS = max(1, min(200, int(os.getenv("WS_TOTAL_REG_ITEMS", "200"))))
+WS_PROGRAM_REG_ITEMS = max(0, min(100, int(os.getenv("WS_PROGRAM_REG_ITEMS", "20"))))
 WS_DYNAMIC_REG_ENABLED = os.getenv("WS_DYNAMIC_REG_ENABLED", "false").lower() in ("1", "true", "yes")
 WS_CONTROL_ACK_TIMEOUT_SEC = max(1.0, float(os.getenv("WS_CONTROL_ACK_TIMEOUT_SEC", "10")))
 SUBSCRIPTION_GROUPS = {
@@ -400,12 +401,14 @@ async def _get_candidates(rdb, market: str = "001") -> list[str]:
 
 async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
     """ZSET 우선순위 후보를 앞에 배치한 전체/상위 100개 목록을 반환한다."""
+    active_codes = await _get_watchlist_codes(rdb, "active_position:watchlist")
     hold_codes = await _get_hold_monitor_watchlist(rdb)
+    priority_monitor_codes = sorted(active_codes) + sorted(c for c in hold_codes if c not in active_codes)
     try:
         zset_codes = await rdb.zrevrange("candidates:watchlist:z", 0, 199)
         if zset_codes:
             ranked = [c.decode("utf-8") if isinstance(c, bytes) else c for c in zset_codes if c]
-            ranked = _merge_hold_codes(ranked, hold_codes, limit=200)
+            ranked = _merge_hold_codes(ranked, priority_monitor_codes, limit=200)
             return ranked, ranked[:100]
     except Exception:
         pass
@@ -436,13 +439,17 @@ async def _get_ranked_candidates(rdb) -> tuple[list[str], list[str]]:
     }
     priority_list = sorted(c for c in priority_codes if c)
     remaining = sorted(c for c in watchlist if c and c not in priority_codes)
-    ranked = _merge_hold_codes(priority_list + remaining, hold_codes, limit=200)
+    ranked = _merge_hold_codes(priority_list + remaining, priority_monitor_codes, limit=200)
     return ranked, ranked[:100]
 
 
 async def _get_hold_monitor_watchlist(rdb) -> list[str]:
+    return await _get_watchlist_codes(rdb, "hold_monitor:watchlist")
+
+
+async def _get_watchlist_codes(rdb, key: str) -> list[str]:
     try:
-        codes = await rdb.smembers("hold_monitor:watchlist")
+        codes = await rdb.smembers(key)
     except Exception:
         return []
     return [
@@ -455,7 +462,7 @@ async def _get_hold_monitor_watchlist(rdb) -> list[str]:
 def _merge_hold_codes(codes: list[str], hold_codes: list[str], *, limit: int) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
-    for code in sorted(hold_codes):
+    for code in hold_codes:
         if code and code not in seen:
             merged.append(code)
             seen.add(code)
@@ -478,16 +485,20 @@ def _get_market_phase() -> str:
 
 def _groups_for_session(session: str, all_cands: list[str], top100: list[str]) -> list[tuple[str, str, list[str]]]:
     if session in {"pre_market", "opening_auction"}:
-        types = [("1", "0B"), ("4", "0D"), ("5", "0w"), ("2", "0H")]
+        types = [("1", "0B"), ("4", "0D"), ("2", "0H")]
+        per_type = min(WS_GROUP_MAX_ITEMS, max(0, (WS_TOTAL_REG_ITEMS - 1) // len(types)))
+        groups = [(grp_no, ttype, all_cands[:per_type]) for grp_no, ttype in types]
     elif session in {"main_market", "closing_auction", "after_preopen", "after_market"}:
-        types = [("1", "0B"), ("4", "0D"), ("5", "0w")]
+        available = max(0, WS_TOTAL_REG_ITEMS - 1)
+        program_count = min(WS_PROGRAM_REG_ITEMS, max(0, available - 2))
+        primary_count = min(WS_GROUP_MAX_ITEMS, (available - program_count) // 2)
+        groups = [
+            ("1", "0B", all_cands[:primary_count]),
+            ("4", "0D", all_cands[:primary_count]),
+            ("5", "0w", all_cands[:program_count]),
+        ]
     else:
         return []
-
-    # 종목별 필수 데이터가 함께 들어오도록 같은 상위 종목을 타입별로 배분한다.
-    per_type = min(WS_GROUP_MAX_ITEMS, max(1, (WS_TOTAL_REG_ITEMS - 1) // len(types)))
-    candidates = all_cands[:per_type]
-    groups = [(grp_no, ttype, candidates) for grp_no, ttype in types]
     # 이전 다중 그룹 배포의 구독 상태도 다음 갱신에서 명시적으로 해제한다.
     groups += [("6", "0B", []), ("7", "0D", []), ("8", "0w", []), ("9", "0H", [])]
     groups.append(("3", "1h", [""]))

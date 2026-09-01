@@ -45,6 +45,21 @@ def _ai_scored_payloads(rdb):
     return [json.loads(c.args[1]) for c in calls]
 
 
+def test_active_positions_are_published_for_websocket_priority():
+    from position_monitor import ACTIVE_POSITION_WATCHLIST, _sync_active_position_watchlist
+
+    rdb = MagicMock()
+    pipe = MagicMock()
+    pipe.execute = AsyncMock(return_value=True)
+    rdb.pipeline.return_value = pipe
+
+    _run(_sync_active_position_watchlist(rdb, [_pos(stk_cd="373220"), _pos(stk_cd="373220")]))
+
+    pipe.sadd.assert_called_once_with(f"{ACTIVE_POSITION_WATCHLIST}:next", "373220")
+    pipe.rename.assert_called_once_with(f"{ACTIVE_POSITION_WATCHLIST}:next", ACTIVE_POSITION_WATCHLIST)
+    pipe.execute.assert_awaited_once()
+
+
 def test_sl_hit_sends_exactly_one_sell_message():
     rdb = _rdb()
 

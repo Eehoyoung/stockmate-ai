@@ -13,6 +13,7 @@ def _rdb(**overrides):
     smembers = overrides.get("smembers")
     if smembers is None:
         smembers = [
+            overrides.get("active_watchlist", set()),
             overrides.get("hold_watchlist", set()),
             overrides.get("priority_watchlist", set()),
             overrides.get("watchlist", set()),
@@ -32,7 +33,7 @@ async def test_ranked_candidates_prefers_zset_order():
 
     assert ranked == ["000003", "000002", "000001"]
     assert top100 == ranked
-    rdb.smembers.assert_awaited_once_with("hold_monitor:watchlist")
+    assert rdb.smembers.await_args_list[0].args == ("active_position:watchlist",)
 
 
 @pytest.mark.asyncio
@@ -81,3 +82,14 @@ async def test_ranked_candidates_keeps_hold_codes_ahead_of_watchlist():
 
     assert ranked == ["000001", "000003", "000004"]
     assert top100 == ranked
+
+
+@pytest.mark.asyncio
+async def test_ranked_candidates_keeps_active_positions_first():
+    from ws_client import _get_ranked_candidates
+
+    rdb = _rdb(zrevrange=["000003", "000002"], active_watchlist={"373220"}, hold_watchlist={"000001"})
+
+    ranked, _ = await _get_ranked_candidates(rdb)
+
+    assert ranked == ["373220", "000001", "000003", "000002"]
