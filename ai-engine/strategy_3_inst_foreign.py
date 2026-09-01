@@ -47,7 +47,7 @@ KIWOOM_BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 _KA10055_MAX_PAGES = int(os.getenv("S3_KA10055_MAX_PAGES", "3"))
 _KA10055_CACHE_TTL = int(os.getenv("S3_KA10055_CACHE_TTL", "30"))
 _KA10055_CACHE_BUCKET_SEC = int(os.getenv("S3_KA10055_CACHE_BUCKET_SEC", "300"))
-_S3_SCAN_ITEM_LIMIT = int(os.getenv("S3_SCAN_ITEM_LIMIT", "15"))
+_S3_SCAN_ITEM_LIMIT = int(os.getenv("S3_SCAN_ITEM_LIMIT", "5"))
 _KA10055_REQUIRE_COMPLETE = str(os.getenv("S3_KA10055_REQUIRE_COMPLETE", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
 

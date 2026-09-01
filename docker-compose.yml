@@ -126,7 +126,8 @@ services:
       S3_KA10055_CACHE_BUCKET_SEC: 300
       S3_KA10055_CACHE_TTL: 360
       S3_KA10055_REQUIRE_COMPLETE: "0"
-      S3_SCAN_ITEM_LIMIT: 15
+      S3_SCAN_ITEM_LIMIT: 5
+      S7_SCAN_LIMIT: 24
       TZ: Asia/Seoul
     ports:
       - "8082:8082"
