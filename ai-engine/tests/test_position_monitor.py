@@ -53,7 +53,7 @@ def test_active_positions_are_published_for_websocket_priority():
     pipe.execute = AsyncMock(return_value=True)
     rdb.pipeline.return_value = pipe
 
-    _run(_sync_active_position_watchlist(rdb, [_pos(stk_cd="373220"), _pos(stk_cd="373220")]))
+    _run(_sync_active_position_watchlist(rdb, ["373220", "373220"]))
 
     pipe.sadd.assert_called_once_with(f"{ACTIVE_POSITION_WATCHLIST}:next", "373220")
     pipe.rename.assert_called_once_with(f"{ACTIVE_POSITION_WATCHLIST}:next", ACTIVE_POSITION_WATCHLIST)

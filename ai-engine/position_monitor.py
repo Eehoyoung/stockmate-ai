@@ -23,7 +23,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from analyzer import analyze_exit
-from db_reader import get_active_positions
+from db_reader import get_active_positions, get_realtime_watch_codes
 from db_writer import (
     update_peak_price,
     close_open_position,
@@ -217,7 +217,7 @@ async def run_position_monitor(rdb, pg_pool):
 
 async def _scan_all(rdb, pg_pool):
     positions = await get_active_positions(pg_pool)
-    await _sync_active_position_watchlist(rdb, positions)
+    await _sync_active_position_watchlist(rdb, await get_realtime_watch_codes(pg_pool))
     if not positions:
         return
     logger.debug("[PosMon] 활성 포지션 %d건 스캔", len(positions))
@@ -235,8 +235,8 @@ async def _scan_all(rdb, pg_pool):
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _sync_active_position_watchlist(rdb, positions: list[dict]) -> None:
-    codes = sorted({str(p.get("stk_cd") or "").strip() for p in positions} - {""})
+async def _sync_active_position_watchlist(rdb, watch_codes: list[str]) -> None:
+    codes = sorted({str(code or "").strip() for code in watch_codes} - {""})
     if not codes:
         await rdb.delete(ACTIVE_POSITION_WATCHLIST)
         return

@@ -181,6 +181,26 @@ async def get_active_positions(pool) -> list[dict]:
         return []
 
 
+async def get_realtime_watch_codes(pool) -> list[str]:
+    """실제 체결과 종이 포지션을 모두 포함한 실시간 시세 추적 종목."""
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT DISTINCT stk_cd
+            FROM trading_signals
+            WHERE position_status IN ('ACTIVE', 'PARTIAL_TP', 'OVERNIGHT')
+              AND signal_status IN ('PENDING', 'SENT', 'EXECUTED', 'OVERNIGHT_HOLD')
+              AND exit_type IS NULL
+              AND COALESCE(monitor_enabled, TRUE) = TRUE
+            ORDER BY stk_cd
+            """
+        )
+        return [str(row["stk_cd"]).strip() for row in rows if row["stk_cd"]]
+    except Exception as e:
+        logger.error("[DBReader] get_realtime_watch_codes error: %s", e)
+        return []
+
+
 async def get_strategy_win_rate(pool, strategy: str, days: int = 20) -> Optional[float]:
     try:
         row = await pool.fetchrow(
