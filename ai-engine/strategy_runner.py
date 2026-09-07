@@ -79,7 +79,8 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
 
 
 RUNNER_POOL_READ_LIMIT_S1 = _int_env("RUNNER_POOL_READ_LIMIT_S1", 100)
-STRATEGY_SCAN_KIWOOM_CALL_BUDGET = _int_env("STRATEGY_SCAN_KIWOOM_CALL_BUDGET", 120)
+STRATEGY_SCAN_KIWOOM_CALL_BUDGET = _int_env("STRATEGY_SCAN_KIWOOM_CALL_BUDGET", 40)
+_STRATEGY_CALL_BUDGET_DEFAULTS = {"S3": 20, "S7": 40, "S11": 30}
 # S4 풀 읽기/스캔/시그널 제한값은 strategy_4_big_candle.scan_big_candle() 내부로 이관됨
 # (동일한 RUNNER_POOL_READ_LIMIT_S4 / RUNNER_SCAN_LIMIT_S4 / RUNNER_SIGNAL_LIMIT_S4
 #  env var 이름을 그대로 사용하므로 운영 설정은 변경할 필요 없음).
@@ -138,6 +139,11 @@ _STRATEGY_TIMEOUT_OVERRIDES = {
 
 def _strategy_timeout_sec(name: str) -> int:
     return _STRATEGY_TIMEOUT_OVERRIDES.get(name, _DEFAULT_STRATEGY_TIMEOUT_SEC)
+
+
+def _strategy_call_budget(name: str) -> int:
+    default = _STRATEGY_CALL_BUDGET_DEFAULTS.get(name, STRATEGY_SCAN_KIWOOM_CALL_BUDGET)
+    return _int_env(f"STRATEGY_SCAN_KIWOOM_CALL_BUDGET_{name}", default)
 
 
 async def _incr_pipeline_daily(rdb, strategy: str, field: str) -> None:
@@ -258,7 +264,7 @@ async def _run_strategy_with_semaphore(name: str, coro, rdb=None):
         published_state = {"count": 0}
         published_token = _SCAN_PUBLISHED_CONTEXT.set(published_state)
         from http_utils import begin_call_budget, end_call_budget
-        budget_token = begin_call_budget(STRATEGY_SCAN_KIWOOM_CALL_BUDGET)
+        budget_token = begin_call_budget(_strategy_call_budget(name))
         try:
             result = await asyncio.wait_for(coro, timeout=timeout_sec)
             elapsed_sec = _time.monotonic() - started_at
@@ -722,7 +728,7 @@ async def run_manual_scan(rdb, code: str) -> dict:
     if not token:
         return {"strategy": strategy_name, "published": 0, "error": "kiwoom:token not available"}
     from http_utils import begin_call_budget, end_call_budget
-    budget_token = begin_call_budget(STRATEGY_SCAN_KIWOOM_CALL_BUDGET)
+    budget_token = begin_call_budget(_strategy_call_budget(strategy_name.split("_", 1)[0]))
     try:
         published = await fn(rdb, token)
     finally:

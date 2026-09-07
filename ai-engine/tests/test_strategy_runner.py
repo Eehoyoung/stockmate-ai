@@ -50,6 +50,16 @@ class TestStrategyTimeoutOverrides:
         assert _strategy_timeout_sec("S13") == _DEFAULT_STRATEGY_TIMEOUT_SEC
 
 
+class TestStrategyCallBudgets:
+    def test_heavy_strategies_have_independent_caps(self):
+        from strategy_runner import _strategy_call_budget
+
+        assert _strategy_call_budget("S3") == 20
+        assert _strategy_call_budget("S7") == 40
+        assert _strategy_call_budget("S11") == 30
+        assert _strategy_call_budget("S8") == 40
+
+
 class TestLoadToken:
     def test_returns_token_when_present(self):
         from strategy_runner import _load_token
