@@ -333,7 +333,7 @@ class TestQueueWorkerHappyPath:
         assert captured[0]["cntr_strength"] == 120.0
         assert "120.0" in captured[0]["ai_reason"]
 
-    def test_high_score_hold_routes_to_watch_monitor(self):
+    def test_high_score_hold_promotes_after_pre_ai_gates(self):
         item = _signal(cur_prc=10000, tp1_price=10300, sl_price=9900, rr_ratio=2.0, bid_ratio=2.0)
         rdb = _make_rdb(json.dumps(item))
         captured = []
@@ -356,20 +356,20 @@ class TestQueueWorkerHappyPath:
                      "reason": "strong but originally hold",
                  },
              ), \
-             patch("queue_worker.push_hold_monitor_queue", side_effect=capture_push), \
-             patch("queue_worker.push_score_only_queue", new_callable=AsyncMock):
+             patch("queue_worker.push_hold_monitor_queue", new_callable=AsyncMock), \
+             patch("queue_worker.push_score_only_queue", side_effect=capture_push):
             from queue_worker import process_one
 
             result = _run(process_one(rdb))
 
         assert result is True
         assert len(captured) == 1
-        assert captured[0]["action"] == "HOLD"
-        assert captured[0]["execution_decision"] == "WATCH"
+        assert captured[0]["action"] == "ENTER"
+        assert captured[0]["execution_decision"] == "ENTER"
         assert captured[0]["ai_score"] == 80.0
         assert captured[0]["cancel_reason"] is None
-        assert captured[0]["hold_promoted_to_enter"] is False
-        assert "ai_score alone cannot promote to ENTER" in captured[0]["ai_reason"]
+        assert captured[0]["hold_promoted_to_enter"] is True
+        assert "HOLD promoted to ENTER" in captured[0]["ai_reason"]
 
 
 class TestQueueWorkerFailures:
@@ -955,7 +955,7 @@ class TestClaudeRiskPostprocess:
 
         assert _detect_market_regime(ctx, "S8_GOLDEN_CROSS") == "sideways"
 
-    def test_s1_high_score_hold_stays_watch(self):
+    def test_s1_high_score_hold_stays_watch_without_completed_gates(self):
         from queue_worker import _maybe_promote_hold_to_enter
 
         action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
@@ -1005,6 +1005,23 @@ class TestClaudeRiskPostprocess:
         assert action == "ENTER"
         assert confidence == "HIGH"
         assert "HOLD promoted to ENTER after full revalidation" in reason
+        assert cancel_reason is None
+
+    def test_initial_high_confidence_hold_promotes_after_completed_gates(self):
+        from queue_worker import _maybe_promote_hold_to_enter
+
+        action, confidence, reason, cancel_reason = _maybe_promote_hold_to_enter(
+            strategy="S9_PULLBACK_SWING",
+            action="HOLD",
+            confidence="HIGH",
+            reason="strong setup",
+            cancel_reason=None,
+            ai_score=85.0,
+            allow_promotion=True,
+        )
+
+        assert action == "ENTER"
+        assert confidence == "HIGH"
         assert cancel_reason is None
 
     def test_revalidated_hold_requires_high_confidence_and_score(self):
@@ -1262,10 +1279,7 @@ class TestSessionEnterGuard:
             result = _run(process_one(rdb))
 
         assert result is True
-        assert len(captured) == 1
-        assert captured[0]["action"] == "HOLD"
-        assert captured[0]["execution_decision"] == "WATCH"
-        assert "HOLD promoted to ENTER" not in captured[0]["ai_reason"]
+        assert captured == []
 
 
 class TestCrossStrategyArbitration:

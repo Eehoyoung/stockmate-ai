@@ -64,11 +64,18 @@ def _resolve_display_reason(action: str, reason: str, cancel_reason: str | None)
 
 
 def _maybe_promote_hold_to_enter(result: dict, strategy: str = "") -> dict:
-    """Keep Claude HOLD as monitor-only; score alone must never promote to ENTER."""
+    """Promote a human-confirmed HOLD only when AI is also strong and confident."""
     if str(result.get("action", "")).upper() != "HOLD":
         return result
     held = dict(result)
     reason = str(held.get("reason") or "").strip() or "Claude HOLD"
+    ai_score = normalize_score_0_100(held.get("ai_score", 0))
+    if str(held.get("confidence") or "").upper() == "HIGH" and ai_score >= HOLD_TO_ENTER_MIN_AI_SCORE:
+        held["action"] = "ENTER"
+        held["confidence"] = "HIGH"
+        held["reason"] = f"HOLD promoted to ENTER after human confirmation (ai_score={ai_score:.1f}) | {reason}"
+        held["cancel_reason"] = None
+        return held
     held["action"] = "HOLD"
     held["confidence"] = held.get("confidence") or "MEDIUM"
     held["reason"] = f"{reason} | WATCH retained; ai_score alone cannot promote to ENTER"

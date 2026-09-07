@@ -136,7 +136,8 @@ def _build_system_sections(signal: dict) -> tuple[str, str | None]:
             f"family_id={family.family_id}; family_name={family.name}; "
             f"primary_setup_id={strategy}; matched_setup_ids={json.dumps(matched, ensure_ascii=False)}\n"
             "The setup-specific rules remain authoritative; family confirmations are attribution only "
-            "and must not increase quantity or blend rules. Do not average Toss and Kiwoom values. "
+            "and must not increase quantity or blend rules. Treat equivalent Toss and Kiwoom fields as "
+            "equal-quality inputs, while keeping each field's latest value and source without averaging. "
             "Echo validated_family_id and validated_setup_id exactly, include independent_confirmations, "
             "data_quality(OK|DEGRADED|BLOCKED), risk_flags and effective_rr in the JSON."
         )

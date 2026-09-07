@@ -2096,7 +2096,9 @@ async def process_one(rdb, pg_pool=None) -> bool:
                 analyze_signal_fn=analyze_signal,
                 normalize_score_fn=normalize_score_0_100,
                 hold_policy_fn=lambda **kwargs: _maybe_promote_hold_to_enter(
-                    allow_promotion=bool(signal.get("hold_monitor_recheck")),
+                    # 규칙·RR·필수 데이터 게이트를 통과한 고신뢰 AI HOLD는
+                    # 최초 판단에서도 ENTER로 승격해 중복 보수 게이트를 제거한다.
+                    allow_promotion=True,
                     **kwargs,
                 ),
             )

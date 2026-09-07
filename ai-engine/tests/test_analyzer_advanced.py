@@ -349,7 +349,8 @@ class TestStrategyPrompts:
         assert "family_id=G06" in prompt
         assert "S6_THEME_LAGGARD" in prompt
         assert "must not increase quantity" in prompt
-        assert "Do not average Toss and Kiwoom values" in prompt
+        assert "Treat equivalent Toss and Kiwoom fields as equal-quality inputs" in prompt
+        assert "without averaging" in prompt
 
     def test_family_ai_schema_accepts_exact_lineage(self):
         from analyzer import _validate_family_ai_contract
